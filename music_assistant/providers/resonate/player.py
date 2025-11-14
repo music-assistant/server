@@ -64,9 +64,8 @@ class MusicAssistantMediaStream(MediaStream):
     """MediaStream implementation for Music Assistant with per-player DSP support."""
 
     player_instance: ResonatePlayer
-    flow_pcm_format: AudioFormat
-    pcm_format: AudioFormat
-    audio_codec: AudioCodec
+    internal_format: AudioFormat
+    output_format: AudioFormat
 
     def __init__(
         self,
@@ -74,19 +73,26 @@ class MusicAssistantMediaStream(MediaStream):
         main_channel_source: AsyncGenerator[bytes, None],
         main_channel_format: ResonateAudioFormat,
         player_instance: ResonatePlayer,
-        flow_pcm_format: AudioFormat,
-        pcm_format: AudioFormat,
-        audio_codec: AudioCodec,
+        internal_format: AudioFormat,
+        output_format: AudioFormat,
     ) -> None:
-        """Initialise the media stream with audio source and format for main_channel()."""
+        """
+        Initialise the media stream with audio source and format for main_channel().
+
+        Args:
+            main_channel_source: Audio source generator for the main channel.
+            main_channel_format: Audio format for the main channel (includes codec).
+            player_instance: The ResonatePlayer instance for accessing mass and streams.
+            internal_format: Internal processing format (float32 for headroom).
+            output_format: Output PCM format (16-bit for player output).
+        """
         super().__init__(
             main_channel_source=main_channel_source,
             main_channel_format=main_channel_format,
         )
         self.player_instance = player_instance
-        self.flow_pcm_format = flow_pcm_format
-        self.pcm_format = pcm_format
-        self.audio_codec = audio_codec
+        self.internal_format = internal_format
+        self.output_format = output_format
 
     async def player_channel(
         self,
@@ -119,14 +125,14 @@ class MusicAssistantMediaStream(MediaStream):
             return None
 
         # Get per-player DSP filter parameters
-        # Convert from flow format to output format
+        # Convert from internal format to output format
         filter_params = get_player_filter_params(
-            mass, player_id, self.flow_pcm_format, self.pcm_format
+            mass, player_id, self.internal_format, self.output_format
         )
 
         # Get the stream with position (in seconds)
         stream_gen, actual_position = await multi_client_stream.get_stream(
-            output_format=self.pcm_format,
+            output_format=self.output_format,
             filter_params=filter_params,
         )
 
@@ -142,10 +148,10 @@ class MusicAssistantMediaStream(MediaStream):
         return (
             stream_gen,
             ResonateAudioFormat(
-                sample_rate=self.pcm_format.sample_rate,
-                bit_depth=self.pcm_format.bit_depth,
-                channels=self.pcm_format.channels,
-                codec=self.audio_codec,
+                sample_rate=self.output_format.sample_rate,
+                bit_depth=self.output_format.bit_depth,
+                channels=self.output_format.channels,
+                codec=self._main_channel_format.codec,
             ),
             actual_position_us,
         )
@@ -360,9 +366,8 @@ class ResonatePlayer(Player):
                     codec=audio_codec,
                 ),
                 player_instance=self,
-                pcm_format=pcm_format,
-                flow_pcm_format=flow_pcm_format,
-                audio_codec=audio_codec,
+                internal_format=flow_pcm_format,
+                output_format=pcm_format,
             )
 
             stop_time = await self.api.group.play_media(media_stream)
