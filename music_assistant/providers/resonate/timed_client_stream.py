@@ -217,13 +217,18 @@ class TimedClientStream:
         audio_gen, position = await self.subscribe_raw()
 
         async def _stream_with_ffmpeg() -> AsyncGenerator[bytes, None]:
-            async for chunk in get_ffmpeg_stream(
-                audio_input=audio_gen,
-                input_format=self.audio_format,
-                output_format=output_format,
-                filter_params=filter_params,
-            ):
-                yield chunk
+            try:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=audio_gen,
+                    input_format=self.audio_format,
+                    output_format=output_format,
+                    filter_params=filter_params,
+                ):
+                    yield chunk
+            finally:
+                # Ensure audio_gen cleanup runs immediately
+                with suppress(Exception):
+                    await audio_gen.aclose()
 
         return _stream_with_ffmpeg(), position
 
