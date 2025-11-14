@@ -234,6 +234,45 @@ class TimedClientStream:
 
         return _stream_with_ffmpeg(), position
 
+    async def _generate(self, subscriber_id: UUID) -> AsyncGenerator[bytes, None]:
+        """
+        Generate audio chunks for a subscriber.
+
+        Yields chunks from the buffer until the stream ends, reading from the source
+        as needed. Automatically cleans up the subscriber on exit.
+        """
+        try:
+            # Position already set above atomically with timestamp capture
+            while True:
+                # Try to get chunk from buffer
+                chunk_bytes = await self._get_chunk_from_buffer(subscriber_id)
+
+                # Release lock before yielding to avoid deadlock
+                if chunk_bytes is not None:
+                    if chunk_bytes == b"":
+                        # End of stream marker
+                        break
+                    yield chunk_bytes
+                else:
+                    # No chunk available, need to read from source
+                    # Use source_read_lock to ensure only one subscriber reads at a time
+                    async with self.source_read_lock:
+                        # Check again if buffer has grown or stream ended while waiting
+                        check_result = await self._check_buffer(subscriber_id)
+                        if check_result is True:
+                            # Another subscriber already read the chunk
+                            continue
+                        if check_result is False:
+                            # Stream ended while waiting for source lock
+                            break
+
+                        # Read next chunk from source (check_result is None)
+                        # Note: This may block if the audio_source does synchronous I/O
+                        await self._read_chunk_from_source()
+
+        finally:
+            await self._cleanup_subscriber(subscriber_id)
+
     async def subscribe_raw(self) -> tuple[AsyncGenerator[bytes, None], float]:
         """
         Subscribe to the raw/unaltered audio stream.
@@ -273,38 +312,5 @@ class TimedClientStream:
             # Register subscriber at position 0 (start of buffer)
             self.subscriber_positions[subscriber_id] = 0
 
-        async def _generate() -> AsyncGenerator[bytes, None]:
-            try:
-                # Position already set above atomically with timestamp capture
-                while True:
-                    # Try to get chunk from buffer
-                    chunk_bytes = await self._get_chunk_from_buffer(subscriber_id)
-
-                    # Release lock before yielding to avoid deadlock
-                    if chunk_bytes is not None:
-                        if chunk_bytes == b"":
-                            # End of stream marker
-                            break
-                        yield chunk_bytes
-                    else:
-                        # No chunk available, need to read from source
-                        # Use source_read_lock to ensure only one subscriber reads at a time
-                        async with self.source_read_lock:
-                            # Check again if buffer has grown or stream ended while waiting
-                            check_result = await self._check_buffer(subscriber_id)
-                            if check_result is True:
-                                # Another subscriber already read the chunk
-                                continue
-                            if check_result is False:
-                                # Stream ended while waiting for source lock
-                                break
-
-                            # Read next chunk from source (check_result is None)
-                            # Note: This may block if the audio_source does synchronous I/O
-                            await self._read_chunk_from_source()
-
-            finally:
-                await self._cleanup_subscriber(subscriber_id)
-
         # Return generator and starting position in seconds
-        return _generate(), starting_position
+        return self._generate(subscriber_id), starting_position
