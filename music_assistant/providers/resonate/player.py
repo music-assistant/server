@@ -60,6 +60,97 @@ if TYPE_CHECKING:
     from .provider import ResonateProvider
 
 
+class MusicAssistantMediaStream(MediaStream):
+    """MediaStream implementation for Music Assistant with per-player DSP support."""
+
+    player_instance: ResonatePlayer
+    flow_pcm_format: AudioFormat
+    pcm_format: AudioFormat
+    audio_codec: AudioCodec
+
+    def __init__(
+        self,
+        *,
+        main_channel_source: AsyncGenerator[bytes, None],
+        main_channel_format: ResonateAudioFormat,
+        player_instance: ResonatePlayer,
+        flow_pcm_format: AudioFormat,
+        pcm_format: AudioFormat,
+        audio_codec: AudioCodec,
+    ) -> None:
+        """Initialise the media stream with audio source and format for main_channel()."""
+        super().__init__(
+            main_channel_source=main_channel_source,
+            main_channel_format=main_channel_format,
+        )
+        self.player_instance = player_instance
+        self.flow_pcm_format = flow_pcm_format
+        self.pcm_format = pcm_format
+        self.audio_codec = audio_codec
+
+    async def player_channel(
+        self: MusicAssistantMediaStream,
+        player_id: str,
+        preferred_format: ResonateAudioFormat | None = None,
+        position_us: int = 0,
+    ) -> tuple[AsyncGenerator[bytes, None], ResonateAudioFormat, int] | None:
+        """
+        Get a player-specific audio stream with per-player DSP.
+
+        Args:
+            player_id: Identifier for the player requesting the stream.
+            preferred_format: The player's preferred native format for the stream.
+                The implementation may return a different format; the library
+                will handle any necessary conversion.
+            position_us: Position in microseconds relative to the main_stream start.
+                Used for late-joining players to sync with the main stream.
+
+        Returns:
+            A tuple of (audio generator, audio format, actual position in microseconds)
+            or None if unavailable. If None, the main_stream is used as fallback.
+        """
+        mass = self.player_instance.mass
+        multi_client_stream = self.player_instance.timed_client_stream
+        assert multi_client_stream is not None
+
+        dsp = mass.config.get_player_dsp_config(player_id)
+        if not dsp.enabled:
+            # DSP is disabled for this player, use main_stream
+            return None
+
+        # Get per-player DSP filter parameters
+        # Convert from flow format to output format
+        filter_params = get_player_filter_params(
+            mass, player_id, self.flow_pcm_format, self.pcm_format
+        )
+
+        # Get the stream with position (in seconds)
+        stream_gen, actual_position = await multi_client_stream.get_stream(
+            output_format=self.pcm_format,
+            filter_params=filter_params,
+        )
+
+        # Convert position from seconds to microseconds for aioresonate API
+        actual_position_us = int(actual_position * 1_000_000)
+
+        # Return actual position in microseconds relative to main_stream start
+        self.player_instance.logger.debug(
+            "Providing channel stream for player %s at position %d us",
+            player_id,
+            actual_position_us,
+        )
+        return (
+            stream_gen,
+            ResonateAudioFormat(
+                sample_rate=self.pcm_format.sample_rate,
+                bit_depth=self.pcm_format.bit_depth,
+                channels=self.pcm_format.channels,
+                codec=self.audio_codec,
+            ),
+            actual_position_us,
+        )
+
+
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
@@ -253,74 +344,6 @@ class ResonatePlayer(Player):
                 audio_format=flow_pcm_format,
             )
 
-            # Capture self and other variables for use in inner class
-            player_instance = self
-            mass = self.mass
-
-            # Create MediaStream wrapping the TimedClientStream
-            class MusicAssistantMediaStream(MediaStream):
-                async def player_channel(
-                    self: MusicAssistantMediaStream,
-                    player_id: str,
-                    preferred_format: ResonateAudioFormat | None = None,
-                    position_us: int = 0,
-                ) -> tuple[AsyncGenerator[bytes, None], ResonateAudioFormat, int] | None:
-                    """
-                    Get a player-specific audio stream with per-player DSP.
-
-                    Args:
-                        player_id: Identifier for the player requesting the stream.
-                        preferred_format: The player's preferred native format for the stream.
-                            The implementation may return a different format; the library
-                            will handle any necessary conversion.
-                        position_us: Position in microseconds relative to the main_stream start.
-                            Used for late-joining players to sync with the main stream.
-
-                    Returns:
-                        A tuple of (audio generator, audio format, actual position in microseconds)
-                        or None if unavailable. If None, the main_stream is used as fallback.
-                    """
-                    if not player_instance.timed_client_stream:
-                        return None
-
-                    multi_client_stream = player_instance.timed_client_stream
-                    dsp = mass.config.get_player_dsp_config(player_id)
-                    if not dsp.enabled:
-                        # DSP is disabled for this player, use main_stream
-                        return None
-
-                    # Get per-player DSP filter parameters
-                    # Convert from flow format to output format
-                    filter_params = get_player_filter_params(
-                        mass, player_id, flow_pcm_format, pcm_format
-                    )
-
-                    # Get the stream with position (in seconds)
-                    stream_gen, actual_position = await multi_client_stream.get_stream(
-                        output_format=pcm_format,
-                        filter_params=filter_params,
-                    )
-
-                    # Convert position from seconds to microseconds for aioresonate API
-                    actual_position_us = int(actual_position * 1_000_000)
-
-                    # Return actual position in microseconds relative to main_stream start
-                    player_instance.logger.debug(
-                        "Providing channel stream for player %s at position %d us",
-                        player_id,
-                        actual_position_us,
-                    )
-                    return (
-                        stream_gen,
-                        ResonateAudioFormat(
-                            sample_rate=pcm_format.sample_rate,
-                            bit_depth=pcm_format.bit_depth,
-                            channels=pcm_format.channels,
-                            codec=audio_codec,
-                        ),
-                        actual_position_us,
-                    )
-
             # Setup the main channel subscription
             # aioresonate only really supports 16-bit for now TODO: upgrade later to 32-bit
             main_channel_gen, main_position = await self.timed_client_stream.get_stream(
@@ -336,6 +359,10 @@ class ResonatePlayer(Player):
                     channels=pcm_format.channels,
                     codec=audio_codec,
                 ),
+                player_instance=self,
+                pcm_format=pcm_format,
+                flow_pcm_format=flow_pcm_format,
+                audio_codec=audio_codec,
             )
 
             stop_time = await self.api.group.play_media(media_stream)
