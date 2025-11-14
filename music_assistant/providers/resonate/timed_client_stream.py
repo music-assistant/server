@@ -118,7 +118,7 @@ class TimedClientStream:
     async def _read_chunk_from_source(self) -> None:
         """Read next chunk from audio source and add to buffer."""
         try:
-            chunk = await self.audio_source.__anext__()
+            chunk = await anext(self.audio_source)
             async with self.buffer_lock:
                 # Calculate timestamp for this chunk
                 chunk_timestamp = self.current_position
