@@ -111,9 +111,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         result: UniqueList[Audiobook] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
-            if not provider:
-                continue
-            provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
             if not provider.library_supported(MediaType.AUDIOBOOK):
