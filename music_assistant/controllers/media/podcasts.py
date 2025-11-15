@@ -110,13 +110,12 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[PodcastEpisode]:
+    ) -> PodcastEpisode:
         """Return single podcast episode by the given provider podcast id."""
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
-        episode = await prov.get_podcast_episode(item_id)
-        return UniqueList([episode])
+        return await prov.get_podcast_episode(item_id)
 
     async def versions(
         self,
@@ -128,9 +127,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         search_query = podcast.name
         result: UniqueList[Podcast] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not provider:
-                continue
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
