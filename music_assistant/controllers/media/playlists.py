@@ -120,7 +120,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # collect current track IDs and URIs
         async for item in self.tracks(playlist.item_id, playlist.provider):
             if item.item_id:
-                cur_playlist_track_uris.add(item.item_id)
+                cur_playlist_track_ids.add(item.item_id)
             if item.uri:
                 cur_playlist_track_uris.add(item.uri)
 
@@ -151,8 +151,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         unwrapped_uris.append(track.uri)
 
             elif media_type == MediaType.TRACK:
-                if uri is not None:
-                    unwrapped_uris.append(uri)
+                unwrapped_uris.append(uri)
             else:
                 self.logger.warning(
                     "Not adding %s to playlist %s - not a track", uri, playlist.name
