@@ -597,7 +597,6 @@ class TracksController(MediaControllerBase[Track]):
     ) -> ItemMapping:
         """Store Track Artist info."""
         db_artist: Artist | ItemMapping | None = None
-
         if artist.provider == "library":
             db_artist = artist
         elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
@@ -606,14 +605,13 @@ class TracksController(MediaControllerBase[Track]):
             db_artist = existing
 
         if not db_artist or overwrite:
-            # ensure we pass only Artist to add_item_to_library
-            if isinstance(artist, Artist):
+            if isinstance(artist, ItemMapping):
+                # Can't add ItemMapping to library, use existing or artist itself
+                db_artist = db_artist or artist
+            else:
                 db_artist = await self.mass.music.artists.add_item_to_library(
                     artist, overwrite_existing=overwrite
                 )
-            else:
-                raise InvalidDataError("Cannot add ItemMapping as a library artist")
-
         # write (or update) record in album_artists table
         assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
@@ -623,5 +621,4 @@ class TracksController(MediaControllerBase[Track]):
                 "artist_id": int(db_artist.item_id),
             },
         )
-
         return ItemMapping.from_item(db_artist)
