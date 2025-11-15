@@ -275,7 +275,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         query = f"albums.item_id in ({subquery})"
         return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
 
-    async def _add_library_item(self, item: Artist, overwrite_existing: bool = False) -> int:
+    async def _add_library_item(
+        self, item: Artist | ItemMapping, overwrite_existing: bool = False
+    ) -> int:
         """Add a new item record to the database."""
         # If item is an ItemMapping, convert it
         if isinstance(item, ItemMapping):
