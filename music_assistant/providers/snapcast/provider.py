@@ -204,13 +204,13 @@ class SnapCastProvider(PlayerProvider):
         search_dict = self._ids_map.inverse
         ma_id = search_dict.get(snap_client_id)
         assert ma_id is not None  # for type checking
-        return cast("str", ma_id)
+        return ma_id
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
         snap_id = search_dict.get(player_id)
         assert snap_id is not None  # for type checking
-        return cast("str", snap_id)
+        return snap_id
 
     def _generate_and_register_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
@@ -254,10 +254,9 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            ma_player = cast(
-                "SnapCastPlayer", self.mass.players.get(self._get_ma_id(snap_client.identifier))
-            )
-            snap_client.set_callback(ma_player._handle_player_update)
+            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
+                ma_player = cast("SnapCastPlayer", player)
+                snap_client.set_callback(ma_player._handle_player_update)
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
 

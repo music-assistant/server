@@ -359,7 +359,6 @@ class SnapCastPlayer(Player):
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
-            extra_args = ""
         else:
             extra_args = ""
 
