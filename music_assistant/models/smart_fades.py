@@ -12,7 +12,7 @@ from mashumaro.config import BaseConfig
 class SmartFadesMode(StrEnum):
     """Smart fades modes."""
 
-    SMART_FADES = "smart_fades"  # Use smart fades with beat matching and EQ filters
+    SMART_CROSSFADE = "smart_crossfade"  # Use smart crossfade with beat matching and EQ filters
     STANDARD_CROSSFADE = "standard_crossfade"  # Use standard crossfade only
     DISABLED = "disabled"  # No crossfade
 

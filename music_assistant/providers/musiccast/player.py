@@ -336,7 +336,9 @@ class MusicCastPlayer(Player):
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         mass_player = self.mass.players.get(player_id)
-        assert mass_player is not None
+        if mass_player is None:
+            # Do not assert here, should the player not yet exist
+            return
         if _source not in _allowed_sources:
             msg = (
                 "The switch source you specified for "

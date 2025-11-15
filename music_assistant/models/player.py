@@ -1254,6 +1254,18 @@ class Player(ABC):
         ):
             self._state.group_members.set([self.player_id, *self._state.group_members])
 
+        # track stop called state
+        if (
+            prev_state.playback_state == PlaybackState.IDLE
+            and self._state.playback_state != PlaybackState.IDLE
+        ):
+            self.__stop_called = False
+        elif (
+            prev_state.playback_state != PlaybackState.IDLE
+            and self._state.playback_state == PlaybackState.IDLE
+        ):
+            self.__stop_called = True
+
         # Auto correct player state if player is synced (or group child)
         # This is because some players/providers do not accurately update this info
         # for the sync child's.
@@ -1437,6 +1449,23 @@ class Player(ABC):
         """
         self.__active_mass_source = value
         self.update_state()
+
+    __stop_called: bool = False
+
+    def mark_stop_called(self) -> None:
+        """Mark that the STOP command was called on the player."""
+        self.__stop_called = True
+
+    @property
+    def stop_called(self) -> bool:
+        """
+        Return True if the STOP command was called on the player.
+
+        This is used to differentiate between a user-initiated stop
+        and a natural end of playback (e.g. end of track/queue).
+        mainly for debugging/logging purposes by the streams controller.
+        """
+        return self.__stop_called
 
     def __hash__(self) -> int:
         """Return a hash of the Player."""

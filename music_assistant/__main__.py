@@ -133,6 +133,19 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
     logging.getLogger("numba").setLevel(logging.WARNING)
 
+    # Add a filter to suppress slow callback warnings from buffered audio streaming
+    # These warnings are expected when audio buffers fill up and producers wait for consumers
+    class BufferedGeneratorFilter(logging.Filter):
+        """Filter out expected slow callback warnings from buffered audio generators."""
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            """Return False to suppress the log record."""
+            return not (
+                record.levelno == logging.WARNING and "buffered.<locals>.producer()" in record.msg
+            )
+
+    logging.getLogger("asyncio").addFilter(BufferedGeneratorFilter())
+
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
         "Uncaught exception",
         exc_info=args,
