@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.fades import (
@@ -19,7 +20,7 @@ from music_assistant.models.smart_fades import (
     SmartFadesMode,
 )
 
-from . import LOGGER
+from . import SMART_FADES_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -34,6 +35,7 @@ class SmartFadesMixer:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize smart fades mixer."""
         self.mass = mass
+        self.logger = logging.getLogger(SMART_FADES_LOGGER_NAME).getChild("mixer")
 
     async def mix(
         self,
@@ -127,7 +129,9 @@ class SmartFadesMixer:
                     pcm_format,
                 )
             except Exception as e:
-                LOGGER.warning("Smart crossfade failed: %s, falling back to standard crossfade", e)
+                self.logger.warning(
+                    "Smart crossfade failed: %s, falling back to standard crossfade", e
+                )
 
         # Always fallback to Standard Crossfade in case something goes wrong
         smart_fade = StandardCrossFade(crossfade_duration=standard_crossfade_duration)

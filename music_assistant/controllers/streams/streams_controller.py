@@ -57,8 +57,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
-from music_assistant.controllers.streams.smart_fades import LOGGER as SMART_FADES_LOGGER
 from music_assistant.controllers.streams.smart_fades import (
+    SMART_FADES_LOGGER_NAME,
     SmartFadesMixer,
 )
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
@@ -297,10 +297,7 @@ class StreamsController(CoreController):
         # copy log level to audio/ffmpeg loggers
         AUDIO_LOGGER.setLevel(self.logger.level)
         FFMPEG_LOGGER.setLevel(self.logger.level)
-        _smart_fades_log_level = config.get_value(CONF_SMART_FADES_LOG_LEVEL)
-        if _smart_fades_log_level == "GLOBAL":
-            _smart_fades_log_level = self.logger.level
-        SMART_FADES_LOGGER.setLevel(_smart_fades_log_level)
+        self._setup_smart_fades_logger(config)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
@@ -1912,3 +1909,11 @@ class StreamsController(CoreController):
         )
         # Schedule next run in 15 minutes
         self.mass.call_later(900, self._periodic_garbage_collection)
+
+    def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
+        """Set up smart fades logger level."""
+        _smart_fades_log_level = config.get_value(CONF_SMART_FADES_LOG_LEVEL)
+        if _smart_fades_log_level == "GLOBAL":
+            _smart_fades_log_level = self.logger.level
+        smart_fades_logger = logging.getLogger(SMART_FADES_LOGGER_NAME)
+        smart_fades_logger.setLevel(_smart_fades_log_level)
