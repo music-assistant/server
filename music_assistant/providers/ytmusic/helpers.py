@@ -58,7 +58,7 @@ async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
                     album_track["videoId"] = playlist_track["videoId"]
                     album_track["isAvailable"] = playlist_track.get("isAvailable", True)
                     album_track["likeStatus"] = playlist_track.get("likeStatus", "INDIFFERENT")
-            exept Exeption: 
+            except Exeption: 
                 pass
             
         return album
