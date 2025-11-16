@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 from uuid import uuid4
 
 import aiofiles
@@ -256,6 +256,9 @@ class ConfigController:
         :param instance_id: The provider instance ID.
         :param key: The config key to retrieve.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
         """
         cache_key = f"prov_conf_value_{instance_id}.{key}"
         if (cached_value := self._value_cache.get(cache_key)) is not None:
@@ -511,7 +514,18 @@ class ConfigController:
         self,
         player_id: str,
         key: str,
-        unpack_splitted_values: bool = ...,
+        unpack_splitted_values: Literal[True],
+        *,
+        return_type: type[_ConfigValueT] | None = ...,
+    ) -> tuple[str, ...] | list[tuple[str, ...]]: ...
+
+    @overload
+    async def get_player_config_value(
+        self,
+        player_id: str,
+        key: str,
+        unpack_splitted_values: Literal[False] = False,
+        *,
         return_type: type[_ConfigValueT] = ...,
     ) -> _ConfigValueT: ...
 
@@ -520,9 +534,10 @@ class ConfigController:
         self,
         player_id: str,
         key: str,
-        unpack_splitted_values: bool = ...,
+        unpack_splitted_values: Literal[False] = False,
+        *,
         return_type: None = ...,
-    ) -> ConfigValueType | tuple[str, ...] | list[tuple[str, ...]]: ...
+    ) -> ConfigValueType: ...
 
     @api_command("config/players/get_value")
     async def get_player_config_value(
@@ -539,6 +554,9 @@ class ConfigController:
         :param key: The config key to retrieve.
         :param unpack_splitted_values: Whether to unpack multi-value config entries.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
         """
         conf = await self.get_player_config(player_id)
         if unpack_splitted_values:
@@ -894,6 +912,9 @@ class ConfigController:
         :param domain: The core controller domain.
         :param key: The config key to retrieve.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
         """
         conf = await self.get_core_config(domain)
         return (

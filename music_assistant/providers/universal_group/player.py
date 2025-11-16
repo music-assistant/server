@@ -353,7 +353,7 @@ class UniversalGroupPlayer(GroupPlayer):
                 content_bit_depth=UGP_FORMAT.bit_depth,
             )
             http_profile = await self.mass.config.get_player_config_value(
-                child_player_id, CONF_HTTP_PROFILE, False, str
+                child_player_id, CONF_HTTP_PROFILE, return_type=str
             )
         elif output_format_str == "flac":
             output_format = AudioFormat(content_type=ContentType.FLAC)
