@@ -44,6 +44,7 @@ async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
         ytm = ytmusicapi.YTMusic(language=language)
         album = ytm.get_album(browseId=prov_album_id)
         if "audioPlaylistId" in album:
+            try:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
@@ -57,9 +58,11 @@ async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
                     album_track["videoId"] = playlist_track["videoId"]
                     album_track["isAvailable"] = playlist_track.get("isAvailable", True)
                     album_track["likeStatus"] = playlist_track.get("likeStatus", "INDIFFERENT")
-            return album
-        return ytm.get_album(browseId=prov_album_id)
-
+            exept Exeption: 
+                pass
+            
+        return album
+            
     return await asyncio.to_thread(_get_album)
 
 
