@@ -60,7 +60,7 @@ class AirPlay2Stream(AirPlayProtocol):
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER
+            player_id, CONF_READ_AHEAD_BUFFER, return_type=int
         )
 
         txt_kv: str = ""
