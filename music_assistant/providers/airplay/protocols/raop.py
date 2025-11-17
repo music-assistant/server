@@ -53,7 +53,7 @@ class RaopStream(AirPlayProtocol):
             if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
         if device_password := self.mass.config.get_raw_player_config_value(
-            player_id, CONF_PASSWORD, None
+            player_id, CONF_PASSWORD
         ):
             extra_args += ["-password", str(device_password)]
         # Add AirPlay credentials from pairing if available (for Apple devices)
@@ -64,7 +64,7 @@ class RaopStream(AirPlayProtocol):
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
         read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER
+            player_id, CONF_READ_AHEAD_BUFFER, return_type=int
         )
 
         # cliraop is the binary that handles the actual raop streaming to the player
