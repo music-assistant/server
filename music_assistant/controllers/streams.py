@@ -1100,8 +1100,8 @@ class StreamsController(CoreController):
                     if last_play_log_entry:
                         assert last_play_log_entry.seconds_streamed is not None
                         last_play_log_entry.seconds_streamed += (
-                            crossfade_part_len / 2
-                        ) / pcm_sample_size
+                            crossfade_part_len / 2 / pcm_sample_size
+                        )
                     # yield crossfade_part (in pcm_sample_size chunks)
                     for _chunk in divide_chunks(crossfade_part, pcm_sample_size):
                         yield _chunk
