@@ -34,7 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     QueueEmpty,
 )
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.constants import (
@@ -1386,7 +1386,10 @@ class StreamsController(CoreController):
                         fade_in_buffer += chunk
                     elif fade_in_buffer:
                         async for fade_chunk in get_ffmpeg_stream(
-                            audio_input=cast("AsyncGenerator[bytes, None]", fade_in_buffer + chunk),
+                            # NOTE: get_ffmpeg_stream signature says str | AsyncGenerator
+                            # but FFMpeg class actually accepts bytes too. This works at
+                            # runtime but needs type: ignore for mypy.
+                            audio_input=fade_in_buffer + chunk,  # type: ignore[arg-type]
                             input_format=pcm_format,
                             output_format=pcm_format,
                             filter_params=["afade=type=in:start_time=0:duration=3"],
@@ -1866,12 +1869,8 @@ class StreamsController(CoreController):
             self.logger.debug("Skipping crossfade: next item is not a track")
             return False
         if (
-            queue_item.media_type == MediaType.TRACK
-            and next_item.media_type == MediaType.TRACK
-            and queue_item.media_item is not None
-            and next_item.media_item is not None
-            and hasattr(queue_item.media_item, "album")
-            and hasattr(next_item.media_item, "album")
+            isinstance(queue_item.media_item, Track)
+            and isinstance(next_item.media_item, Track)
             and queue_item.media_item.album
             and next_item.media_item.album
             and queue_item.media_item.album == next_item.media_item.album
