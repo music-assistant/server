@@ -179,6 +179,15 @@ class ResonatePlayer(Player):
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
         self.unsub_event_cb = resonate_client.add_event_listener(self.event_cb)
         self.unsub_group_event_cb = resonate_client.group.add_event_listener(self.group_event_cb)
+        resonate_client.group.set_supported_commands(
+            [
+                MediaCommand.PLAY,
+                MediaCommand.PAUSE,
+                MediaCommand.STOP,
+                MediaCommand.NEXT,
+                MediaCommand.PREVIOUS,
+            ]
+        )
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
