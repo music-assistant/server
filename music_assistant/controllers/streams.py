@@ -427,8 +427,8 @@ class StreamsController(CoreController):
             headers=headers,
         )
         resp.content_type = f"audio/{output_format.output_format_str}"
-        http_profile = str(
-            await self.mass.config.get_player_config_value(queue_id, CONF_HTTP_PROFILE)
+        http_profile = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE, return_type=str
         )
         if http_profile == "forced_content_length" and not queue_item.duration:
             # just set an insane high content length to make sure the player keeps playing
