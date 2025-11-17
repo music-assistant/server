@@ -234,12 +234,32 @@ class ConfigController:
 
     @overload
     async def get_provider_config_value(
-        self, instance_id: str, key: str, *, return_type: type[_ConfigValueT] = ...
+        self,
+        instance_id: str,
+        key: str,
+        *,
+        default: _ConfigValueT,
+        return_type: type[_ConfigValueT] = ...,
     ) -> _ConfigValueT: ...
 
     @overload
     async def get_provider_config_value(
-        self, instance_id: str, key: str, *, return_type: None = ...
+        self,
+        instance_id: str,
+        key: str,
+        *,
+        default: ConfigValueType = ...,
+        return_type: type[_ConfigValueT] = ...,
+    ) -> _ConfigValueT: ...
+
+    @overload
+    async def get_provider_config_value(
+        self,
+        instance_id: str,
+        key: str,
+        *,
+        default: ConfigValueType = ...,
+        return_type: None = ...,
     ) -> ConfigValueType: ...
 
     @api_command("config/providers/get_value")
@@ -248,6 +268,7 @@ class ConfigController:
         instance_id: str,
         key: str,
         *,
+        default: ConfigValueType = None,
         return_type: type[_ConfigValueT | ConfigValueType] | None = None,
     ) -> _ConfigValueT | ConfigValueType:
         """
@@ -255,6 +276,7 @@ class ConfigController:
 
         :param instance_id: The provider instance ID.
         :param key: The config key to retrieve.
+        :param default: Optional default value to return if key is not found.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
@@ -264,6 +286,11 @@ class ConfigController:
         if (cached_value := self._value_cache.get(cache_key)) is not None:
             return cached_value
         conf = await self.get_provider_config(instance_id)
+        if key not in conf.values:
+            if default is not None:
+                return default
+            msg = f"Config key {key} not found for provider {instance_id}"
+            raise KeyError(msg)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
@@ -516,6 +543,7 @@ class ConfigController:
         key: str,
         unpack_splitted_values: Literal[True],
         *,
+        default: ConfigValueType = ...,
         return_type: type[_ConfigValueT] | None = ...,
     ) -> tuple[str, ...] | list[tuple[str, ...]]: ...
 
@@ -526,6 +554,7 @@ class ConfigController:
         key: str,
         unpack_splitted_values: Literal[False] = False,
         *,
+        default: _ConfigValueT,
         return_type: type[_ConfigValueT] = ...,
     ) -> _ConfigValueT: ...
 
@@ -536,6 +565,18 @@ class ConfigController:
         key: str,
         unpack_splitted_values: Literal[False] = False,
         *,
+        default: ConfigValueType = ...,
+        return_type: type[_ConfigValueT] = ...,
+    ) -> _ConfigValueT: ...
+
+    @overload
+    async def get_player_config_value(
+        self,
+        player_id: str,
+        key: str,
+        unpack_splitted_values: Literal[False] = False,
+        *,
+        default: ConfigValueType = ...,
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
@@ -545,6 +586,8 @@ class ConfigController:
         player_id: str,
         key: str,
         unpack_splitted_values: bool = False,
+        *,
+        default: ConfigValueType = None,
         return_type: type[_ConfigValueT | ConfigValueType] | None = None,
     ) -> _ConfigValueT | ConfigValueType | tuple[str, ...] | list[tuple[str, ...]]:
         """
@@ -553,12 +596,18 @@ class ConfigController:
         :param player_id: The player ID.
         :param key: The config key to retrieve.
         :param unpack_splitted_values: Whether to unpack multi-value config entries.
+        :param default: Optional default value to return if key is not found.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
         conf = await self.get_player_config(player_id)
+        if key not in conf.values:
+            if default is not None:
+                return default
+            msg = f"Config key {key} not found for player {player_id}"
+            raise KeyError(msg)
         if unpack_splitted_values:
             return conf.values[key].get_splitted_values()
         return (
@@ -890,12 +939,32 @@ class ConfigController:
 
     @overload
     async def get_core_config_value(
-        self, domain: str, key: str, *, return_type: type[_ConfigValueT] = ...
+        self,
+        domain: str,
+        key: str,
+        *,
+        default: _ConfigValueT,
+        return_type: type[_ConfigValueT] = ...,
     ) -> _ConfigValueT: ...
 
     @overload
     async def get_core_config_value(
-        self, domain: str, key: str, *, return_type: None = ...
+        self,
+        domain: str,
+        key: str,
+        *,
+        default: ConfigValueType = ...,
+        return_type: type[_ConfigValueT] = ...,
+    ) -> _ConfigValueT: ...
+
+    @overload
+    async def get_core_config_value(
+        self,
+        domain: str,
+        key: str,
+        *,
+        default: ConfigValueType = ...,
+        return_type: None = ...,
     ) -> ConfigValueType: ...
 
     @api_command("config/core/get_value")
@@ -904,6 +973,7 @@ class ConfigController:
         domain: str,
         key: str,
         *,
+        default: ConfigValueType = None,
         return_type: type[_ConfigValueT | ConfigValueType] | None = None,
     ) -> _ConfigValueT | ConfigValueType:
         """
@@ -911,12 +981,18 @@ class ConfigController:
 
         :param domain: The core controller domain.
         :param key: The config key to retrieve.
+        :param default: Optional default value to return if key is not found.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
         conf = await self.get_core_config(domain)
+        if key not in conf.values:
+            if default is not None:
+                return default
+            msg = f"Config key {key} not found for core controller {domain}"
+            raise KeyError(msg)
         return (
             conf.values[key].value
             if conf.values[key].value is not None
