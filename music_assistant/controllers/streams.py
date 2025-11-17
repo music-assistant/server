@@ -1299,17 +1299,15 @@ class StreamsController(CoreController):
             filter_params.append(filter_rule)
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.FIXED_GAIN:
             # apply user defined fixed volume/gain correction
-            gain_correct = round(
-                await self.mass.config.get_core_config_value(
-                    self.domain,
-                    CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
-                    if streamdetails.media_type == MediaType.TRACK
-                    else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
-                    return_type=float,
-                )
-                or 0.0,
-                2,
+            config_key = (
+                CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
+                if streamdetails.media_type == MediaType.TRACK
+                else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
+            gain_value = await self.mass.config.get_core_config_value(
+                self.domain, config_key, return_type=float
+            )
+            gain_correct = round(gain_value or 0.0, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
             # volume normalization with known loudness measurement
