@@ -149,7 +149,7 @@ class CacheController(CoreController):
         expiration: int = DEFAULT_CACHE_EXPIRATION,
         provider: str = "default",
         category: int = 0,
-        checksum: str | int | None = None,
+        checksum: str | None = None,
         persistent: bool = False,
     ) -> None:
         """
