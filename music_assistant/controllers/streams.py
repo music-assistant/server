@@ -350,11 +350,11 @@ class StreamsController(CoreController):
             player_id = queue_item.queue_id
         try:
             conf_output_codec = await self.mass.config.get_player_config_value(
-                player_id, CONF_OUTPUT_CODEC
+                player_id, CONF_OUTPUT_CODEC, return_type=str
             )
         except KeyError:
             conf_output_codec = "flac"
-        output_codec = ContentType.try_parse(str(conf_output_codec or "flac"))
+        output_codec = ContentType.try_parse(conf_output_codec or "flac")
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
@@ -449,17 +449,11 @@ class StreamsController(CoreController):
             # no crossfade on non-tracks
             smart_fades_mode = SmartFadesMode.DISABLED
         else:
-            smart_fades_mode = cast(
-                "SmartFadesMode",
-                await self.mass.config.get_player_config_value(
-                    queue.queue_id, CONF_SMART_FADES_MODE
-                ),
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
             )
-            standard_crossfade_duration = cast(
-                "int",
-                self.mass.config.get_raw_player_config_value(
-                    queue.queue_id, CONF_CROSSFADE_DURATION, 10
-                ),
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
@@ -623,10 +617,12 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        http_profile_value = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE
+        http_profile = (
+            await self.mass.config.get_player_config_value(
+                queue_id, CONF_HTTP_PROFILE, return_type=str
+            )
+            or "default"
         )
-        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = get_chunksize(output_format, 12 * 3600)
@@ -720,10 +716,12 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile_value = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE
+        http_profile = (
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_HTTP_PROFILE, return_type=str
+            )
+            or "default"
         )
-        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
@@ -814,10 +812,12 @@ class StreamsController(CoreController):
             headers=headers,
         )
         resp.content_type = f"audio/{output_format.output_format_str}"
-        http_profile_value = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE
+        http_profile = (
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_HTTP_PROFILE, return_type=str
+            )
+            or "default"
         )
-        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # just set an insanely high content length to make sure the player keeps playing
             resp.content_length = get_chunksize(output_format, 12 * 3600)
@@ -973,19 +973,12 @@ class StreamsController(CoreController):
             smart_fades_mode = SmartFadesMode.DISABLED
             standard_crossfade_duration = 0
         else:
-            smart_fades_mode_val = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_SMART_FADES_MODE
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
             )
-            smart_fades_mode = SmartFadesMode(
-                str(smart_fades_mode_val) if smart_fades_mode_val else SmartFadesMode.DISABLED.value
-            )
-            standard_crossfade_duration_val = self.mass.config.get_raw_player_config_value(
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
-            if isinstance(standard_crossfade_duration_val, (int, float)):
-                standard_crossfade_duration = int(standard_crossfade_duration_val)
-            else:
-                standard_crossfade_duration = 10
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
@@ -1306,14 +1299,16 @@ class StreamsController(CoreController):
             filter_params.append(filter_rule)
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.FIXED_GAIN:
             # apply user defined fixed volume/gain correction
-            gain_value_raw = await self.mass.config.get_core_config_value(
-                self.domain,
-                CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
-                if streamdetails.media_type == MediaType.TRACK
-                else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
-            )
             gain_correct = round(
-                float(gain_value_raw if isinstance(gain_value_raw, (int, float)) else 0.0), 2
+                await self.mass.config.get_core_config_value(
+                    self.domain,
+                    CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
+                    if streamdetails.media_type == MediaType.TRACK
+                    else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+                    return_type=float,
+                )
+                or 0.0,
+                2,
             )
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
