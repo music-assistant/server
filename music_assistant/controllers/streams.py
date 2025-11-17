@@ -877,8 +877,15 @@ class StreamsController(CoreController):
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-            # special case: UGP stream
+        elif (
+            media.media_type == MediaType.FLOW_STREAM
+            and media.source_id
+            and media.source_id.startswith(UGP_PREFIX)
+            and media.uri
+            and "/ugp/" in media.uri
+        ):
+            # special case: member player accessing UGP stream
+            # Check URI to distinguish from the UGP accessing its own stream
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
