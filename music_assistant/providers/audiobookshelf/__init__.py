@@ -1449,7 +1449,7 @@ for more details.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
             if progress.current_time is not None:
-                if int(progress.current_time) != 0 and progress.current_time >= 30:
+                if int(progress.current_time) != 0 and not progress.current_time >= 30:
                     # same as mass default, only > 30s
                     continue
             if progress.library_item_id not in known_ids:

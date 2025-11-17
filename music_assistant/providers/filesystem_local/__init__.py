@@ -995,8 +995,15 @@ class LocalFileSystemProvider(MusicProvider):
         assert file_item.ext is not None  # for type checking
         lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
         if await self.exists(lrc_path):
-            async with aiofiles.open(lrc_path) as lrc_file:
-                track.metadata.lrc_lyrics = await lrc_file.read()
+            try:
+                async with aiofiles.open(lrc_path, encoding="utf-8") as lrc_file:
+                    track.metadata.lrc_lyrics = await lrc_file.read()
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to read lyrics file %s: %s",
+                    lrc_path,
+                    str(err),
+                )
 
         return track
 
