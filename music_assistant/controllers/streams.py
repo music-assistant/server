@@ -1097,7 +1097,8 @@ class StreamsController(CoreController):
                     # calculations at the end of the track are correct
                     crossfade_part_len = len(crossfade_part)
                     bytes_written += int(crossfade_part_len / 2)
-                    if last_play_log_entry and last_play_log_entry.seconds_streamed is not None:
+                    if last_play_log_entry:
+                        assert last_play_log_entry.seconds_streamed is not None
                         last_play_log_entry.seconds_streamed += (
                             crossfade_part_len / 2
                         ) / pcm_sample_size
