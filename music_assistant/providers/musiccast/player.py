@@ -623,11 +623,13 @@ class MusicCastPlayer(Player):
                     ConfigEntry(
                         key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Disable zone handling completely",
+                        label="Disable zone handling completely.",
                         default_value=False,
                         description="This disables zone handling completely. Other options "
                         "will be ignored. Enable should you encounter playback issues while "
-                        "e.g. playing to main. You can also hide from the ui completely.",
+                        "e.g. playing to main. You can also hide the player from the UI "
+                        "by taking advantage of 'Hide the player in the user interface' "
+                        "dropdown.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
