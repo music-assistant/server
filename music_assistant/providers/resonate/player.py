@@ -242,7 +242,7 @@ class ResonatePlayer(Player):
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
-            case GroupCommandEvent(command=command, volume=volume, mute=mute):
+            case GroupCommandEvent(command=command):
                 self.logger.debug("Group command received: %s", command)
                 match command:
                     case MediaCommand.PLAY:
@@ -255,15 +255,6 @@ class ResonatePlayer(Player):
                         await self.mass.players.cmd_next_track(self.player_id)
                     case MediaCommand.PREVIOUS:
                         await self.mass.players.cmd_previous_track(self.player_id)
-                    case MediaCommand.VOLUME:
-                        assert volume is not None
-                        await self.mass.players.cmd_group_volume(self.player_id, volume)
-                    case MediaCommand.MUTE:
-                        assert mute is not None
-                        for member in self.mass.players.iter_group_members(
-                            self, active_only=True, exclude_self=True
-                        ):
-                            await member.volume_mute(mute)
             case GroupStateChangedEvent(state=state):
                 self.logger.debug("Group state changed to: %s", state)
                 match state:
