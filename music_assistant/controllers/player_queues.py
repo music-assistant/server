@@ -444,8 +444,9 @@ class PlayerQueuesController(CoreController):
                         config_value = await self.mass.config.get_core_config_value(
                             self.domain,
                             f"default_enqueue_option_{media_item.media_type.value}",
+                            return_type=str,
                         )
-                        option = QueueOption(str(config_value))
+                        option = QueueOption(config_value)
                         if option == QueueOption.REPLACE:
                             self.clear(queue_id, skip_stop=True)
 
@@ -865,7 +866,9 @@ class PlayerQueuesController(CoreController):
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
-        prefer_flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
+        prefer_flow_mode = await self.mass.config.get_player_config_value(
+            queue_id, CONF_FLOW_MODE, return_type=bool
+        )
         target_player = self.mass.players.get(queue_id)
         if target_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -920,7 +923,7 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
-            flow_mode = bool(
+            flow_mode = (
                 prefer_flow_mode or not enqueue_supported
             ) and queue_item.media_type not in (
                 # don't use flow mode for duration-less streams
