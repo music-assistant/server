@@ -186,7 +186,7 @@ class AirPlayPlayer(Player):
                 default_value=True,
                 label="Enable encryption",
                 description="Enable encrypted communication with the player, "
-                "some (3rd party) players require to disable this.",
+                "some (3rd party) players require this to be disabled.",
                 category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
@@ -197,7 +197,7 @@ class AirPlayPlayer(Player):
                 default_value=True,
                 label="Enable compression",
                 description="Save some network bandwidth by sending the audio as "
-                "(lossless) ALAC at the cost of a bit CPU.",
+                "(lossless) ALAC at the cost of a bit of CPU.",
                 category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
