@@ -14,7 +14,7 @@ from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
-    from music_assistant.providers.tidal import TidalProvider
+    from .provider import TidalProvider
 
 
 class TidalPageParser:

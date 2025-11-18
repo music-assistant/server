@@ -29,7 +29,7 @@ from music_assistant.helpers.util import infer_album_type
 from .constants import BROWSE_URL, RESOURCES_URL
 
 if TYPE_CHECKING:
-    from . import TidalProvider
+    from .provider import TidalProvider
 
 
 def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
