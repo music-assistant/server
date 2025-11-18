@@ -1533,9 +1533,8 @@ class MusicController(CoreController):
         if not sync_conf:
             return
         conf_key = f"provider_sync_interval_{media_type.value}s"
-        sync_interval = cast(
-            "int",
-            await self.mass.config.get_provider_config_value(provider.instance_id, conf_key),
+        sync_interval = await self.mass.config.get_provider_config_value(
+            provider.instance_id, conf_key, return_type=int
         )
         if sync_interval <= 0:
             # sync disabled for this media type

@@ -25,8 +25,6 @@ from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
 )
 
-from . import SMART_FADES_LOGGER_NAME
-
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
@@ -38,10 +36,10 @@ class SmartFade(ABC):
 
     filters: list[Filter]
 
-    def __init__(self) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         """Initialize SmartFade base class."""
         self.filters = []
-        self.logger = logging.getLogger(SMART_FADES_LOGGER_NAME).getChild("fades")
+        self.logger = logger
 
     @abstractmethod
     def _build(self) -> None:
@@ -160,7 +158,10 @@ class SmartCrossFade(SmartFade):
     time_stretch_bpm_percentage_threshold: float = 5.0
 
     def __init__(
-        self, fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
+        self,
+        logger: logging.Logger,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
     ) -> None:
         """Initialize SmartFades with analysis data.
 
@@ -171,7 +172,7 @@ class SmartCrossFade(SmartFade):
         """
         self.fade_out_analysis = fade_out_analysis
         self.fade_in_analysis = fade_in_analysis
-        super().__init__()
+        super().__init__(logger)
 
     def _build(self) -> None:
         """Build the smart fades filter chain."""
@@ -200,7 +201,7 @@ class SmartCrossFade(SmartFade):
             0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
             and crossfade_bars > 4
         ):
-            self.filters.append(TimeStretchFilter(stretch_ratio=bpm_ratio))
+            self.filters.append(TimeStretchFilter(logger=self.logger, stretch_ratio=bpm_ratio))
             # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
             self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
                 self.fade_out_analysis.downbeats,
@@ -210,7 +211,7 @@ class SmartCrossFade(SmartFade):
 
         # Check if we would have enough audio after beat alignment for the crossfade
         if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
-            self.filters.append(TrimFilter(fadein_start_pos=fadein_start_pos))
+            self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
         else:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
@@ -251,6 +252,7 @@ class SmartCrossFade(SmartFade):
         # The crossfade always happens at the END of the buffer
         fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
         fadeout_sweep = FrequencySweepFilter(
+            logger=self.logger,
             sweep_type="lowpass",
             target_freq=crossover_freq,
             duration=fadeout_eq_duration,
@@ -266,6 +268,7 @@ class SmartCrossFade(SmartFade):
         # Quicker highpass removal to avoid lingering vocals after crossfade
         fadein_eq_duration = crossfade_duration / 1.5
         fadein_sweep = FrequencySweepFilter(
+            logger=self.logger,
             sweep_type="highpass",
             target_freq=crossover_freq,
             duration=fadein_eq_duration,
@@ -278,7 +281,9 @@ class SmartCrossFade(SmartFade):
         self.filters.append(fadein_sweep)
 
         # Add final crossfade filter
-        crossfade_filter = CrossfadeFilter(crossfade_duration=crossfade_duration)
+        crossfade_filter = CrossfadeFilter(
+            logger=self.logger, crossfade_duration=crossfade_duration
+        )
         self.filters.append(crossfade_filter)
 
     def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
@@ -452,15 +457,15 @@ class SmartCrossFade(SmartFade):
 class StandardCrossFade(SmartFade):
     """Standard crossfade class that implements a standard crossfade mode."""
 
-    def __init__(self, crossfade_duration: float = 10.0) -> None:
+    def __init__(self, logger: logging.Logger, crossfade_duration: float = 10.0) -> None:
         """Initialize StandardCrossFade with crossfade duration."""
         self.crossfade_duration = crossfade_duration
-        super().__init__()
+        super().__init__(logger)
 
     def _build(self) -> None:
         """Build the standard crossfade filter chain."""
         self.filters = [
-            CrossfadeFilter(crossfade_duration=self.crossfade_duration),
+            CrossfadeFilter(logger=self.logger, crossfade_duration=self.crossfade_duration),
         ]
 
     async def apply(

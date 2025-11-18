@@ -1,5 +1,6 @@
 """Smart Fades - Audio filter implementations."""
 
+import logging
 from abc import ABC, abstractmethod
 
 
@@ -8,6 +9,10 @@ class Filter(ABC):
 
     output_fadeout_label: str
     output_fadein_label: str
+
+    def __init__(self, logger: logging.Logger) -> None:
+        """Initialize filter base class."""
+        self.logger = logger
 
     @abstractmethod
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -22,10 +27,12 @@ class TimeStretchFilter(Filter):
 
     def __init__(
         self,
+        logger: logging.Logger,
         stretch_ratio: float,
     ):
         """Initialize time stretch filter."""
         self.stretch_ratio = stretch_ratio
+        super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM."""
@@ -46,13 +53,14 @@ class TrimFilter(Filter):
     output_fadeout_label: str = "fadeout_beatalign"
     output_fadein_label: str = "fadein_beatalign"
 
-    def __init__(self, fadein_start_pos: float):
+    def __init__(self, logger: logging.Logger, fadein_start_pos: float):
         """Initialize beat align filter.
 
         Args:
             fadein_start_pos: Position in seconds to trim the incoming track to
         """
         self.fadein_start_pos = fadein_start_pos
+        super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Trim the incoming track to align with downbeats."""
@@ -74,6 +82,7 @@ class FrequencySweepFilter(Filter):
 
     def __init__(
         self,
+        logger: logging.Logger,
         sweep_type: str,
         target_freq: int,
         duration: float,
@@ -111,6 +120,8 @@ class FrequencySweepFilter(Filter):
         else:
             self.output_fadeout_label = "fadeout_passthrough"
             self.output_fadein_label = f"fadein_{sweep_type}"
+
+        super().__init__(logger)
 
     def _generate_volume_expr(self, start: float, dur: float, direction: str, curve: str) -> str:
         t_expr = f"t-{start}"  # Time relative to start
@@ -197,9 +208,10 @@ class CrossfadeFilter(Filter):
     output_fadeout_label: str = "crossfade"
     output_fadein_label: str = "crossfade"
 
-    def __init__(self, crossfade_duration: float):
+    def __init__(self, logger: logging.Logger, crossfade_duration: float):
         """Initialize crossfade filter."""
         self.crossfade_duration = crossfade_duration
+        super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the acrossfade filter."""

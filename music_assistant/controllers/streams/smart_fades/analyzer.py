@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 import warnings
 from typing import TYPE_CHECKING
@@ -21,12 +20,10 @@ from music_assistant.models.smart_fades import (
     SmartFadesAnalysisFragment,
 )
 
-from . import SMART_FADES_LOGGER_NAME
-
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
-    from music_assistant.mass import MusicAssistant
+    from music_assistant.controllers.streams.streams_controller import StreamsController
 
 ANALYSIS_FPS = 100
 
@@ -34,10 +31,10 @@ ANALYSIS_FPS = 100
 class SmartFadesAnalyzer:
     """Smart fades analyzer that performs audio analysis."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    def __init__(self, streams: StreamsController) -> None:
         """Initialize smart fades analyzer."""
-        self.mass = mass
-        self.logger = logging.getLogger(SMART_FADES_LOGGER_NAME).getChild("analyzer")
+        self.streams = streams
+        self.logger = streams.logger.getChild("smart_fades_analyzer")
 
     async def analyze(
         self,
@@ -120,8 +117,8 @@ class SmartFadesAnalyzer:
                 analysis.confidence,
                 total_time,
             )
-            self.mass.create_task(
-                self.mass.music.set_smart_fades_analysis(
+            self.streams.mass.create_task(
+                self.streams.mass.music.set_smart_fades_analysis(
                     item_id, provider_instance_id_or_domain, analysis
                 )
             )
