@@ -214,7 +214,6 @@ class VBANReceiverProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.logger = self.logger.getChild(self.instance_id.split("--")[1])
         self._bind_port: int = cast("int", self.config.get_value(CONF_BIND_PORT))
         self._bind_ip: str = cast("str", self.config.get_value(CONF_BIND_IP))
         self._sender_host: str = cast("str", self.config.get_value(CONF_SENDER_HOST))
