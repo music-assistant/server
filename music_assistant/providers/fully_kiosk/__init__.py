@@ -84,7 +84,7 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             label="Verify HTTPS certificates (recommended).",
             default_value=True,
-            description="Disabling verification is equivalent to trusting any certificate (no validation).",
+            description="Disabling verification trusts any certificate (no validation).",
             category="advanced",
         ),
         ConfigEntry(

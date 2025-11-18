@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -34,7 +33,7 @@ class _FingerprintSessionWrapper:
     session: ClientSession
     fingerprint: Fingerprint
 
-    def get(self, *args: Any, **kwargs: Any):
+    def get(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped session.get while injecting the fingerprint."""
         kwargs.setdefault("ssl", self.fingerprint)
         return self.session.get(*args, **kwargs)
@@ -69,7 +68,8 @@ class FullyKioskProvider(PlayerProvider):
             logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
 
         use_ssl = bool(self.config.get_value(CONF_USE_SSL))
-        fingerprint_raw = (self.config.get_value(CONF_SSL_FINGERPRINT) or "").strip()
+        fingerprint_value = self.config.get_value(CONF_SSL_FINGERPRINT)
+        fingerprint_raw = fingerprint_value.strip() if isinstance(fingerprint_value, str) else ""
         if fingerprint_raw and not use_ssl:
             msg = "Fingerprint validation requires HTTPS to be enabled."
             raise SetupFailedError(msg)
@@ -86,7 +86,9 @@ class FullyKioskProvider(PlayerProvider):
                 http_session = _FingerprintSessionWrapper(self.mass.http_session, fingerprint)
                 verify_ssl = True
             else:
-                http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+                http_session = (
+                    self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+                )
         else:
             http_session = self.mass.http_session_no_ssl
 
@@ -107,7 +109,8 @@ class FullyKioskProvider(PlayerProvider):
         player_id = fully_kiosk.deviceInfo["deviceID"]
         scheme = "https" if use_ssl else "http"
         address = (
-            f"{scheme}://{self.config.get_value(CONF_IP_ADDRESS)}:{self.config.get_value(CONF_PORT)}"
+            f"{scheme}://{self.config.get_value(CONF_IP_ADDRESS)}:"
+            f"{self.config.get_value(CONF_PORT)}"
         )
         player = FullyKioskPlayer(self, player_id, fully_kiosk, address)
         player.set_attributes()
