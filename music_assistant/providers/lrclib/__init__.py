@@ -109,7 +109,7 @@ class LrclibProvider(MetadataProvider):
             return None
 
         if not track.artists:
-            self.logger.debug("Skipping lyrics lookup for %s: No artist information", track.name)
+            self.logger.info("Skipping lyrics lookup for %s: No artist information", track.name)
             return None
 
         artist_name = track.artists[0].name
@@ -118,7 +118,7 @@ class LrclibProvider(MetadataProvider):
         duration = track.duration or 0
 
         if not duration:
-            self.logger.debug("Skipping lyrics lookup for %s: No duration information", track.name)
+            self.logger.info("Skipping lyrics lookup for %s: No duration information", track.name)
             return None
 
         self.logger.debug(
@@ -166,8 +166,8 @@ class LrclibProvider(MetadataProvider):
                 self.logger.debug("Found plain lyrics for %s by %s", track.name, artist_name)
                 return metadata
             else:
-                self.logger.debug(
-                    "No plain lyrics found for %s by %s with album name %s and with a "
+                self.logger.info(
+                    "No lyrics found for %s by %s with album name %s and with a "
                     "duration within 2 secs of %s",
                     track.name,
                     artist_name,
