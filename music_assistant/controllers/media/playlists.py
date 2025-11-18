@@ -89,7 +89,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
-        # create playlist on the provider
+        # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
         playlist = await provider.create_playlist(name)
         # add the new playlist to the library
@@ -127,12 +127,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # unwrap URIs to individual track URIs
         unwrapped_uris: list[str] = []
         for uri in uris:
+            # URI could be a playlist or album uri, unwrap it
             if not ("://" in uri and len(uri.split("/")) >= 4):
+                # NOT a music assistant-style uri (provider://media_type/item_id)
                 self.logger.warning(
                     "Not adding %s to playlist %s - not a valid uri", uri, playlist.name
                 )
                 continue
-
+            # music assistant-style uri
+            # provider://media_type/item_id
             provider_instance_id_or_domain, rest = uri.split("://", 1)
             media_type_str, item_id = rest.split("/", 1)
             media_type = MediaType(media_type_str)
