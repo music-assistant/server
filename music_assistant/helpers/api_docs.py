@@ -428,6 +428,9 @@ def generate_openapi_spec(
         for param_name in handler.signature.parameters:
             if param_name == "self":
                 continue
+            # Skip return_type parameter (used only for type hints)
+            if param_name == "return_type":
+                continue
             param_type = handler.type_hints.get(param_name, Any)
             # Skip Any types as they don't provide useful schema information
             if param_type is not Any and str(param_type) != "typing.Any":
@@ -1186,6 +1189,9 @@ def generate_commands_reference(  # noqa: PLR0915
             for param_name, param in handler.signature.parameters.items():
                 if param_name == "self":
                     continue
+                # Skip return_type parameter (used only for type hints)
+                if param_name == "return_type":
+                    continue
                 is_required = param.default is inspect.Parameter.empty
                 param_type = handler.type_hints.get(param_name, Any)
                 type_str = str(param_type)
@@ -1494,6 +1500,9 @@ def generate_schemas_reference(  # noqa: PLR0915
         # Collect schemas from parameters
         for param_name in handler.signature.parameters:
             if param_name == "self":
+                continue
+            # Skip return_type parameter (used only for type hints)
+            if param_name == "return_type":
                 continue
             param_type = handler.type_hints.get(param_name, Any)
             if param_type is not Any and str(param_type) != "typing.Any":
@@ -2316,6 +2325,9 @@ def generate_html_docs(  # noqa: PLR0915
             params_html = []
             for param_name, param in handler.signature.parameters.items():
                 if param_name == "self":
+                    continue
+                # Skip return_type parameter (used only for type hints)
+                if param_name == "return_type":
                     continue
 
                 param_type = handler.type_hints.get(param_name, Any)
