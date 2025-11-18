@@ -219,14 +219,19 @@ class DLNAPlayer(Player):
         _device_uri = self.device.current_track_uri or ""
         self.set_current_media(uri=_device_uri, clear_all=True)
 
-        # Default to MA queue; only override if we detect a known external source
-        self._attr_active_source = self.player_id
-        if "spotify" in _device_uri:
+        # Let player controller determine active source, only override for known external sources
+        if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
+            # MA stream - let controller determine source
+            self._attr_active_source = None
+        elif "spotify" in _device_uri:
             # Spotify or Spotify Connect
             self._attr_active_source = "spotify"
-        elif _device_uri and not _device_uri.startswith(self.mass.streams.base_url):
-            # Device is playing from an external HTTP source (not MA stream)
+        elif _device_uri:
+            # External HTTP source
             self._attr_active_source = "http"
+        else:
+            # No URI - idle or unknown
+            self._attr_active_source = None
         # TODO: extend this list with other possible sources
         if self.device.media_position:
             # only update elapsed_time if the device actually reports it
