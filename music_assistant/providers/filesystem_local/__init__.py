@@ -25,7 +25,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -793,10 +798,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
+        # Validate playlist path to prevent path traversal attacks
+        playlist_filename = self._validate_playlist_path(prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
@@ -811,12 +817,13 @@ class LocalFileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
+        # Validate playlist path to prevent path traversal attacks
+        playlist_filename = self._validate_playlist_path(prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
         _, ext = prov_playlist_id.rsplit(".", 1)
         # get playlist file contents
-        playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         # get current contents first
@@ -839,9 +846,14 @@ class LocalFileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        # filename = await self.resolve(f"{name}.m3u")
-        filename = f"{name}.m3u"
-        playlist_filename = self.get_absolute_path(filename)
+        # Sanitize the name to prevent path traversal
+        safe_name = os.path.basename(name).replace("..", "").strip()
+        if not safe_name:
+            msg = "Invalid playlist name"
+            raise InvalidDataError(msg)
+        filename = f"{safe_name}.m3u"
+        # Validate playlist path to prevent path traversal attacks
+        playlist_filename = self._validate_playlist_path(filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")
         return await self.get_playlist(filename)
@@ -1561,6 +1573,40 @@ class LocalFileSystemProvider(MusicProvider):
             expiration=120,
         )
         return images
+
+    def _validate_playlist_path(self, path: str) -> str:
+        """
+        Validate and sanitize playlist paths to prevent path traversal.
+
+        :param path: The playlist path to validate.
+        :raises InvalidDataError: If the path is invalid or attempts path traversal.
+        """
+        # Only allow .m3u and .m3u8 extensions for playlists
+        if not path.lower().endswith((".m3u", ".m3u8")):
+            msg = f"Invalid playlist path: must have .m3u or .m3u8 extension, got {path}"
+            raise InvalidDataError(msg)
+
+        # Get absolute path and ensure it's within base_path
+        abs_path = self.get_absolute_path(path)
+
+        try:
+            # Resolve symlinks and normalize path
+            resolved_path = os.path.realpath(abs_path)
+            resolved_base = os.path.realpath(self.base_path)
+
+            # Ensure path is within base directory
+            # Check if resolved_path starts with resolved_base followed by separator
+            # or if it equals the base (edge case)
+            if not (
+                resolved_path.startswith(resolved_base + os.sep) or resolved_path == resolved_base
+            ):
+                msg = f"Invalid path: Path traversal attempt detected for {path}"
+                raise InvalidDataError(msg)
+        except (OSError, ValueError) as err:
+            msg = f"Invalid path: {path}"
+            raise InvalidDataError(msg) from err
+
+        return abs_path
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""
