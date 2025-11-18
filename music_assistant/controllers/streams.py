@@ -348,12 +348,9 @@ class StreamsController(CoreController):
         """Resolve the stream URL for the given QueueItem."""
         if not player_id:
             player_id = queue_item.queue_id
-        try:
-            conf_output_codec = await self.mass.config.get_player_config_value(
-                player_id, CONF_OUTPUT_CODEC, return_type=str
-            )
-        except KeyError:
-            conf_output_codec = "flac"
+        conf_output_codec = await self.mass.config.get_player_config_value(
+            player_id, CONF_OUTPUT_CODEC, default="flac", return_type=str
+        )
         output_codec = ContentType.try_parse(conf_output_codec or "flac")
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
@@ -428,7 +425,7 @@ class StreamsController(CoreController):
         )
         resp.content_type = f"audio/{output_format.output_format_str}"
         http_profile = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE, return_type=str
+            queue_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
         if http_profile == "forced_content_length" and not queue_item.duration:
             # just set an insane high content length to make sure the player keeps playing
@@ -617,11 +614,8 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        http_profile = (
-            await self.mass.config.get_player_config_value(
-                queue_id, CONF_HTTP_PROFILE, return_type=str
-            )
-            or "default"
+        http_profile = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
@@ -716,11 +710,8 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = (
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_HTTP_PROFILE, return_type=str
-            )
-            or "default"
+        http_profile = await self.mass.config.get_player_config_value(
+            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
@@ -812,11 +803,8 @@ class StreamsController(CoreController):
             headers=headers,
         )
         resp.content_type = f"audio/{output_format.output_format_str}"
-        http_profile = (
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_HTTP_PROFILE, return_type=str
-            )
-            or "default"
+        http_profile = await self.mass.config.get_player_config_value(
+            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
         if http_profile == "forced_content_length":
             # just set an insanely high content length to make sure the player keeps playing
@@ -1306,9 +1294,9 @@ class StreamsController(CoreController):
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
             gain_value = await self.mass.config.get_core_config_value(
-                self.domain, config_key, return_type=float
+                self.domain, config_key, default=0.0, return_type=float
             )
-            gain_correct = round(gain_value or 0.0, 2)
+            gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
             # volume normalization with known loudness measurement
