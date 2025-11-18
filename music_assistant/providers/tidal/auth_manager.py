@@ -6,6 +6,7 @@ import time
 import urllib
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -125,7 +126,7 @@ class TidalAuthManager:
 
         # Check if token is expired
         expires_at = self._auth_info.get("expires_at", 0)  # type: ignore[unreachable]
-        if expires_at > time.time() - 60:
+        if expires_at > time.time() - timedelta(minutes=60).total_seconds():
             return True
 
         # Need to refresh token
