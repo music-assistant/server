@@ -19,11 +19,9 @@ from aiohttp.client_exceptions import (
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
-    AlbumType,
     ConfigEntryType,
     ContentType,
     ExternalID,
-    ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -40,10 +38,8 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
-    MediaItemImage,
     MediaItemType,
     Playlist,
-    ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -53,12 +49,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
 from .constants import (
-    BROWSE_URL,
     CACHE_CATEGORY_ISRC_MAP,
     CACHE_CATEGORY_RECOMMENDATIONS,
     CONF_ACTION_CLEAR_AUTH,
@@ -75,8 +69,8 @@ from .constants import (
     LABEL_COMPLETE_PKCE_LOGIN,
     LABEL_OOPS_URL,
     LABEL_START_PKCE_LOGIN,
-    RESOURCES_URL,
 )
+from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .tidal_page_parser import TidalPageParser
 
 if TYPE_CHECKING:
@@ -704,24 +698,22 @@ class TidalProvider(MusicProvider):
         # Check if keys exist and are not None before processing
         if "artists" in results and results["artists"] and "items" in results["artists"]:
             parsed_results.artists = [
-                self._parse_artist(artist) for artist in results["artists"]["items"]
+                parse_artist(self, artist) for artist in results["artists"]["items"]
             ]
 
         if "albums" in results and results["albums"] and "items" in results["albums"]:
             parsed_results.albums = [
-                self._parse_album(album) for album in results["albums"]["items"]
+                parse_album(self, album) for album in results["albums"]["items"]
             ]
-
         if "playlists" in results and results["playlists"] and "items" in results["playlists"]:
             parsed_results.playlists = [
-                self._parse_playlist(playlist) for playlist in results["playlists"]["items"]
+                parse_playlist(self, playlist) for playlist in results["playlists"]["items"]
             ]
 
         if "tracks" in results and results["tracks"] and "items" in results["tracks"]:
             parsed_results.tracks = [
-                self._parse_track(track) for track in results["tracks"]["items"]
+                parse_track(self, track) for track in results["tracks"]["items"]
             ]
-
         self.logger.debug(
             "Search results - artists: %d, albums: %d, tracks: %d, playlists: %d",
             len(parsed_results.artists),
@@ -740,7 +732,7 @@ class TidalProvider(MusicProvider):
                 f"tracks/{prov_track_id}/radio", params={"limit": limit}
             )
             similar_tracks = self._extract_data(api_result)
-            return [self._parse_track(track_obj) for track_obj in similar_tracks.get("items", [])]
+            return [parse_track(self, track_obj) for track_obj in similar_tracks.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -756,7 +748,7 @@ class TidalProvider(MusicProvider):
         try:
             api_result = await self._get_data(f"artists/{prov_artist_id}")
             artist_obj = self._extract_data(api_result)
-            return self._parse_artist(artist_obj)
+            return parse_artist(self, artist_obj)
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -768,7 +760,7 @@ class TidalProvider(MusicProvider):
         try:
             api_result = await self._get_data(f"albums/{prov_album_id}")
             album_obj = self._extract_data(api_result)
-            return self._parse_album(album_obj)
+            return parse_album(self, album_obj)
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -788,7 +780,7 @@ class TidalProvider(MusicProvider):
                 if lyrics_data:
                     lyrics = lyrics_data
             # Create track with lyrics data
-            return self._parse_track(track_obj, lyrics=lyrics)
+            return parse_track(self, track_obj, lyrics=lyrics)
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -814,7 +806,7 @@ class TidalProvider(MusicProvider):
         try:
             api_result = await self._get_data(f"playlists/{prov_playlist_id}")
             playlist_obj = self._extract_data(api_result)
-            return self._parse_playlist(playlist_obj)
+            return parse_playlist(self, playlist_obj)
         except MediaNotFoundError:
             # If not found, try as a Tidal mix (might be unidentified mix)
             self.logger.debug("Playlist %s not found, trying as Tidal Mix", prov_playlist_id)
@@ -879,7 +871,7 @@ class TidalProvider(MusicProvider):
             else:
                 self.logger.debug("No images found for mix %s", prov_mix_id)
 
-            return self._parse_playlist(mix_obj, is_mix=True)
+            return parse_playlist(self, mix_obj, is_mix=True)
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -893,7 +885,7 @@ class TidalProvider(MusicProvider):
                 f"albums/{prov_album_id}/tracks", params={"limit": 250}
             )
             album_tracks = self._extract_data(api_result)
-            return [self._parse_track(track_obj) for track_obj in album_tracks.get("items", [])]
+            return [parse_track(self, track_obj) for track_obj in album_tracks.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -907,7 +899,7 @@ class TidalProvider(MusicProvider):
                 f"artists/{prov_artist_id}/albums", params={"limit": 250}
             )
             artist_albums = self._extract_data(api_result)
-            return [self._parse_album(album_obj) for album_obj in artist_albums.get("items", [])]
+            return [parse_album(self, album_obj) for album_obj in artist_albums.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -922,7 +914,7 @@ class TidalProvider(MusicProvider):
             )
             artist_top_tracks = self._extract_data(api_result)
             return [
-                self._parse_track(track_obj) for track_obj in artist_top_tracks.get("items", [])
+                parse_track(self, track_obj) for track_obj in artist_top_tracks.get("items", [])
             ]
         except ResourceTemporarilyUnavailable:
             raise
@@ -1249,7 +1241,7 @@ class TidalProvider(MusicProvider):
         result: list[Track] = []
         for index, track_obj in enumerate(track_objects, 1):
             try:
-                track = self._parse_track(track_obj)
+                track = parse_track(self, track_obj)
                 track.position = offset + index
                 result.append(track)
             except (KeyError, TypeError) as err:
@@ -1340,7 +1332,7 @@ class TidalProvider(MusicProvider):
             try:
                 api_result = await self._get_data(f"tracks/{cached_track_id}")
                 track_data = self._extract_data(api_result)
-                return self._parse_track(track_data)
+                return parse_track(self, track_data)
             except MediaNotFoundError:
                 # Track no longer exists, invalidate cache
                 await self.mass.cache.delete(
@@ -1476,7 +1468,7 @@ class TidalProvider(MusicProvider):
 
         async for artist_item in self._paginate_api(path, nested_key="item"):
             if artist_item and artist_item.get("id"):
-                yield self._parse_artist(artist_item)
+                yield parse_artist(self, artist_item)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
@@ -1485,7 +1477,7 @@ class TidalProvider(MusicProvider):
 
         async for album_item in self._paginate_api(path, nested_key="item"):
             if album_item and album_item.get("id"):
-                yield self._parse_album(album_item)
+                yield parse_album(self, album_item)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Tidal."""
@@ -1494,7 +1486,7 @@ class TidalProvider(MusicProvider):
 
         async for track_item in self._paginate_api(path, nested_key="item"):
             if track_item and track_item.get("id"):
-                yield self._parse_track(track_item)
+                yield parse_track(self, track_item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -1508,13 +1500,13 @@ class TidalProvider(MusicProvider):
             cursor_based=True,
         ):
             if mix_item and mix_item.get("id"):
-                yield self._parse_playlist(mix_item, is_mix=True)
+                yield parse_playlist(self, mix_item, is_mix=True)
 
         playlist_path = f"users/{user_id}/playlistsAndFavoritePlaylists"
 
         async for playlist_item in self._paginate_api(playlist_path, nested_key="playlist"):
             if playlist_item and playlist_item.get("uuid"):
-                yield self._parse_playlist(playlist_item)
+                yield parse_playlist(self, playlist_item)
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -1623,7 +1615,7 @@ class TidalProvider(MusicProvider):
                 f"users/{self.auth.user_id}/playlists", data=data, as_form=True
             )
 
-            return self._parse_playlist(playlist_obj)
+            return parse_playlist(self, playlist_obj)
         except (ClientResponseError, MediaNotFoundError, LoginFailed) as err:
             self.logger.error("API error creating playlist: %s", err)
             raise
@@ -1691,286 +1683,3 @@ class TidalProvider(MusicProvider):
         await self._delete_data(
             f"playlists/{prov_playlist_id}/items/{position_string}", headers=headers
         )
-
-    #
-    # ITEM PARSERS
-    #
-
-    def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
-        """Parse tidal artist object to generic layout."""
-        artist_id = str(artist_obj["id"])
-        artist = Artist(
-            item_id=artist_id,
-            provider=self.lookup_key,
-            name=artist_obj["name"],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=artist_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    # NOTE: don't use the /browse endpoint as it's
-                    # not working for musicbrainz lookups
-                    url=f"https://tidal.com/artist/{artist_id}",
-                )
-            },
-        )
-        # metadata
-        if artist_obj["picture"]:
-            picture_id = artist_obj["picture"].replace("-", "/")
-            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-
-        return artist
-
-    def _parse_album(self, album_obj: dict[str, Any]) -> Album:
-        """Parse tidal album object to generic layout."""
-        name = album_obj.get("title", "Unknown Album")
-        version = album_obj.get("version", "") or ""
-        album_id = str(album_obj.get("id", ""))
-
-        album = Album(
-            item_id=album_id,
-            provider=self.lookup_key,
-            name=name,
-            version=version,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=album_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=AudioFormat(
-                        content_type=ContentType.FLAC,
-                    ),
-                    url=f"https://tidal.com/album/{album_id}",
-                    available=album_obj.get("streamReady", True),  # Default to available
-                )
-            },
-        )
-
-        # Safely handle artists array
-        various_artist_album: bool = False
-        for artist_obj in album_obj.get("artists", []):
-            try:
-                if artist_obj.get("name") == "Various Artists":
-                    various_artist_album = True
-                album.artists.append(self._parse_artist(artist_obj))
-            except (KeyError, TypeError) as err:
-                self.logger.warning("Error parsing artist in album %s: %s", name, err)
-
-        # Safely determine album type
-        album_type = album_obj.get("type", "ALBUM")
-        if album_type == "COMPILATION" or various_artist_album:
-            album.album_type = AlbumType.COMPILATION
-        elif album_type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
-        elif album_type == "EP":
-            album.album_type = AlbumType.EP
-        elif album_type == "SINGLE":
-            album.album_type = AlbumType.SINGLE
-
-        # Try inference - override if it finds something more specific
-        inferred_type = infer_album_type(name, version)
-        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
-            album.album_type = inferred_type
-
-        # Safely parse year
-        if release_date := album_obj.get("releaseDate", ""):
-            try:
-                album.year = int(release_date.split("-")[0])
-            except (ValueError, IndexError):
-                self.logger.debug("Invalid release date format: %s", release_date)
-            with suppress(ValueError):
-                album.metadata.release_date = datetime.fromisoformat(release_date)
-
-        # Safely set metadata
-        upc = album_obj.get("upc")
-        if upc:
-            album.external_ids.add((ExternalID.BARCODE, upc))
-
-        album.metadata.copyright = album_obj.get("copyright", "")
-        album.metadata.explicit = album_obj.get("explicit", False)
-        album.metadata.popularity = album_obj.get("popularity", 0)
-
-        # Safely handle cover image
-        cover = album_obj.get("cover")
-        if cover:
-            picture_id = cover.replace("-", "/")
-            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
-            album.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-
-        return album
-
-    def _parse_track(
-        self,
-        track_obj: dict[str, Any],
-        lyrics: dict[str, str] | None = None,
-    ) -> Track:
-        """Parse tidal track object to generic layout."""
-        version = track_obj.get("version", "") or ""
-        track_id = str(track_obj.get("id", 0))
-        media_metadata = track_obj.get("mediaMetadata", {})
-        tags = media_metadata.get("tags", [])
-        hi_res_lossless = any(tag in tags for tag in ["HIRES_LOSSLESS", "HI_RES_LOSSLESS"])
-        track = Track(
-            item_id=track_id,
-            provider=self.lookup_key,
-            name=track_obj.get("title", "Unknown"),
-            version=version,
-            duration=track_obj.get("duration", 0),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(track_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=AudioFormat(
-                        content_type=ContentType.FLAC,
-                        bit_depth=24 if hi_res_lossless else 16,
-                    ),
-                    url=f"https://tidal.com/track/{track_id}",
-                    available=track_obj["streamReady"],
-                )
-            },
-            disc_number=track_obj.get("volumeNumber", 0) or 0,
-            track_number=track_obj.get("trackNumber", 0) or 0,
-        )
-        if "isrc" in track_obj:
-            track.external_ids.add((ExternalID.ISRC, track_obj["isrc"]))
-        track.artists = UniqueList()
-        for track_artist in track_obj["artists"]:
-            artist = self._parse_artist(track_artist)
-            track.artists.append(artist)
-        # metadata
-        track.metadata.explicit = track_obj["explicit"]
-        track.metadata.popularity = track_obj["popularity"]
-        if "copyright" in track_obj:
-            track.metadata.copyright = track_obj["copyright"]
-        if lyrics and "lyrics" in lyrics:
-            track.metadata.lyrics = lyrics["lyrics"]
-        if lyrics and "subtitles" in lyrics:
-            track.metadata.lrc_lyrics = lyrics["subtitles"]
-        if track_obj["album"]:
-            # Here we use an ItemMapping as Tidal returns
-            # minimal data when getting an Album from a Track
-            track.album = self.get_item_mapping(
-                media_type=MediaType.ALBUM,
-                key=str(track_obj["album"]["id"]),
-                name=track_obj["album"]["title"],
-            )
-            if track_obj["album"]["cover"]:
-                picture_id = track_obj["album"]["cover"].replace("-", "/")
-                image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
-                track.metadata.images = UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=image_url,
-                            provider=self.lookup_key,
-                            remotely_accessible=True,
-                        )
-                    ]
-                )
-        return track
-
-    def _parse_playlist(self, playlist_obj: dict[str, Any], is_mix: bool = False) -> Playlist:
-        """Parse tidal playlist object to generic layout."""
-        # Get ID based on playlist type
-        raw_id = str(playlist_obj.get("id" if is_mix else "uuid", ""))
-
-        # Add prefix for mixes to distinguish them
-        playlist_id = f"mix_{raw_id}" if is_mix else raw_id
-
-        # Owner logic differs between types
-        if is_mix:
-            owner_name = "Created by Tidal"
-            is_editable = False
-        else:
-            creator_id = None
-            creator = playlist_obj.get("creator", {})
-            if creator:
-                creator_id = creator.get("id")
-            is_editable = bool(creator_id and str(creator_id) == str(self.auth.user_id))
-
-            owner_name = "Tidal"
-            if is_editable:
-                if self.auth.user.profile_name:
-                    owner_name = self.auth.user.profile_name
-                elif self.auth.user.user_name:
-                    owner_name = self.auth.user.user_name
-                elif self.auth.user_id:
-                    owner_name = str(self.auth.user_id)
-
-        # URL path differs by type - use raw_id for URLs
-        url_path = "mix" if is_mix else "playlist"
-
-        playlist = Playlist(
-            item_id=playlist_id,
-            provider=self.instance_id if is_editable else self.lookup_key,
-            name=playlist_obj.get("title", "Unknown"),
-            owner=owner_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=playlist_id,  # Use raw ID for provider mapping
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=f"{BROWSE_URL}/{url_path}/{raw_id}",
-                )
-            },
-            is_editable=is_editable,
-        )
-
-        # Metadata - different fields based on type
-
-        # Add the description from the subtitle for mixes
-        if is_mix:
-            subtitle = playlist_obj.get("subTitle")
-            if subtitle:
-                playlist.metadata.description = subtitle
-
-        # Handle images differently based on type
-        if is_mix:
-            if pictures := playlist_obj.get("images", {}).get("MEDIUM"):
-                image_url = pictures.get("url", "")
-                if image_url:
-                    playlist.metadata.images = UniqueList(
-                        [
-                            MediaItemImage(
-                                type=ImageType.THUMB,
-                                path=image_url,
-                                provider=self.lookup_key,
-                                remotely_accessible=True,
-                            )
-                        ]
-                    )
-        elif picture := (playlist_obj.get("squareImage") or playlist_obj.get("image")):
-            picture_id = picture.replace("-", "/")
-            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-
-        return playlist
