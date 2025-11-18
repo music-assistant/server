@@ -58,7 +58,6 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
-    Radio,
     Track,
     UniqueList,
     media_from_dict,
@@ -371,7 +370,11 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+        media: MediaItemType
+        | ItemMapping
+        | str
+        | dict[str, Any]
+        | list[MediaItemType | ItemMapping | str | dict[str, Any]],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
@@ -417,6 +420,8 @@ class PlayerQueuesController(CoreController):
                 media_item: MediaItemType | ItemMapping | BrowseFolder
                 if isinstance(item, str):
                     media_item = await self.mass.music.get_item_by_uri(item)
+                elif isinstance(item, dict):
+                    media_item = media_from_dict(item)
                 else:
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
@@ -481,15 +486,13 @@ class PlayerQueuesController(CoreController):
             media_items = list(radio_tracks)
 
         # only add valid/available items
-        # _resolve_media_items should only return playable types, but we filter to be safe
         queue_items: list[QueueItem] = []
         for x in media_items:
             if not x or not x.available:
                 continue
-            # Only playable media types can be added to queue
-            if not isinstance(x, (Track, Radio, Audiobook, PodcastEpisode)):
-                continue
-            queue_items.append(QueueItem.from_media_item(queue_id, x))
+            queue_items.append(
+                QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+            )
 
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
@@ -1215,19 +1218,7 @@ class PlayerQueuesController(CoreController):
                 and queue_item.media_item.album.item_id == previous_item.media_item.album.item_id
             )
         playing_album_tracks = next_track_from_same_album or previous_track_from_same_album
-        if queue_item.media_item and queue_item.media_item.media_type == MediaType.TRACK:
-            # Type narrowing with proper error handling
-            if not isinstance(queue_item.media_item, Track):
-                self.logger.error(
-                    "Data inconsistency: media_item has media_type=TRACK "
-                    "but class is %s for item %s",
-                    type(queue_item.media_item).__name__,
-                    queue_item.uri,
-                )
-                raise InvalidDataError(
-                    f"Expected Track instance but got {type(queue_item.media_item).__name__}"
-                )
-
+        if queue_item.media_item and isinstance(queue_item.media_item, Track):
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
             # always request the full library item as there might be other qualities available
@@ -1236,30 +1227,16 @@ class PlayerQueuesController(CoreController):
                 queue_item.media_item.item_id,
                 queue_item.media_item.provider,
             ):
-                if not isinstance(library_item, Track):
-                    self.logger.error(
-                        "Library returned wrong type: expected Track but got %s for item %s",
-                        type(library_item).__name__,
-                        queue_item.uri,
-                    )
-                # Continue with original item rather than crashing
-                else:
-                    queue_item.media_item = library_item
+                assert isinstance(library_item, Track)
+                queue_item.media_item = library_item
             elif not queue_item.media_item.image or queue_item.media_item.provider.startswith(
                 "ytmusic"
             ):
                 # Youtube Music has poor thumbs by default, so we always fetch the full item
                 # this also catches the case where they have an unavailable item in a listing
                 fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
-                if not isinstance(fetched_item, Track):
-                    self.logger.error(
-                        "Fetched item has wrong type: expected Track but got %s for URI %s",
-                        type(fetched_item).__name__,
-                        queue_item.uri,
-                    )
-                    # Continue with original item
-                else:
-                    queue_item.media_item = fetched_item
+                assert isinstance(fetched_item, Track)
+                queue_item.media_item = fetched_item
 
             # ensure we got the full (original) album set
             if album and (
@@ -1269,14 +1246,8 @@ class PlayerQueuesController(CoreController):
                     album.provider,
                 )
             ):
-                if not isinstance(library_album, Album):
-                    self.logger.error(
-                        "Library returned wrong album type: expected Album but got %s",
-                        type(library_album).__name__,
-                    )
-                    # Keep original album
-                else:
-                    queue_item.media_item.album = library_album
+                assert isinstance(library_album, Album)
+                queue_item.media_item.album = library_album
             elif album:
                 # Restore original album if we have no better alternative from the library
                 queue_item.media_item.album = album
@@ -1787,11 +1758,6 @@ class PlayerQueuesController(CoreController):
             if media_item.uri is None:
                 raise InvalidDataError("ItemMapping has no URI")
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-
-        # Skip BrowseFolder items
-        if isinstance(media_item, BrowseFolder):
-            return []
-
         if media_item.media_type == MediaType.PLAYLIST:
             assert isinstance(media_item, Playlist)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
@@ -1822,7 +1788,7 @@ class PlayerQueuesController(CoreController):
             assert isinstance(media_item, BrowseFolder)
             return list(await self._get_folder_tracks(media_item))
         # all other: single track or radio item
-        return [media_item]
+        return [cast("MediaItemType", media_item)]
 
     async def _get_radio_tracks(
         self, queue_id: str, is_initial_radio_mode: bool = False
