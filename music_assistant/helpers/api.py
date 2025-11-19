@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
@@ -118,8 +118,10 @@ def parse_value(  # noqa: PLR0911
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
-    if origin in (tuple, list):
-        return origin(
+    if origin in (tuple, list, Sequence, Iterable):
+        # For abstract types like Sequence and Iterable, use list as the concrete type
+        concrete_type = list if origin in (Sequence, Iterable) else origin
+        return concrete_type(
             parse_value(
                 name, subvalue, get_args(value_type)[0], allow_value_convert=allow_value_convert
             )
