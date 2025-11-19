@@ -54,6 +54,20 @@ from music_assistant.models.player import Player, PlayerMedia
 
 from .timed_client_stream import TimedClientStream
 
+# Supported group commands for Resonate players
+SUPPORTED_GROUP_COMMANDS = [
+    MediaCommand.PLAY,
+    MediaCommand.PAUSE,
+    MediaCommand.STOP,
+    MediaCommand.NEXT,
+    MediaCommand.PREVIOUS,
+    MediaCommand.REPEAT_OFF,
+    MediaCommand.REPEAT_ONE,
+    MediaCommand.REPEAT_ALL,
+    MediaCommand.SHUFFLE,
+    MediaCommand.UNSHUFFLE,
+]
+
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
     from music_assistant_models.event import MassEvent
@@ -179,15 +193,7 @@ class ResonatePlayer(Player):
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
         self.unsub_event_cb = resonate_client.add_event_listener(self.event_cb)
         self.unsub_group_event_cb = resonate_client.group.add_event_listener(self.group_event_cb)
-        resonate_client.group.set_supported_commands(
-            [
-                MediaCommand.PLAY,
-                MediaCommand.PAUSE,
-                MediaCommand.STOP,
-                MediaCommand.NEXT,
-                MediaCommand.PREVIOUS,
-            ]
-        )
+        resonate_client.group.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -233,16 +239,33 @@ class ResonatePlayer(Player):
                     case PlaybackStateType.STOPPED:
                         self._attr_playback_state = PlaybackState.IDLE
                 # Update in case this is a newly created group
-                new_group.set_supported_commands(
-                    [
-                        MediaCommand.PLAY,
-                        MediaCommand.PAUSE,
-                        MediaCommand.STOP,
-                        MediaCommand.NEXT,
-                        MediaCommand.PREVIOUS,
-                    ]
-                )
+                new_group.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
                 self.update_state()
+
+    async def _handle_group_command(self, command: MediaCommand) -> None:
+        """Handle a group command from aioresonate."""
+        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        match command:
+            case MediaCommand.PLAY:
+                await self.mass.players.cmd_play(self.player_id)
+            case MediaCommand.PAUSE:
+                await self.mass.players.cmd_pause(self.player_id)
+            case MediaCommand.STOP:
+                await self.mass.players.cmd_stop(self.player_id)
+            case MediaCommand.NEXT:
+                await self.mass.players.cmd_next_track(self.player_id)
+            case MediaCommand.PREVIOUS:
+                await self.mass.players.cmd_previous_track(self.player_id)
+            case MediaCommand.REPEAT_OFF if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+            case MediaCommand.REPEAT_ONE if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+            case MediaCommand.REPEAT_ALL if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+            case MediaCommand.SHUFFLE if queue:
+                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
+            case MediaCommand.UNSHUFFLE if queue:
+                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
     async def group_event_cb(self, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
@@ -254,17 +277,7 @@ class ResonatePlayer(Player):
         match event:
             case GroupCommandEvent(command=command):
                 self.logger.debug("Group command received: %s", command)
-                match command:
-                    case MediaCommand.PLAY:
-                        await self.mass.players.cmd_play(self.player_id)
-                    case MediaCommand.PAUSE:
-                        await self.mass.players.cmd_pause(self.player_id)
-                    case MediaCommand.STOP:
-                        await self.mass.players.cmd_stop(self.player_id)
-                    case MediaCommand.NEXT:
-                        await self.mass.players.cmd_next_track(self.player_id)
-                    case MediaCommand.PREVIOUS:
-                        await self.mass.players.cmd_previous_track(self.player_id)
+                await self._handle_group_command(command)
             case GroupStateChangedEvent(state=state):
                 self.logger.debug("Group state changed to: %s", state)
                 match state:
