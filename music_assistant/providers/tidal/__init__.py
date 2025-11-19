@@ -47,7 +47,21 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return configuration entries required to set up the Tidal provider.
+
+    Parameters:
+        mass (MusicAssistant): The MusicAssistant instance.
+        instance_id (str | None): Optional instance identifier for the provider.
+        action (str | None): Optional action to perform (e.g., start or complete PKCE login, clear auth).
+        values (dict[str, ConfigValueType] | None): Dictionary of current configuration values.
+
+    Returns:
+        tuple[ConfigEntry, ...]: A tuple of ConfigEntry objects representing the configuration steps.
+
+    The function handles authentication actions and returns the appropriate configuration entries
+    based on the current state and provided values.
+    """
     assert values is not None
 
     if action == CONF_ACTION_START_PKCE_LOGIN:
@@ -155,7 +169,7 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
-                label="After pasting the URL in the field above, click the button below...",
+                label="After pasting the URL in the field above, click the button below to complete the process.",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
