@@ -53,11 +53,12 @@ async def get_config_entries(
     Parameters:
         mass (MusicAssistant): The MusicAssistant instance.
         instance_id (str | None): Optional instance identifier for the provider.
-        action (str | None): Optional action to perform (e.g., start or complete PKCE login, clear auth).
+        action (str | None): Optional action to perform (e.g., start or complete PKCE login,
+        clear auth).
         values (dict[str, ConfigValueType] | None): Dictionary of current configuration values.
 
     Returns:
-        tuple[ConfigEntry, ...]: A tuple of ConfigEntry objects representing the configuration steps.
+        tuple[ConfigEntry, ...]: Tuple of ConfigEntry objects representing the configuration steps.
 
     The function handles authentication actions and returns the appropriate configuration entries
     based on the current state and provided values.
@@ -132,7 +133,9 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_START_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
-                label="The button below will redirect you to Tidal.com to authenticate...",
+                label="After authenticating, you will be redirected to a page that prominently"
+                " displays 'Page Not Found' at the top. That is normal, you need to copy that URL"
+                " from the address bar and come back here",
                 hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
@@ -155,7 +158,7 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_OOPS_URL,
                 type=ConfigEntryType.LABEL,
-                label="Copy the URL from the 'Page Not Found' page and paste it in the field below.",
+                label="Copy the URL from the 'Page Not Found' page and paste into the field below.",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
@@ -169,7 +172,8 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
-                label="After pasting the URL in the field above, click the button below to complete the process.",
+                label="After pasting the URL in the field above, click the button below to complete"
+                " the process.",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(

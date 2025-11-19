@@ -30,7 +30,7 @@ class TidalStreamingManager:
         """Get stream details for a track."""
         # 1. Try direct lookup
         try:
-            track = await self.provider.media.get_track(item_id)
+            track = await self.provider.get_track(item_id)
         except MediaNotFoundError:
             # 2. Fallback to ISRC lookup
             if isrc_track := await self._get_track_by_isrc(item_id):
@@ -95,7 +95,7 @@ class TidalStreamingManager:
             item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
         ):
             try:
-                return await self.provider.media.get_track(cached_id)
+                return await self.provider.get_track(cached_id)
             except MediaNotFoundError:
                 await self.mass.cache.delete(
                     item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
@@ -133,4 +133,4 @@ class TidalStreamingManager:
             expiration=86400 * 90,
         )
 
-        return await self.provider.media.get_track(track_id)
+        return await self.provider.get_track(track_id)
