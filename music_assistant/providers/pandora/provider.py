@@ -259,13 +259,7 @@ class PandoraProvider(MusicProvider):
             },
         )
 
-    async def get_stream_details(
-        self,
-        item_id: str,
-        media_type: MediaType,
-        queue_id: str | None = None,
-        queue_item_id: str | None = None,
-    ) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
@@ -275,8 +269,7 @@ class PandoraProvider(MusicProvider):
         parts = [
             MultiPartPath(
                 path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
-                f"station_id={item_id}&track_num={i}&queue_id={queue_id}"
-                f"&queue_item_id={queue_item_id}",
+                f"station_id={item_id}&track_num={i}"
             )
             for i in range(1000)
         ]
@@ -344,12 +337,6 @@ class PandoraProvider(MusicProvider):
 
         try:
             track_num = int(track_num_str)
-            # Log when the URL is being requested
-            import time
-
-            self.logger.info(
-                "=== TRACK URL REQUESTED === Track %d at timestamp %s", track_num, time.time()
-            )
         except ValueError:
             return web.Response(status=400, text="Invalid track_num")
 
@@ -390,13 +377,6 @@ class PandoraProvider(MusicProvider):
 
             # Update metadata if we have queue context
             if queue_id and queue_item_id:
-                self.logger.info(
-                    "=== UPDATING METADATA === Track %d (%s - %s) at timestamp %s",
-                    track_num,
-                    track.get("artistName"),
-                    track.get("songTitle"),
-                    time.time(),
-                )
                 queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
                 if queue_item and queue_item.streamdetails:
                     # Get the best quality album art
@@ -414,19 +394,6 @@ class PandoraProvider(MusicProvider):
                         image_url=album_art_url,
                         duration=track.get("trackLength"),
                     )
-                    self.logger.debug(
-                        "Updated stream metadata: %s - %s",
-                        track.get("artistName", "Unknown"),
-                        track.get("songTitle", "Unknown"),
-                    )
-
-            self.logger.debug(
-                "Redirecting to audio URL for track %d (%s - %s)",
-                track_num,
-                track.get("artistName", "Unknown"),
-                track.get("songTitle", "Unknown"),
-            )
-
             # Redirect to the actual audio URL
             return web.Response(status=302, headers={"Location": audio_url})
 

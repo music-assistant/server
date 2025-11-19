@@ -283,10 +283,7 @@ async def get_stream_details(
             try:
                 BYPASS_THROTTLER.set(True)
                 streamdetails = await music_prov.get_stream_details(
-                    prov_media.item_id,
-                    media_item.media_type,
-                    queue_id=queue_item.queue_id,
-                    queue_item_id=queue_item.queue_item_id,
+                    prov_media.item_id, media_item.media_type
                 )
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
