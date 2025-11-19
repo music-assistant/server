@@ -232,6 +232,16 @@ class ResonatePlayer(Player):
                         self._attr_playback_state = PlaybackState.PAUSED
                     case PlaybackStateType.STOPPED:
                         self._attr_playback_state = PlaybackState.IDLE
+                # Update in case this is a newly created group
+                new_group.set_supported_commands(
+                    [
+                        MediaCommand.PLAY,
+                        MediaCommand.PAUSE,
+                        MediaCommand.STOP,
+                        MediaCommand.NEXT,
+                        MediaCommand.PREVIOUS,
+                    ]
+                )
                 self.update_state()
 
     async def group_event_cb(self, event: GroupEvent) -> None:
