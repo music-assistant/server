@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
@@ -49,14 +49,112 @@ from music_assistant.constants import (
     INTERNAL_PCM_FORMAT,
 )
 from music_assistant.helpers.audio import get_player_filter_params
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
+
+from .timed_client_stream import TimedClientStream
 
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
     from music_assistant_models.event import MassEvent
 
     from .provider import ResonateProvider
+
+
+class MusicAssistantMediaStream(MediaStream):
+    """MediaStream implementation for Music Assistant with per-player DSP support."""
+
+    player_instance: ResonatePlayer
+    internal_format: AudioFormat
+    output_format: AudioFormat
+
+    def __init__(
+        self,
+        *,
+        main_channel_source: AsyncGenerator[bytes, None],
+        main_channel_format: ResonateAudioFormat,
+        player_instance: ResonatePlayer,
+        internal_format: AudioFormat,
+        output_format: AudioFormat,
+    ) -> None:
+        """
+        Initialise the media stream with audio source and format for main_channel().
+
+        Args:
+            main_channel_source: Audio source generator for the main channel.
+            main_channel_format: Audio format for the main channel (includes codec).
+            player_instance: The ResonatePlayer instance for accessing mass and streams.
+            internal_format: Internal processing format (float32 for headroom).
+            output_format: Output PCM format (16-bit for player output).
+        """
+        super().__init__(
+            main_channel_source=main_channel_source,
+            main_channel_format=main_channel_format,
+        )
+        self.player_instance = player_instance
+        self.internal_format = internal_format
+        self.output_format = output_format
+
+    async def player_channel(
+        self,
+        player_id: str,
+        preferred_format: ResonateAudioFormat | None = None,
+        position_us: int = 0,
+    ) -> tuple[AsyncGenerator[bytes, None], ResonateAudioFormat, int] | None:
+        """
+        Get a player-specific audio stream with per-player DSP.
+
+        Args:
+            player_id: Identifier for the player requesting the stream.
+            preferred_format: The player's preferred native format for the stream.
+                The implementation may return a different format; the library
+                will handle any necessary conversion.
+            position_us: Position in microseconds relative to the main_stream start.
+                Used for late-joining players to sync with the main stream.
+
+        Returns:
+            A tuple of (audio generator, audio format, actual position in microseconds)
+            or None if unavailable. If None, the main_stream is used as fallback.
+        """
+        mass = self.player_instance.mass
+        multi_client_stream = self.player_instance.timed_client_stream
+        assert multi_client_stream is not None
+
+        dsp = mass.config.get_player_dsp_config(player_id)
+        if not dsp.enabled:
+            # DSP is disabled for this player, use main_stream
+            return None
+
+        # Get per-player DSP filter parameters
+        # Convert from internal format to output format
+        filter_params = get_player_filter_params(
+            mass, player_id, self.internal_format, self.output_format
+        )
+
+        # Get the stream with position (in seconds)
+        stream_gen, actual_position = await multi_client_stream.get_stream(
+            output_format=self.output_format,
+            filter_params=filter_params,
+        )
+
+        # Convert position from seconds to microseconds for aioresonate API
+        actual_position_us = int(actual_position * 1_000_000)
+
+        # Return actual position in microseconds relative to main_stream start
+        self.player_instance.logger.debug(
+            "Providing channel stream for player %s at position %d us",
+            player_id,
+            actual_position_us,
+        )
+        return (
+            stream_gen,
+            ResonateAudioFormat(
+                sample_rate=self.output_format.sample_rate,
+                bit_depth=self.output_format.bit_depth,
+                channels=self.output_format.channels,
+                codec=self._main_channel_format.codec,
+            ),
+            actual_position_us,
+        )
 
 
 class ResonatePlayer(Player):
@@ -67,6 +165,7 @@ class ResonatePlayer(Player):
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
+    timed_client_stream: TimedClientStream | None = None
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -84,6 +183,7 @@ class ResonatePlayer(Player):
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
+            PlayerFeature.MULTI_DEVICE_DSP,
         }
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
@@ -110,6 +210,15 @@ class ResonatePlayer(Player):
             case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
+                # Sync playback state from the new group
+                match new_group.state:
+                    case PlaybackStateType.PLAYING:
+                        self._attr_playback_state = PlaybackState.PLAYING
+                    case PlaybackStateType.PAUSED:
+                        self._attr_playback_state = PlaybackState.PAUSED
+                    case PlaybackStateType.STOPPED:
+                        self._attr_playback_state = PlaybackState.IDLE
+                self.update_state()
 
     async def group_event_cb(self, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
@@ -155,10 +264,16 @@ class ResonatePlayer(Player):
                         self._attr_elapsed_time = 0
                         self._attr_elapsed_time_last_updated = time.time()
                 self.update_state()
-            case GroupMemberAddedEvent(client_id=_):
-                pass
-            case GroupMemberRemovedEvent(client_id=_):
-                pass
+            case GroupMemberAddedEvent(client_id=client_id):
+                self.logger.debug("Group member added: %s", client_id)
+                if client_id not in self._attr_group_members:
+                    self._attr_group_members.append(client_id)
+                    self.update_state()
+            case GroupMemberRemovedEvent(client_id=client_id):
+                self.logger.debug("Group member removed: %s", client_id)
+                if client_id in self._attr_group_members:
+                    self._attr_group_members.remove(client_id)
+                    self.update_state()
             case GroupDeletedEvent():
                 pass
 
@@ -224,25 +339,35 @@ class ResonatePlayer(Player):
             # Convert string codec to AudioCodec enum
             audio_codec = AudioCodec(output_codec)
 
-            # Apply DSP and other audio filters
-            audio_source = get_ffmpeg_stream(
-                audio_input=self.mass.streams.get_stream(media, flow_pcm_format),
-                input_format=flow_pcm_format,
-                output_format=pcm_format,
-                filter_params=get_player_filter_params(
-                    self.mass, self.player_id, flow_pcm_format, pcm_format
-                ),
+            # Get clean audio source in flow format (high quality internal format)
+            # Format conversion and per-player DSP will be applied via player_channel
+            audio_source = self.mass.streams.get_stream(media, flow_pcm_format)
+
+            # Create TimedClientStream to wrap the clean audio source
+            # This distributes the audio to multiple subscribers without DSP
+            self.timed_client_stream = TimedClientStream(
+                audio_source=audio_source,
+                audio_format=flow_pcm_format,
             )
 
-            # Create MediaStream wrapping the audio source generator
-            media_stream = MediaStream(
-                source=audio_source,
-                audio_format=ResonateAudioFormat(
+            # Setup the main channel subscription
+            # aioresonate only really supports 16-bit for now TODO: upgrade later to 32-bit
+            main_channel_gen, main_position = await self.timed_client_stream.get_stream(
+                output_format=pcm_format,
+                filter_params=None,  # TODO: this should probably still include the safety limiter
+            )
+            assert main_position == 0.0  # first subscriber, should be zero
+            media_stream = MusicAssistantMediaStream(
+                main_channel_source=main_channel_gen,
+                main_channel_format=ResonateAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     channels=pcm_format.channels,
                     codec=audio_codec,
                 ),
+                player_instance=self,
+                internal_format=flow_pcm_format,
+                output_format=pcm_format,
             )
 
             stop_time = await self.api.group.play_media(media_stream)
@@ -253,6 +378,8 @@ class ResonatePlayer(Player):
         except Exception:
             self.logger.exception("Error during playback for player %s", self.display_name)
             raise
+        finally:
+            self.timed_client_stream = None
 
     async def set_members(
         self,
@@ -268,18 +395,12 @@ class ResonatePlayer(Player):
             player = cast("ResonatePlayer", player)  # For type checking
             await self.api.group.remove_client(player.api)
             player.api.disconnect_behaviour = DisconnectBehaviour.STOP
-            self._attr_group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
             player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
             await self.api.group.add_client(player.api)
-            self._attr_group_members.append(player_id)
-        self.update_state()
-
-    def _update_media_art(self, image_data: bytes) -> None:
-        image = Image.open(BytesIO(image_data))
-        self.api.group.set_media_art(image)
+        # self.group_members will be updated by the group event callback
 
     async def _on_queue_update(self, event: MassEvent) -> None:
         """Extract and send current media metadata to resonate players on queue updates."""
@@ -328,7 +449,8 @@ class ResonatePlayer(Player):
                     current_item.media_item
                 )
                 if image_data is not None:
-                    await asyncio.to_thread(self._update_media_art, image_data)
+                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
+                    await self.api.group.set_media_art(image)
             # TODO: null media art if not set?
 
         track_duration = current_item.duration

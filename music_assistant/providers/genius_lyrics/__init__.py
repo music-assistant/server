@@ -69,13 +69,13 @@ class GeniusProvider(MetadataProvider):
             return None
 
         if not track.artists:
-            self.logger.debug("Skipping lyrics lookup for %s: No artist information", track.name)
+            self.logger.info("Skipping lyrics lookup for %s: No artist information", track.name)
             return None
 
         artist_name = track.artists[0].name
 
         if not track.name or len(track.name.strip()) == 0:
-            self.logger.debug(
+            self.logger.info(
                 "Skipping lyrics lookup for %s: No track name information", artist_name
             )
             return None
@@ -89,7 +89,7 @@ class GeniusProvider(MetadataProvider):
             self.logger.debug("Found lyrics for %s by %s", track.name, artist_name)
             return metadata
 
-        self.logger.debug("No lyrics found for %s by %s", track.name, artist_name)
+        self.logger.info("No lyrics found for %s by %s", track.name, artist_name)
         return None
 
     @use_cache(86400 * 7)  # Cache for 7 days
