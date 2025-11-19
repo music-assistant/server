@@ -988,6 +988,7 @@ class YoutubeMusicProvider(MusicProvider):
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
             yt_dlp = importlib.import_module("yt_dlp")
+            asyncio.sleep(0)  # yield control to event loop
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
