@@ -798,7 +798,10 @@ class PlexProvider(MusicProvider):
             available = True
             content = plex_track.media[0].container
         else:
-            available = False
+            # For Plex (local library provider), assume tracks are available by default
+            # even if media attribute is not populated in the initial response.
+            # This prevents tracks from being skipped during library sync.
+            available = True
             content = None
         track = Track(
             item_id=plex_track.key,
