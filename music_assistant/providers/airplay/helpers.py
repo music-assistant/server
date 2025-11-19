@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.airplay.constants import BROKEN_RAOP_MODELS, StreamingProtocol
+from music_assistant.providers.airplay.constants import (
+    AIRPLAY_2_DEFAULT_MODELS,
+    BROKEN_AIRPLAY_MODELS,
+    StreamingProtocol,
+)
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -110,10 +114,18 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
     return None
 
 
-def is_broken_raop_model(manufacturer: str, model: str) -> bool:
+def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
     """Check if a model is known to have broken RAOP support."""
-    for broken_manufacturer, broken_model in BROKEN_RAOP_MODELS:
+    for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
         if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
+            return True
+    return False
+
+
+def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
+    """Check if a model is known to work better with AirPlay 2 protocol."""
+    for ap2_manufacturer, ap2_model in AIRPLAY_2_DEFAULT_MODELS:
+        if ap2_manufacturer in (manufacturer, "*") and ap2_model in (model, "*"):
             return True
     return False
 
@@ -140,12 +152,9 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                 ]
                 passing_output = "cliraop check"
             else:
-                config_file = os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf")
                 args = [
                     cli_path,
                     "--testrun",
-                    "--config",
-                    config_file,
                 ]
 
             returncode, output = await check_output(*args)
