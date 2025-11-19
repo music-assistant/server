@@ -118,10 +118,11 @@ class TidalStreamingManager:
         )
         data = api_result[0] if isinstance(api_result, tuple) else api_result
 
-        if not data.get("data"):
+        data_items = data.get("data", [])
+        if not data_items:
             return None
 
-        track_id = str(data["data"][0]["id"])
+        track_id = str(data_items[0]["id"])
 
         # Cache result
         await self.mass.cache.set(

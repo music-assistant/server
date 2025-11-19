@@ -53,8 +53,7 @@ async def get_config_entries(
     Parameters:
         mass (MusicAssistant): The MusicAssistant instance.
         instance_id (str | None): Optional instance identifier for the provider.
-        action (str | None): Optional action to perform (e.g., start or complete PKCE login,
-        clear auth).
+        action (str | None): Optional action to perform (e.g., start or complete PKCE login).
         values (dict[str, ConfigValueType] | None): Dictionary of current configuration values.
 
     Returns:

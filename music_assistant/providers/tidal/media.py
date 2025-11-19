@@ -134,7 +134,7 @@ class TidalMediaManager:
                 if mix_data := modules[0].get("mix"):
                     mix_obj["images"] = mix_data.get("images", {})
 
-            if not mix_obj["images"]:
+            if not mix_obj["subTitle"]:
                 mix_obj["subTitle"] = tidal_mix.get("subTitle", "")
 
             return parse_playlist(self.provider, mix_obj, is_mix=True)

@@ -148,7 +148,7 @@ class TidalAPIClient:
             raise ResourceTemporarilyUnavailable("API error")
 
         try:
-            if response.content_length == 0:
+            if not response.content_length or response.content_length == 0:
                 data = {"success": True}
             else:
                 data = await response.json()
@@ -201,5 +201,5 @@ class TidalAPIClient:
                 cursor = response.get("cursor")
                 if not cursor:
                     break
-
-            offset += len(items)
+            else:
+                offset += len(items)
