@@ -66,7 +66,9 @@ class ResonateProvider(PlayerProvider):
         # Start server for handling incoming Resonate connections from clients
         # and mDNS discovery of new clients
         await self.server_api.start_server(
-            port=8927, host=cast("str", self.mass.streams.publish_ip)
+            port=8927,
+            host=self.mass.streams.bind_ip,
+            advertise_host=cast("str", self.mass.streams.publish_ip),
         )
 
     async def unload(self, is_removed: bool = False) -> None:
