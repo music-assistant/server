@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from .provider import TidalProvider
 
 
-class TidalMediaRetriever:
+class TidalMediaManager:
     """Handles retrieval of media items from Tidal."""
 
     def __init__(self, provider: TidalProvider):

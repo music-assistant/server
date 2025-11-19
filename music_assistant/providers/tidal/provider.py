@@ -32,7 +32,7 @@ from .constants import (
     CONF_USER_ID,
 )
 from .library import TidalLibraryManager
-from .media import TidalMediaRetriever
+from .media import TidalMediaManager
 from .playlist import TidalPlaylistManager
 from .recommendations import TidalRecommendationManager
 from .streaming import TidalStreamingManager
@@ -80,7 +80,7 @@ class TidalProvider(MusicProvider):
         )
         self.api = TidalAPIClient(self)
         self.library = TidalLibraryManager(self)
-        self.media = TidalMediaRetriever(self)
+        self.media = TidalMediaManager(self)
         self.playlists = TidalPlaylistManager(self)
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
