@@ -271,11 +271,13 @@ class ResonatePlayer(Player):
                 self.logger.debug("Group member added: %s", client_id)
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
+                    self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
                 if client_id in self._attr_group_members:
                     self._attr_group_members.remove(client_id)
+                    self.api.disconnect_behaviour = DisconnectBehaviour.STOP
                     self.update_state()
             case GroupDeletedEvent():
                 pass
@@ -397,11 +399,9 @@ class ResonatePlayer(Player):
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
             await self.api.group.remove_client(player.api)
-            player.api.disconnect_behaviour = DisconnectBehaviour.STOP
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
-            player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
             await self.api.group.add_client(player.api)
         # self.group_members will be updated by the group event callback
 
