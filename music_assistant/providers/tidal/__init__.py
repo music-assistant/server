@@ -141,7 +141,7 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_OOPS_URL,
                 type=ConfigEntryType.LABEL,
-                label="Copy the URL from the 'Page Not Found' page...",
+                label="Copy the URL from the 'Page Not Found' page and paste it in the field below.",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
