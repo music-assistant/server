@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ClientResponse
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
