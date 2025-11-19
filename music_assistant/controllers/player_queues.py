@@ -370,11 +370,7 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemType
-        | ItemMapping
-        | str
-        | dict[str, Any]
-        | list[MediaItemType | ItemMapping | str | dict[str, Any]],
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
@@ -420,8 +416,13 @@ class PlayerQueuesController(CoreController):
                 media_item: MediaItemType | ItemMapping | BrowseFolder
                 if isinstance(item, str):
                     media_item = await self.mass.music.get_item_by_uri(item)
-                elif isinstance(item, dict):
-                    media_item = media_from_dict(item)
+                elif isinstance(item, dict):  # type: ignore[unreachable]
+                    # TODO: Investigate why the API parser sometimes passes raw dicts instead of
+                    # converting them to MediaItem objects. The parse_value function in api.py
+                    # should handle dict-to-object conversion, but dicts are slipping through
+                    # in some cases. This is defensive handling for that parser bug.
+                    media_item = media_from_dict(item)  # type: ignore[unreachable]
+                    self.logger.debug("Converted to: %s", type(media_item))
                 else:
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
@@ -443,17 +444,14 @@ class PlayerQueuesController(CoreController):
 
                 # handle default enqueue option if needed
                 if option is None:
-                    # Type guard to narrow type for mypy
-                    # only full MediaItemType objects have config options
-                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
-                        config_value = await self.mass.config.get_core_config_value(
-                            self.domain,
-                            f"default_enqueue_option_{media_item.media_type.value}",
-                            return_type=str,
-                        )
-                        option = QueueOption(config_value)
-                        if option == QueueOption.REPLACE:
-                            self.clear(queue_id, skip_stop=True)
+                    config_value = await self.mass.config.get_core_config_value(
+                        self.domain,
+                        f"default_enqueue_option_{media_item.media_type.value}",
+                        return_type=str,
+                    )
+                    option = QueueOption(config_value)
+                    if option == QueueOption.REPLACE:
+                        self.clear(queue_id, skip_stop=True)
 
                 # collect media_items to play
                 if radio_mode:
