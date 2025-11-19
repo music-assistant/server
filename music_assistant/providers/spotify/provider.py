@@ -682,7 +682,7 @@ class SpotifyProvider(MusicProvider):
 
             return StreamDetails(
                 item_id=item_id,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 media_type=MediaType.AUDIOBOOK,
                 audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 stream_type=StreamType.CUSTOM,
@@ -770,6 +770,7 @@ class SpotifyProvider(MusicProvider):
             "refresh_token": refresh_token,
             "client_id": client_id,
         }
+        err = "Unknown error"
         for _ in range(2):
             async with self.mass.http_session.post(
                 "https://accounts.spotify.com/api/token", data=params

@@ -362,7 +362,6 @@ class SqueezelitePlayer(Player):
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
         self._attr_volume_muted = self.client.muted
-        self._attr_active_source = self.player_id
         self._attr_device_info = DeviceInfo(
             model=self.client.device_model,
             ip_address=self.client.device_address,
@@ -382,8 +381,11 @@ class SqueezelitePlayer(Player):
                 source_id=metadata.get("source_id"),
                 queue_item_id=metadata.get("queue_item_id"),
             )
+            # Set active source from metadata if available, otherwise use player_id
+            self._attr_active_source = metadata.get("source_id") or self.player_id
         else:
             self._attr_current_media = None
+            self._attr_active_source = self.player_id
 
     async def _handle_play_url_for_slimplayer(
         self,
