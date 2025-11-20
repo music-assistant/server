@@ -62,9 +62,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
-from music_assistant.controllers.streams.smart_fades import (
-    SmartFadesMixer,
-)
+from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
@@ -352,6 +350,11 @@ class StreamsController(CoreController):
                     "/pluginsource/{plugin_source}/{player_id}.{fmt}",
                     self.serve_plugin_source_stream,
                 ),
+                (
+                    "GET",
+                    "/preload/{queue_id}/{queue_item_id}.{fmt}",
+                    self.serve_preload_queue_item,
+                ),
             ],
         )
         # Start periodic garbage collection task
@@ -587,6 +590,98 @@ class StreamsController(CoreController):
             )
             # try to skip to the next item in the queue after a short delay
             self.mass.call_later(5, self.mass.player_queues.next(queue_id))
+        return resp
+
+    async def serve_preload_queue_item(self, request: web.Request) -> web.StreamResponse:
+        """
+        Stream single queue item audio for preloading in browser.
+
+        This endpoint allows the browser to preload the next track in the background
+        for instant playback when the user clicks "Next". Unlike the /single/ endpoint,
+        this doesn't require session_id validation since it's meant for prefetching.
+        """
+        self._log_request(request)
+        queue_id = request.match_info["queue_id"]
+        queue_item_id = request.match_info["queue_item_id"]
+
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
+
+        queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+        if not queue_item:
+            raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+
+        # Get or fetch stream details
+        if not queue_item.streamdetails:
+            try:
+                queue_item.streamdetails = await get_stream_details(
+                    mass=self.mass, queue_item=queue_item
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Failed to get streamdetails for preload QueueItem %s: %s", queue_item_id, e
+                )
+                raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+
+        queue_player = self.mass.players.get(queue_id)
+        if not queue_player:
+            raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
+
+        output_format = await self.get_output_format(
+            output_format_str=request.match_info["fmt"],
+            player=queue_player,
+            content_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
+            content_bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+        )
+
+        headers = {
+            **DEFAULT_STREAM_HEADERS,
+            "icy-name": queue_item.name,
+            "Accept-Ranges": "none",
+            "Content-Type": f"audio/{output_format.output_format_str}",
+        }
+        resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        resp.content_type = f"audio/{output_format.output_format_str}"
+        resp.enable_chunked_encoding()
+
+        await resp.prepare(request)
+
+        if request.method != "GET":
+            return resp
+
+        # Prepare PCM format for internal processing
+        pcm_format = AudioFormat(
+            sample_rate=queue_item.streamdetails.audio_format.sample_rate,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            channels=queue_item.streamdetails.audio_format.channels,
+        )
+
+        # Get raw PCM audio stream for the queue item
+        # No crossfade is applied for preload streams
+        audio_input = self.get_queue_item_stream(
+            queue_item=queue_item,
+            pcm_format=pcm_format,
+            seek_position=queue_item.streamdetails.seek_position,
+        )
+
+        # Stream the audio through ffmpeg to convert to output format
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=pcm_format,
+                output_format=output_format,
+                filter_params=get_player_filter_params(
+                    self.mass, queue_id, pcm_format, output_format
+                ),
+            ):
+                await resp.write(chunk)
+        except Exception:
+            # The browser may close the connection once it has buffered enough data
+            # This is expected behavior for preloading
+            self.logger.debug("Preload stream for QueueItem %s closed by client", queue_item_id)
+
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:
