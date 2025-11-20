@@ -278,8 +278,9 @@ class ResonatePlayer(Player):
     async def group_event_cb(self, group: ResonateGroup, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
         if self.synced_to is not None:
-            # Only handle group events as the leader
-            return
+            # Only handle group events as the leader, except for GroupMemberRemovedEvent
+            if not isinstance(event, GroupMemberRemovedEvent):
+                return
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
@@ -305,7 +306,25 @@ class ResonatePlayer(Player):
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
-                if client_id in self._attr_group_members:
+                if client_id == self.player_id:
+                    if len(self._attr_group_members) > 0:
+                        # We were just removed as a leader:
+                        # 1. stop playback on the old group
+                        await group.stop()
+                        # 2. clear our members (since we are now alone)
+                        group_members = [
+                            member for member in self._attr_group_members if member != client_id
+                        ]
+                        self._attr_group_members = []
+                        # 3. assign new leader if there are members left
+                        if len(group_members) > 0 and (
+                            new_leader := self.mass.players.get(group_members[0])
+                        ):
+                            new_leader._attr_group_members = group_members[1:]
+                            new_leader.update_state()
+                    self.update_state()
+                elif client_id in self._attr_group_members:
+                    # Someone else left our group
                     self._attr_group_members.remove(client_id)
                     self.update_state()
             case GroupDeletedEvent():
