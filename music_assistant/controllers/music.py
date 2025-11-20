@@ -101,7 +101,6 @@ class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
     domain: str = "music"
-    database: DatabaseConnection | None = None
     config: CoreConfig
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -116,12 +115,20 @@ class MusicController(CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
+        self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
         )
         self.manifest.icon = "archive-music"
+
+    @property
+    def database(self) -> DatabaseConnection:
+        """Return the database connection."""
+        if self._database is None:
+            raise RuntimeError("Database not initialized")
+        return self._database
 
     async def get_config_entries(
         self,
@@ -167,8 +174,8 @@ class MusicController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self.database:
-            await self.database.close()
+        if self._database:
+            await self._database.close()
 
     async def on_provider_loaded(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -473,7 +480,6 @@ class MusicController(CoreController):
             "ORDER BY timestamp DESC"
         )
 
-        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
@@ -504,7 +510,6 @@ class MusicController(CoreController):
             "AND seconds_played > 0 "
             "ORDER BY timestamp DESC"
         )
-        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
         for db_row in db_rows:
@@ -531,7 +536,6 @@ class MusicController(CoreController):
             "WHERE media_type in ('audiobook', 'podcast_episode') "
             f"AND provider in ('library','{provider_instance_id}')"
         )
-        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
 
         result: list[tuple[MediaType, str]] = []
@@ -857,7 +861,6 @@ class MusicController(CoreController):
         }
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
-        assert self.database is not None  # for type checking
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
     async def set_smart_fades_analysis(
@@ -889,7 +892,6 @@ class MusicController(CoreController):
             "confidence": analysis.confidence,
             "duration": analysis.duration,
         }
-        assert self.database is not None  # for type checking
         await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
 
     async def get_smart_fades_analysis(
@@ -901,7 +903,6 @@ class MusicController(CoreController):
         """Get Smart Fades BPM analysis for a track from db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
-        assert self.database is not None  # for type checking
         db_row = await self.database.get_row(
             DB_TABLE_SMART_FADES_ANALYSIS,
             {
@@ -932,7 +933,6 @@ class MusicController(CoreController):
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
-        assert self.database is not None  # for type checking
         db_row = await self.database.get_row(
             DB_TABLE_LOUDNESS_MEASUREMENTS,
             {
@@ -968,7 +968,6 @@ class MusicController(CoreController):
             # we deliberately skip builtin provider items as those are often
             # one-off items like TTS or some sound effect etc.
             return
-        assert self.database is not None  # for type checking
         # update generic playlog table (when not playing)
         if not is_playing:
             await self.database.insert(
@@ -1023,7 +1022,6 @@ class MusicController(CoreController):
     ) -> None:
         """Mark item as unplayed in playlog."""
         # update generic playlog table
-        assert self.database is not None  # for type checking
         await self.database.delete(
             DB_TABLE_PLAYLOG,
             {
@@ -1166,7 +1164,6 @@ class MusicController(CoreController):
         # Get MA's internal position from playlog
         ma_fully_played = False
         ma_position_ms = 0
-        assert self.database is not None  # for type checking
         if db_entry := await self.database.get_row(
             DB_TABLE_PLAYLOG,
             {
@@ -1257,7 +1254,6 @@ class MusicController(CoreController):
         await self.mass.cache.clear()
 
         # cleanup media items from db matched to deleted provider
-        assert self.database is not None  # for type checking
         self.logger.info(
             "Removing provider %s from library, this can take a a while...",
             provider_instance,
@@ -1305,7 +1301,6 @@ class MusicController(CoreController):
             errors += remaining_items_count
 
         # cleanup playlog table
-        assert self.mass.music.database is not None  # for type checking
         await self.mass.music.database.delete(
             DB_TABLE_PLAYLOG,
             {
@@ -1575,7 +1570,6 @@ class MusicController(CoreController):
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         # Remove playlog entries older than 90 days
-        assert self.database is not None  # for type checking
         await self.database.delete_where_query(
             DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
         )
@@ -1604,20 +1598,19 @@ class MusicController(CoreController):
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
-            assert self.mass.music.database is not None  # for type checking
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
         self.logger.debug("Database cleanup done")
 
     async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "library.db")
-        self.database = DatabaseConnection(db_path)
-        await self.database.setup()
+        self._database = DatabaseConnection(db_path)
+        await self._database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
-            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
+            if db_row := await self._database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
@@ -1635,8 +1628,6 @@ class MusicController(CoreController):
                 await self.__migrate_database(prev_version)
             except Exception as err:
                 # if the migration fails completely we reset the db
-                # so the user at least can have a working situation back
-                # a backup file is made with the previous version
                 self.logger.error(
                     "Database migration failed - starting with a fresh library database, "
                     "a full rescan will be performed, this can take a while!",
@@ -1644,15 +1635,15 @@ class MusicController(CoreController):
                 if not isinstance(err, MusicAssistantError):
                     self.logger.exception(err)
 
-                await self.database.close()
+                await self._database.close()
                 await asyncio.to_thread(os.remove, db_path)
-                self.database = DatabaseConnection(db_path)
-                await self.database.setup()
+                self._database = DatabaseConnection(db_path)
+                await self._database.setup()
                 await self.mass.cache.clear()
                 await self.__create_database_tables()
 
         # store current schema version
-        await self.database.insert_or_replace(
+        await self._database.insert_or_replace(
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
@@ -1662,7 +1653,7 @@ class MusicController(CoreController):
         # compact db
         self.logger.debug("Compacting database...")
         try:
-            await self.database.vacuum()
+            await self._database.vacuum()
         except Exception as err:
             self.logger.warning("Database vacuum failed: %s", str(err))
         else:
@@ -1673,7 +1664,6 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
-        assert self.database is not None  # for type checking
         if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
 
@@ -1691,18 +1681,18 @@ class MusicController(CoreController):
                 DB_TABLE_PODCASTS,
             ):
                 try:
-                    await self.database.execute(
+                    await self._database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_name TEXT DEFAULT '' NOT NULL"
                     )
-                    await self.database.execute(
+                    await self._database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_sort_name TEXT DEFAULT '' NOT NULL"
                     )
                 except Exception as err:
                     if "duplicate column" not in str(err):
                         raise
                 # migrate all existing values
-                async for db_row in self.database.iter_items(table):
-                    await self.database.update(
+                async for db_row in self._database.iter_items(table):
+                    await self._database.update(
                         table,
                         {"item_id": db_row["item_id"]},
                         {
@@ -1719,7 +1709,7 @@ class MusicController(CoreController):
                 DB_TABLE_AUDIOBOOKS,
                 DB_TABLE_PODCASTS,
             ):
-                async for db_row in self.database.iter_items(table):
+                async for db_row in self._database.iter_items(table):
                     if '"release_date":null' in db_row["metadata"]:
                         continue
                     metadata = json_loads(db_row["metadata"])
@@ -1728,7 +1718,7 @@ class MusicController(CoreController):
                     except (KeyError, ValueError):
                         # this is not a valid date, so we set it to None
                         metadata["release_date"] = None
-                        await self.database.update(
+                        await self._database.update(
                             table,
                             {"item_id": db_row["item_id"]},
                             {
@@ -1748,16 +1738,16 @@ class MusicController(CoreController):
                 "audiobooks",
                 "podcasts",
             ):
-                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
+                await self._database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
 
         if prev_version <= 18:
             # add in_library column to provider_mappings table
-            await self.database.execute(
+            await self._database.execute(
                 f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
                 "BOOLEAN NOT NULL DEFAULT 0;"
             )
             # migrate existing entries in provider_mappings which are filesystem
-            await self.database.execute(
+            await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
             )
@@ -1766,7 +1756,7 @@ class MusicController(CoreController):
             # drop column cache_checksum from playlists table
             # this is no longer used and is a leftover from previous designs
             try:
-                await self.database.execute(
+                await self._database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
                 )
             except Exception as err:
@@ -1775,11 +1765,11 @@ class MusicController(CoreController):
 
         if prev_version <= 21:
             # drop table for smart fades analysis - it will be recreated with needed columns
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
+            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
             await self.__create_database_tables()
 
         # save changes
-        await self.database.commit()
+        await self._database.commit()
 
         # always clear the cache after a db migration
         await self.mass.cache.clear()
@@ -1795,7 +1785,6 @@ class MusicController(CoreController):
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
-        assert self.database is not None  # for type checking
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
                     [key] TEXT PRIMARY KEY,
@@ -2028,7 +2017,6 @@ class MusicController(CoreController):
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
-        assert self.database is not None  # for type checking
         for db_table in (
             DB_TABLE_ARTISTS,
             DB_TABLE_ALBUMS,
@@ -2139,7 +2127,6 @@ class MusicController(CoreController):
 
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
-        assert self.database is not None  # for type checking
         # triggers to auto update timestamps
         for db_table in (
             "artists",
