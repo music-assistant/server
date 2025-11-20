@@ -8,6 +8,7 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import logging
 import os
@@ -33,17 +34,27 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InvalidCommand
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.api_docs import (
-    generate_commands_reference,
-    generate_openapi_spec,
-    generate_schemas_reference,
-)
+from music_assistant.helpers.api import APICommandHandler, api_command, parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
+from music_assistant.models.auth import UserAuthProvider, UserRole
 from music_assistant.models.core_controller import CoreController
+
+from .api_docs import (
+    generate_commands_reference,
+    generate_openapi_spec,
+    generate_schemas_reference,
+)
+from .auth import AuthenticationManager
+from .helpers.auth_middleware import (
+    get_authenticated_user,
+    get_current_user,
+    is_request_from_ingress,
+    set_current_user,
+)
+from .helpers.auth_providers import BuiltinLoginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
@@ -54,6 +65,9 @@ if TYPE_CHECKING:
 DEFAULT_SERVER_PORT = 8095
 INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
+CONF_AUTH_ENABLED = "auth_enabled"
+CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
+CONF_AUTH_HA_ENABLED = "auth_ha_enabled"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
@@ -75,6 +89,7 @@ class WebserverController(CoreController):
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
         )
         self.manifest.icon = "web-box"
+        self.auth = AuthenticationManager(self)
 
     @property
     def base_url(self) -> str:
@@ -130,10 +145,45 @@ class WebserverController(CoreController):
                 "not be adjusted in regular setups.",
                 category="advanced",
             ),
+            # Authentication settings
+            ConfigEntry(
+                key=CONF_AUTH_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Enable Authentication",
+                description="Enable authentication for the web interface and API. \n"
+                "When enabled, users must log in to access Music Assistant. \n"
+                "Existing setups: Authentication is disabled by default for "
+                "backwards compatibility.",
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Allow Self-Registration",
+                description="Allow users to create accounts via Home Assistant OAuth. \n"
+                "New users will have USER role by default.",
+                category="advanced",
+                depends_on=CONF_AUTH_ENABLED,
+            ),
+            ConfigEntry(
+                key=CONF_AUTH_HA_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Enable Home Assistant OAuth",
+                description="Allow users to sign in with their Home Assistant account. \n"
+                "Requires the Home Assistant provider (plugin) to be configured. \n"
+                "Uses hass_client for seamless authentication - "
+                "no manual OAuth app setup required!",
+                category="advanced",
+                depends_on=CONF_AUTH_ENABLED,
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        self.config = config
         # work out all routes
         routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
@@ -170,6 +220,18 @@ class WebserverController(CoreController):
         routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
         routes.append(("GET", "/api-docs/swagger", self._handle_swagger_ui))
         routes.append(("GET", "/api-docs/swagger/", self._handle_swagger_ui))
+        # add authentication routes
+        routes.append(("GET", "/login", self._handle_login_page))
+        routes.append(("POST", "/auth/login", self._handle_auth_login))
+        routes.append(("POST", "/auth/logout", self._handle_auth_logout))
+        routes.append(("GET", "/auth/providers", self._handle_auth_providers))
+        routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
+        routes.append(("GET", "/auth/callback", self._handle_auth_callback))
+        # add first-time setup routes
+        routes.append(("GET", "/setup", self._handle_setup_page))
+        routes.append(("POST", "/auth/setup", self._handle_setup))
+        # Initialize authentication manager
+        await self.auth.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -223,6 +285,7 @@ class WebserverController(CoreController):
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
+        await self.auth.close()
 
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
@@ -277,6 +340,29 @@ class WebserverController(CoreController):
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
+
+        # Check authentication if required
+        if handler.authenticated or handler.required_role:
+            # Skip auth for ingress requests (HA handles it)
+            if not is_request_from_ingress(request):
+                user = await get_authenticated_user(request)
+                if not user:
+                    return web.Response(
+                        status=401,
+                        text="Authentication required",
+                        headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+                    )
+
+                # Set user in context for API methods
+                set_current_user(user)
+
+                # Check role if required
+                if handler.required_role == "admin" and user.role != UserRole.ADMIN:
+                    return web.Response(
+                        status=403,
+                        text="Admin access required",
+                    )
+
         try:
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
             result: Any = handler.target(**args)
@@ -339,12 +425,413 @@ class WebserverController(CoreController):
         )
         return await self._server.serve_static(swagger_html_path, request)
 
+    async def _handle_login_page(self, request: web.Request) -> web.Response:
+        """Handle request for login page."""
+        # If auth is enabled and no users exist, redirect to setup
+        if self.auth.enabled and not await self.auth.has_users():
+            return web.Response(status=302, headers={"Location": "/setup"})
+
+        login_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "login.html"
+        )
+        async with aiofiles.open(login_html_path) as f:
+            html_content = await f.read()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def _handle_auth_login(self, request: web.Request) -> web.Response:
+        """Handle login request."""
+        if not request.can_read_body:
+            return web.Response(status=400, text="Body required")
+
+        body = await request.json()
+        provider_id = body.get("provider_id")
+        credentials = body.get("credentials", {})
+
+        if not provider_id:
+            return web.json_response(
+                {"success": False, "error": "Provider ID required"}, status=400
+            )
+
+        # Authenticate with provider
+        auth_result = await self.auth.authenticate_with_credentials(provider_id, credentials)
+
+        if not auth_result.success or not auth_result.user:
+            return web.json_response({"success": False, "error": auth_result.error}, status=401)
+
+        # Create token for user
+        device_name = body.get(
+            "device_name", f"{request.headers.get('User-Agent', 'Unknown')[:50]}"
+        )
+        token = await self.auth.create_token(auth_result.user, device_name)
+
+        return web.json_response(
+            {
+                "success": True,
+                "token": token,
+                "user": auth_result.user.to_dict(),
+            }
+        )
+
+    async def _handle_auth_logout(self, request: web.Request) -> web.Response:
+        """Handle logout request."""
+        user = await get_authenticated_user(request)
+        if not user:
+            return web.Response(status=401, text="Not authenticated")
+
+        # Get token from request
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            # Find and revoke the token
+            token_hash = hashlib.sha256(token.encode()).hexdigest()
+            token_row = await self.auth.database.get_row("auth_tokens", {"token_hash": token_hash})
+            if token_row:
+                await self.auth.revoke_token(token_row["token_id"], user)
+
+        return web.json_response({"success": True})
+
+    async def _handle_auth_providers(self, request: web.Request) -> web.Response:
+        """Handle request for available login providers."""
+        providers = await self.auth.get_login_providers()
+        return web.json_response(providers)
+
+    async def _handle_auth_authorize(self, request: web.Request) -> web.Response:
+        """Handle OAuth authorization request."""
+        provider_id = request.query.get("provider_id")
+        redirect_uri = request.query.get("redirect_uri")
+
+        if not provider_id or not redirect_uri:
+            return web.Response(status=400, text="provider_id and redirect_uri required")
+
+        auth_url = await self.auth.get_authorization_url(provider_id, redirect_uri)
+        if not auth_url:
+            return web.Response(
+                status=400, text="Provider does not support OAuth or is not configured"
+            )
+
+        return web.json_response({"authorization_url": auth_url})
+
+    async def _handle_auth_callback(self, request: web.Request) -> web.Response:
+        """Handle OAuth callback."""
+        code = request.query.get("code")
+        state = request.query.get("state")
+        provider_id = request.query.get("provider_id", "google")  # Default to google for now
+
+        if not code or not state:
+            return web.Response(status=400, text="code and state required")
+
+        redirect_uri = f"{self.base_url}/auth/callback"
+        auth_result = await self.auth.handle_oauth_callback(provider_id, code, state, redirect_uri)
+
+        if not auth_result.success or not auth_result.user:
+            # Return error page
+            error_html = f"""
+            <html>
+            <body>
+                <h1>Authentication Failed</h1>
+                <p>{html.escape(auth_result.error or "Unknown error")}</p>
+                <a href="/login">Back to Login</a>
+            </body>
+            </html>
+            """
+            return web.Response(text=error_html, content_type="text/html", status=400)
+
+        # Create token
+        device_name = f"OAuth ({provider_id})"
+        token = await self.auth.create_token(auth_result.user, device_name)
+
+        # Return success page with token
+        success_html = f"""
+        <html>
+        <head>
+            <title>Login Successful</title>
+        </head>
+        <body>
+            <h1>Login Successful!</h1>
+            <p>Redirecting...</p>
+            <script>
+                // Store token in localStorage
+                localStorage.setItem('auth_token', '{token}');
+                // Redirect to home
+                window.location.href = '/';
+            </script>
+        </body>
+        </html>
+        """
+        return web.Response(text=success_html, content_type="text/html")
+
+    async def _handle_setup_page(self, request: web.Request) -> web.Response:
+        """Handle request for first-time setup page."""
+        # Check if setup is needed
+        if await self.auth.has_users():
+            # Already has users, redirect to login
+            return web.Response(status=302, headers={"Location": "/login"})
+
+        # Serve setup page
+        setup_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "setup.html"
+        )
+        async with aiofiles.open(setup_html_path) as f:
+            html_content = await f.read()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def _handle_setup(self, request: web.Request) -> web.Response:
+        """Handle first-time setup request to create admin user."""
+        # Check if setup is still needed
+        if await self.auth.has_users():
+            return web.json_response(
+                {"success": False, "error": "Setup already completed"}, status=400
+            )
+
+        if not request.can_read_body:
+            return web.Response(status=400, text="Body required")
+
+        body = await request.json()
+        username = body.get("username", "").strip()
+        password = body.get("password", "")
+
+        # Validation
+        if not username or len(username) < 3:
+            return web.json_response(
+                {"success": False, "error": "Username must be at least 3 characters"}, status=400
+            )
+
+        if not password or len(password) < 8:
+            return web.json_response(
+                {"success": False, "error": "Password must be at least 8 characters"}, status=400
+            )
+
+        try:
+            # Get built-in provider
+
+            builtin_provider = self.auth.login_providers.get("builtin")
+            if not builtin_provider:
+                return web.json_response(
+                    {"success": False, "error": "Built-in auth provider not available"}, status=500
+                )
+
+            # Create admin user with password
+
+            if not isinstance(builtin_provider, BuiltinLoginProvider):
+                return web.json_response(
+                    {"success": False, "error": "Built-in provider configuration error"}, status=500
+                )
+
+            user = await builtin_provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN
+            )
+
+            # Create token for the new admin
+            device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
+            token = await self.auth.create_token(user, device_name)
+
+            self.logger.info("First admin user created: %s", username)
+
+            return web.json_response(
+                {
+                    "success": True,
+                    "token": token,
+                    "user": user.to_dict(),
+                }
+            )
+
+        except Exception as e:
+            self.logger.exception("Error during setup")
+            return web.json_response(
+                {"success": False, "error": f"Setup failed: {e!s}"}, status=500
+            )
+
+    # User Management API Methods
+
+    @api_command("auth/users", required_role="admin")
+    async def get_users(self) -> list[dict[str, Any]]:
+        """
+        Get all users (admin only).
+
+        :return: List of user dictionaries.
+        """
+        users = await self.auth.list_users()
+        return [user.to_dict() for user in users]
+
+    @api_command("auth/user", required_role="admin")
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        """
+        Get user by ID (admin only).
+
+        :param user_id: The user ID.
+        :return: User dictionary or None if not found.
+        """
+        user = await self.auth.get_user(user_id)
+        return user.to_dict() if user else None
+
+    @api_command("auth/user/update_role", required_role="admin")
+    async def update_user_role(self, user_id: str, role: str) -> dict[str, Any]:
+        """
+        Update user role (admin only).
+
+        :param user_id: The user ID.
+        :param role: New role ("admin" or "user").
+        :return: Success status.
+        """
+        admin_user = get_current_user()
+        if not admin_user:
+            return {"success": False, "error": "Not authenticated"}
+
+        new_role = UserRole(role)
+        success = await self.auth.update_user_role(user_id, new_role, admin_user)
+        return {"success": success}
+
+    @api_command("auth/user/enable", required_role="admin")
+    async def enable_user(self, user_id: str) -> dict[str, Any]:
+        """
+        Enable user account (admin only).
+
+        :param user_id: The user ID.
+        :return: Success status.
+        """
+        admin_user = get_current_user()
+        if not admin_user:
+            return {"success": False, "error": "Not authenticated"}
+
+        success = await self.auth.enable_user(user_id, admin_user)
+        return {"success": success}
+
+    @api_command("auth/user/disable", required_role="admin")
+    async def disable_user(self, user_id: str) -> dict[str, Any]:
+        """
+        Disable user account (admin only).
+
+        :param user_id: The user ID.
+        :return: Success status.
+        """
+        admin_user = get_current_user()
+        if not admin_user:
+            return {"success": False, "error": "Not authenticated"}
+
+        success = await self.auth.disable_user(user_id, admin_user)
+        return {"success": success}
+
+    @api_command("auth/user/delete", required_role="admin")
+    async def delete_user(self, user_id: str) -> dict[str, Any]:
+        """
+        Delete user account (admin only).
+
+        :param user_id: The user ID.
+        :return: Success status.
+        """
+        admin_user = get_current_user()
+        if not admin_user:
+            return {"success": False, "error": "Not authenticated"}
+
+        # Don't allow deleting yourself
+        if user_id == admin_user.user_id:
+            return {"success": False, "error": "Cannot delete your own account"}
+
+        # Delete user from database
+        try:
+            await self.auth.database.delete("users", {"user_id": user_id})
+            await self.auth.database.commit()
+            return {"success": True}
+        except Exception as e:
+            self.logger.exception("Error deleting user")
+            return {"success": False, "error": str(e)}
+
+    @api_command("auth/change_password")
+    async def change_password(self, old_password: str, new_password: str) -> dict[str, Any]:
+        """
+        Change current user's password (built-in auth only).
+
+        :param old_password: Current password.
+        :param new_password: New password.
+        :return: Success status.
+        """
+        current_user_obj = get_current_user()
+        if not current_user_obj:
+            return {"success": False, "error": "Not authenticated"}
+
+        # Get built-in provider
+        builtin_provider = self.auth.login_providers.get("builtin")
+        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+            return {"success": False, "error": "Built-in auth not available"}
+
+        # Change password
+        try:
+            await builtin_provider.change_password(current_user_obj, old_password, new_password)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @api_command("auth/tokens")
+    async def get_my_tokens(self) -> list[dict[str, Any]]:
+        """
+        Get current user's auth tokens.
+
+        :return: List of token dictionaries.
+        """
+        user = get_current_user()
+        if not user:
+            return []
+
+        tokens = await self.auth.get_user_tokens(user)
+        return [token.to_dict() for token in tokens]
+
+    @api_command("auth/token/revoke")
+    async def revoke_token(self, token_id: str) -> dict[str, Any]:
+        """
+        Revoke an auth token.
+
+        :param token_id: The token ID to revoke.
+        :return: Success status.
+        """
+        user = get_current_user()
+        if not user:
+            return {"success": False, "error": "Not authenticated"}
+
+        success = await self.auth.revoke_token(token_id, user)
+        return {"success": success}
+
+    @api_command("auth/user/providers")
+    async def get_my_providers(self) -> list[dict[str, Any]]:
+        """
+        Get current user's linked authentication providers.
+
+        :return: List of provider links.
+        """
+        user = get_current_user()
+        if not user:
+            return []
+
+        # Get provider links from database
+        rows = await self.auth.database.get_rows("user_auth_providers", {"user_id": user.user_id})
+        providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        return [p.to_dict() for p in providers]
+
+    @api_command("auth/user/unlink_provider", required_role="admin")
+    async def unlink_provider(self, user_id: str, provider_type: str) -> dict[str, Any]:
+        """
+        Unlink authentication provider from user (admin only).
+
+        :param user_id: The user ID.
+        :param provider_type: Provider type to unlink.
+        :return: Success status.
+        """
+        try:
+            await self.auth.database.delete(
+                "user_auth_providers", {"user_id": user_id, "provider_type": provider_type}
+            )
+            await self.auth.database.commit()
+            return {"success": True}
+        except Exception as e:
+            self.logger.exception("Error unlinking provider")
+            return {"success": False, "error": str(e)}
+
 
 class WebsocketClientHandler:
     """Handle an active websocket client connection."""
 
     def __init__(self, webserver: WebserverController, request: web.Request) -> None:
         """Initialize an active connection."""
+        self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
         self.wsock = web.WebSocketResponse(heartbeat=55)
@@ -352,6 +839,8 @@ class WebsocketClientHandler:
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
+        self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
+        self._is_ingress = "X-Ingress-Path" in request.headers
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -443,6 +932,11 @@ class WebsocketClientHandler:
         """Handle an incoming command from the client."""
         self._logger.debug("Handling command %s", msg.command)
 
+        # Handle special "auth" command
+        if msg.command == "auth":
+            await self._handle_auth_command(msg)
+            return
+
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(msg.command)
 
@@ -456,6 +950,33 @@ class WebsocketClientHandler:
             )
             self._logger.warning("Invalid command: %s", msg.command)
             return
+
+        # Check authentication if required (skip for ingress connections)
+        if (handler.authenticated or handler.required_role) and not self._is_ingress:
+            if self._authenticated_user is None:
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        401,
+                        "Authentication required. Please send auth command first.",
+                    )
+                )
+                return
+
+            # Set user in context for API methods
+            set_current_user(self._authenticated_user)
+
+            # Check role if required
+            if handler.required_role == "admin":
+                if self._authenticated_user.role != UserRole.ADMIN:
+                    await self._send_message(
+                        ErrorResultMessage(
+                            msg.message_id,
+                            403,
+                            "Admin access required",
+                        )
+                    )
+                    return
 
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))
@@ -535,6 +1056,47 @@ class WebsocketClientHandler:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
             self._cancel()
+
+    async def _handle_auth_command(self, msg: CommandMessage) -> None:
+        """Handle WebSocket authentication command.
+
+        :param msg: The auth command message with access token.
+        """
+        # Extract token from args
+        token = msg.args.get("access_token") if msg.args else None
+        if not token:
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    400,
+                    "access_token required in args",
+                )
+            )
+            return
+
+        # Authenticate with token
+        user = await self.webserver.auth.authenticate_with_token(token)
+        if not user:
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    401,
+                    "Invalid or expired token",
+                )
+            )
+            return
+
+        # Store authenticated user
+        self._authenticated_user = user
+        self._logger.info("WebSocket client authenticated as %s", user.username)
+
+        # Send success response
+        await self._send_message(
+            SuccessResultMessage(
+                msg.message_id,
+                {"authenticated": True, "user": user.to_dict()},
+            )
+        )
 
     def _cancel(self) -> None:
         """Cancel the connection."""

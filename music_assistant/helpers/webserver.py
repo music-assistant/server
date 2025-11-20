@@ -95,6 +95,8 @@ class Webserver:
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress
         if ingress_tcp_site_params:
+            # Store ingress site reference in app for security checks
+            self._webapp["ingress_site"] = ingress_tcp_site_params
             self._ingress_tcp_site = web.TCPSite(
                 self._apprunner,
                 host=ingress_tcp_site_params[0],

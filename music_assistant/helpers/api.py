@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
@@ -27,13 +27,26 @@ class APICommandHandler:
     command: str
     signature: inspect.Signature
     type_hints: dict[str, Any]
-    target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
+    target: Callable[..., Coroutine[Any, Any, Any]]
+    authenticated: bool = True
+    required_role: str | None = None  # "admin" or "user" or None
 
     @classmethod
     def parse(
-        cls, command: str, func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
+        cls,
+        command: str,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        authenticated: bool = True,
+        required_role: str | None = None,
     ) -> APICommandHandler:
-        """Parse APICommandHandler by providing a function."""
+        """Parse APICommandHandler by providing a function.
+
+        :param command: The command name/path.
+        :param func: The function to handle the command.
+        :param authenticated: Whether authentication is required (default: True).
+        :param required_role: Required user role ("admin" or "user")
+            None for any authenticated user.
+        """
         type_hints = get_type_hints(func)
         # workaround for generic typevar ItemCls that needs to be resolved
         # to the real media item type. TODO: find a better way to do this
@@ -48,14 +61,25 @@ class APICommandHandler:
             signature=inspect.signature(func),
             type_hints=type_hints,
             target=func,
+            authenticated=authenticated,
+            required_role=required_role,
         )
 
 
-def api_command(command: str) -> Callable[[_F], _F]:
-    """Decorate a function as API route/command."""
+def api_command(
+    command: str, authenticated: bool = True, required_role: str | None = None
+) -> Callable[[_F], _F]:
+    """Decorate a function as API route/command.
+
+    :param command: The command name/path.
+    :param authenticated: Whether authentication is required (default: True).
+    :param required_role: Required user role ("admin" or "user"), None means any authenticated user.
+    """
 
     def decorate(func: _F) -> _F:
         func.api_cmd = command  # type: ignore[attr-defined]
+        func.api_authenticated = authenticated  # type: ignore[attr-defined]
+        func.api_required_role = required_role  # type: ignore[attr-defined]
         return func
 
     return decorate

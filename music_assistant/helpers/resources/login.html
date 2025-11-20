@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Music Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            width: 100%;
+            max-width: 400px;
+            padding: 40px 30px;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo img {
+            width: 80px;
+            height: 80px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c33;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 12px;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: white;
+            color: #333;
+            border: 1px solid #ddd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: #f5f5f5;
+        }
+
+        .divider {
+            text-align: center;
+            margin: 25px 0;
+            position: relative;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: #ddd;
+        }
+
+        .divider span {
+            background: white;
+            padding: 0 15px;
+            color: #999;
+            font-size: 14px;
+            position: relative;
+        }
+
+        .oauth-providers {
+            margin-top: 20px;
+        }
+
+        .provider-icon {
+            width: 20px;
+            height: 20px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <svg width="80" height="80" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="45" fill="#667eea"/>
+                <path d="M35 40 L35 60 L60 50 Z" fill="white"/>
+            </svg>
+        </div>
+
+        <h1>Welcome to Music Assistant</h1>
+        <p class="subtitle">Sign in to continue</p>
+
+        <div id="error" class="error"></div>
+
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autofocus>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="loginBtn">
+                <span id="loginText">Sign In</span>
+                <span id="loginLoading" class="loading" style="display: none;"></span>
+            </button>
+        </form>
+
+        <div id="oauthProviders" class="oauth-providers">
+            <!-- OAuth providers will be inserted here -->
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        // Show error message
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+        }
+
+        // Hide error message
+        function hideError() {
+            document.getElementById('error').classList.remove('show');
+        }
+
+        // Set loading state
+        function setLoading(loading) {
+            const btn = document.getElementById('loginBtn');
+            const text = document.getElementById('loginText');
+            const loadingEl = document.getElementById('loginLoading');
+
+            btn.disabled = loading;
+            text.style.display = loading ? 'none' : 'inline';
+            loadingEl.style.display = loading ? 'inline-block' : 'none';
+        }
+
+        // Load OAuth providers
+        async function loadProviders() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/providers`);
+                const providers = await response.json();
+
+                const oauthProviders = providers.filter(p => p.requires_redirect && p.provider_type !== 'builtin');
+
+                if (oauthProviders.length > 0) {
+                    const container = document.getElementById('oauthProviders');
+
+                    // Add divider
+                    const divider = document.createElement('div');
+                    divider.className = 'divider';
+                    divider.innerHTML = '<span>Or continue with</span>';
+                    container.appendChild(divider);
+
+                    // Add OAuth buttons
+                    oauthProviders.forEach(provider => {
+                        const btn = document.createElement('button');
+                        btn.className = 'btn btn-secondary';
+                        btn.type = 'button';
+
+                        let providerName = provider.provider_type;
+                        if (provider.provider_type === 'homeassistant') {
+                            providerName = 'Home Assistant';
+                        } else if (provider.provider_type === 'google') {
+                            providerName = 'Google';
+                        }
+
+                        btn.innerHTML = `<span>Sign in with ${providerName}</span>`;
+                        btn.onclick = () => initiateOAuth(provider.provider_id);
+
+                        container.appendChild(btn);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load providers:', error);
+            }
+        }
+
+        // Handle form submission
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            setLoading(true);
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        provider_id: 'builtin',
+                        credentials: { username, password }
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Store token
+                    localStorage.setItem('auth_token', data.token);
+                    // Redirect to home
+                    window.location.href = '/';
+                } else {
+                    showError(data.error || 'Login failed');
+                }
+            } catch (error) {
+                showError('Network error. Please try again.');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        // Initiate OAuth flow
+        async function initiateOAuth(providerId) {
+            try {
+                const redirectUri = `${API_BASE}/auth/callback`;
+                const response = await fetch(`${API_BASE}/auth/authorize?provider_id=${providerId}&redirect_uri=${encodeURIComponent(redirectUri)}`);
+                const data = await response.json();
+
+                if (data.authorization_url) {
+                    // Redirect to OAuth provider
+                    window.location.href = data.authorization_url;
+                } else {
+                    showError('Failed to initiate OAuth flow');
+                }
+            } catch (error) {
+                showError('Network error. Please try again.');
+            }
+        }
+
+        // Load providers on page load
+        loadProviders();
+    </script>
+</body>
+</html>

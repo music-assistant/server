@@ -483,16 +483,25 @@ class MusicAssistant:
         self,
         command: str,
         handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
+        authenticated: bool = True,
+        required_role: str | None = None,
     ) -> Callable[[], None]:
-        """
-        Dynamically register a command on the API.
+        """Dynamically register a command on the API.
+
+        :param command: The command name/path.
+        :param handler: The function to handle the command.
+        :param authenticated: Whether authentication is required (default: True).
+        :param required_role: Required user role ("admin" or "user")
+            None means any authenticated user.
 
         Returns handle to unregister.
         """
         if command in self.command_handlers:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
-        self.command_handlers[command] = APICommandHandler.parse(command, handler)
+        self.command_handlers[command] = APICommandHandler.parse(
+            command, handler, authenticated, required_role
+        )
 
         def unregister() -> None:
             self.command_handlers.pop(command)
@@ -637,7 +646,9 @@ class MusicAssistant:
                 obj = getattr(cls, attr_name)
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
-                    self.register_api_command(obj.api_cmd, obj)
+                    authenticated = getattr(obj, "api_authenticated", True)
+                    required_role = getattr(obj, "api_required_role", None)
+                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role)
 
     async def _load_providers(self) -> None:
         """Load providers from config."""
