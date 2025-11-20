@@ -241,6 +241,13 @@ class ResonatePlayer(Player):
                         self._attr_playback_state = PlaybackState.IDLE
                 # Update in case this is a newly created group
                 new_group.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+                # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
+                # so group members are already up to date at this point
+                if self.synced_to is None:
+                    # We are the leader, stop on disconnect
+                    self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+                else:
+                    self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
                 self.update_state()
 
     async def _handle_group_command(self, command: MediaCommand) -> None:
@@ -295,13 +302,11 @@ class ResonatePlayer(Player):
                 self.logger.debug("Group member added: %s", client_id)
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
-                    self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
                 if client_id in self._attr_group_members:
                     self._attr_group_members.remove(client_id)
-                    self.api.disconnect_behaviour = DisconnectBehaviour.STOP
                     self.update_state()
             case GroupDeletedEvent():
                 pass
