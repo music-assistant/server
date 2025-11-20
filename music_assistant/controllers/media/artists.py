@@ -100,18 +100,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> UniqueList[Track]:
+    ) -> list[Track]:
         """Return all/top tracks for an artist."""
         # always check if we have a library item for this artist
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_artist:
-            return UniqueList(
-                await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
-            )
+            return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_artist_tracks(library_artist.item_id)
-        result: UniqueList[Track] = UniqueList(db_items)
+        result: list[Track] = db_items
         if in_library_only:
             # return in-library items only
             return result
@@ -359,7 +357,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Track]:
+    ) -> list[Track]:
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         return await self.tracks(
             item_id,
