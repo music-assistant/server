@@ -39,7 +39,7 @@ class ResonateProvider(PlayerProvider):
             ),
         ]
 
-    async def event_cb(self, event: ResonateEvent) -> None:
+    async def event_cb(self, server: ResonateServer, event: ResonateEvent) -> None:
         """Event callback registered to the resonate server."""
         self.logger.debug("Received ResonateEvent: %s", event)
         match event:

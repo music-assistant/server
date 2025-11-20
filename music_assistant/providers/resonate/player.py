@@ -17,6 +17,7 @@ from aioresonate.server import (
     GroupCommandEvent,
     GroupEvent,
     GroupStateChangedEvent,
+    ResonateGroup,
     VolumeChangedEvent,
 )
 from aioresonate.server.client import DisconnectBehaviour
@@ -219,7 +220,7 @@ class ResonatePlayer(Player):
             )
         )
 
-    async def event_cb(self, event: ClientEvent) -> None:
+    async def event_cb(self, client: ResonateClient, event: ClientEvent) -> None:
         """Event callback registered to the resonate server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
@@ -267,7 +268,7 @@ class ResonatePlayer(Player):
             case MediaCommand.UNSHUFFLE if queue:
                 self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
-    async def group_event_cb(self, event: GroupEvent) -> None:
+    async def group_event_cb(self, group: ResonateGroup, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
         if self.synced_to is not None:
             # Only handle group events as the leader
