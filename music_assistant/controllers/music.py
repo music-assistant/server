@@ -479,7 +479,6 @@ class MusicController(CoreController):
             f"AND provider in {available_providers_str} "
             "ORDER BY timestamp DESC"
         )
-
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
@@ -968,6 +967,7 @@ class MusicController(CoreController):
             # we deliberately skip builtin provider items as those are often
             # one-off items like TTS or some sound effect etc.
             return
+
         # update generic playlog table (when not playing)
         if not is_playing:
             await self.database.insert(
@@ -1628,6 +1628,8 @@ class MusicController(CoreController):
                 await self.__migrate_database(prev_version)
             except Exception as err:
                 # if the migration fails completely we reset the db
+                # so the user at least can have a working situation back
+                # a backup file is made with the previous version
                 self.logger.error(
                     "Database migration failed - starting with a fresh library database, "
                     "a full rescan will be performed, this can take a while!",
@@ -1664,6 +1666,7 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
+
         if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
 
