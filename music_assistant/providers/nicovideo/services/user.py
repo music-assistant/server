@@ -10,8 +10,7 @@ from music_assistant.providers.nicovideo.services.base import NicovideoBaseServi
 if TYPE_CHECKING:
     from typing import Literal
 
-    from music_assistant_models.media_items import Artist, Playlist, Track
-    from niconico.objects.nvapi import FollowingMylistItem
+    from music_assistant_models.media_items import Artist, Track
 
     from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
@@ -170,11 +169,6 @@ class NicovideoUserService(NicovideoBaseService):
 
         return tracks
 
-    async def get_following_mylists(self) -> list[FollowingMylistItem]:
-        """Get mylists the user is following."""
-        # Following mylists are not included in simplified config
-        return []
-
     async def get_own_followings(self) -> list[Artist]:
         """Get users the current user is following and convert them to Artists."""
         followings_data = await self.service_manager._call_with_throttler(
@@ -191,29 +185,3 @@ class NicovideoUserService(NicovideoBaseService):
             artist = self.converter_manager.artist.convert_by_owner_or_user(user)
             artists.append(artist)
         return artists
-
-    async def follow_user(self, user_id: str) -> bool:
-        """Follow a user."""
-        result = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.follow_user, user_id
-        )
-        return bool(result)
-
-    async def unfollow_user(self, user_id: str) -> bool:
-        """Unfollow a user."""
-        result = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.unfollow_user, user_id
-        )
-        return bool(result)
-
-    async def get_following_playlists(self) -> list[Playlist]:
-        """Get playlists from users you follow, converted to Music Assistant format."""
-        following_mylists = await self.get_following_mylists()
-        if not following_mylists:
-            return []
-
-        playlists = []
-        for mylist in following_mylists:
-            playlist = self.converter_manager.playlist.convert_following_by_mylist(mylist)
-            playlists.append(playlist)
-        return playlists
