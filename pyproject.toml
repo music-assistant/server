@@ -61,7 +61,6 @@ test = [
   "syrupy==5.0.0",
   "tomli==2.3.0",
   "ruff==0.14.4",
-  "niconico.py-ma==2.1.0.post1",
 ]
 
 [project.scripts]
