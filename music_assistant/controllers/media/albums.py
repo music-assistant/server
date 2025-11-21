@@ -231,21 +231,20 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> UniqueList[Track]:
+    ) -> list[Track]:  # Changed return type
         """Return album tracks for the given provider album id."""
         # always check if we have a library item for this album
         library_album = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
-            return UniqueList(
-                await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
-            )
+            return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
+
         db_items = await self.get_library_album_tracks(library_album.item_id)
-        result: UniqueList[Track] = UniqueList(db_items)
+        result: list[Track] = list(db_items)
         if in_library_only:
             # return in-library items only
-            return UniqueList(sorted(db_items, key=lambda x: (x.disc_number, x.track_number)))
+            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
 
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
@@ -298,7 +297,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
-        return UniqueList(sorted(result, key=lambda x: (x.disc_number, x.track_number)))
+        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
 
     async def versions(
         self,
@@ -427,7 +426,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Track]:
+    ) -> list[Track]:
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         return await self.tracks(item_id, provider_instance_id_or_domain, in_library_only=False)
 
