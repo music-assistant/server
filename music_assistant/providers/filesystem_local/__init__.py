@@ -26,7 +26,6 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
-    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     SetupFailedError,
@@ -67,7 +66,11 @@ from music_assistant.constants import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.playlists import (
+    parse_m3u,
+    parse_pls,
+    validate_playlist_path,
+)
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, parse_tags, split_items
 from music_assistant.helpers.util import (
     TaskManager,
@@ -798,7 +801,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        playlist_filename = self._validate_playlist_path(prov_playlist_id)
+        playlist_filename = validate_playlist_path(prov_playlist_id, self.base_path)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -816,7 +819,7 @@ class LocalFileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        playlist_filename = self._validate_playlist_path(prov_playlist_id)
+        playlist_filename = validate_playlist_path(prov_playlist_id, self.base_path)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -845,7 +848,7 @@ class LocalFileSystemProvider(MusicProvider):
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         filename = f"{name}.m3u"
-        playlist_filename = self._validate_playlist_path(filename)
+        playlist_filename = validate_playlist_path(filename, self.base_path)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")
         return await self.get_playlist(filename)
@@ -1565,39 +1568,6 @@ class LocalFileSystemProvider(MusicProvider):
             expiration=120,
         )
         return images
-
-    def _validate_playlist_path(self, path: str) -> str:
-        """
-        Validate and sanitize playlist paths to prevent path traversal.
-
-        :param path: The playlist path to validate.
-        :raises InvalidDataError: If the path is invalid or attempts path traversal.
-        """
-        # Only allow .m3u and .m3u8 extensions for playlists
-        if not path.lower().endswith((".m3u", ".m3u8")):
-            msg = f"Invalid playlist path: must have .m3u or .m3u8 extension, got {path}"
-            raise InvalidDataError(msg)
-
-        # Get absolute path and ensure it's within base_path
-        abs_path = self.get_absolute_path(path)
-
-        try:
-            # Resolve symlinks and normalize path
-            resolved_path = os.path.realpath(abs_path)
-            resolved_base = os.path.realpath(self.base_path)
-
-            # Ensure path is within base directory
-            # Normalize base path to ensure it ends with separator (except for root)
-            base_with_sep = resolved_base + os.sep if resolved_base != os.sep else resolved_base
-
-            if not (resolved_path.startswith(base_with_sep) or resolved_path == resolved_base):
-                msg = f"Invalid path: Path traversal attempt detected for {path}"
-                raise InvalidDataError(msg)
-        except (OSError, ValueError) as err:
-            msg = f"Invalid path: {path}"
-            raise InvalidDataError(msg) from err
-
-        return abs_path
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""

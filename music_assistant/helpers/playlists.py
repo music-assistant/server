@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import configparser
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -45,6 +47,66 @@ class PlaylistItem:
         """Validate the URL can be parsed and at least has scheme + netloc."""
         result = urlparse(self.path)
         return all([result.scheme, result.netloc])
+
+
+def validate_playlist_filename(filename: str) -> None:
+    """
+    Validate a playlist filename to prevent path traversal attacks.
+
+    This validation is designed for the builtin provider where playlist_id
+    should be just a filename (e.g., 'MyPlaylist.m3u') without any path components.
+
+    :param filename: The playlist filename to validate.
+    :raises InvalidDataError: If the filename contains path separators or traversal attempts.
+    """
+    # Reject absolute paths (start with / or drive letter on Windows)
+    if Path(filename).is_absolute():
+        msg = f"Invalid playlist filename: absolute paths not allowed: {filename}"
+        raise InvalidDataError(msg)
+
+    # Reject path separators (both Unix and Windows)
+    if "/" in filename or "\\" in filename:
+        msg = f"Invalid playlist filename: path separators not allowed: {filename}"
+        raise InvalidDataError(msg)
+
+    # Reject path traversal attempts
+    if ".." in filename:
+        msg = f"Invalid playlist filename: path traversal not allowed: {filename}"
+        raise InvalidDataError(msg)
+
+    # Only allow .m3u and .m3u8 extensions
+    if not filename.lower().endswith((".m3u", ".m3u8")):
+        msg = f"Invalid playlist filename: must have .m3u or .m3u8 extension: {filename}"
+        raise InvalidDataError(msg)
+
+
+def validate_playlist_path(path: str, base_path: str) -> str:
+    """Validate and resolve a playlist path to prevent path traversal attacks."""
+    # Only allow .m3u and .m3u8 extensions for playlists
+    if not path.lower().endswith((".m3u", ".m3u8")):
+        msg = f"Invalid playlist path: must have .m3u or .m3u8 extension: {path}"
+        raise InvalidDataError(msg)
+
+    # Join path with base_path
+    abs_path = os.path.join(base_path, path)
+
+    try:
+        # Resolve symlinks and normalize path
+        resolved_path = os.path.realpath(abs_path)
+        resolved_base = os.path.realpath(base_path)
+
+        # Ensure path is within base directory
+        # Normalize base path to ensure it ends with separator (except for root)
+        base_with_sep = resolved_base + os.sep if resolved_base != os.sep else resolved_base
+
+        if not (resolved_path.startswith(base_with_sep) or resolved_path == resolved_base):
+            msg = f"Invalid path: path traversal attempt detected: {path}"
+            raise InvalidDataError(msg)
+    except (OSError, ValueError) as err:
+        msg = f"Invalid path: {path}"
+        raise InvalidDataError(msg) from err
+
+    return abs_path
 
 
 def parse_m3u(m3u_data: str) -> list[PlaylistItem]:

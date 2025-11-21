@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.helpers.playlists import validate_playlist_filename
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
@@ -636,6 +637,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _read_playlist_file_items(self, playlist_id: str) -> list[str]:
         """Return lines of a playlist file."""
+        validate_playlist_filename(playlist_id)
         playlist_file = os.path.join(self._playlists_dir, playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             return []
@@ -648,6 +650,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _write_playlist_file_items(self, playlist_id: str, lines: list[str]) -> None:
         """Return lines of a playlist file."""
+        validate_playlist_filename(playlist_id)
         playlist_file = os.path.join(self._playlists_dir, playlist_id)
         async with (
             self._playlist_lock,
