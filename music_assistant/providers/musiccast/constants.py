@@ -22,6 +22,7 @@ PLAYER_ZONE_SPLITTER = "___"  # must be url ok
 
 # Switch to these non netusb sources when leaving a group as a dev
 # with multiple zones. Optionally turn device off.
+CONF_PLAYER_HANDLE_SOURCE_DISABLED = "handle_source_allowed"
 CONF_PLAYER_SWITCH_SOURCE_NON_NET = "main_switch_source"
 CONF_PLAYER_TURN_OFF_ON_LEAVE = "turn_off_on_leave"
 MAIN_SWITCH_SOURCE_NON_NET = "audio1"
