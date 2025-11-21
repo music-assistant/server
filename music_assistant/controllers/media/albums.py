@@ -207,7 +207,6 @@ class AlbumsController(MediaControllerBase[Album]):
             query_params["album_types"] = [x.value for x in album_types]
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
-        assert self.mass.music.database is not None
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -220,7 +219,6 @@ class AlbumsController(MediaControllerBase[Album]):
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_track.item_id)
         # delete entry(s) from albumtracks table
-        assert self.mass.music.database is not None
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"album_id": db_id})
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
@@ -351,7 +349,6 @@ class AlbumsController(MediaControllerBase[Album]):
         if not isinstance(item, Album):  # TODO: Remove this once the codebase is fully typed
             msg = "Not a valid Album object (ItemMapping can not be added to db)"  # type: ignore[unreachable]
             raise InvalidDataError(msg)
-        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -388,7 +385,6 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -444,7 +440,6 @@ class AlbumsController(MediaControllerBase[Album]):
         """Store Album Artists."""
         if overwrite:
             # on overwrite, clear the album_artists table first
-            assert self.mass.music.database is not None
             await self.mass.music.database.delete(
                 DB_TABLE_ALBUM_ARTISTS,
                 {
@@ -476,7 +471,6 @@ class AlbumsController(MediaControllerBase[Album]):
                     artist, overwrite_existing=overwrite
                 )
         # write (or update) record in album_artists table
-        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_ARTISTS,
             {
@@ -489,7 +483,6 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""
         # write (or update) record in album_tracks table
-        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_TRACKS,
             {
