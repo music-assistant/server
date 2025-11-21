@@ -54,7 +54,7 @@ def validate_playlist_filename(filename: str) -> None:
     Validate a playlist filename to prevent path traversal attacks.
 
     This validation is designed for the builtin provider where playlist_id
-    should be just a filename (e.g., 'MyPlaylist.m3u') without any path components.
+    can be either a simple ID (e.g., 'abc123') or a filename with extension.
 
     :param filename: The playlist filename to validate.
     :raises InvalidDataError: If the filename contains path separators or traversal attempts.
@@ -72,11 +72,6 @@ def validate_playlist_filename(filename: str) -> None:
     # Reject path traversal attempts
     if ".." in filename:
         msg = f"Invalid playlist filename: path traversal not allowed: {filename}"
-        raise InvalidDataError(msg)
-
-    # Only allow .m3u and .m3u8 extensions
-    if not filename.lower().endswith((".m3u", ".m3u8")):
-        msg = f"Invalid playlist filename: must have .m3u or .m3u8 extension: {filename}"
         raise InvalidDataError(msg)
 
 

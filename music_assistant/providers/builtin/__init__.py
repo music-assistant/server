@@ -213,7 +213,7 @@ class BuiltinProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            # this is one of our builtin/default playlists
+            # this is one of our builtin/default playlists (skip validation for builtin IDs)
             return Playlist(
                 item_id=prov_playlist_id,
                 provider=self.instance_id,
