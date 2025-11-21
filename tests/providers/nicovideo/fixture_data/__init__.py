@@ -1,1 +1,1 @@
-"""Fixture data package for nicovideo provider tests."""
+"""Fixtures package for nicovideo provider tests."""
