@@ -13,7 +13,7 @@ dependencies = [
   "aiodns>=3.2.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.1",
+  "aiohttp==3.13.2",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
@@ -40,6 +40,7 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "gql[all]==4.0.0",
+  "aiovban>=0.6.3",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -130,8 +131,6 @@ enable_error_code = [
 ]
 exclude = [
   '^music_assistant/controllers/media/albums.py*$',
-  '^music_assistant/controllers/media/artists.py*$',
-  '^music_assistant/controllers/media/audiobooks.py*$',
   '^music_assistant/controllers/media/base.py*$',
   '^music_assistant/controllers/media/playlists.py*$',
   '^music_assistant/controllers/media/podcasts.py*$',
@@ -240,10 +239,8 @@ ignore = [
   "C901",
   "PTH119",
   "PTH116",
-  "DTZ003",
   "RUF012",
   "S304",
-  "DTZ003",
   "RET507",
   "RUF006",
   "TRY300",
@@ -252,12 +249,10 @@ ignore = [
   "N818",
   "S307",
   "B007",
-  "RUF009",
   "ANN204",
   "PTH202",
   "ASYNC109",
   "ASYNC110",
-  "A005",
 ]
 
 select = ["ALL"]
