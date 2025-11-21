@@ -131,7 +131,6 @@ enable_error_code = [
 ]
 exclude = [
   '^music_assistant/controllers/media/albums.py*$',
-  '^music_assistant/controllers/media/artists.py*$',
   '^music_assistant/controllers/media/audiobooks.py*$',
   '^music_assistant/controllers/media/base.py*$',
   '^music_assistant/controllers/media/playlists.py*$',
