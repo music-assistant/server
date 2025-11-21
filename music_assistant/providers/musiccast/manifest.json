@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "MusicCast",
   "description": "Stream audio to Yamaha MusicCast speakers — supports multiroom playback.",
-  "requirements": ["aiomusiccast==0.14.8", "setuptools>=1.0.0"],
+  "requirements": ["aiomusiccast==0.15.0"],
   "codeowners": ["@fmunkes"],
   "mdns_discovery": ["_http._tcp.local."],
   "documentation": "https://music-assistant.io/player-support/musiccast",
