@@ -8,7 +8,7 @@ aiohttp==3.13.1
 aiohttp_asyncmdnsresolver==0.1.1
 aiohttp-fast-zlib==0.3.0
 aiojellyfin==0.14.1
-aiomusiccast==0.14.8
+aiomusiccast==0.15.0
 aioresonate==0.13.1
 aiorun==2025.1.1
 aioslimproto==3.1.1
@@ -55,7 +55,6 @@ python-slugify==8.0.4
 pywidevine==1.8.0
 radios==0.3.2
 rokuecp==0.19.5
-setuptools>=1.0.0
 shortuuid==1.0.13
 snapcast==2.3.7
 soco==0.30.12

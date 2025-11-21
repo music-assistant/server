@@ -26,6 +26,7 @@ from music_assistant.providers.musiccast.avt_helpers import (
     search_xml,
 )
 from music_assistant.providers.musiccast.constants import (
+    CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
     MC_CONTROL_SOURCE_IDS,
@@ -328,6 +329,15 @@ class MusicCastPlayer(Player):
         # this is not this player's id
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
+
+        # skip zone handling if disabled.
+        if bool(
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
+            )
+        ):
+            return
+
         _source = str(
             await self.mass.config.get_player_config_value(
                 player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
@@ -610,6 +620,17 @@ class MusicCastPlayer(Player):
                 zone_entries = []
             else:
                 zone_entries = [
+                    ConfigEntry(
+                        key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Disable zone handling completely.",
+                        default_value=False,
+                        description="This disables zone handling completely. Other options "
+                        "will be ignored. Enable should you encounter playback issues while "
+                        "e.g. playing to main. You can also hide the player from the UI "
+                        "by taking advantage of 'Hide the player in the user interface' "
+                        "dropdown.",
+                    ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
                         label="Switch to this non-net source when leaving a group.",
