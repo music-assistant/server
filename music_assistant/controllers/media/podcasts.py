@@ -143,7 +143,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def _add_library_item(self, item: Podcast, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -174,7 +173,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -215,7 +213,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 return
             # for providers that do not natively support providing resume info,
             # we fallback to the playlog db table
-            assert self.mass.music.database is not None
             resume_info_db_row = await self.mass.music.database.get_row(
                 DB_TABLE_PLAYLOG,
                 {
