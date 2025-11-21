@@ -798,7 +798,6 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        # Validate playlist path to prevent path traversal attacks
         playlist_filename = self._validate_playlist_path(prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
@@ -817,7 +816,6 @@ class LocalFileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        # Validate playlist path to prevent path traversal attacks
         playlist_filename = self._validate_playlist_path(prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
@@ -846,13 +844,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        # Sanitize the name to prevent path traversal
-        safe_name = os.path.basename(name).replace("..", "").strip()
-        if not safe_name:
-            msg = "Invalid playlist name"
-            raise InvalidDataError(msg)
-        filename = f"{safe_name}.m3u"
-        # Validate playlist path to prevent path traversal attacks
+        filename = f"{name}.m3u"
         playlist_filename = self._validate_playlist_path(filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")
