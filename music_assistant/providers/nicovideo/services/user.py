@@ -177,8 +177,20 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_own_followings(self) -> list[Artist]:
         """Get users the current user is following and convert them to Artists."""
-        # Own followings are not included in simplified config
-        return []
+        followings_data = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.user.get_own_followings,
+            page_size=25,
+            page=1,
+        )
+
+        if not followings_data or not followings_data.items:
+            return []
+
+        artists = []
+        for user in followings_data.items:
+            artist = self.converter_manager.artist.convert_by_owner_or_user(user)
+            artists.append(artist)
+        return artists
 
     async def follow_user(self, user_id: str) -> bool:
         """Follow a user."""
