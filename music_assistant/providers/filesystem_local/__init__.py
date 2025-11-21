@@ -69,7 +69,6 @@ from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import (
     parse_m3u,
     parse_pls,
-    validate_playlist_path,
 )
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, parse_tags, split_items
 from music_assistant.helpers.util import (
@@ -801,7 +800,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        playlist_filename = validate_playlist_path(prov_playlist_id, self.base_path)
+        playlist_filename = os.path.join(self.base_path, prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -819,7 +818,7 @@ class LocalFileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        playlist_filename = validate_playlist_path(prov_playlist_id, self.base_path)
+        playlist_filename = os.path.join(self.base_path, prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -848,7 +847,7 @@ class LocalFileSystemProvider(MusicProvider):
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
         filename = f"{name}.m3u"
-        playlist_filename = validate_playlist_path(filename, self.base_path)
+        playlist_filename = os.path.join(self.base_path, filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")
         return await self.get_playlist(filename)

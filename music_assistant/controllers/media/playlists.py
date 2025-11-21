@@ -101,6 +101,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
+        if provider and not provider.is_streaming_provider:
+            validate_playlist_filename(name)
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
         # add the new playlist to the library
@@ -117,6 +119,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)
+
+        # validate provider_mappings before calling provider methods
+        self._verify_update_allowed(playlist, playlist)
 
         # grab all existing track ids in the playlist so we can check for duplicates
         playlist_prov_map = next(iter(playlist.provider_mappings))
@@ -307,6 +312,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)
+
+        # validate provider_mappings before calling provider methods
+        self._verify_update_allowed(playlist, playlist)
+
         for prov_mapping in playlist.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
