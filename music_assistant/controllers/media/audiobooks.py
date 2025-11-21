@@ -126,7 +126,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -160,7 +159,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -268,7 +266,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """Update/set the playlog table for the given audiobook db item_id."""
         # cleanup provider specific entries for this item
         # we always prefer the library playlog entry
-        assert self.mass.music.database is not None
         for prov_mapping in media_item.provider_mappings:
             if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
                 continue
