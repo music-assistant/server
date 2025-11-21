@@ -177,7 +177,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
-        assert self.mass.music.database is not None
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -213,7 +212,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     async def library_count(self, favorite_only: bool = False) -> int:
         """Return the total number of items in the library."""
-        assert self.mass.music.database is not None
         if favorite_only:
             sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
             return await self.mass.music.database.get_count_from_query(sql_query)
@@ -501,7 +499,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if library_item.favorite == favorite:
             return
         match = {"item_id": db_id}
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(self.db_table, match, {"favorite": favorite})
         library_item = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
@@ -592,7 +589,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
         }
         # update provider_mappings table
-        assert self.mass.music.database is not None
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
             {
@@ -633,7 +629,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # edge case: already deleted / race condition
             library_item = None
         # update provider_mappings table
-        assert self.mass.music.database is not None
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
             {
@@ -668,7 +663,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
-        assert self.mass.music.database is not None
         if overwrite:
             # on overwrite, clear the provider_mappings table first
             # this is done for filesystem provider changing the path (and thus item_id)
@@ -754,7 +748,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
-        assert self.mass.music.database is not None
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
             for db_row in await self.mass.music.database.get_rows_from_query(
