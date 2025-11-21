@@ -114,7 +114,6 @@ class TracksController(MediaControllerBase[Track]):
             return track
 
         # append full album details to full track item (resolve ItemMappings)
-        assert self.mass.music.database is not None
         try:
             if album_uri:
                 item = await self.mass.music.get_item_by_uri(album_uri)
@@ -332,7 +331,6 @@ class TracksController(MediaControllerBase[Track]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
-        assert self.mass.music.database is not None
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
         # delete entry(s) from trackartists table
@@ -447,7 +445,6 @@ class TracksController(MediaControllerBase[Track]):
         if not item.artists:
             msg = "Track is missing artist(s)"
             raise InvalidDataError(msg)
-        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -487,7 +484,6 @@ class TracksController(MediaControllerBase[Track]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -560,7 +556,6 @@ class TracksController(MediaControllerBase[Track]):
                     overwrite_existing=overwrite,
                 )
         # write (or update) record in album_tracks table
-        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_TRACKS,
             {
@@ -578,7 +573,6 @@ class TracksController(MediaControllerBase[Track]):
         overwrite: bool = False,
     ) -> None:
         """Store Track Artists."""
-        assert self.mass.music.database is not None
         if overwrite:
             # on overwrite, clear the track_artists table first
             await self.mass.music.database.delete(
@@ -619,7 +613,6 @@ class TracksController(MediaControllerBase[Track]):
                     artist, overwrite_existing=overwrite
                 )
         # write (or update) record in track_artists table
-        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_TRACK_ARTISTS,
             {
