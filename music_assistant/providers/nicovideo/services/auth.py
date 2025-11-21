@@ -95,15 +95,17 @@ class NicovideoAuthService(NicovideoBaseService):
                         or "ConnectionError" in str(e)
                     ):
                         self.logger.warning(
-                            f"Network or DNS error occurred: {e}. "
-                            f"Retrying in {retry_delay_seconds} seconds..."
+                            "Network or DNS error occurred: %s. Retrying in %d seconds...",
+                            e,
+                            retry_delay_seconds,
                         )
                         await asyncio.sleep(retry_delay_seconds)
                     else:
                         self.logger.error("An unexpected error has occurred.: %s", e)
                         return False
         self.logger.error(
-            f"Could not login after exceeding the maximum number of retries ({max_retries})."
+            "Could not login after exceeding the maximum number of retries (%d).",
+            max_retries,
         )
         return False
 

@@ -65,8 +65,5 @@ def to_dict_for_snapshot(media_item: DataClassDictMixin) -> JsonDict:
     sorted_result = sort_dict_keys_and_lists(item_dict)
 
     # Ensure we return the expected dict type
-    if isinstance(sorted_result, dict):
-        return sorted_result
-    else:
-        # This should not happen given the input, but satisfies mypy
-        return item_dict
+    assert isinstance(sorted_result, dict)
+    return sorted_result

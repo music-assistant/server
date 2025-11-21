@@ -79,7 +79,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_history",
-                    name="Recently watched  (nicovideo history)",
+                    name="Recently watched (nicovideo history)",
                     provider=self.lookup_key,
                     icon="mdi-history",
                     items=UniqueList(history_tracks),
