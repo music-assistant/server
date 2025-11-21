@@ -327,7 +327,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_library_item(self, item: Playlist, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -357,7 +356,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
