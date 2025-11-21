@@ -10,7 +10,11 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
@@ -154,10 +158,39 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return db_item.item_id
         return None
 
+    def _verify_update_allowed(self, current_item: ItemCls, update: ItemCls) -> None:
+        """
+        Verify that the update is allowed from a security perspective.
+
+        Validates that provider_mappings item_id values are immutable.
+        This prevents database poisoning attacks via path traversal.
+        """
+        # Build lookup dict: (provider_instance, provider_domain) -> item_id
+        current_mappings = {
+            (mapping.provider_instance, mapping.provider_domain): mapping.item_id
+            for mapping in current_item.provider_mappings
+        }
+
+        # Check if any existing mapping's item_id has been modified
+        for update_mapping in update.provider_mappings:
+            mapping_key = (update_mapping.provider_instance, update_mapping.provider_domain)
+            if mapping_key in current_mappings:
+                # This provider mapping already exists, verify item_id hasn't changed
+                if current_mappings[mapping_key] != update_mapping.item_id:
+                    msg = (
+                        f"Cannot modify provider_mappings item_id: "
+                        f"attempted to change '{current_mappings[mapping_key]}' to "
+                        f"'{update_mapping.item_id}' for provider "
+                        f"{update_mapping.provider_instance}"
+                    )
+                    raise InvalidDataError(msg)
+
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
         """Update existing library record in the library database."""
+        current_item = await self.get_library_item(item_id)
+        self._verify_update_allowed(current_item, update)
         await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
