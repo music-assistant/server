@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Artist, Audiobook, UniqueList
+from music_assistant_models.media_items import Audiobook, UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
 from music_assistant.controllers.media.base import MediaControllerBase
@@ -18,11 +17,12 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant import MusicAssistant
 
 
 class AudiobooksController(MediaControllerBase[Audiobook]):
@@ -32,9 +32,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     media_type = MediaType.AUDIOBOOK
     item_cls = Audiobook
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.base_query = """
         SELECT
             audiobooks.*,
@@ -69,9 +69,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-    ) -> list[Artist]:
+    ) -> list[Audiobook]:
         """Get in-database audiobooks."""
-        extra_query_params: dict[str, Any] = extra_query_params or {}
+        extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
         result = await self._get_library_items_by_query(
             favorite=favorite,
@@ -111,7 +111,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         result: UniqueList[Audiobook] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
-            if not provider:
+            if not isinstance(provider, MusicProvider):
                 continue
             if not provider.library_supported(MediaType.AUDIOBOOK):
                 continue
@@ -124,11 +124,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             )
         return result
 
-    async def _add_library_item(self, item: Audiobook) -> int:
+    async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        if not isinstance(item, Audiobook):
-            msg = "Not a valid Audiobook object (ItemMapping can not be added to db)"
-            raise InvalidDataError(msg)
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -143,7 +140,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "narrators": serialize_to_json(item.narrators),
                 "duration": item.duration,
                 "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
             },
         )
         # update/set provider_mappings table
@@ -182,7 +179,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 ),
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
             },
         )
         # update/set provider_mappings table
@@ -216,7 +213,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             return  # guard
         author_name = db_audiobook.authors[0]
 
-        async def find_prov_match(provider: MusicProvider):
+        async def find_prov_match(provider: MusicProvider) -> bool:
             self.logger.debug(
                 "Trying to match audiobook %s on provider %s",
                 db_audiobook.name,

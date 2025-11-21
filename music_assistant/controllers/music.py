@@ -101,7 +101,6 @@ class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
     domain: str = "music"
-    database: DatabaseConnection | None = None
     config: CoreConfig
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -116,12 +115,20 @@ class MusicController(CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
+        self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
         )
         self.manifest.icon = "archive-music"
+
+    @property
+    def database(self) -> DatabaseConnection:
+        """Return the database connection."""
+        if self._database is None:
+            raise RuntimeError("Database not initialized")
+        return self._database
 
     async def get_config_entries(
         self,
@@ -167,8 +174,8 @@ class MusicController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self.database:
-            await self.database.close()
+        if self._database:
+            await self._database.close()
 
     async def on_provider_loaded(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -528,7 +535,6 @@ class MusicController(CoreController):
             "WHERE media_type in ('audiobook', 'podcast_episode') "
             f"AND provider in ('library','{provider_instance_id}')"
         )
-        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
 
         result: list[tuple[MediaType, str]] = []
@@ -1598,13 +1604,13 @@ class MusicController(CoreController):
     async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "library.db")
-        self.database = DatabaseConnection(db_path)
-        await self.database.setup()
+        self._database = DatabaseConnection(db_path)
+        await self._database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
-            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
+            if db_row := await self._database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
@@ -1631,15 +1637,15 @@ class MusicController(CoreController):
                 if not isinstance(err, MusicAssistantError):
                     self.logger.exception(err)
 
-                await self.database.close()
+                await self._database.close()
                 await asyncio.to_thread(os.remove, db_path)
-                self.database = DatabaseConnection(db_path)
-                await self.database.setup()
+                self._database = DatabaseConnection(db_path)
+                await self._database.setup()
                 await self.mass.cache.clear()
                 await self.__create_database_tables()
 
         # store current schema version
-        await self.database.insert_or_replace(
+        await self._database.insert_or_replace(
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
@@ -1649,7 +1655,7 @@ class MusicController(CoreController):
         # compact db
         self.logger.debug("Compacting database...")
         try:
-            await self.database.vacuum()
+            await self._database.vacuum()
         except Exception as err:
             self.logger.warning("Database vacuum failed: %s", str(err))
         else:
@@ -1678,18 +1684,18 @@ class MusicController(CoreController):
                 DB_TABLE_PODCASTS,
             ):
                 try:
-                    await self.database.execute(
+                    await self._database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_name TEXT DEFAULT '' NOT NULL"
                     )
-                    await self.database.execute(
+                    await self._database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_sort_name TEXT DEFAULT '' NOT NULL"
                     )
                 except Exception as err:
                     if "duplicate column" not in str(err):
                         raise
                 # migrate all existing values
-                async for db_row in self.database.iter_items(table):
-                    await self.database.update(
+                async for db_row in self._database.iter_items(table):
+                    await self._database.update(
                         table,
                         {"item_id": db_row["item_id"]},
                         {
@@ -1706,7 +1712,7 @@ class MusicController(CoreController):
                 DB_TABLE_AUDIOBOOKS,
                 DB_TABLE_PODCASTS,
             ):
-                async for db_row in self.database.iter_items(table):
+                async for db_row in self._database.iter_items(table):
                     if '"release_date":null' in db_row["metadata"]:
                         continue
                     metadata = json_loads(db_row["metadata"])
@@ -1715,7 +1721,7 @@ class MusicController(CoreController):
                     except (KeyError, ValueError):
                         # this is not a valid date, so we set it to None
                         metadata["release_date"] = None
-                        await self.database.update(
+                        await self._database.update(
                             table,
                             {"item_id": db_row["item_id"]},
                             {
@@ -1735,16 +1741,16 @@ class MusicController(CoreController):
                 "audiobooks",
                 "podcasts",
             ):
-                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
+                await self._database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
 
         if prev_version <= 18:
             # add in_library column to provider_mappings table
-            await self.database.execute(
+            await self._database.execute(
                 f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
                 "BOOLEAN NOT NULL DEFAULT 0;"
             )
             # migrate existing entries in provider_mappings which are filesystem
-            await self.database.execute(
+            await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
             )
@@ -1753,7 +1759,7 @@ class MusicController(CoreController):
             # drop column cache_checksum from playlists table
             # this is no longer used and is a leftover from previous designs
             try:
-                await self.database.execute(
+                await self._database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
                 )
             except Exception as err:
@@ -1762,11 +1768,11 @@ class MusicController(CoreController):
 
         if prev_version <= 21:
             # drop table for smart fades analysis - it will be recreated with needed columns
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
+            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
             await self.__create_database_tables()
 
         # save changes
-        await self.database.commit()
+        await self._database.commit()
 
         # always clear the cache after a db migration
         await self.mass.cache.clear()
