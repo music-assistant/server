@@ -1587,11 +1587,10 @@ class LocalFileSystemProvider(MusicProvider):
             resolved_base = os.path.realpath(self.base_path)
 
             # Ensure path is within base directory
-            # Check if resolved_path starts with resolved_base followed by separator
-            # or if it equals the base (edge case)
-            if not (
-                resolved_path.startswith(resolved_base + os.sep) or resolved_path == resolved_base
-            ):
+            # Normalize base path to ensure it ends with separator (except for root)
+            base_with_sep = resolved_base + os.sep if resolved_base != os.sep else resolved_base
+
+            if not (resolved_path.startswith(base_with_sep) or resolved_path == resolved_base):
                 msg = f"Invalid path: Path traversal attempt detected for {path}"
                 raise InvalidDataError(msg)
         except (OSError, ValueError) as err:
