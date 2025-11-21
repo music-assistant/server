@@ -32,7 +32,7 @@ gql[all]==4.0.0
 hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
-liblistenbrainz==0.6.0
+liblistenbrainz==0.6.1
 librosa==0.11.0
 lyricsgenius==3.7.2
 mashumaro==3.16
@@ -52,7 +52,7 @@ pycryptodome==3.23.0
 pylast==6.0.0
 python-fullykiosk==0.0.14
 python-slugify==8.0.4
-pywidevine==1.8.0
+pywidevine==1.9.0
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
