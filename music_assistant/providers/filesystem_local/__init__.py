@@ -25,11 +25,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import (
-    MediaNotFoundError,
-    MusicAssistantError,
-    SetupFailedError,
-)
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError, SetupFailedError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -66,10 +62,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.playlists import (
-    parse_m3u,
-    parse_pls,
-)
+from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, parse_tags, split_items
 from music_assistant.helpers.util import (
     TaskManager,
@@ -800,10 +793,10 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        playlist_filename = os.path.join(self.base_path, prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
@@ -818,12 +811,12 @@ class LocalFileSystemProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        playlist_filename = os.path.join(self.base_path, prov_playlist_id)
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
         _, ext = prov_playlist_id.rsplit(".", 1)
         # get playlist file contents
+        playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         # get current contents first
@@ -846,8 +839,9 @@ class LocalFileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
+        # filename = await self.resolve(f"{name}.m3u")
         filename = f"{name}.m3u"
-        playlist_filename = os.path.join(self.base_path, filename)
+        playlist_filename = self.get_absolute_path(filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write("#EXTM3U\n")
         return await self.get_playlist(filename)
