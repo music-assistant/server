@@ -12,7 +12,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -137,18 +137,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> UniqueList[Album]:
+    ) -> list[Album]:
         """Return (all/most popular) albums for an artist."""
         # always check if we have a library item for this artist
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_artist:
-            return UniqueList(
-                await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
-            )
+            return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_artist_albums(library_artist.item_id)
-        result: UniqueList[Album] = UniqueList(db_items)
+        result: list[Album] = db_items
         if in_library_only:
             # return in-library items only
             return result
