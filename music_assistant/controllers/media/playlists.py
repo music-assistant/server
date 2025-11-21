@@ -16,6 +16,7 @@ from music_assistant_models.media_items import Playlist, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import validate_playlist_filename
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
@@ -43,6 +44,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
+
+    def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
+        """
+        Verify that the update is allowed from a security perspective.
+
+        Extends base validation with playlist-specific validation for non-streaming providers.
+        """
+        # Call parent validation first (immutability checks)
+        super()._verify_update_allowed(current_item, update)
+
+        # Additional validation for non-streaming providers to prevent path traversal
+        for update_mapping in update.provider_mappings:
+            provider = self.mass.get_provider(update_mapping.provider_instance)
+            if provider and not provider.is_streaming_provider:
+                validate_playlist_filename(update_mapping.item_id)
 
     async def tracks(
         self,
