@@ -61,7 +61,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
-        assert self.mass.music.database is not None  # for type checking
         return await self.mass.music.database.get_count_from_query(sql_query)
 
     async def library_items(
@@ -178,7 +177,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_id = int(item_id)  # ensure integer
 
         # recursively also remove artist albums
-        assert self.mass.music.database is not None  # for type checking
         for db_row in await self.mass.music.database.get_rows_from_query(
             f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {db_id}",
             limit=5000,
@@ -286,7 +284,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        assert self.mass.music.database is not None  # for type checking
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -328,7 +325,6 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None  # for type checking
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
