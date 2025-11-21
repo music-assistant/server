@@ -49,15 +49,7 @@ class PlaylistItem:
 
 
 def validate_playlist_filename(filename: str) -> None:
-    """
-    Validate a playlist filename to prevent path traversal attacks.
-
-    This validation is designed for the builtin provider where playlist_id
-    can be either a simple ID (e.g., 'abc123') or a filename with extension.
-
-    :param filename: The playlist filename to validate.
-    :raises InvalidDataError: If the filename contains path separators or traversal attempts.
-    """
+    """Validate a playlist filename to prevent path traversal attacks."""
     # Reject absolute paths (start with / or drive letter on Windows)
     if Path(filename).is_absolute():
         msg = f"Invalid playlist filename: absolute paths not allowed: {filename}"
