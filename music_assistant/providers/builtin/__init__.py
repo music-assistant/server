@@ -561,7 +561,7 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
-    async def _get_builtin_playlist_random_album(self) -> UniqueList[Track]:
+    async def _get_builtin_playlist_random_album(self) -> list[Track]:
         for in_library_only in (True, False):
             for min_tracks_required in (10, 5, 1):
                 for random_album in await self.mass.music.albums.library_items(
@@ -575,7 +575,7 @@ class BuiltinProvider(MusicProvider):
                     for idx, track in enumerate(tracks, 1):
                         track.position = idx
                     return tracks
-        return UniqueList()
+        return []
 
     async def _get_builtin_playlist_random_artist(self) -> list[Track]:
         for in_library_only in (True, False):
