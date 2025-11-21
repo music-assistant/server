@@ -11,8 +11,6 @@ if TYPE_CHECKING:
 from niconico.objects.video.search import (
     EssentialMylist,
     EssentialSeries,
-    VideoSearchSortKey,
-    VideoSearchSortOrder,
 )
 
 from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
@@ -123,31 +121,3 @@ class NicovideoSearchService(NicovideoBaseService):
                 if track:
                     tracks.append(track)
         return tracks
-
-    async def search_videos_by_tag(
-        self,
-        tag: str,
-        limit: int,
-        sort: VideoSearchSortKey,
-        sort_order: VideoSearchSortOrder,
-    ) -> list[Track]:
-        """Search for videos by tags with specified sort order."""
-        tracks = []
-        # Search for each tag separately since search_videos_by_tag only accepts one tag
-        video_search_data = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.video.search.search_videos_by_tag,
-            tag,
-            page_size=limit,
-            sort_key=sort,
-            sort_order=sort_order,
-            search_by_user=True,
-        )
-
-        if video_search_data:
-            for item in video_search_data.items:
-                if item.id_:
-                    track = self.converter_manager.track.convert_by_essential_video(item)
-                    if track:
-                        tracks.append(track)
-
-        return tracks[:limit]  # Limit total results

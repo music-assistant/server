@@ -125,26 +125,6 @@ class NicovideoUserService(NicovideoBaseService):
                 tracks.append(track)
         return tracks
 
-    async def get_own_videos(self, limit: int = 100) -> list[Track]:
-        """Get user's own uploaded videos from nicovideo."""
-        # Calculate page_size based on limit
-        page_size = min(limit, 100)  # API max likely 100
-        own_videos = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.get_own_videos,
-            page_size=page_size,
-            page=1,
-            sensitive_contents=SENSITIVE_CONTENTS,
-        )
-        if not own_videos or not own_videos.items:
-            return []
-
-        tracks = []
-        for item in own_videos.items:
-            track = self.converter_manager.track.convert_by_essential_video(item.essential)
-            if track:
-                tracks.append(track)
-        return tracks
-
     async def get_following_activities(self, limit: int = 50) -> list[Track]:
         """Get latest activities from followed users."""
         feed_data = await self.service_manager._call_with_throttler(

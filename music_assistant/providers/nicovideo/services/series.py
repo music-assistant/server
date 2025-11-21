@@ -51,21 +51,6 @@ class NicovideoSeriesService(NicovideoBaseService):
             for series_item in user_series_items
         ]
 
-    async def get_own_series(self, page: int = 1, page_size: int = 100) -> list[Album]:
-        """Get own series list and convert as Album list."""
-        user_series_items = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.get_own_series,
-            page=page,
-            page_size=page_size,
-        )
-        if not user_series_items:
-            return []
-
-        return [
-            self.converter_manager.album.convert_by_series(series_item)
-            for series_item in user_series_items
-        ]
-
     async def _get_series(
         self, series_id: str, page: int = 1, page_size: int = 100
     ) -> AlbumWithTracks | None:

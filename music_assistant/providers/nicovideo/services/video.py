@@ -68,13 +68,6 @@ class NicovideoVideoService(NicovideoBaseService):
         conversion_data = await self._prepare_conversion_data(video_id)
         return self.converter_manager.stream.convert_from_conversion_data(conversion_data)
 
-    async def like_video(self, video_id: str) -> bool:
-        """Like a video."""
-        result = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.video.like_video, video_id
-        )
-        return bool(result)
-
     async def _prepare_conversion_data(self, video_id: str) -> StreamConversionData:
         """Prepare StreamConversionData for a video."""
         # 1. Fetch watch data
