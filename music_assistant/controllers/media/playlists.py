@@ -45,15 +45,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
 
-    def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
-        """
-        Verify that the update is allowed from a security perspective.
-
-        Extends base validation with playlist-specific validation for non-streaming providers.
-        """
-        # Call parent validation first (immutability checks)
-        super()._verify_update_allowed(current_item, update)
-
+    def _verify_update_allowed(self, update: Playlist) -> None:
         # Additional validation for non-streaming providers to prevent path traversal
         for update_mapping in update.provider_mappings:
             provider = self.mass.get_provider(update_mapping.provider_instance)
@@ -347,6 +339,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, item_id: int, update: Playlist, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
+        self._verify_update_allowed(update)
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)

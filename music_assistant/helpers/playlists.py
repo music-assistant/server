@@ -49,19 +49,21 @@ class PlaylistItem:
 
 
 def validate_playlist_filename(filename: str) -> None:
-    """Validate a playlist filename to prevent path traversal attacks."""
-    # Reject absolute paths (start with / or drive letter on Windows)
+    """Validate a playlist filename to prevent path traversal attacks.
+
+    Allows legitimate subdirectories (e.g., 'rock/favorites.m3u') but prevents
+    path traversal attacks (e.g., '../../../etc/passwd').
+
+    :param filename: The playlist filename/path to validate.
+    """
+    # Reject absolute paths
     if Path(filename).is_absolute():
         msg = f"Invalid playlist filename: absolute paths not allowed: {filename}"
         raise InvalidDataError(msg)
 
-    # Reject path separators (both Unix and Windows)
-    if "/" in filename or "\\" in filename:
-        msg = f"Invalid playlist filename: path separators not allowed: {filename}"
-        raise InvalidDataError(msg)
-
-    # Reject path traversal attempts
-    if ".." in filename:
+    # Reject path traversal attempts (..)
+    # Check as path components to catch '../', or isolated '..'
+    if ".." in Path(filename).parts:
         msg = f"Invalid playlist filename: path traversal not allowed: {filename}"
         raise InvalidDataError(msg)
 
