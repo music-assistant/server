@@ -239,6 +239,32 @@ class OpenSonicProvider(MusicProvider):
 
         return SearchResults(artists=ar, albums=al, tracks=tr)
 
+    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+        """Set or clear favorite on the server."""
+        # The subsonic spec does not support favorite-ing anything but artists, albums, and tracks
+        if media_type not in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK):
+            return
+
+        track_ids: list[str] = []
+        album_ids: list[str] = []
+        artist_ids: list[str] = []
+
+        if media_type == MediaType.ARTIST:
+            artist_ids.append(prov_item_id)
+        elif media_type == MediaType.ALBUM:
+            album_ids.append(prov_item_id)
+        elif media_type == MediaType.TRACK:
+            track_ids.append(prov_item_id)
+
+        if favorite:
+            await self._run_async(
+                self.conn.star, sids=track_ids, album_ids=album_ids, artist_ids=artist_ids
+            )
+        else:
+            await self._run_async(
+                self.conn.unstar, sids=track_ids, album_ids=album_ids, artist_ids=artist_ids
+            )
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Provide a generator for reading all artists."""
         artists = await self._run_async(self.conn.get_artists)
