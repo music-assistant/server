@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout, web
@@ -363,7 +363,9 @@ class PlexRemoteControlServer:
             shuffle = request.query.get("shuffle", "0") == "1"
 
             if not key:
-                return web.Response(status=400, text="Missing 'key' parameter")
+                return web.Response(
+                    status=400, text="Missing required 'key' parameter for playMedia command"
+                )
 
             LOGGER.info(
                 f"Received playMedia command - key: {key}, "
@@ -442,6 +444,36 @@ class PlexRemoteControlServer:
         finally:
             # Clear flag after processing
             self._updating_from_plex = False
+
+    def _reorder_tracks_for_playback(
+        self, tracks: list[Any], start_index: int
+    ) -> tuple[list[Any], dict[int, int]]:
+        """Reorder tracks to start from a specific index and update item ID mappings.
+
+        :param tracks: List of tracks to reorder.
+        :param start_index: Index of the track to start from.
+        :return: Tuple of (reordered tracks, updated item ID mappings).
+        """
+        if start_index <= 0 or start_index >= len(tracks):
+            # No reordering needed
+            return tracks, self.play_queue_item_ids
+
+        # Reorder: [selected track, tracks after it, tracks before it]
+        reordered_tracks = (
+            tracks[start_index:]  # From selected to end
+            + tracks[:start_index]  # From start to selected
+        )
+
+        # Update play queue item ID mappings to reflect new order
+        new_item_ids = {}
+        for new_idx, old_idx in enumerate(
+            list(range(start_index, len(tracks))) + list(range(start_index))
+        ):
+            if old_idx in self.play_queue_item_ids:
+                new_item_ids[new_idx] = self.play_queue_item_ids[old_idx]
+
+        LOGGER.info(f"Started playback from offset {start_index} (reordered queue)")
+        return reordered_tracks, new_item_ids
 
     async def _seek_to_offset_after_playback(self, player_id: str, offset: int) -> None:
         """Seek to the specified offset after playback starts.
@@ -535,27 +567,8 @@ class PlexRemoteControlServer:
 
                     # Reorder tracks if not starting from the first track
                     if start_index is not None and start_index > 0:
-                        # Reorder: [selected track, tracks after it, tracks before it]
-                        reordered_tracks = (
-                            # From selected to end
-                            tracks_to_queue[start_index:]
-                            # From start to selected
-                            + tracks_to_queue[:start_index]
-                        )
-
-                        # Update play queue item ID mappings to reflect new order
-                        new_item_ids = {}
-                        for new_idx, old_idx in enumerate(
-                            list(range(start_index, len(tracks_to_queue)))
-                            + list(range(start_index))
-                        ):
-                            if old_idx in self.play_queue_item_ids:
-                                new_item_ids[new_idx] = self.play_queue_item_ids[old_idx]
-                        self.play_queue_item_ids = new_item_ids
-
-                        tracks_to_queue = reordered_tracks
-                        LOGGER.info(
-                            f"Started playback from offset {selected_offset} (reordered queue)"
+                        tracks_to_queue, self.play_queue_item_ids = (
+                            self._reorder_tracks_for_playback(tracks_to_queue, start_index)
                         )
 
                     # Queue all tracks
@@ -582,21 +595,7 @@ class PlexRemoteControlServer:
 
                     # Seek to offset if specified
                     if offset > 0:
-                        # Wait for the queue to have items loaded before seeking
-                        for _ in range(10):  # Try up to 10 times (5 seconds total)
-                            await asyncio.sleep(0.5)
-                            queue = self.provider.mass.player_queues.get(player_id)
-                            if queue and queue.current_item:
-                                try:
-                                    await self.provider.mass.players.cmd_seek(
-                                        player_id, offset // 1000
-                                    )
-                                    break
-                                except Exception as e:
-                                    LOGGER.debug(f"Could not seek to offset {offset}ms: {e}")
-                                    break
-                        else:
-                            LOGGER.warning("Queue not ready for seeking after timeout")
+                        await self._seek_to_offset_after_playback(player_id, offset)
                 else:
                     LOGGER.error("No valid tracks in play queue")
                     # Fall back to single track
@@ -629,7 +628,97 @@ class PlexRemoteControlServer:
                     option=QueueOption.REPLACE,
                 )
 
-    async def handle_refresh_play_queue(self, request: web.Request) -> web.Response:  # noqa: PLR0915
+    async def _replace_entire_queue(self, player_id: str, playqueue: PlayQueue) -> None:
+        """Replace the entire queue when nothing is currently playing.
+
+        :param player_id: The Music Assistant player ID.
+        :param playqueue: The Plex play queue to load.
+        """
+        all_tracks = []
+        self.play_queue_item_ids = {}
+
+        for i, item in enumerate(playqueue.items):
+            track_key = item.key if hasattr(item, "key") else None
+            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+
+            if track_key:
+                try:
+                    track = await self.provider.get_track(track_key)
+                    all_tracks.append(track)
+
+                    if play_queue_item_id:
+                        self.play_queue_item_ids[len(all_tracks) - 1] = play_queue_item_id
+                except Exception as e:
+                    LOGGER.debug(f"Could not fetch track {track_key}: {e}")
+                    continue
+
+        if all_tracks:
+            await self.provider.mass.player_queues.play_media(
+                queue_id=player_id,
+                media=all_tracks,  # type: ignore[arg-type]
+                option=QueueOption.REPLACE,
+            )
+            LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
+
+    async def _replace_remaining_queue(
+        self, player_id: str, playqueue: PlayQueue, current_index: int
+    ) -> None:
+        """Replace only items after the current track.
+
+        :param player_id: The Music Assistant player ID.
+        :param playqueue: The Plex play queue to load.
+        :param current_index: The current track index in the MA queue.
+        """
+        # Fetch tracks that come AFTER the current track in the Plex queue
+        remaining_tracks = []
+        new_item_mappings = {}
+
+        # Start from the track after current_index
+        for i in range(current_index + 1, len(playqueue.items)):
+            item = playqueue.items[i]
+            track_key = item.key if hasattr(item, "key") else None
+            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+
+            if track_key:
+                try:
+                    track = await self.provider.get_track(track_key)
+                    remaining_tracks.append(track)
+
+                    # Map relative to the current position
+                    if play_queue_item_id:
+                        new_item_mappings[current_index + 1 + len(remaining_tracks) - 1] = (
+                            play_queue_item_id
+                        )
+                except Exception as e:
+                    LOGGER.debug(f"Could not fetch track {track_key}: {e}")
+                    continue
+
+        # Replace items after current track
+        if remaining_tracks:
+            await self.provider.mass.player_queues.play_media(
+                queue_id=player_id,
+                media=remaining_tracks,  # type: ignore[arg-type]
+                option=QueueOption.REPLACE_NEXT,  # Replace everything after current
+            )
+            # Update mappings for the new items
+            self.play_queue_item_ids.update(new_item_mappings)
+
+            LOGGER.info(
+                f"Replaced {len(remaining_tracks)} tracks after current track "
+                f"(index {current_index})"
+            )
+        else:
+            # No tracks after current - clear remaining queue
+            LOGGER.debug("No tracks after current track in Plex queue")
+
+        # Rebuild complete item ID mappings from Plex queue
+        # Keep mappings for tracks from index 0 to current_index unchanged
+        for i, item in enumerate(playqueue.items):
+            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+            if play_queue_item_id:
+                self.play_queue_item_ids[i] = play_queue_item_id
+
+    async def handle_refresh_play_queue(self, request: web.Request) -> web.Response:
         """
         Handle refreshPlayQueue command from Plex controller.
 
@@ -653,6 +742,13 @@ class PlexRemoteControlServer:
                 LOGGER.warning(
                     f"Refresh requested for queue {play_queue_id} but active queue is "
                     f"{self.play_queue_id}"
+                )
+                return web.Response(
+                    status=409,
+                    text=(
+                        f"Requested playQueueID {play_queue_id} does not match "
+                        f"active queue {self.play_queue_id}"
+                    ),
                 )
 
             # Update the play queue version (increments on each refresh)
@@ -696,93 +792,14 @@ class PlexRemoteControlServer:
             # If nothing is playing, replace the entire queue
             if current_index is None:
                 LOGGER.debug("No track currently playing, replacing entire queue")
-
-                all_tracks = []
-                self.play_queue_item_ids = {}
-
-                for i, item in enumerate(playqueue.items):
-                    track_key = item.key if hasattr(item, "key") else None
-                    play_queue_item_id = (
-                        item.playQueueItemID if hasattr(item, "playQueueItemID") else None
-                    )
-
-                    if track_key:
-                        try:
-                            track = await self.provider.get_track(track_key)
-                            all_tracks.append(track)
-
-                            if play_queue_item_id:
-                                self.play_queue_item_ids[len(all_tracks) - 1] = play_queue_item_id
-                        except Exception as e:
-                            LOGGER.debug(f"Could not fetch track {track_key}: {e}")
-                            continue
-
-                if all_tracks:
-                    await self.provider.mass.player_queues.play_media(
-                        queue_id=player_id,
-                        media=all_tracks,  # type: ignore[arg-type]
-                        option=QueueOption.REPLACE,
-                    )
-                    LOGGER.info(f"Replaced queue with {len(all_tracks)} tracks")
+                await self._replace_entire_queue(player_id, playqueue)
             else:
                 # Something is playing - update only the remaining queue items
                 LOGGER.debug(
                     f"Track at index {current_index} is playing, "
                     f"replacing only items after current track"
                 )
-
-                # Fetch tracks that come AFTER the current track in the Plex queue
-                remaining_tracks = []
-                new_item_mappings = {}
-
-                # Start from the track after current_index
-                for i in range(current_index + 1, len(playqueue.items)):
-                    item = playqueue.items[i]
-                    track_key = item.key if hasattr(item, "key") else None
-                    play_queue_item_id = (
-                        item.playQueueItemID if hasattr(item, "playQueueItemID") else None
-                    )
-
-                    if track_key:
-                        try:
-                            track = await self.provider.get_track(track_key)
-                            remaining_tracks.append(track)
-
-                            # Map relative to the current position
-                            if play_queue_item_id:
-                                new_item_mappings[current_index + 1 + len(remaining_tracks) - 1] = (
-                                    play_queue_item_id
-                                )
-                        except Exception as e:
-                            LOGGER.debug(f"Could not fetch track {track_key}: {e}")
-                            continue
-
-                # Replace items after current track
-                if remaining_tracks:
-                    await self.provider.mass.player_queues.play_media(
-                        queue_id=player_id,
-                        media=remaining_tracks,  # type: ignore[arg-type]
-                        option=QueueOption.REPLACE_NEXT,  # Replace everything after current
-                    )
-                    # Update mappings for the new items
-                    self.play_queue_item_ids.update(new_item_mappings)
-
-                    LOGGER.info(
-                        f"Replaced {len(remaining_tracks)} tracks after current track "
-                        f"(index {current_index})"
-                    )
-                else:
-                    # No tracks after current - clear remaining queue
-                    LOGGER.debug("No tracks after current track in Plex queue")
-
-                # Rebuild complete item ID mappings from Plex queue
-                # Keep mappings for tracks from index 0 to current_index unchanged
-                for i, item in enumerate(playqueue.items):
-                    play_queue_item_id = (
-                        item.playQueueItemID if hasattr(item, "playQueueItemID") else None
-                    )
-                    if play_queue_item_id:
-                        self.play_queue_item_ids[i] = play_queue_item_id
+                await self._replace_remaining_queue(player_id, playqueue, current_index)
 
             LOGGER.info(
                 f"Refreshed play queue {play_queue_id} - now has {len(playqueue.items)} items"
@@ -911,14 +928,14 @@ class PlexRemoteControlServer:
             # Try to fetch as track first
             try:
                 return await self.provider.get_track(key)
-            except Exception:  # noqa: S110
-                pass
+            except Exception as exc:
+                LOGGER.debug(f"Failed to resolve Plex item as track for key '{key}': {exc}")
 
             # Try as album
             try:
                 return await self.provider.get_album(key)
-            except Exception:  # noqa: S110
-                pass
+            except Exception as exc:
+                LOGGER.debug(f"Failed to resolve Plex item as album for key '{key}': {exc}")
 
             # Try as artist
             try:
@@ -1214,7 +1231,88 @@ class PlexRemoteControlServer:
             text=xml, content_type="text/xml", headers={"Access-Control-Allow-Origin": "*"}
         )
 
-    async def _build_timeline_xml(  # noqa: PLR0915
+    def _build_timeline_attributes(
+        self,
+        track: Any,
+        state: str,
+        duration: int,
+        time: int,
+        volume: int,
+        shuffle: int,
+        repeat: int,
+        controllable: str,
+        queue: Any | None,
+    ) -> list[str]:
+        """Build timeline attributes for a playing track.
+
+        :param track: The current track media item.
+        :param state: Playback state (playing, paused, etc.).
+        :param duration: Track duration in milliseconds.
+        :param time: Current playback time in milliseconds.
+        :param volume: Volume level (0-100).
+        :param shuffle: Shuffle state (0 or 1).
+        :param repeat: Repeat mode (0=off, 1=one, 2=all).
+        :param controllable: Controllable features string.
+        :param queue: The MA queue object.
+        :return: List of timeline attribute strings.
+        """
+        # Get Plex key and ratingKey
+        key = None
+        rating_key = None
+        for mapping in track.provider_mappings:
+            if mapping.provider_instance == self.provider.instance_id:
+                key = mapping.item_id
+                rating_key = key.split("/")[-1]
+                break
+
+        if not key:
+            return []
+
+        # Server identification
+        plex_url = urlparse(self.provider._baseurl)
+        machine_identifier = self.provider._plex_server.machineIdentifier
+        address = plex_url.hostname
+        port = plex_url.port or (443 if plex_url.scheme == "https" else 32400)
+        protocol = plex_url.scheme
+
+        # Build timeline attributes
+        attrs = [
+            f'state="{state}"',
+            f'duration="{duration}"',
+            f'time="{time}"',
+            f'ratingKey="{rating_key}"',
+            f'key="{key}"',
+        ]
+
+        # Add play queue info if available
+        if self.play_queue_id and queue:
+            if queue.current_index is not None:
+                play_queue_item_id = self.play_queue_item_ids.get(
+                    queue.current_index, queue.current_index + 1
+                )
+                attrs.append(f'playQueueItemID="{play_queue_item_id}"')
+            attrs.append(f'playQueueID="{self.play_queue_id}"')
+            attrs.append(f'playQueueVersion="{self.play_queue_version}"')
+            attrs.append(f'containerKey="/playQueues/{self.play_queue_id}"')
+
+        # Add standard attributes
+        attrs.extend(
+            [
+                'type="music"',
+                f'volume="{volume}"',
+                f'shuffle="{shuffle}"',
+                f'repeat="{repeat}"',
+                f'controllable="{controllable}"',
+                f'machineIdentifier="{machine_identifier}"',
+                f'address="{address}"',
+                f'port="{port}"',
+                f'protocol="{protocol}"',
+            ]
+        )
+
+        return attrs
+
+    async def _build_timeline_xml(
         self, include_metadata: bool = False, command_id: str = "0"
     ) -> str:
         """Build timeline XML from current Music Assistant player state."""
@@ -1281,80 +1379,29 @@ class PlexRemoteControlServer:
         ):
             track = queue.current_item.media_item
 
-            # Get Plex key and ratingKey
-            key = None
-            rating_key = None
-            for mapping in track.provider_mappings:
-                if mapping.provider_instance == self.provider.instance_id:
-                    key = mapping.item_id
-                    rating_key = key.split("/")[-1]
-                    break
+            # Duration in milliseconds
+            duration = round(track.duration * 1000) if track.duration else 0
 
-            if not key:
+            # Current playback time in milliseconds
+            time = (
+                round(player.corrected_elapsed_time * 1000)
+                if player and player.corrected_elapsed_time is not None
+                else 0
+            )
+
+            # Build timeline attributes
+            attrs = self._build_timeline_attributes(
+                track, state, duration, time, volume, shuffle, repeat, controllable, queue
+            )
+
+            if attrs:
+                music_timeline = f"<Timeline {' '.join(attrs)}/>"
+            else:
                 # No Plex mapping, send basic timeline with actual state
-                time = (
-                    round(player.corrected_elapsed_time * 1000)
-                    if player and player.corrected_elapsed_time is not None
-                    else 0
-                )
                 music_timeline = (
                     f'<Timeline state="{state}" time="{time}" type="music" volume="{volume}" '
                     f'shuffle="{shuffle}" repeat="{repeat}" controllable="{controllable}"/>'
                 )
-            else:
-                # Duration in milliseconds
-                duration = round(track.duration * 1000) if track.duration else 0
-
-                # Current playback time in milliseconds
-                time = (
-                    round(player.corrected_elapsed_time * 1000)
-                    if player and player.corrected_elapsed_time is not None
-                    else 0
-                )
-
-                # Server identification
-                plex_url = urlparse(self.provider._baseurl)
-                machine_identifier = self.provider._plex_server.machineIdentifier
-                address = plex_url.hostname
-                port = plex_url.port or (443 if plex_url.scheme == "https" else 32400)
-                protocol = plex_url.scheme
-
-                # Build timeline attributes
-                attrs = [
-                    f'state="{state}"',
-                    f'duration="{duration}"',
-                    f'time="{time}"',
-                    f'ratingKey="{rating_key}"',
-                    f'key="{key}"',
-                ]
-
-                # Add play queue info if available
-                if self.play_queue_id:
-                    if queue.current_index is not None:
-                        play_queue_item_id = self.play_queue_item_ids.get(
-                            queue.current_index, queue.current_index + 1
-                        )
-                        attrs.append(f'playQueueItemID="{play_queue_item_id}"')
-                    attrs.append(f'playQueueID="{self.play_queue_id}"')
-                    attrs.append(f'playQueueVersion="{self.play_queue_version}"')
-                    attrs.append(f'containerKey="/playQueues/{self.play_queue_id}"')
-
-                # Add standard attributes
-                attrs.extend(
-                    [
-                        'type="music"',
-                        f'volume="{volume}"',
-                        f'shuffle="{shuffle}"',
-                        f'repeat="{repeat}"',
-                        f'controllable="{controllable}"',
-                        f'machineIdentifier="{machine_identifier}"',
-                        f'address="{address}"',
-                        f'port="{port}"',
-                        f'protocol="{protocol}"',
-                    ]
-                )
-
-                music_timeline = f"<Timeline {' '.join(attrs)}/>"
         else:
             # No current track - use actual state
             time = (
@@ -1477,7 +1524,20 @@ class PlexRemoteControlServer:
             return
 
         # Fetch Plex items for all tracks in MA queue
-        plex_items = []
+        async def fetch_plex_item(plex_key: str) -> object | None:
+            """Fetch a single Plex item."""
+            try:
+
+                def fetch_item() -> object:
+                    return self.plex_server.fetchItem(plex_key)
+
+                return await asyncio.to_thread(fetch_item)
+            except Exception as e:
+                LOGGER.debug(f"Failed to fetch Plex item {plex_key}: {e}")
+                return None
+
+        # Collect all fetch tasks
+        fetch_tasks = []
         for item in queue_items:
             if not item.media_item:
                 continue
@@ -1490,15 +1550,13 @@ class PlexRemoteControlServer:
                     break
 
             if plex_key:
-                try:
-                    # Fetch Plex item
-                    def fetch_item(key: object = plex_key) -> object:
-                        return self.plex_server.fetchItem(key)
+                fetch_tasks.append(fetch_plex_item(plex_key))
 
-                    plex_item = await asyncio.to_thread(fetch_item)
-                    plex_items.append(plex_item)
-                except Exception as e:
-                    LOGGER.debug(f"Failed to fetch Plex item {plex_key}: {e}")
+        # Fetch all items concurrently
+        plex_items = []
+        if fetch_tasks:
+            fetched_items = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            plex_items = [item for item in fetched_items if item is not None]
 
         if not plex_items:
             LOGGER.debug("No Plex tracks in MA queue, skipping PlayQueue creation")
@@ -1653,16 +1711,24 @@ class PlexRemoteControlServer:
     async def _broadcast_timeline(self) -> None:
         """Send timeline to all subscribed controllers."""
         current_time = time.time()
-        stale_clients = [
-            client_id
-            for client_id, sub in self.subscriptions.items()
-            if current_time - float(sub["last_update"]) > 90  # type: ignore[arg-type]
-        ]
+        stale_clients = []
+        for client_id, sub in self.subscriptions.items():
+            try:
+                last_update = float(sub["last_update"])  # type: ignore[arg-type]
+                if current_time - last_update > 90:
+                    stale_clients.append(client_id)
+            except (ValueError, TypeError):
+                # If conversion fails, treat client as stale
+                LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
+                stale_clients.append(client_id)
+
         for client_id in stale_clients:
             del self.subscriptions[client_id]
 
-        for client_id in list(self.subscriptions.keys()):
-            await self._send_timeline(client_id)
+        await asyncio.gather(
+            *(self._send_timeline(client_id) for client_id in list(self.subscriptions.keys())),
+            return_exceptions=True,  # Don't fail all if one fails
+        )
 
     # for debugging purposes only
     # async def handle_unknown(self, request: web.Request) -> web.Response:

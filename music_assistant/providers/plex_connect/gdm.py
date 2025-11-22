@@ -177,7 +177,7 @@ class PlexGDMAdvertiser:
                             # Send response - addr contains the actual client's IP and port
                             self._send_discovery_response(addr)
 
-                    except TimeoutError:
+                    except socket.timeout:  # noqa: UP041
                         continue
                     except Exception as e:
                         if self._running:
