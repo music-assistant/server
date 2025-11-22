@@ -42,11 +42,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.auth import UserAuthProvider, UserRole
 from music_assistant.models.core_controller import CoreController
 
-from .api_docs import (
-    generate_commands_reference,
-    generate_openapi_spec,
-    generate_schemas_reference,
-)
+from .api_docs import generate_commands_reference, generate_openapi_spec, generate_schemas_reference
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
@@ -115,6 +111,17 @@ class WebserverController(CoreController):
                 required=False,
             ),
             ConfigEntry(
+                key=CONF_AUTH_HA_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Enable Home Assistant OAuth",
+                description="Allow users to sign in with their Home Assistant account. \n"
+                "Requires the Home Assistant provider (plugin) to be configured. \n"
+                "Uses hass_client for seamless authentication - "
+                "no manual OAuth app setup required!",
+                depends_on=CONF_AUTH_ENABLED,
+            ),
+            ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
                 default_value=default_base_url,
@@ -153,8 +160,8 @@ class WebserverController(CoreController):
                 label="Enable Authentication",
                 description="Enable authentication for the web interface and API. \n"
                 "When enabled, users must log in to access Music Assistant. \n"
-                "Existing setups: Authentication is disabled by default for "
-                "backwards compatibility.",
+                "Note that while this is now still a provisional feature, "
+                "it will be mandatory in future releases!",
                 category="advanced",
             ),
             ConfigEntry(
@@ -165,19 +172,7 @@ class WebserverController(CoreController):
                 description="Allow users to create accounts via Home Assistant OAuth. \n"
                 "New users will have USER role by default.",
                 category="advanced",
-                depends_on=CONF_AUTH_ENABLED,
-            ),
-            ConfigEntry(
-                key=CONF_AUTH_HA_ENABLED,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Enable Home Assistant OAuth",
-                description="Allow users to sign in with their Home Assistant account. \n"
-                "Requires the Home Assistant provider (plugin) to be configured. \n"
-                "Uses hass_client for seamless authentication - "
-                "no manual OAuth app setup required!",
-                category="advanced",
-                depends_on=CONF_AUTH_ENABLED,
+                depends_on=CONF_AUTH_HA_ENABLED,
             ),
         )
 
