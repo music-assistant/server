@@ -7,7 +7,7 @@
   "codeowners": ["@anatosun"],
   "requirements": ["plexapi==4.17.1"],
   "icon": "mdi:plex",
-  "documentation": "https://music-assistant.io/plugin-support/plex_connect/",
+  "documentation": "https://music-assistant.io/plugins/plex-connect/",
   "depends_on": "plex",
   "multi_instance": true
 }
