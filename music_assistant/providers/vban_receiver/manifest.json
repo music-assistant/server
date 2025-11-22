@@ -1,0 +1,10 @@
+{
+  "type": "plugin",
+  "domain": "vban_receiver",
+  "stage": "alpha",
+  "name": "VBAN Receiver",
+  "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender",
+  "codeowners": ["@sprocket-9"],
+  "documentation": "https://music-assistant.io/plugins/vban-receiver/",
+  "multi_instance": true
+}
