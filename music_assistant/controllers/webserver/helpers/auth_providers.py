@@ -191,6 +191,19 @@ class BuiltinLoginProvider(LoginProvider):
 
         return True
 
+    async def reset_password(self, user: User, new_password: str) -> None:
+        """
+        Reset user password (admin only - no old password verification).
+
+        :param user: The user whose password to reset.
+        :param new_password: The new password.
+        """
+        # Hash new password and update provider link
+        new_password_hash = self._hash_password(new_password, user.username)
+        await self.auth_manager.update_provider_link(
+            user, AuthProviderType.BUILTIN, new_password_hash
+        )
+
     def _hash_password(self, password: str, salt: str) -> str:
         """
         Hash password with salt.

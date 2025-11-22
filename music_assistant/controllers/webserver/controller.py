@@ -36,6 +36,7 @@ from music_assistant_models.errors import InvalidCommand
 from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_ONBOARD_DONE,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -44,7 +45,7 @@ from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
-from music_assistant.models.auth import UserAuthProvider, UserRole
+from music_assistant.models.auth import AuthProviderType, UserAuthProvider, UserRole
 from music_assistant.models.core_controller import CoreController
 
 from .api_docs import generate_commands_reference, generate_openapi_spec, generate_schemas_reference
@@ -59,7 +60,6 @@ from .helpers.auth_providers import BuiltinLoginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
-    from music_assistant_models.event import MassEvent
 
     from music_assistant import MusicAssistant
 
@@ -186,8 +186,13 @@ class WebserverController(CoreController):
         index_path = os.path.join(frontend_dir, "index.html")
         handler = partial(self._server.serve_static, index_path)
         routes.append(("GET", "/", handler))
+        # add logo
+        logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
+        handler = partial(self._server.serve_static, logo_path)
+        routes.append(("GET", "/logo.png", handler))
         # add info
         routes.append(("GET", "/info", self._handle_server_info))
+        routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add logging
         routes.append(("GET", "/music-assistant.log", self._handle_application_log))
         # add websocket api
@@ -211,13 +216,16 @@ class WebserverController(CoreController):
         # add authentication routes
         routes.append(("GET", "/login", self._handle_login_page))
         routes.append(("POST", "/auth/login", self._handle_auth_login))
+        routes.append(("OPTIONS", "/auth/login", self._handle_cors_preflight))
         routes.append(("POST", "/auth/logout", self._handle_auth_logout))
+        routes.append(("GET", "/auth/me", self._handle_auth_me))
+        routes.append(("PATCH", "/auth/me", self._handle_auth_me_update))
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
-        routes.append(("POST", "/auth/setup", self._handle_setup))
+        routes.append(("POST", "/setup", self._handle_setup))
         # Initialize authentication manager
         await self.auth.setup()
         # start the webserver
@@ -266,6 +274,8 @@ class WebserverController(CoreController):
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
             ingress_tcp_site_params=ingress_tcp_site_params,
+            # Add mass object to app for use in auth middleware
+            app_state={"mass": self.mass},
         )
 
     async def close(self) -> None:
@@ -285,9 +295,35 @@ class WebserverController(CoreController):
             await resp.write(chunk)
         return resp
 
+    async def _handle_cors_preflight(self, request: web.Request) -> web.Response:
+        """Handle CORS preflight OPTIONS request."""
+        return web.Response(
+            status=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                "Access-Control-Max-Age": "86400",  # Cache preflight for 24 hours
+            },
+        )
+
     async def _handle_server_info(self, request: web.Request) -> web.Response:
         """Handle request for server info."""
-        return web.json_response(self.mass.get_server_info().to_dict())
+        server_info = self.mass.get_server_info()
+
+        # Override requires_auth for Ingress (HA handles authentication)
+        if is_request_from_ingress(request):
+            server_info.requires_auth = False
+
+        # Add CORS headers to allow frontend to call from any origin
+        return web.json_response(
+            server_info.to_dict(),
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
 
     async def _handle_ws_client(self, request: web.Request) -> web.WebSocketResponse:
         connection = WebsocketClientHandler(self, request)
@@ -413,7 +449,9 @@ class WebserverController(CoreController):
         """Handle request for login page."""
         # If no users exist, redirect to setup
         if not await self.auth.has_users():
-            return web.Response(status=302, headers={"Location": "/setup"})
+            return_url = request.query.get("return_url", "")
+            setup_url = f"/setup?return_url={return_url}" if return_url else "/setup"
+            return web.Response(status=302, headers={"Location": setup_url})
 
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
@@ -422,37 +460,64 @@ class WebserverController(CoreController):
 
     async def _handle_auth_login(self, request: web.Request) -> web.Response:
         """Handle login request."""
-        if not request.can_read_body:
-            return web.Response(status=400, text="Body required")
+        try:
+            if not request.can_read_body:
+                return web.Response(status=400, text="Body required")
 
-        body = await request.json()
-        provider_id = body.get("provider_id")
-        credentials = body.get("credentials", {})
+            body = await request.json()
+            provider_id = body.get("provider_id", "builtin")  # Default to built-in provider
+            credentials = body.get("credentials", {})
+            return_url = body.get("return_url")  # Optional return URL for redirect after login
 
-        if not provider_id:
-            return web.json_response(
-                {"success": False, "error": "Provider ID required"}, status=400
+            # Authenticate with provider
+            auth_result = await self.auth.authenticate_with_credentials(provider_id, credentials)
+
+            if not auth_result.success or not auth_result.user:
+                return web.json_response(
+                    {"success": False, "error": auth_result.error},
+                    status=401,
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    },
+                )
+
+            # Create token for user
+            device_name = body.get(
+                "device_name", f"{request.headers.get('User-Agent', 'Unknown')[:50]}"
             )
+            token = await self.auth.create_token(auth_result.user, device_name)
 
-        # Authenticate with provider
-        auth_result = await self.auth.authenticate_with_credentials(provider_id, credentials)
-
-        if not auth_result.success or not auth_result.user:
-            return web.json_response({"success": False, "error": auth_result.error}, status=401)
-
-        # Create token for user
-        device_name = body.get(
-            "device_name", f"{request.headers.get('User-Agent', 'Unknown')[:50]}"
-        )
-        token = await self.auth.create_token(auth_result.user, device_name)
-
-        return web.json_response(
-            {
+            # If return_url is provided, return it in the response for client-side redirect
+            response_data = {
                 "success": True,
                 "token": token,
                 "user": auth_result.user.to_dict(),
             }
-        )
+            if return_url:
+                response_data["return_url"] = return_url
+
+            # Add CORS headers to allow login from any origin
+            return web.json_response(
+                response_data,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+            )
+        except Exception:
+            self.logger.exception("Error during login")
+            return web.json_response(
+                {"success": False, "error": "Login failed"},
+                status=500,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+            )
 
     async def _handle_auth_logout(self, request: web.Request) -> web.Response:
         """Handle logout request."""
@@ -472,75 +537,136 @@ class WebserverController(CoreController):
 
         return web.json_response({"success": True})
 
+    async def _handle_auth_me(self, request: web.Request) -> web.Response:
+        """Handle request for current user information."""
+        user = await get_authenticated_user(request)
+        if not user:
+            return web.Response(status=401, text="Not authenticated")
+
+        return web.json_response(user.to_dict())
+
+    async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
+        """Handle request to update current user's profile."""
+        user = await get_authenticated_user(request)
+        if not user:
+            return web.Response(status=401, text="Not authenticated")
+
+        try:
+            if not request.can_read_body:
+                return web.Response(status=400, text="Body required")
+
+            body = await request.json()
+            username = body.get("username")
+            display_name = body.get("display_name")
+            avatar_url = body.get("avatar_url")
+
+            # Update user
+            updated_user = await self.auth.update_user(
+                user,
+                username=username,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+
+            return web.json_response({"success": True, "user": updated_user.to_dict()})
+        except Exception:
+            self.logger.exception("Error updating user profile")
+            return web.json_response(
+                {"success": False, "error": "Failed to update profile"}, status=500
+            )
+
     async def _handle_auth_providers(self, request: web.Request) -> web.Response:
         """Handle request for available login providers."""
-        providers = await self.auth.get_login_providers()
-        return web.json_response(providers)
+        try:
+            providers = await self.auth.get_login_providers()
+            return web.json_response(providers)
+        except Exception:
+            self.logger.exception("Error getting auth providers")
+            return web.json_response({"error": "Failed to get auth providers"}, status=500)
 
     async def _handle_auth_authorize(self, request: web.Request) -> web.Response:
         """Handle OAuth authorization request."""
-        provider_id = request.query.get("provider_id")
-        redirect_uri = request.query.get("redirect_uri")
+        try:
+            provider_id = request.query.get("provider_id")
+            redirect_uri = request.query.get("redirect_uri")
 
-        if not provider_id or not redirect_uri:
-            return web.Response(status=400, text="provider_id and redirect_uri required")
+            if not provider_id or not redirect_uri:
+                return web.Response(status=400, text="provider_id and redirect_uri required")
 
-        auth_url = await self.auth.get_authorization_url(provider_id, redirect_uri)
-        if not auth_url:
-            return web.Response(
-                status=400, text="Provider does not support OAuth or is not configured"
-            )
+            auth_url = await self.auth.get_authorization_url(provider_id, redirect_uri)
+            if not auth_url:
+                return web.Response(
+                    status=400, text="Provider does not support OAuth or is not configured"
+                )
 
-        return web.json_response({"authorization_url": auth_url})
+            return web.json_response({"authorization_url": auth_url})
+        except Exception:
+            self.logger.exception("Error during OAuth authorization")
+            return web.json_response({"error": "Authorization failed"}, status=500)
 
     async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
-        code = request.query.get("code")
-        state = request.query.get("state")
-        provider_id = request.query.get("provider_id", "google")  # Default to google for now
+        try:
+            code = request.query.get("code")
+            state = request.query.get("state")
+            provider_id = request.query.get("provider_id", "google")  # Default to google for now
 
-        if not code or not state:
-            return web.Response(status=400, text="code and state required")
+            if not code or not state:
+                return web.Response(status=400, text="code and state required")
 
-        redirect_uri = f"{self.base_url}/auth/callback"
-        auth_result = await self.auth.handle_oauth_callback(provider_id, code, state, redirect_uri)
+            redirect_uri = f"{self.base_url}/auth/callback"
+            auth_result = await self.auth.handle_oauth_callback(
+                provider_id, code, state, redirect_uri
+            )
 
-        if not auth_result.success or not auth_result.user:
-            # Return error page
-            error_html = f"""
+            if not auth_result.success or not auth_result.user:
+                # Return error page
+                error_html = f"""
+                <html>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>{html.escape(auth_result.error or "Unknown error")}</p>
+                    <a href="/login">Back to Login</a>
+                </body>
+                </html>
+                """
+                return web.Response(text=error_html, content_type="text/html", status=400)
+
+            # Create token
+            device_name = f"OAuth ({provider_id})"
+            token = await self.auth.create_token(auth_result.user, device_name)
+
+            # Return success page with token
+            success_html = f"""
+            <html>
+            <head>
+                <title>Login Successful</title>
+            </head>
+            <body>
+                <h1>Login Successful!</h1>
+                <p>Redirecting...</p>
+                <script>
+                    // Store token in localStorage
+                    localStorage.setItem('auth_token', '{token}');
+                    // Redirect to home
+                    window.location.href = '/';
+                </script>
+            </body>
+            </html>
+            """
+            return web.Response(text=success_html, content_type="text/html")
+        except Exception:
+            self.logger.exception("Error during OAuth callback")
+            error_html = """
             <html>
             <body>
                 <h1>Authentication Failed</h1>
-                <p>{html.escape(auth_result.error or "Unknown error")}</p>
+                <p>An error occurred during authentication</p>
                 <a href="/login">Back to Login</a>
             </body>
             </html>
             """
-            return web.Response(text=error_html, content_type="text/html", status=400)
-
-        # Create token
-        device_name = f"OAuth ({provider_id})"
-        token = await self.auth.create_token(auth_result.user, device_name)
-
-        # Return success page with token
-        success_html = f"""
-        <html>
-        <head>
-            <title>Login Successful</title>
-        </head>
-        <body>
-            <h1>Login Successful!</h1>
-            <p>Redirecting...</p>
-            <script>
-                // Store token in localStorage
-                localStorage.setItem('auth_token', '{token}');
-                // Redirect to home
-                window.location.href = '/';
-            </script>
-        </body>
-        </html>
-        """
-        return web.Response(text=success_html, content_type="text/html")
+            return web.Response(text=error_html, content_type="text/html", status=500)
 
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
@@ -602,8 +728,14 @@ class WebserverController(CoreController):
             )
 
             # Create token for the new admin
-            device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
+            device_name = body.get(
+                "device_name", f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
+            )
             token = await self.auth.create_token(user, device_name)
+
+            # Mark onboarding as complete
+            self.mass.config.set(CONF_ONBOARD_DONE, True)
+            self.mass.config.save(immediate=True)
 
             self.logger.info("First admin user created: %s", username)
 
@@ -644,22 +776,61 @@ class WebserverController(CoreController):
         user = await self.auth.get_user(user_id)
         return user.to_dict() if user else None
 
-    @api_command("auth/user/update_role", required_role="admin")
-    async def update_user_role(self, user_id: str, role: str) -> dict[str, Any]:
+    @api_command("auth/user/create", required_role="admin")
+    async def create_user(
+        self,
+        username: str,
+        password: str,
+        role: str = "user",
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+    ) -> dict[str, Any]:
         """
-        Update user role (admin only).
+        Create a new user with built-in authentication (admin only).
 
-        :param user_id: The user ID.
-        :param role: New role ("admin" or "user").
-        :return: Success status.
+        :param username: The username (minimum 3 characters).
+        :param password: The password (minimum 8 characters).
+        :param role: User role - "admin" or "user" (default: "user").
+        :param display_name: Optional display name.
+        :param avatar_url: Optional avatar URL.
+        :return: Created user information or error.
         """
-        admin_user = get_current_user()
-        if not admin_user:
-            return {"success": False, "error": "Not authenticated"}
+        # Validation
+        if not username or len(username) < 3:
+            return {"success": False, "error": "Username must be at least 3 characters"}
 
-        new_role = UserRole(role)
-        success = await self.auth.update_user_role(user_id, new_role, admin_user)
-        return {"success": success}
+        if not password or len(password) < 8:
+            return {"success": False, "error": "Password must be at least 8 characters"}
+
+        # Validate role
+        try:
+            user_role = UserRole(role)
+        except ValueError:
+            return {"success": False, "error": "Invalid role. Must be 'admin' or 'user'"}
+
+        try:
+            # Get built-in provider
+            builtin_provider = self.auth.login_providers.get("builtin")
+            if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+                return {"success": False, "error": "Built-in auth provider not available"}
+
+            # Create user with password
+            user = await builtin_provider.create_user_with_password(
+                username, password, role=user_role
+            )
+
+            # Update optional fields if provided
+            if display_name or avatar_url:
+                user = await self.auth.update_user(
+                    user, display_name=display_name, avatar_url=avatar_url
+                )
+
+            self.logger.info("User created by admin: %s (role: %s)", username, role)
+            return {"success": True, "user": user.to_dict()}
+
+        except Exception as e:
+            self.logger.exception("Error creating user")
+            return {"success": False, "error": str(e)}
 
     @api_command("auth/user/enable", required_role="admin")
     async def enable_user(self, user_id: str) -> dict[str, Any]:
@@ -716,29 +887,130 @@ class WebserverController(CoreController):
             self.logger.exception("Error deleting user")
             return {"success": False, "error": str(e)}
 
-    @api_command("auth/change_password")
-    async def change_password(self, old_password: str, new_password: str) -> dict[str, Any]:
-        """
-        Change current user's password (built-in auth only).
+    @api_command("auth/me")
+    async def get_current_user_info(self) -> dict[str, Any]:
+        """Get current authenticated user information."""
+        current_user_obj = get_current_user()
+        if not current_user_obj:
+            return {"error": "Not authenticated"}
+        return current_user_obj.to_dict()
 
-        :param old_password: Current password.
-        :param new_password: New password.
-        :return: Success status.
+    @api_command("auth/user/update")
+    async def update_user_profile(
+        self,
+        user_id: str | None = None,
+        username: str | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+        password: str | None = None,
+        old_password: str | None = None,
+        role: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Update user profile information.
+
+        Users can update their own profile. Admins can update any user including role and password.
+
+        :param user_id: User ID to update (optional, defaults to current user).
+        :param username: New username (optional).
+        :param display_name: New display name (optional).
+        :param avatar_url: New avatar URL (optional).
+        :param password: New password (optional, minimum 8 characters).
+        :param old_password: Current password (required when user updates own password).
+        :param role: New role - "admin" or "user" (optional, admin only).
+        :return: Updated user information.
         """
         current_user_obj = get_current_user()
         if not current_user_obj:
             return {"success": False, "error": "Not authenticated"}
 
-        # Get built-in provider
-        builtin_provider = self.auth.login_providers.get("builtin")
-        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
-            return {"success": False, "error": "Built-in auth not available"}
+        # Determine target user
+        if user_id and user_id != current_user_obj.user_id:
+            # Updating another user - requires admin
+            if current_user_obj.role != UserRole.ADMIN:
+                return {"success": False, "error": "Admin access required"}
+            target_user = await self.auth.get_user(user_id)
+            if not target_user:
+                return {"success": False, "error": "User not found"}
+            is_admin_update = True
+        else:
+            # Updating own profile
+            target_user = current_user_obj
+            is_admin_update = False
 
-        # Change password
         try:
-            await builtin_provider.change_password(current_user_obj, old_password, new_password)
-            return {"success": True}
+            # Update role (admin only)
+            if role:
+                if not is_admin_update:
+                    return {"success": False, "error": "Only admins can update user roles"}
+
+                try:
+                    new_role = UserRole(role)
+                except ValueError:
+                    return {"success": False, "error": "Invalid role. Must be 'admin' or 'user'"}
+
+                success = await self.auth.update_user_role(
+                    target_user.user_id, new_role, current_user_obj
+                )
+                if not success:
+                    return {"success": False, "error": "Failed to update role"}
+
+                # Refresh target user to get updated role
+                refreshed_user = await self.auth.get_user(target_user.user_id)
+                if not refreshed_user:
+                    return {"success": False, "error": "Failed to refresh user after role update"}
+                target_user = refreshed_user
+
+            # Update basic profile fields
+            if username or display_name or avatar_url:
+                updated_user = await self.auth.update_user(
+                    target_user,
+                    username=username,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                )
+                if not updated_user:
+                    return {"success": False, "error": "Failed to update user profile"}
+                target_user = updated_user
+
+            # Update password if provided
+            if password:
+                if len(password) < 8:
+                    return {"success": False, "error": "Password must be at least 8 characters"}
+
+                builtin_provider = self.auth.login_providers.get("builtin")
+                if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+                    return {"success": False, "error": "Built-in auth not available"}
+
+                if is_admin_update:
+                    # Admin can reset password without old password
+                    await builtin_provider.reset_password(target_user, password)
+                    self.logger.info(
+                        "Password reset for user %s by admin %s",
+                        target_user.username,
+                        current_user_obj.username,
+                    )
+                else:
+                    # User updating own password - requires old password verification
+                    if not old_password:
+                        return {
+                            "success": False,
+                            "error": "old_password is required to change your own password",
+                        }
+
+                    # Verify old password and change to new one
+                    success = await builtin_provider.change_password(
+                        target_user, old_password, password
+                    )
+                    if not success:
+                        return {"success": False, "error": "Invalid current password"}
+
+                    self.logger.info("Password changed for user %s", target_user.username)
+
+            return {"success": True, "user": target_user.to_dict()}
+
         except Exception as e:
+            self.logger.exception("Error updating user profile")
             return {"success": False, "error": str(e)}
 
     @api_command("auth/tokens")
@@ -821,6 +1093,7 @@ class WebsocketClientHandler:
         self._logger = webserver.logger
         self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
         self._is_ingress = "X-Ingress-Path" in request.headers
+        self._events_unsub_callback: Any = None  # Will be set after authentication
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -851,13 +1124,17 @@ class WebsocketClientHandler:
         self._writer_task = self.mass.create_task(self._writer())
 
         # send server(version) info when client connects
-        await self._send_message(self.mass.get_server_info())
+        server_info = self.mass.get_server_info()
+        # Override requires_auth for Ingress (HA handles authentication)
+        if self._is_ingress:
+            server_info.requires_auth = False
+        await self._send_message(server_info)
 
-        # forward all events to clients
-        def handle_event(event: MassEvent) -> None:
-            self._send_message_sync(event)
-
-        unsub_callback = self.mass.subscribe(handle_event)
+        # For Ingress connections, auto-create/link user and subscribe to events immediately
+        # For regular connections, events will be subscribed after successful authentication
+        if self._is_ingress:
+            await self._handle_ingress_auth()
+            self._subscribe_to_events()
 
         disconnect_warn = None
 
@@ -889,8 +1166,9 @@ class WebsocketClientHandler:
 
         finally:
             # Handle connection shutting down.
-            unsub_callback()
-            self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
+            if self._events_unsub_callback:
+                self._events_unsub_callback()
+                self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
 
             try:
                 self._to_write.put_nowait(None)
@@ -931,8 +1209,10 @@ class WebsocketClientHandler:
             self._logger.warning("Invalid command: %s", msg.command)
             return
 
-        # Check authentication if required (skip for ingress connections)
-        if (handler.authenticated or handler.required_role) and not self._is_ingress:
+        # Check authentication if required
+        if handler.authenticated or handler.required_role:
+            # For Ingress, user should already be set from _handle_ingress_auth
+            # For regular connections, user must be set via auth command
             if self._authenticated_user is None:
                 await self._send_message(
                     ErrorResultMessage(
@@ -1042,14 +1322,16 @@ class WebsocketClientHandler:
 
         :param msg: The auth command message with access token.
         """
-        # Extract token from args
-        token = msg.args.get("access_token") if msg.args else None
+        # Extract token from args (support both 'token' and 'access_token' for backward compat)
+        token = msg.args.get("token") if msg.args else None
+        if not token:
+            token = msg.args.get("access_token") if msg.args else None
         if not token:
             await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
                     400,
-                    "access_token required in args",
+                    "token required in args",
                 )
             )
             return
@@ -1077,6 +1359,52 @@ class WebsocketClientHandler:
                 {"authenticated": True, "user": user.to_dict()},
             )
         )
+
+        # Subscribe to events after successful authentication
+        self._subscribe_to_events()
+
+    async def _handle_ingress_auth(self) -> None:
+        """Handle authentication for Ingress connections (auto-create/link user)."""
+        ingress_user_id = self.request.headers.get("X-Remote-User-ID")
+        ingress_username = self.request.headers.get("X-Remote-User-Name")
+        ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
+
+        if not ingress_user_id or not ingress_username:
+            self._logger.warning("Ingress headers missing user info")
+            return
+
+        # Try to find existing user linked to this HA user ID
+        user = await self.webserver.auth.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, ingress_user_id
+        )
+
+        if not user:
+            # Auto-create user for Ingress (they're already authenticated by HA)
+            user = await self.webserver.auth.create_user(
+                username=ingress_username,
+                role=UserRole.USER,
+                display_name=ingress_display_name,
+            )
+            # Link to Home Assistant provider
+            await self.webserver.auth.link_user_to_provider(
+                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+            )
+
+        self._authenticated_user = user
+        self._logger.debug("Ingress user authenticated: %s", user.username)
+
+    def _subscribe_to_events(self) -> None:
+        """Subscribe to Mass events and forward them to the client."""
+        if self._events_unsub_callback is not None:
+            # Already subscribed
+            return
+
+        def handle_event(event: Any) -> None:
+            # event is MassEvent but we use Any to avoid runtime import
+            self._send_message_sync(event)
+
+        self._events_unsub_callback = self.mass.subscribe(handle_event)
+        self._logger.debug("Subscribed to events")
 
     def _cancel(self) -> None:
         """Cancel the connection."""

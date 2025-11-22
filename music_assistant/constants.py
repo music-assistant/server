@@ -14,8 +14,8 @@ from music_assistant_models.media_items import AudioFormat
 APPLICATION_NAME: Final = "Music Assistant"
 
 
-API_SCHEMA_VERSION: Final[int] = 27
-MIN_SCHEMA_VERSION: Final[int] = 24
+API_SCHEMA_VERSION: Final[int] = 28
+MIN_SCHEMA_VERSION: Final[int] = 28
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"

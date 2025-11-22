@@ -1249,15 +1249,6 @@ class ConfigController:
             ]
             changed = True
 
-        # set 'onboard_done' flag if we have any (non default) provider configs
-        if self._data.get(CONF_ONBOARD_DONE) is None:
-            default_providers = {x.domain for x in self.mass.get_provider_manifests() if x.builtin}
-            for provider_config in self._data.get(CONF_PROVIDERS, {}).values():
-                if provider_config["domain"] not in default_providers:
-                    self._data[CONF_ONBOARD_DONE] = True
-                    changed = True
-                    break
-
         # migrate player_group entries
         ugp_found = False
         for player_config in self._data.get(CONF_PLAYERS, {}).values():

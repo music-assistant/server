@@ -259,6 +259,7 @@ class MusicAssistant:
             base_url=self.webserver.base_url,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
+            requires_auth=True,  # Default: auth required (overridden for Ingress)
         )
 
     @api_command("providers/manifests")
@@ -639,11 +640,16 @@ class MusicAssistant:
             self.music,
             self.players,
             self.player_queues,
+            self.webserver,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
                     continue
-                obj = getattr(cls, attr_name)
+                try:
+                    obj = getattr(cls, attr_name)
+                except (AttributeError, RuntimeError):
+                    # Skip properties that fail during initialization
+                    continue
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
                     authenticated = getattr(obj, "api_authenticated", True)

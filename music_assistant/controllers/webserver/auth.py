@@ -79,7 +79,7 @@ class AuthenticationManager:
         # This handles existing setups where authentication was optional
         if self.mass.config.onboard_done and not await self.has_users():
             self.logger.warning(
-                "Authentication is now mandatory but no users exist. "
+                "Authentication is mandatory but no users exist. "
                 "Resetting onboard_done to redirect to setup."
             )
             self.mass.config.set(CONF_ONBOARD_DONE, False)
@@ -264,14 +264,16 @@ class AuthenticationManager:
         if not user_row or not user_row["enabled"]:
             return None
 
+        # Convert Row to dict for easier handling of optional fields
+        user_dict = dict(user_row)
         return User(
-            user_id=user_row["user_id"],
-            username=user_row["username"],
-            role=UserRole(user_row["role"]),
-            enabled=bool(user_row["enabled"]),
-            created_at=datetime.fromisoformat(user_row["created_at"]),
-            display_name=user_row.get("display_name"),
-            avatar_url=user_row.get("avatar_url"),
+            user_id=user_dict["user_id"],
+            username=user_dict["username"],
+            role=UserRole(user_dict["role"]),
+            enabled=bool(user_dict["enabled"]),
+            created_at=datetime.fromisoformat(user_dict["created_at"]),
+            display_name=user_dict.get("display_name"),
+            avatar_url=user_dict.get("avatar_url"),
         )
 
     async def get_user_by_provider_link(
@@ -366,6 +368,35 @@ class AuthenticationManager:
             provider_user_id=provider_user_id,
             created_at=created_at,
         )
+
+    async def update_user(
+        self,
+        user: User,
+        username: str | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+    ) -> User:
+        """
+        Update a user's profile information.
+
+        :param user: The user to update.
+        :param username: New username (optional).
+        :param display_name: New display name (optional).
+        :param avatar_url: New avatar URL (optional).
+        """
+        updates = {}
+        if username is not None:
+            updates["username"] = username
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if avatar_url is not None:
+            updates["avatar_url"] = avatar_url
+
+        if updates:
+            await self.database.update("users", {"user_id": user.user_id}, updates)
+
+        # Return updated user
+        return await self.get_user(user.user_id)  # type: ignore[return-value]
 
     async def update_provider_link(
         self,
@@ -463,18 +494,21 @@ class AuthenticationManager:
     async def list_users(self) -> list[User]:
         """Get all users."""
         user_rows = await self.database.get_rows("users", limit=1000)
-        return [
-            User(
-                user_id=row["user_id"],
-                username=row["username"],
-                role=UserRole(row["role"]),
-                enabled=bool(row["enabled"]),
-                created_at=datetime.fromisoformat(row["created_at"]),
-                display_name=row.get("display_name"),
-                avatar_url=row.get("avatar_url"),
+        users = []
+        for row in user_rows:
+            row_dict = dict(row)
+            users.append(
+                User(
+                    user_id=row_dict["user_id"],
+                    username=row_dict["username"],
+                    role=UserRole(row_dict["role"]),
+                    enabled=bool(row_dict["enabled"]),
+                    created_at=datetime.fromisoformat(row_dict["created_at"]),
+                    display_name=row_dict.get("display_name"),
+                    avatar_url=row_dict.get("avatar_url"),
+                )
             )
-            for row in user_rows
-        ]
+        return users
 
     async def update_user_role(self, user_id: str, new_role: UserRole, admin_user: User) -> bool:
         """

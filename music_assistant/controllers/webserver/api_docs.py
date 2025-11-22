@@ -453,6 +453,7 @@ def generate_openapi_spec(
                     "commands with examples."
                 ),
                 "operationId": "execute_command",
+                "security": [{"bearerAuth": []}],
                 "requestBody": {
                     "required": True,
                     "content": {
@@ -502,10 +503,164 @@ def generate_openapi_spec(
                         },
                     },
                     "400": {"description": "Bad request - invalid command or parameters"},
+                    "401": {"description": "Unauthorized - authentication required"},
+                    "403": {"description": "Forbidden - insufficient permissions"},
                     "500": {"description": "Internal server error"},
                 },
             }
-        }
+        },
+        "/auth/login": {
+            "post": {
+                "summary": "Authenticate with credentials",
+                "description": "Login with username and password to obtain an access token.",
+                "operationId": "auth_login",
+                "tags": ["Authentication"],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "provider_id": {
+                                        "type": "string",
+                                        "description": "Auth provider ID (defaults to 'builtin')",
+                                        "example": "builtin",
+                                    },
+                                    "credentials": {
+                                        "type": "object",
+                                        "description": "Provider-specific credentials",
+                                        "properties": {
+                                            "username": {"type": "string"},
+                                            "password": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Login successful",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "token": {"type": "string"},
+                                        "user": {"type": "object"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"description": "Invalid credentials"},
+                },
+            }
+        },
+        "/auth/providers": {
+            "get": {
+                "summary": "Get available auth providers",
+                "description": "Returns list of configured authentication providers.",
+                "operationId": "auth_providers",
+                "tags": ["Authentication"],
+                "responses": {
+                    "200": {
+                        "description": "List of auth providers",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "providers": {
+                                            "type": "array",
+                                            "items": {"type": "object"},
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+        "/setup": {
+            "post": {
+                "summary": "Initial server setup",
+                "description": (
+                    "Handle initial setup of the Music Assistant server including creating "
+                    "the first admin user. Only accessible when no users exist "
+                    "(onboard_done=false)."
+                ),
+                "operationId": "setup",
+                "tags": ["Server"],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["username", "password"],
+                                "properties": {
+                                    "username": {"type": "string"},
+                                    "password": {"type": "string"},
+                                    "display_name": {"type": "string"},
+                                },
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Setup completed successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "token": {"type": "string"},
+                                        "user": {"type": "object"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"description": "Setup already completed or invalid request"},
+                },
+            }
+        },
+        "/info": {
+            "get": {
+                "summary": "Get server info",
+                "description": (
+                    "Returns server information including schema version and authentication status."
+                ),
+                "operationId": "get_info",
+                "tags": ["Server"],
+                "responses": {
+                    "200": {
+                        "description": "Server information",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "schema_version": {"type": "integer"},
+                                        "server_version": {"type": "string"},
+                                        "onboard_done": {"type": "boolean"},
+                                        "requires_auth": {"type": "boolean"},
+                                        "homeassistant_addon": {"type": "boolean"},
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
     }
 
     # Build OpenAPI spec
@@ -528,7 +683,16 @@ def generate_openapi_spec(
         },
         "servers": [{"url": server_url, "description": "Music Assistant Server"}],
         "paths": paths,
-        "components": {"schemas": definitions},
+        "components": {
+            "schemas": definitions,
+            "securitySchemes": {
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "Access token obtained from /auth/login or /auth/setup",
+                }
+            },
+        },
     }
 
 
@@ -1111,6 +1275,112 @@ def generate_commands_reference(  # noqa: PLR0915
             display: block;
             margin-top: 0.25rem;
         }
+        .auth-section {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border: 2px solid #e0e0e0;
+        }
+        .auth-section.authenticated {
+            border-color: #4caf50;
+            background: #e8f5e9;
+        }
+        .auth-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.8rem;
+            font-weight: 600;
+        }
+        .auth-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #f44336;
+        }
+        .auth-status-dot.authenticated {
+            background: #4caf50;
+        }
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+        .auth-form input {
+            padding: 0.6rem;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95em;
+        }
+        .auth-form input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .auth-form button {
+            padding: 0.6rem 1.2rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .auth-form button:hover {
+            background: #5568d3;
+        }
+        .auth-form button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .auth-user-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .auth-user-details {
+            font-size: 0.9em;
+            color: #666;
+        }
+        .auth-logout-btn {
+            padding: 0.5rem 1rem;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .auth-logout-btn:hover {
+            background: #d32f2f;
+        }
+        .auth-error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 0.6rem;
+            border-radius: 6px;
+            font-size: 0.9em;
+            margin-top: 0.5rem;
+        }
+        .role-badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            text-transform: uppercase;
+        }
+        .role-badge.admin {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .role-badge.user {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
     </style>
 </head>
 <body>
@@ -1120,6 +1390,27 @@ def generate_commands_reference(  # noqa: PLR0915
     </div>
 
     <div class="nav-container">
+        <div class="auth-section" id="authSection">
+            <div class="auth-status">
+                <span class="auth-status-dot" id="authDot"></span>
+                <span id="authStatusText">Not Authenticated</span>
+            </div>
+            <div id="authFormContainer">
+                <form class="auth-form" id="loginForm" onsubmit="return handleLogin(event)">
+                    <input type="text" id="username" placeholder="Username" required />
+                    <input type="password" id="password" placeholder="Password" required />
+                    <button type="submit" id="loginBtn">Login</button>
+                </form>
+                <div id="authError" class="auth-error" style="display: none;"></div>
+            </div>
+            <div id="authUserInfo" class="auth-user-info" style="display: none;">
+                <div class="auth-user-details">
+                    <div>Logged in as: <strong id="authUsername"></strong></div>
+                    <div>Role: <strong id="authRole"></strong></div>
+                </div>
+                <button class="auth-logout-btn" onclick="handleLogout()">Logout</button>
+            </div>
+        </div>
         <div class="search-box">
             <input type="text" id="search" placeholder="Search commands..." />
         </div>
@@ -1156,7 +1447,14 @@ def generate_commands_reference(  # noqa: PLR0915
                 '                    <div class="command-header" onclick="toggleCommand(this)">\n'
             )
             html += '                        <div class="command-title">\n'
-            html += f'                            <div class="command-name">{command}</div>\n'
+            html += f'                            <div class="command-name">{command}'
+
+            # Add role badge if required_role is set
+            if handler.required_role:
+                role_class = handler.required_role.lower()
+                html += f'<span class="role-badge {role_class}">{handler.required_role}</span>'
+
+            html += "</div>\n"
             if summary:
                 summary_escaped = summary.replace("<", "&lt;").replace(">", "&gt;")
                 html += (
@@ -1273,9 +1571,14 @@ def generate_commands_reference(  # noqa: PLR0915
             if example_args:
                 request_body["args"] = example_args
 
+            # Build cURL command with auth header if required
+            curl_headers = '  -H "Content-Type: application/json"'
+            if handler.authenticated:
+                curl_headers += ' \\\n  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"'
+
             curl_cmd = (
                 f"curl -X POST {server_url}/api \\\n"
-                '  -H "Content-Type: application/json" \\\n'
+                f"{curl_headers} \\\n"
                 f"  -d '{json.dumps(request_body, indent=2)}'"
             )
 
@@ -1337,6 +1640,155 @@ def generate_commands_reference(  # noqa: PLR0915
     html += """    </div>
 
     <script>
+        // Authentication functionality
+        const TOKEN_STORAGE_KEY = 'ma_api_token';
+        const USER_STORAGE_KEY = 'ma_api_user';
+
+        // Check for existing token on page load
+        function checkAuth() {
+            const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+            const userStr = localStorage.getItem(USER_STORAGE_KEY);
+
+            if (token && userStr) {
+                try {
+                    const user = JSON.parse(userStr);
+                    updateAuthUI(true, user);
+                } catch (e) {
+                    clearAuth();
+                }
+            }
+        }
+
+        // Handle login form submission
+        async function handleLogin(event) {
+            event.preventDefault();
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const loginBtn = document.getElementById('loginBtn');
+            const errorDiv = document.getElementById('authError');
+
+            // Disable button and show loading
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Logging in...';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        credentials: {
+                            username: username,
+                            password: password
+                        }
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success && result.token && result.user) {
+                    // Store token and user info
+                    localStorage.setItem(TOKEN_STORAGE_KEY, result.token);
+                    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(result.user));
+
+                    // Update UI
+                    updateAuthUI(true, result.user);
+
+                    // Clear form
+                    document.getElementById('loginForm').reset();
+                } else {
+                    // Show error
+                    errorDiv.textContent = result.error || 'Login failed';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Connection error: ' + error.message;
+                errorDiv.style.display = 'block';
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Login';
+            }
+
+            return false;
+        }
+
+        // Handle logout
+        function handleLogout() {
+            clearAuth();
+        }
+
+        // Clear authentication
+        function clearAuth() {
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
+            localStorage.removeItem(USER_STORAGE_KEY);
+            updateAuthUI(false, null);
+        }
+
+        // Update auth UI
+        function updateAuthUI(authenticated, user) {
+            const authSection = document.getElementById('authSection');
+            const authDot = document.getElementById('authDot');
+            const authStatusText = document.getElementById('authStatusText');
+            const authFormContainer = document.getElementById('authFormContainer');
+            const authUserInfo = document.getElementById('authUserInfo');
+
+            if (authenticated && user) {
+                authSection.classList.add('authenticated');
+                authDot.classList.add('authenticated');
+                authStatusText.textContent = 'Authenticated';
+                authFormContainer.style.display = 'none';
+                authUserInfo.style.display = 'flex';
+
+                document.getElementById('authUsername').textContent = user.username;
+                document.getElementById('authRole').textContent = user.role;
+
+                // Update cURL examples with actual token
+                updateCurlExamples();
+            } else {
+                authSection.classList.remove('authenticated');
+                authDot.classList.remove('authenticated');
+                authStatusText.textContent = 'Not Authenticated';
+                authFormContainer.style.display = 'block';
+                authUserInfo.style.display = 'none';
+
+                // Reset cURL examples to placeholder
+                updateCurlExamples();
+            }
+        }
+
+        // Update all cURL examples with actual token or placeholder
+        function updateCurlExamples() {
+            const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+            const curlBlocks = document.querySelectorAll('.example pre');
+
+            curlBlocks.forEach(block => {
+                const curlText = block.textContent;
+
+                // Only update if it contains an Authorization header
+                if (curlText.includes('Authorization: Bearer')) {
+                    if (token) {
+                        // Replace placeholder with actual token
+                        block.textContent = curlText.replace(
+                            /Authorization: Bearer YOUR_ACCESS_TOKEN/g,
+                            `Authorization: Bearer ${token}`
+                        );
+                    } else {
+                        // Replace actual token with placeholder
+                        block.textContent = curlText.replace(
+                            /Authorization: Bearer \\S+/g,
+                            'Authorization: Bearer YOUR_ACCESS_TOKEN'
+                        );
+                    }
+                }
+            });
+        }
+
+        // Initialize auth on page load
+        checkAuth();
+
         // Search functionality
         document.getElementById('search').addEventListener('input', function(e) {
             const searchTerm = e.target.value.toLowerCase();
@@ -1427,12 +1879,23 @@ def generate_commands_reference(  # noqa: PLR0915
                     throw new Error('Invalid JSON: ' + e.message);
                 }
 
+                // Get stored token
+                const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+
+                // Build headers
+                const headers = {
+                    'Content-Type': 'application/json',
+                };
+
+                // Add authorization header if token exists
+                if (token) {
+                    headers['Authorization'] = 'Bearer ' + token;
+                }
+
                 // Make API request
                 const response = await fetch('/api', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: headers,
                     body: JSON.stringify(requestBody)
                 });
 

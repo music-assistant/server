@@ -188,10 +188,7 @@
 <body>
     <div class="login-container">
         <div class="logo">
-            <svg width="80" height="80" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="50" cy="50" r="45" fill="#667eea"/>
-                <path d="M35 40 L35 60 L60 50 Z" fill="white"/>
-            </svg>
+            <img src="/logo.png" alt="Music Assistant Logo">
         </div>
 
         <h1>Welcome to Music Assistant</h1>
@@ -223,6 +220,11 @@
 
     <script>
         const API_BASE = window.location.origin;
+
+        // Get return_url from query string
+        const urlParams = new URLSearchParams(window.location.search);
+        const returnUrl = urlParams.get('return_url');
+        console.log('Login page loaded with return_url:', returnUrl);
 
         // Show error message
         function showError(message) {
@@ -298,25 +300,42 @@
             const password = document.getElementById('password').value;
 
             try {
+                const requestBody = {
+                    provider_id: 'builtin',
+                    credentials: { username, password }
+                };
+
+                // Include return_url if present
+                if (returnUrl) {
+                    requestBody.return_url = returnUrl;
+                }
+
                 const response = await fetch(`${API_BASE}/auth/login`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        provider_id: 'builtin',
-                        credentials: { username, password }
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 const data = await response.json();
+                console.log('Login response:', data);
 
                 if (data.success) {
-                    // Store token
-                    localStorage.setItem('auth_token', data.token);
-                    // Redirect to home
-                    window.location.href = '/';
+                    console.log('Login successful, token received');
+                    // If return_url is provided, redirect to it with token as query parameter
+                    if (returnUrl) {
+                        const targetUrl = new URL(returnUrl);
+                        targetUrl.searchParams.set('token', data.token);
+                        console.log('Redirecting to:', targetUrl.toString());
+                        window.location.href = targetUrl.toString();
+                    } else {
+                        // No return_url, redirect to root with token as query parameter
+                        console.log('No return_url, redirecting to root with token');
+                        window.location.href = `/?token=${encodeURIComponent(data.token)}`;
+                    }
                 } else {
+                    console.error('Login failed:', data.error);
                     showError(data.error || 'Login failed');
                 }
             } catch (error) {
