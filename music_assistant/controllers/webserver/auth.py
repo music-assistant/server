@@ -11,7 +11,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import CONF_ONBOARD_DONE, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthResult,
     BuiltinLoginProvider,
@@ -39,7 +39,6 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 TOKEN_EXPIRATION_DAYS = 30
 
 # Config keys (defined in controller.py to avoid circular import)
-CONF_AUTH_ENABLED = "auth_enabled"
 CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
 CONF_AUTH_HA_ENABLED = "auth_ha_enabled"
 
@@ -58,14 +57,10 @@ class AuthenticationManager:
         self.database: DatabaseConnection = None  # type: ignore[assignment]
         self.login_providers: dict[str, LoginProvider] = {}
         self.logger = LOGGER
-        self.enabled = False  # Will be set from config
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
         # Get auth settings from config
-        auth_enabled = self.webserver.config.get_value(CONF_AUTH_ENABLED)
-        assert isinstance(auth_enabled, bool)
-        self.enabled = auth_enabled
         allow_self_registration = self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION)
         assert isinstance(allow_self_registration, bool)
 
@@ -80,10 +75,18 @@ class AuthenticationManager:
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
 
+        # Migration: Reset onboard_done if no users exist
+        # This handles existing setups where authentication was optional
+        if self.mass.config.onboard_done and not await self.has_users():
+            self.logger.warning(
+                "Authentication is now mandatory but no users exist. "
+                "Resetting onboard_done to redirect to setup."
+            )
+            self.mass.config.set(CONF_ONBOARD_DONE, False)
+            self.mass.config.save(immediate=True)
+
         self.logger.info(
-            "Authentication manager initialized (enabled=%s, providers=%d)",
-            self.enabled,
-            len(self.login_providers),
+            "Authentication manager initialized (providers=%d)", len(self.login_providers)
         )
 
     async def close(self) -> None:
@@ -575,3 +578,20 @@ class AuthenticationManager:
             return AuthResult(success=False, error="Invalid provider")
 
         return await provider.handle_oauth_callback(code, state, redirect_uri)
+
+    async def create_long_lived_token(self, user: User, name: str) -> str:
+        """
+        Create a long-lived access token (no expiration) for external apps/integrations.
+
+        This is similar to Home Assistant's long-lived access tokens - they never expire
+        and are intended for external applications like the Home Assistant integration,
+        mobile apps, etc. Users can manage and revoke these tokens at any time.
+
+        :param user: The user to create the token for.
+        :param name: A name/description for the token (e.g., "Home Assistant", "Mobile App").
+        """
+        # Create a token with no expiration
+        token = await self.create_token(user, name, expires_in_days=None)
+
+        self.logger.info("Created long-lived token '%s' for user '%s'", name, user.username)
+        return token

@@ -33,7 +33,12 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InvalidCommand
 
-from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_BIND_IP,
+    CONF_BIND_PORT,
+    RESOURCES_DIR,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.api import APICommandHandler, api_command, parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -61,7 +66,6 @@ if TYPE_CHECKING:
 DEFAULT_SERVER_PORT = 8095
 INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
-CONF_AUTH_ENABLED = "auth_enabled"
 CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
 CONF_AUTH_HA_ENABLED = "auth_ha_enabled"
 MAX_PENDING_MSG = 512
@@ -110,6 +114,7 @@ class WebserverController(CoreController):
                 "Use a reverse proxy or VPN to secure access.",
                 required=False,
             ),
+            # Authentication settings
             ConfigEntry(
                 key=CONF_AUTH_HA_ENABLED,
                 type=ConfigEntryType.BOOLEAN,
@@ -119,7 +124,7 @@ class WebserverController(CoreController):
                 "Requires the Home Assistant provider (plugin) to be configured. \n"
                 "Uses hass_client for seamless authentication - "
                 "no manual OAuth app setup required!",
-                depends_on=CONF_AUTH_ENABLED,
+                category="advanced",
             ),
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -150,18 +155,6 @@ class WebserverController(CoreController):
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
-            ),
-            # Authentication settings
-            ConfigEntry(
-                key=CONF_AUTH_ENABLED,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Enable Authentication",
-                description="Enable authentication for the web interface and API. \n"
-                "When enabled, users must log in to access Music Assistant. \n"
-                "Note that while this is now still a provisional feature, "
-                "it will be mandatory in future releases!",
                 category="advanced",
             ),
             ConfigEntry(
@@ -382,9 +375,7 @@ class WebserverController(CoreController):
 
     async def _handle_api_intro(self, request: web.Request) -> web.Response:
         """Handle request for API introduction/documentation page."""
-        intro_html_path = os.path.join(
-            os.path.dirname(__file__), "..", "helpers", "resources", "api_docs.html"
-        )
+        intro_html_path = str(RESOURCES_DIR.joinpath("api_docs.html"))
         # Read the template
         async with aiofiles.open(intro_html_path) as f:
             html_content = await f.read()
@@ -415,20 +406,16 @@ class WebserverController(CoreController):
 
     async def _handle_swagger_ui(self, request: web.Request) -> web.FileResponse:
         """Handle request for Swagger UI."""
-        swagger_html_path = os.path.join(
-            os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
-        )
+        swagger_html_path = str(RESOURCES_DIR.joinpath("swagger_ui.html"))
         return await self._server.serve_static(swagger_html_path, request)
 
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page."""
-        # If auth is enabled and no users exist, redirect to setup
-        if self.auth.enabled and not await self.auth.has_users():
+        # If no users exist, redirect to setup
+        if not await self.auth.has_users():
             return web.Response(status=302, headers={"Location": "/setup"})
 
-        login_html_path = os.path.join(
-            os.path.dirname(__file__), "..", "helpers", "resources", "login.html"
-        )
+        login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
             html_content = await f.read()
         return web.Response(text=html_content, content_type="text/html")
@@ -563,9 +550,7 @@ class WebserverController(CoreController):
             return web.Response(status=302, headers={"Location": "/login"})
 
         # Serve setup page
-        setup_html_path = os.path.join(
-            os.path.dirname(__file__), "..", "helpers", "resources", "setup.html"
-        )
+        setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
         async with aiofiles.open(setup_html_path) as f:
             html_content = await f.read()
         return web.Response(text=html_content, content_type="text/html")

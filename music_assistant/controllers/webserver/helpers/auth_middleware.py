@@ -70,7 +70,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
     token = parts[1]
 
-    # Authenticate with token
+    # Authenticate with token (works for both user tokens and API keys)
     user = await mass.webserver.auth.authenticate_with_token(token)
     if user:
         # Store in request context
