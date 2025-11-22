@@ -238,6 +238,10 @@
     </div>
 
     <script>
+        // Get device_name from query string if provided
+        const urlParams = new URLSearchParams(window.location.search);
+        const deviceName = urlParams.get('device_name');
+
         const form = document.getElementById('setupForm');
         const errorMessage = document.getElementById('errorMessage');
         const submitBtn = document.getElementById('submitBtn');
@@ -289,15 +293,22 @@
             setLoading(true);
 
             try {
+                const requestBody = {
+                    username: username,
+                    password: password,
+                };
+
+                // Include device_name if provided via query parameter
+                if (deviceName) {
+                    requestBody.device_name = deviceName;
+                }
+
                 const response = await fetch('/setup', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        username: username,
-                        password: password,
-                    }),
+                    body: JSON.stringify(requestBody),
                 });
 
                 const data = await response.json();

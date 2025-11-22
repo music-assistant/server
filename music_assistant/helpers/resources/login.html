@@ -221,10 +221,11 @@
     <script>
         const API_BASE = window.location.origin;
 
-        // Get return_url from query string
+        // Get return_url and device_name from query string
         const urlParams = new URLSearchParams(window.location.search);
         const returnUrl = urlParams.get('return_url');
-        console.log('Login page loaded with return_url:', returnUrl);
+        const deviceName = urlParams.get('device_name');
+        console.log('Login page loaded with return_url:', returnUrl, 'device_name:', deviceName);
 
         // Show error message
         function showError(message) {
@@ -304,6 +305,11 @@
                     provider_id: 'builtin',
                     credentials: { username, password }
                 };
+
+                // Include device_name if provided via query parameter
+                if (deviceName) {
+                    requestBody.device_name = deviceName;
+                }
 
                 // Include return_url if present
                 if (returnUrl) {
