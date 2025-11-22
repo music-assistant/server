@@ -1014,18 +1014,56 @@ class WebserverController(CoreController):
             return {"success": False, "error": str(e)}
 
     @api_command("auth/tokens")
-    async def get_my_tokens(self) -> list[dict[str, Any]]:
+    async def get_my_tokens(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """
-        Get current user's auth tokens.
+        Get current user's auth tokens or another user's tokens (admin only).
 
+        :param user_id: Optional user ID to get tokens for (admin only).
         :return: List of token dictionaries.
         """
-        user = get_current_user()
-        if not user:
+        current_user = get_current_user()
+        if not current_user:
             return []
 
-        tokens = await self.auth.get_user_tokens(user)
+        # If user_id is provided and different from current user, require admin
+        if user_id and user_id != current_user.user_id:
+            if current_user.role != UserRole.ADMIN:
+                return []
+            target_user = await self.auth.get_user(user_id)
+            if not target_user:
+                return []
+        else:
+            target_user = current_user
+
+        tokens = await self.auth.get_user_tokens(target_user)
         return [token.to_dict() for token in tokens]
+
+    @api_command("auth/token/create")
+    async def create_user_token(self, name: str, user_id: str | None = None) -> dict[str, Any]:
+        """
+        Create a new long-lived access token for current user or another user (admin only).
+
+        :param name: The name/description for the token.
+        :param user_id: Optional user ID to create token for (admin only).
+        :return: Dictionary with the new token.
+        """
+        current_user = get_current_user()
+        if not current_user:
+            return {"success": False, "error": "Not authenticated"}
+
+        # If user_id is provided and different from current user, require admin
+        if user_id and user_id != current_user.user_id:
+            if current_user.role != UserRole.ADMIN:
+                return {"success": False, "error": "Admin access required"}
+            target_user = await self.auth.get_user(user_id)
+            if not target_user:
+                return {"success": False, "error": "User not found"}
+        else:
+            target_user = current_user
+
+        # Create the token
+        token = await self.auth.create_token(target_user, name)
+        return {"success": True, "token": token}
 
     @api_command("auth/token/revoke")
     async def revoke_token(self, token_id: str) -> dict[str, Any]:
