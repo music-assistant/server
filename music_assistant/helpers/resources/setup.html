@@ -253,12 +253,7 @@
 
         // Configure UI for Ingress setup
         if (isIngressSetup) {
-            // Update info box for Ingress context
-            document.querySelector('.info-box h3').textContent = 'Home Assistant Setup';
-            document.querySelector('.info-box p').textContent =
-                'Create a password for your Home Assistant account. Your username is provided by Home Assistant.';
-
-            // Pre-fill and disable username field
+            // Pre-fill and disable username field (provided by Home Assistant)
             const usernameField = document.getElementById('username');
             usernameField.value = ingressUsername;
             usernameField.disabled = true;
@@ -328,7 +323,7 @@
                     requestBody.display_name = ingressDisplayName;
                 }
 
-                const response = await fetch('/setup', {
+                const response = await fetch('setup', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
