@@ -686,16 +686,30 @@ class WebserverController(CoreController):
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"
-            self.logger.debug(
-                "OAuth callback: return_url=%s, token created", auth_result.return_url
-            )
             # Add token to redirect URL (URL-encoded)
+            # Important: Insert token BEFORE any hash fragment (e.g., #/) to ensure
+            # it's in query params, not inside the hash where Vue Router can't access it easily
             encoded_token = quote(token, safe="")
-            if "?" in final_redirect_url:
+
+            # Split URL by hash to insert token in the right place
+            if "#" in final_redirect_url:
+                # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
+                url_parts = final_redirect_url.split("#", 1)
+                base_url = url_parts[0]
+                hash_part = url_parts[1]
+
+                # Add token to base URL (before hash)
+                if "?" in base_url:
+                    base_url += f"&token={encoded_token}"
+                else:
+                    base_url += f"?token={encoded_token}"
+
+                final_redirect_url = f"{base_url}#{hash_part}"
+            # No hash fragment, simple case
+            elif "?" in final_redirect_url:
                 final_redirect_url += f"&token={encoded_token}"
             else:
                 final_redirect_url += f"?token={encoded_token}"
-            self.logger.debug("OAuth callback: final_redirect_url=%s", final_redirect_url)
 
             # Return success page with token
             # This handles both popup and same-window OAuth flows
@@ -741,42 +755,41 @@ class WebserverController(CoreController):
                     const token = '{token}';
                     const redirectUrl = '{final_redirect_url}';
 
-                    // Store token in localStorage
-                    localStorage.setItem('auth_token', token);
+                    // Check if we're in a popup (opened by window.open())
+                    const isPopup = window.opener !== null;
 
-                    // Check if we're in a popup (has opener) or same window
-                    if (window.opener && !window.opener.closed) {{
-                        // We're in a popup - send token to parent
-                        console.log('OAuth callback in popup, sending message to parent');
-                        try {{
-                            window.opener.postMessage({{
-                                type: 'oauth_success',
-                                token: token,
-                                redirectUrl: redirectUrl
-                            }}, window.location.origin);
+                    if (isPopup) {{
+                        // Popup mode - send token to parent and close
+                        statusEl.textContent = 'Login Complete!';
+                        messageEl.textContent = 'Closing popup...';
 
-                            // Try to close the popup
-                            window.close();
-
-                            // If still here after 500ms, window.close() failed
-                            // Show manual close instruction
-                            setTimeout(() => {{
-                                statusEl.textContent = 'Login Complete!';
-                                messageEl.textContent =
-                                    'You can close this window and return to Music Assistant.';
-                            }}, 500);
-                        }} catch (e) {{
-                            console.error('Failed to send message to parent:', e);
-                            // If postMessage fails, redirect in this window
-                            statusEl.textContent = 'Login Complete!';
-                            messageEl.textContent = 'Redirecting...';
-                            setTimeout(() => {{
-                                window.location.href = redirectUrl;
-                            }}, 1000);
+                        // Send message to parent window
+                        if (window.opener && !window.opener.closed) {{
+                            try {{
+                                window.opener.postMessage({{
+                                    type: 'oauth_success',
+                                    token: token,
+                                    redirectUrl: redirectUrl
+                                }}, window.location.origin);
+                            }} catch (e) {{
+                                console.error('Failed to send postMessage:', e);
+                            }}
                         }}
+
+                        // Close popup after short delay
+                        setTimeout(() => {{
+                            window.close();
+                            // If still open after 500ms, show manual instruction
+                            setTimeout(() => {{
+                                messageEl.textContent = 'Please close this window manually ' +
+                                    'and return to the login page.';
+                            }}, 500);
+                        }}, 1000);
                     }} else {{
-                        // Same window (or no opener) - redirect
-                        console.log('OAuth callback in same window, redirecting to:', redirectUrl);
+                        // Same window mode - redirect directly
+                        statusEl.textContent = 'Login Successful!';
+                        messageEl.textContent = 'Redirecting...';
+                        localStorage.setItem('auth_token', token);
                         window.location.href = redirectUrl;
                     }}
                 </script>

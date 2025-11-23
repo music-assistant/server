@@ -9,9 +9,12 @@ import logging
 import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from hass_client.utils import base_url, get_auth_url, get_token
+from hass_client import HomeAssistantClient
+from hass_client.exceptions import BaseHassClientError
+from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.models.auth import AuthProviderType, User, UserRole
@@ -249,6 +252,59 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         return AuthResult(success=False, error="Use OAuth flow for Home Assistant authentication")
 
+    async def _get_external_ha_url(self) -> str | None:
+        """
+        Get the external URL for Home Assistant from the config API.
+
+        This is needed when MA runs as HA add-on and connects via internal docker network
+        (http://supervisor/api) but needs the external URL for OAuth redirects.
+
+        :return: External URL if available, otherwise None.
+        """
+        ha_url = cast("str", self.config.get("ha_url")) if self.config.get("ha_url") else None
+        if not ha_url:
+            return None
+
+        # Check if we're using the internal supervisor URL
+        if "supervisor" not in ha_url.lower():
+            # Not using internal URL, return as-is
+            return ha_url
+
+        # We're using internal URL - try to get external URL from HA provider
+        ha_provider = None
+        for provider in self.mass.providers:
+            if provider.domain == "hass" and provider.available:
+                ha_provider = provider
+                break
+
+        if not ha_provider:
+            # No HA provider available, use configured URL
+            return ha_url
+
+        try:
+            # Access the hass client from the provider
+            hass_client = getattr(ha_provider, "hass", None)
+            if not hass_client or not hass_client.connected:
+                return ha_url
+
+            # Get config from Home Assistant
+            config = await hass_client.send_command("config/core/get")
+            if config:
+                # Try external_url first, fall back to internal_url
+                external_url = cast("str", config.get("external_url") or config.get("internal_url"))
+                if external_url:
+                    self.logger.info(
+                        "Using external HA URL for OAuth: %s (configured: %s)",
+                        external_url,
+                        ha_url,
+                    )
+                    return external_url
+        except Exception as err:
+            self.logger.warning("Failed to fetch external HA URL: %s", err)
+
+        # Fallback to configured URL
+        return ha_url
+
     async def get_authorization_url(
         self, redirect_uri: str, return_url: str | None = None
     ) -> str | None:
@@ -258,7 +314,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param redirect_uri: The callback URL.
         :param return_url: Optional URL to redirect to after successful login.
         """
-        ha_url = self.config.get("ha_url")
+        # Get the correct HA URL (external URL if running as add-on)
+        ha_url = await self._get_external_ha_url()
         if not ha_url:
             return None
 
@@ -281,12 +338,12 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ),
         )
 
-    def _decode_ha_jwt_token(self, access_token: str) -> str | None:
+    def _decode_ha_jwt_token(self, access_token: str) -> tuple[str | None, str | None]:
         """
-        Decode Home Assistant JWT token to extract user ID.
+        Decode Home Assistant JWT token to extract user ID and name.
 
         :param access_token: The JWT access token from Home Assistant.
-        :return: The HA user ID or None if decoding fails.
+        :return: Tuple of (user_id, username) or (None, None) if decoding fails.
         """
         try:
             # JWT tokens have 3 parts separated by dots: header.payload.signature
@@ -309,49 +366,51 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     # Fallback to 'sub' if 'iss' is not present
                     ha_user_id = token_data.get("sub")
 
+                # Try to extract username from token (name, username, or other fields)
+                username = token_data.get("name") or token_data.get("username")
+
                 if ha_user_id:
-                    return str(ha_user_id)
-                return None
+                    return str(ha_user_id), username
+                return None, None
         except Exception as decode_error:
             self.logger.error("Failed to decode HA JWT token: %s", decode_error)
 
-        return None
+        return None, None
 
-    async def _fetch_ha_user_info(
-        self, ha_url: str, access_token: str, ha_user_id: str
+    async def _fetch_ha_user_via_websocket(
+        self, ha_url: str, access_token: str
     ) -> tuple[str | None, str | None]:
         """
-        Fetch user information from Home Assistant API.
+        Fetch user information from Home Assistant via WebSocket.
 
         :param ha_url: Home Assistant URL.
-        :param access_token: Access token for API requests.
-        :param ha_user_id: Home Assistant user ID.
+        :param access_token: Access token for WebSocket authentication.
         :return: Tuple of (username, display_name) or (None, None) if fetch fails.
         """
+        ws_url = get_websocket_url(ha_url)
+
         try:
-            # Get user info from HA's person API
-            user_info_url = f"{ha_url}/api/person"
-            headers = {"Authorization": f"Bearer {access_token}"}
+            # Use context manager to automatically handle connect/disconnect
+            async with HomeAssistantClient(ws_url, access_token, self.mass.http_session) as client:
+                # Use the auth/current_user command
+                # send_command expects command type as string, not dict
+                result = await client.send_command("auth/current_user")
+                self.logger.debug("HA auth/current_user result: %s", result)
 
-            async with self.mass.http_session.get(user_info_url, headers=headers) as response:
-                if response.status == 200:
-                    persons = await response.json()
-                    # Find the person linked to this user ID
-                    for person in persons:
-                        if person.get("user_id") == ha_user_id:
-                            username = person.get("id") or person.get("name")
-                            display_name = person.get("name")
-                            self.logger.debug(
-                                "Found HA person for user %s: username=%s, display_name=%s",
-                                ha_user_id,
-                                username,
-                                display_name,
-                            )
-                            return username, display_name
-        except Exception as fetch_error:
-            self.logger.warning("Failed to fetch HA user info: %s", fetch_error)
+                if result:
+                    # Extract username and display name from response
+                    username = result.get("name") or result.get("username")
+                    display_name = result.get("name")
+                    if username:
+                        self.logger.info("Found HA user via WebSocket: %s", username)
+                        return username, display_name
 
-        return None, None
+                self.logger.warning("auth/current_user returned no user data")
+                return None, None
+
+        except BaseHassClientError as ws_error:
+            self.logger.error("Failed to fetch HA user via WebSocket: %s", ws_error)
+            return None, None
 
     async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
         """
@@ -395,21 +454,18 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 return AuthResult(success=False, error="No access token received from HA")
 
             # Decode JWT token to get HA user ID
-            ha_user_id = self._decode_ha_jwt_token(access_token)
+            ha_user_id, _ = self._decode_ha_jwt_token(access_token)
             if not ha_user_id:
                 return AuthResult(success=False, error="Failed to decode token")
 
-            # Fetch user info from Home Assistant API
-            username, display_name = await self._fetch_ha_user_info(
-                ha_url, access_token, ha_user_id
-            )
+            # Fetch user information from HA via WebSocket
+            username, display_name = await self._fetch_ha_user_via_websocket(ha_url, access_token)
 
-            # If we couldn't get user info from API, use fallback
+            # If we couldn't get username from WebSocket, fail authentication
             if not username:
-                # Use first 8 chars of user ID as username (e.g., "ha_e55d97f7")
-                username = f"ha_{ha_user_id[:8]}"
-                self.logger.debug(
-                    "Could not fetch HA user info, using generated username: %s", username
+                return AuthResult(
+                    success=False,
+                    error="Failed to get username from Home Assistant",
                 )
 
             # Check if user already linked to HA
@@ -421,8 +477,33 @@ class HomeAssistantOAuthProvider(LoginProvider):
             return_url = getattr(self, "_oauth_return_url", None)
 
             if user:
-                # Existing user
+                # Existing user already linked to HA
                 return AuthResult(success=True, user=user, return_url=return_url)
+
+            # Check if a user with this username already exists (from built-in provider)
+            # We need to query the database directly since there's no get_user_by_username method
+            user_row = await self.auth_manager.database.get_row("users", {"username": username})
+            if user_row:
+                # User exists with this username - link them to HA provider
+                # Convert Row to dict for easier handling of optional fields
+                user_dict = dict(user_row)
+                existing_user = User(
+                    user_id=user_dict["user_id"],
+                    username=user_dict["username"],
+                    role=UserRole(user_dict["role"]),
+                    enabled=bool(user_dict["enabled"]),
+                    created_at=datetime.fromisoformat(user_dict["created_at"]),
+                    display_name=user_dict["display_name"],
+                    avatar_url=user_dict["avatar_url"],
+                )
+
+                # Link existing user to Home Assistant
+                await self.auth_manager.link_user_to_provider(
+                    existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+                )
+
+                self.logger.info("Linked existing user '%s' to Home Assistant provider", username)
+                return AuthResult(success=True, user=existing_user, return_url=return_url)
 
             # New HA user - check if self-registration allowed
             if not self.allow_self_registration:
