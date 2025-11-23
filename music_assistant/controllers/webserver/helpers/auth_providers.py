@@ -412,6 +412,65 @@ class HomeAssistantOAuthProvider(LoginProvider):
             self.logger.error("Failed to fetch HA user via WebSocket: %s", ws_error)
             return None, None
 
+    async def _get_or_create_user(
+        self, username: str, display_name: str | None, ha_user_id: str
+    ) -> User | None:
+        """
+        Get or create a user for Home Assistant OAuth authentication.
+
+        :param username: Username from Home Assistant.
+        :param display_name: Display name from Home Assistant.
+        :param ha_user_id: Home Assistant user ID.
+        :return: User object or None if creation failed.
+        """
+        # Check if user already linked to HA
+        user = await self.auth_manager.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, ha_user_id
+        )
+        if user:
+            return user
+
+        # Check if a user with this username already exists (from built-in provider)
+        user_row = await self.auth_manager.database.get_row("users", {"username": username})
+        if user_row:
+            # User exists with this username - link them to HA provider
+            user_dict = dict(user_row)
+            existing_user = User(
+                user_id=user_dict["user_id"],
+                username=user_dict["username"],
+                role=UserRole(user_dict["role"]),
+                enabled=bool(user_dict["enabled"]),
+                created_at=datetime.fromisoformat(user_dict["created_at"]),
+                display_name=user_dict["display_name"],
+                avatar_url=user_dict["avatar_url"],
+            )
+
+            # Link existing user to Home Assistant
+            await self.auth_manager.link_user_to_provider(
+                existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+            )
+
+            self.logger.info("Linked existing user '%s' to Home Assistant provider", username)
+            return existing_user
+
+        # New HA user - check if self-registration allowed
+        if not self.allow_self_registration:
+            return None
+
+        # Create new user with USER role
+        user = await self.auth_manager.create_user(
+            username=username,
+            role=UserRole.USER,
+            display_name=display_name or username,
+        )
+
+        # Link to Home Assistant
+        await self.auth_manager.link_user_to_provider(
+            user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+        )
+
+        return user
+
     async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
         """
         Handle Home Assistant OAuth callback using hass_client.
@@ -468,61 +527,17 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     error="Failed to get username from Home Assistant",
                 )
 
-            # Check if user already linked to HA
-            user = await self.auth_manager.get_user_by_provider_link(
-                AuthProviderType.HOME_ASSISTANT, ha_user_id
-            )
+            # Get or create user
+            user = await self._get_or_create_user(username, display_name, ha_user_id)
 
             # Get stored return_url from OAuth state
             return_url = getattr(self, "_oauth_return_url", None)
 
-            if user:
-                # Existing user already linked to HA
-                return AuthResult(success=True, user=user, return_url=return_url)
-
-            # Check if a user with this username already exists (from built-in provider)
-            # We need to query the database directly since there's no get_user_by_username method
-            user_row = await self.auth_manager.database.get_row("users", {"username": username})
-            if user_row:
-                # User exists with this username - link them to HA provider
-                # Convert Row to dict for easier handling of optional fields
-                user_dict = dict(user_row)
-                existing_user = User(
-                    user_id=user_dict["user_id"],
-                    username=user_dict["username"],
-                    role=UserRole(user_dict["role"]),
-                    enabled=bool(user_dict["enabled"]),
-                    created_at=datetime.fromisoformat(user_dict["created_at"]),
-                    display_name=user_dict["display_name"],
-                    avatar_url=user_dict["avatar_url"],
-                )
-
-                # Link existing user to Home Assistant
-                await self.auth_manager.link_user_to_provider(
-                    existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-                )
-
-                self.logger.info("Linked existing user '%s' to Home Assistant provider", username)
-                return AuthResult(success=True, user=existing_user, return_url=return_url)
-
-            # New HA user - check if self-registration allowed
-            if not self.allow_self_registration:
+            if not user:
                 return AuthResult(
                     success=False,
                     error="Self-registration is disabled. Please contact an administrator.",
                 )
-
-            # Create new user with USER role
-            user = await self.auth_manager.create_user(
-                username=username,
-                role=UserRole.USER,
-                display_name=display_name or username,  # Use fetched display name or fallback
-            )
-
-            # Link to Home Assistant
-            await self.auth_manager.link_user_to_provider(
-                user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-            )
 
             return AuthResult(success=True, user=user, return_url=return_url)
 

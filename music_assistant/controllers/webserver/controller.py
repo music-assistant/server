@@ -711,91 +711,15 @@ class WebserverController(CoreController):
             else:
                 final_redirect_url += f"?token={encoded_token}"
 
-            # Return success page with token
-            # This handles both popup and same-window OAuth flows
-            success_html = f"""
-            <html>
-            <head>
-                <title>Login Successful</title>
-                <style>
-                    body {{
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-                            sans-serif;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        min-height: 100vh;
-                        margin: 0;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    }}
-                    .container {{
-                        background: white;
-                        padding: 40px;
-                        border-radius: 12px;
-                        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-                        text-align: center;
-                    }}
-                    h1 {{
-                        color: #667eea;
-                        margin-bottom: 10px;
-                    }}
-                    p {{
-                        color: #666;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 id="status">Login Successful!</h1>
-                    <p id="message">Redirecting...</p>
-                </div>
-                <script>
-                    const statusEl = document.getElementById('status');
-                    const messageEl = document.getElementById('message');
-                    const token = '{token}';
-                    const redirectUrl = '{final_redirect_url}';
+            # Load OAuth callback success page template and inject token and redirect URL
+            oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
+            async with aiofiles.open(oauth_callback_html_path) as f:
+                success_html = await f.read()
 
-                    // Check if we're in a popup (opened by window.open())
-                    const isPopup = window.opener !== null;
+            # Replace template placeholders
+            success_html = success_html.replace("{TOKEN}", token)
+            success_html = success_html.replace("{REDIRECT_URL}", final_redirect_url)
 
-                    if (isPopup) {{
-                        // Popup mode - send token to parent and close
-                        statusEl.textContent = 'Login Complete!';
-                        messageEl.textContent = 'Closing popup...';
-
-                        // Send message to parent window
-                        if (window.opener && !window.opener.closed) {{
-                            try {{
-                                window.opener.postMessage({{
-                                    type: 'oauth_success',
-                                    token: token,
-                                    redirectUrl: redirectUrl
-                                }}, window.location.origin);
-                            }} catch (e) {{
-                                console.error('Failed to send postMessage:', e);
-                            }}
-                        }}
-
-                        // Close popup after short delay
-                        setTimeout(() => {{
-                            window.close();
-                            // If still open after 500ms, show manual instruction
-                            setTimeout(() => {{
-                                messageEl.textContent = 'Please close this window manually ' +
-                                    'and return to the login page.';
-                            }}, 500);
-                        }}, 1000);
-                    }} else {{
-                        // Same window mode - redirect directly
-                        statusEl.textContent = 'Login Successful!';
-                        messageEl.textContent = 'Redirecting...';
-                        localStorage.setItem('auth_token', token);
-                        window.location.href = redirectUrl;
-                    }}
-                </script>
-            </body>
-            </html>
-            """
             return web.Response(text=success_html, content_type="text/html")
         except Exception:
             self.logger.exception("Error during OAuth callback")
