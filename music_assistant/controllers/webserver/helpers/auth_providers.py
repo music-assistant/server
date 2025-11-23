@@ -22,6 +22,7 @@ from music_assistant.models.auth import AuthProviderType, User, UserRole
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.webserver.auth import AuthenticationManager
+    from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -271,19 +272,16 @@ class HomeAssistantOAuthProvider(LoginProvider):
             return ha_url
 
         # We're using internal URL - try to get external URL from HA provider
-        ha_provider = None
-        for provider in self.mass.providers:
-            if provider.domain == "hass" and provider.available:
-                ha_provider = provider
-                break
-
+        ha_provider = self.mass.get_provider("hass")
         if not ha_provider:
             # No HA provider available, use configured URL
             return ha_url
 
+        ha_provider = cast("HomeAssistantProvider", ha_provider)
+
         try:
             # Access the hass client from the provider
-            hass_client = getattr(ha_provider, "hass", None)
+            hass_client = ha_provider.hass
             if not hass_client or not hass_client.connected:
                 return ha_url
 
