@@ -145,7 +145,11 @@ class BuiltinLoginProvider(LoginProvider):
         return AuthResult(success=True, user=user)
 
     async def create_user_with_password(
-        self, username: str, password: str, role: UserRole = UserRole.USER
+        self,
+        username: str,
+        password: str,
+        role: UserRole = UserRole.USER,
+        display_name: str | None = None,
     ) -> User:
         """
         Create a new built-in user with password.
@@ -153,11 +157,13 @@ class BuiltinLoginProvider(LoginProvider):
         :param username: The username.
         :param password: The password (will be hashed).
         :param role: The user role (default: USER).
+        :param display_name: Optional display name.
         """
         # Create the user
         user = await self.auth_manager.create_user(
             username=username,
             role=role,
+            display_name=display_name,
         )
 
         # Hash password and link to provider

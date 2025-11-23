@@ -688,6 +688,20 @@ class WebserverController(CoreController):
         setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
         async with aiofiles.open(setup_html_path) as f:
             html_content = await f.read()
+
+        # Check if this is from Ingress - if so, pre-fill user info
+        if is_request_from_ingress(request):
+            ingress_username = request.headers.get("X-Remote-User-Name", "")
+            ingress_display_name = request.headers.get("X-Remote-User-Display-Name", "")
+
+            # Inject ingress user info into the page
+            html_content = html_content.replace(
+                "const deviceName = urlParams.get('device_name');",
+                f"const deviceName = urlParams.get('device_name');\n"
+                f"        const ingressUsername = '{ingress_username}';\n"
+                f"        const ingressDisplayName = '{ingress_display_name}';",
+            )
+
         return web.Response(text=html_content, content_type="text/html")
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
@@ -704,6 +718,8 @@ class WebserverController(CoreController):
         body = await request.json()
         username = body.get("username", "").strip()
         password = body.get("password", "")
+        from_ingress = body.get("from_ingress", False)
+        display_name = body.get("display_name")
 
         # Validation
         if not username or len(username) < 3:
@@ -718,23 +734,30 @@ class WebserverController(CoreController):
 
         try:
             # Get built-in provider
-
             builtin_provider = self.auth.login_providers.get("builtin")
             if not builtin_provider:
                 return web.json_response(
                     {"success": False, "error": "Built-in auth provider not available"}, status=500
                 )
 
-            # Create admin user with password
-
             if not isinstance(builtin_provider, BuiltinLoginProvider):
                 return web.json_response(
                     {"success": False, "error": "Built-in provider configuration error"}, status=500
                 )
 
+            # Create admin user with password
             user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
+
+            # If from Ingress, also link to HA provider
+            if from_ingress and is_request_from_ingress(request):
+                ha_user_id = request.headers.get("X-Remote-User-ID")
+                if ha_user_id:
+                    # Link user to Home Assistant provider
+                    await self.auth.link_user_to_provider(
+                        user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+                    )
 
             # Create token for the new admin
             device_name = body.get(

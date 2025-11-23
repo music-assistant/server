@@ -238,14 +238,33 @@
     </div>
 
     <script>
-        // Get device_name from query string if provided
+        // Get query parameters
         const urlParams = new URLSearchParams(window.location.search);
         const deviceName = urlParams.get('device_name');
+        const returnUrl = urlParams.get('return_url');
 
         const form = document.getElementById('setupForm');
         const errorMessage = document.getElementById('errorMessage');
         const submitBtn = document.getElementById('submitBtn');
         const loading = document.getElementById('loading');
+
+        // Check if this is an Ingress setup (variables injected by server)
+        const isIngressSetup = typeof ingressUsername !== 'undefined' && ingressUsername;
+
+        // Configure UI for Ingress setup
+        if (isIngressSetup) {
+            // Update info box for Ingress context
+            document.querySelector('.info-box h3').textContent = 'Home Assistant Setup';
+            document.querySelector('.info-box p').textContent =
+                'Create a password for your Home Assistant account. Your username is provided by Home Assistant.';
+
+            // Pre-fill and disable username field
+            const usernameField = document.getElementById('username');
+            usernameField.value = ingressUsername;
+            usernameField.disabled = true;
+            usernameField.style.backgroundColor = '#f5f5f5';
+            usernameField.style.cursor = 'not-allowed';
+        }
 
         function showError(message) {
             errorMessage.textContent = message;
@@ -303,6 +322,12 @@
                     requestBody.device_name = deviceName;
                 }
 
+                // Include Ingress context if applicable
+                if (isIngressSetup) {
+                    requestBody.from_ingress = true;
+                    requestBody.display_name = ingressDisplayName;
+                }
+
                 const response = await fetch('/setup', {
                     method: 'POST',
                     headers: {
@@ -314,11 +339,16 @@
                 const data = await response.json();
 
                 if (response.ok && data.success) {
-                    // Store the token
-                    localStorage.setItem('auth_token', data.token);
-
-                    // Redirect to main page
-                    window.location.href = '/';
+                    // For Ingress setup, redirect to return_url with token
+                    if (isIngressSetup && returnUrl) {
+                        const targetUrl = new URL(returnUrl, window.location.origin);
+                        targetUrl.searchParams.set('token', data.token);
+                        window.location.href = targetUrl.toString();
+                    } else {
+                        // Store the token and redirect to main page
+                        localStorage.setItem('auth_token', data.token);
+                        window.location.href = '/';
+                    }
                 } else {
                     setLoading(false);
                     showError(data.error || 'Setup failed. Please try again.');
