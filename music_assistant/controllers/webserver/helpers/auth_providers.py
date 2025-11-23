@@ -289,41 +289,46 @@ class HomeAssistantOAuthProvider(LoginProvider):
         self.logger.debug("Found HA provider, checking hass client")
 
         try:
-            # Access the hass client from the provider
-            hass_client = ha_provider.hass
-            if not hass_client:
-                self.logger.debug("No hass client found on provider")
-                return ha_url
+            # Try to get config from HA REST API (/api/config)
+            # This works more reliably than WebSocket and includes runtime-detected URLs
+            self.logger.debug("Fetching config from HA REST API: %s/api/config", ha_url)
 
-            if not hass_client.connected:
-                self.logger.debug("Hass client not connected")
-                return ha_url
+            # Get auth token from HA provider
+            token = ha_provider.config.get_value("token")
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
 
-            self.logger.debug("Hass client connected, sending get_config command")
+            async with self.mass.http_session.get(
+                f"{ha_url}/api/config",
+                headers=headers,
+            ) as response:
+                if response.status == 200:
+                    config = await response.json()
+                    self.logger.debug("Received config from HA REST API: %s", config)
 
-            # Get config from Home Assistant using WebSocket API
-            config = await hass_client.send_command("get_config")
-            self.logger.debug("Received config from HA: %s", config)
-
-            if config:
-                external_url = config.get("external_url")
-                internal_url = config.get("internal_url")
-                self.logger.debug(
-                    "Config URLs - external_url: %s, internal_url: %s", external_url, internal_url
-                )
-
-                # Try external_url first, fall back to internal_url
-                final_url = cast("str", external_url or internal_url)
-                if final_url:
-                    self.logger.info(
-                        "Using external HA URL for OAuth: %s (configured: %s)",
-                        final_url,
-                        ha_url,
+                    external_url = config.get("external_url")
+                    internal_url = config.get("internal_url")
+                    self.logger.debug(
+                        "Config URLs - external_url: %s, internal_url: %s",
+                        external_url,
+                        internal_url,
                     )
-                    return final_url
-                self.logger.debug("No external or internal URL found in config")
-            else:
-                self.logger.debug("Config response was empty")
+
+                    # Try external_url first, fall back to internal_url
+                    final_url = cast("str", external_url or internal_url)
+                    if final_url:
+                        self.logger.info(
+                            "Using HA URL for OAuth: %s (from REST API, configured was: %s)",
+                            final_url,
+                            ha_url,
+                        )
+                        return final_url
+                    self.logger.debug("No external or internal URL found in config")
+                else:
+                    self.logger.warning(
+                        "Failed to fetch config from HA REST API: HTTP %s", response.status
+                    )
         except Exception as err:
             self.logger.warning("Failed to fetch external HA URL: %s", err, exc_info=True)
 
@@ -350,11 +355,12 @@ class HomeAssistantOAuthProvider(LoginProvider):
         if "supervisor" in ha_url.lower():
             # Extract scheme and host from redirect_uri to build external HA URL
             parsed = urlparse(redirect_uri)
-            # Use the same scheme and host as the callback URL, but no port
-            # (HA typically runs on port 8123 or default 443/80)
-            inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
-            if parsed.port and parsed.port not in (80, 443, 8095):
-                # If custom port not standard web or MA default, assume HA is on 8123
+            # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
+            if parsed.scheme == "https":
+                # HTTPS - use default port 443 (no port in URL)
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
+            else:
+                # HTTP - assume HA runs on default port 8123
                 inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
 
             self.logger.info(
