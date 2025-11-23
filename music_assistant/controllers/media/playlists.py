@@ -8,6 +8,7 @@ from typing import cast
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
@@ -133,7 +134,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)
-
+        # Validate uris to prevent code injection
+        for uri in uris:
+            # Prevent code injection via newlines in URIs
+            if "\n" in uri or "\r" in uri:
+                msg = "Invalid URI: newlines not allowed"
+                raise InvalidProviderURI(msg)
+            await parse_uri(uri)
         # grab all existing track ids in the playlist so we can check for duplicates
         playlist_prov_map = next(iter(playlist.provider_mappings))
         playlist_prov = self.mass.get_provider(playlist_prov_map.provider_instance)
