@@ -93,8 +93,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
-        if provider and not provider.is_streaming_provider:
-            validate_playlist_filename(name)
+        if "/" in name or "\" in name or ".." in name:
+            msg = f".name} is not a valid Playlist name"
+            raise InvalidDataError(msg)
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
         # add the new playlist to the library
