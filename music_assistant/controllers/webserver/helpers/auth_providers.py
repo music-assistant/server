@@ -287,8 +287,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
             if not hass_client or not hass_client.connected:
                 return ha_url
 
-            # Get config from Home Assistant
-            config = await hass_client.send_command("config/core/get")
+            # Get config from Home Assistant using WebSocket API
+            config = await hass_client.send_command("get_config")
             if config:
                 # Try external_url first, fall back to internal_url
                 external_url = cast("str", config.get("external_url") or config.get("internal_url"))
