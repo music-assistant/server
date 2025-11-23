@@ -461,16 +461,9 @@ class AlbumsController(MediaControllerBase[Album]):
             db_artist = existing
 
         if not db_artist or overwrite:
-            if isinstance(artist, ItemMapping):
-                # Can't add ItemMapping to library, must use existing
-                if not db_artist:
-                    msg = f"ItemMapping {artist.item_id} has no library entry"
-                    raise InvalidDataError(msg)
-                # else: use the existing db_artist
-            else:
-                db_artist = await self.mass.music.artists.add_item_to_library(
-                    artist, overwrite_existing=overwrite
-                )
+            db_artist = await self.mass.music.artists.add_item_to_library(
+                artist, overwrite_existing=overwrite
+            )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_ARTISTS,
