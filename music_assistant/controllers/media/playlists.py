@@ -16,7 +16,6 @@ from music_assistant_models.media_items import Playlist, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.playlists import validate_playlist_filename
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
@@ -45,12 +44,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
 
-    def _verify_update_allowed(self, update: Playlist) -> None:
-        # Additional validation for non-streaming providers to prevent path traversal
+    def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
+        """Verify that the update is allowed from a security perspective.
+
+        Prevents updating item_id for non-streaming providers to prevent path traversal attacks.
+        """
+        # Build lookup dict of current mappings: (provider_instance, provider_domain) -> item_id
+        current_mappings = {
+            (mapping.provider_instance, mapping.provider_domain): mapping.item_id
+            for mapping in current_item.provider_mappings
+        }
+
+        # Check if any existing mapping's item_id has been modified for non-streaming providers
         for update_mapping in update.provider_mappings:
-            provider = self.mass.get_provider(update_mapping.provider_instance)
-            if provider and not provider.is_streaming_provider:
-                validate_playlist_filename(update_mapping.item_id)
+            mapping_key = (update_mapping.provider_instance, update_mapping.provider_domain)
+
+            # Only check if this is an existing mapping being modified
+            if mapping_key in current_mappings:
+                current_item_id = current_mappings[mapping_key]
+
+                # Disallow item_id changes for non-streaming providers
+                if current_item_id != update_mapping.item_id:
+                    provider = self.mass.get_provider(update_mapping.provider_instance)
+                    if provider and not provider.is_streaming_provider:
+                        msg = (
+                            f"Updating item_id is not allowed for non-streaming providers: "
+                            f"attempted to change '{current_item_id}' to '{update_mapping.item_id}'"
+                        )
+                        raise InvalidDataError(msg)
 
     async def tracks(
         self,
@@ -93,8 +114,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
-        if "/" in name or "\" in name or ".." in name:
-            msg = f".name} is not a valid Playlist name"
+        if "/" in name or "\\" in name or ".." in name:
+            msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
@@ -340,9 +361,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, item_id: int, update: Playlist, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
-        self._verify_update_allowed(update)
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
+        self._verify_update_allowed(cur_item, update)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
