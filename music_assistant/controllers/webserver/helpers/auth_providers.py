@@ -264,43 +264,70 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         ha_url = cast("str", self.config.get("ha_url")) if self.config.get("ha_url") else None
         if not ha_url:
+            self.logger.debug("No HA URL configured")
             return None
+
+        self.logger.debug("Checking if HA URL is internal supervisor URL: %s", ha_url)
 
         # Check if we're using the internal supervisor URL
         if "supervisor" not in ha_url.lower():
             # Not using internal URL, return as-is
+            self.logger.debug("Not using supervisor URL, returning as-is")
             return ha_url
+
+        self.logger.debug("Detected supervisor URL, attempting to fetch external URL from HA")
 
         # We're using internal URL - try to get external URL from HA provider
         ha_provider = self.mass.get_provider("hass")
         if not ha_provider:
             # No HA provider available, use configured URL
+            self.logger.debug("No HA provider available, using configured URL")
             return ha_url
 
         ha_provider = cast("HomeAssistantProvider", ha_provider)
+        self.logger.debug("Found HA provider, checking hass client")
 
         try:
             # Access the hass client from the provider
             hass_client = ha_provider.hass
-            if not hass_client or not hass_client.connected:
+            if not hass_client:
+                self.logger.debug("No hass client found on provider")
                 return ha_url
+
+            if not hass_client.connected:
+                self.logger.debug("Hass client not connected")
+                return ha_url
+
+            self.logger.debug("Hass client connected, sending get_config command")
 
             # Get config from Home Assistant using WebSocket API
             config = await hass_client.send_command("get_config")
+            self.logger.debug("Received config from HA: %s", config)
+
             if config:
+                external_url = config.get("external_url")
+                internal_url = config.get("internal_url")
+                self.logger.debug(
+                    "Config URLs - external_url: %s, internal_url: %s", external_url, internal_url
+                )
+
                 # Try external_url first, fall back to internal_url
-                external_url = cast("str", config.get("external_url") or config.get("internal_url"))
-                if external_url:
+                final_url = cast("str", external_url or internal_url)
+                if final_url:
                     self.logger.info(
                         "Using external HA URL for OAuth: %s (configured: %s)",
-                        external_url,
+                        final_url,
                         ha_url,
                     )
-                    return external_url
+                    return final_url
+                self.logger.debug("No external or internal URL found in config")
+            else:
+                self.logger.debug("Config response was empty")
         except Exception as err:
-            self.logger.warning("Failed to fetch external HA URL: %s", err)
+            self.logger.warning("Failed to fetch external HA URL: %s", err, exc_info=True)
 
         # Fallback to configured URL
+        self.logger.debug("Falling back to configured URL: %s", ha_url)
         return ha_url
 
     async def get_authorization_url(
