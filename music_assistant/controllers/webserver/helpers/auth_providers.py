@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypedDict, cast
+from urllib.parse import urlparse
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -343,6 +344,25 @@ class HomeAssistantOAuthProvider(LoginProvider):
         ha_url = await self._get_external_ha_url()
         if not ha_url:
             return None
+
+        # If HA URL is still the internal supervisor URL (no external_url in HA config),
+        # infer from redirect_uri (the URL user is accessing MA from)
+        if "supervisor" in ha_url.lower():
+            # Extract scheme and host from redirect_uri to build external HA URL
+            parsed = urlparse(redirect_uri)
+            # Use the same scheme and host as the callback URL, but no port
+            # (HA typically runs on port 8123 or default 443/80)
+            inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
+            if parsed.port and parsed.port not in (80, 443, 8095):
+                # If custom port not standard web or MA default, assume HA is on 8123
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
+
+            self.logger.info(
+                "HA external_url not configured, inferring from callback URL: %s (from %s)",
+                inferred_ha_url,
+                redirect_uri,
+            )
+            ha_url = inferred_ha_url
 
         state = secrets.token_urlsafe(32)
         # Store state and return_url for verification and final redirect
