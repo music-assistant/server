@@ -52,27 +52,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         # Build lookup dict of current mappings: (provider_instance, provider_domain) -> item_id
         current_mappings = {
-            (mapping.provider_instance, mapping.provider_domain): mapping.item_id
-            for mapping in current_item.provider_mappings
+            mapping.provider_instance: mapping.item_id for mapping in current_item.provider_mappings
         }
 
         # Check if any existing mapping's item_id has been modified for non-streaming providers
         for update_mapping in update.provider_mappings:
-            mapping_key = (update_mapping.provider_instance, update_mapping.provider_domain)
-
             # Only check if this is an existing mapping being modified
-            if mapping_key in current_mappings:
-                current_item_id = current_mappings[mapping_key]
+            if update_mapping.provider_instance in current_mappings:
+                current_item_id = current_mappings[update_mapping.provider_instance]
 
-                # Disallow item_id changes for non-streaming providers
-                if current_item_id != update_mapping.item_id:
-                    provider = self.mass.get_provider(update_mapping.provider_instance)
-                    if provider and not provider.is_streaming_provider:
-                        msg = (
-                            f"Updating item_id is not allowed for non-streaming providers: "
-                            f"attempted to change '{current_item_id}' to '{update_mapping.item_id}'"
-                        )
-                        raise InvalidDataError(msg)
+                # Disallow item_id changes for filesystem-based providers (filesystem, builtin)
+                if (
+                    current_item_id != update_mapping.item_id
+                    and update_mapping.provider_instance.startswith(("filesystem", "builtin"))
+                ):
+                    msg = (
+                        f"Updating item_id is not allowed for filesystem-based providers: "
+                        f"attempted to change '{current_item_id}' to '{update_mapping.item_id}'"
+                    )
+                    raise InvalidDataError(msg)
 
     async def tracks(
         self,
