@@ -6,8 +6,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
-
-from music_assistant.models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant

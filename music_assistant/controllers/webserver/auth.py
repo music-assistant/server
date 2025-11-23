@@ -11,6 +11,14 @@ import secrets
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import (
+    AuthProviderType,
+    AuthToken,
+    User,
+    UserAuthProvider,
+    UserRole,
+)
+
 from music_assistant.constants import CONF_ONBOARD_DONE, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthResult,
@@ -22,18 +30,15 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
-from music_assistant.models.auth import (
-    AuthProviderType,
-    AuthToken,
-    User,
-    UserAuthProvider,
-    UserRole,
-)
+from music_assistant.helpers.json import json_dumps, json_loads
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+# Database schema version
+DB_SCHEMA_VERSION = 1
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -69,8 +74,8 @@ class AuthenticationManager:
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
 
-        # Create database schema
-        await self._create_database_schema()
+        # Create database schema and handle migrations
+        await self._setup_database()
 
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
@@ -94,8 +99,53 @@ class AuthenticationManager:
         if self.database:
             await self.database.close()
 
-    async def _create_database_schema(self) -> None:
-        """Create the database schema for authentication."""
+    async def _setup_database(self) -> None:
+        """Set up database schema and handle migrations."""
+        # Always create tables if they don't exist
+        await self._create_database_tables()
+
+        # Check current schema version
+        try:
+            if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
+                prev_version = int(db_row["value"])
+            else:
+                prev_version = 0
+        except (KeyError, ValueError, Exception):
+            # settings table doesn't exist yet or other error
+            prev_version = 0
+
+        # Perform migration if needed
+        if prev_version != 0 and prev_version < DB_SCHEMA_VERSION:
+            self.logger.warning(
+                "Performing database migration from schema version %s to %s",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            await self._migrate_database(prev_version)
+
+        # Store current schema version
+        await self.database.insert_or_replace(
+            "settings",
+            {"key": "schema_version", "value": str(DB_SCHEMA_VERSION), "type": "int"},
+        )
+
+        # Create indexes
+        await self._create_database_indexes()
+        await self.database.commit()
+
+    async def _create_database_tables(self) -> None:
+        """Create database tables."""
+        # Settings table (for schema version and other settings)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                type TEXT
+            )
+            """
+        )
+
         # Users table (decoupled from auth providers)
         await self.database.execute(
             """
@@ -106,7 +156,8 @@ class AuthenticationManager:
                 enabled INTEGER DEFAULT 1,
                 created_at TEXT NOT NULL,
                 display_name TEXT,
-                avatar_url TEXT
+                avatar_url TEXT,
+                preferences TEXT DEFAULT '{}'
             )
             """
         )
@@ -143,7 +194,10 @@ class AuthenticationManager:
             """
         )
 
-        # Create indexes
+        await self.database.commit()
+
+    async def _create_database_indexes(self) -> None:
+        """Create database indexes."""
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_user_auth_providers_user "
             "ON user_auth_providers(user_id)"
@@ -159,7 +213,32 @@ class AuthenticationManager:
             "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
         )
 
-        await self.database.commit()
+    async def _migrate_database(self, from_version: int) -> None:
+        """Perform database migration.
+
+        :param from_version: The schema version to migrate from.
+        """
+        self.logger.info(
+            "Migrating auth database from version %s to %s", from_version, DB_SCHEMA_VERSION
+        )
+
+        # Migration to version 1: Add preferences column to users table
+        if from_version < 1:
+            self.logger.info("Adding preferences column to users table")
+            try:
+                # Add preferences column with default empty JSON object
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN preferences TEXT DEFAULT '{}'"
+                )
+                # Set default value for existing rows
+                await self.database.execute(
+                    "UPDATE users SET preferences = '{}' WHERE preferences IS NULL"
+                )
+                await self.database.commit()
+                self.logger.info("Successfully added preferences column")
+            except Exception as err:
+                # Column might already exist from a failed migration
+                self.logger.debug("Could not add preferences column (may already exist): %s", err)
 
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
         """
@@ -303,6 +382,15 @@ class AuthenticationManager:
 
         # Convert Row to dict for easier handling of optional fields
         user_dict = dict(user_row)
+
+        # Parse preferences from JSON
+        preferences = {}
+        if prefs_json := user_dict.get("preferences"):
+            try:
+                preferences = json_loads(prefs_json)
+            except Exception:
+                self.logger.warning("Failed to parse preferences for user %s", user_id)
+
         return User(
             user_id=user_dict["user_id"],
             username=user_dict["username"],
@@ -311,6 +399,7 @@ class AuthenticationManager:
             created_at=datetime.fromisoformat(user_dict["created_at"]),
             display_name=user_dict.get("display_name"),
             avatar_url=user_dict.get("avatar_url"),
+            preferences=preferences,
         )
 
     async def get_user_by_provider_link(
@@ -340,6 +429,7 @@ class AuthenticationManager:
         role: UserRole = UserRole.USER,
         display_name: str | None = None,
         avatar_url: str | None = None,
+        preferences: dict[str, Any] | None = None,
     ) -> User:
         """
         Create a new user.
@@ -348,9 +438,13 @@ class AuthenticationManager:
         :param role: The user role (default: USER).
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
+        :param preferences: Optional user preferences dict.
         """
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
+        if preferences is None:
+            preferences = {}
+
         user_data = {
             "user_id": user_id,
             "username": username,
@@ -359,6 +453,7 @@ class AuthenticationManager:
             "created_at": created_at.isoformat(),
             "display_name": display_name,
             "avatar_url": avatar_url,
+            "preferences": json_dumps(preferences),
         }
 
         await self.database.insert("users", user_data)
@@ -371,6 +466,7 @@ class AuthenticationManager:
             created_at=created_at,
             display_name=display_name,
             avatar_url=avatar_url,
+            preferences=preferences,
         )
 
     async def get_or_create_system_user(
@@ -390,16 +486,10 @@ class AuthenticationManager:
         # Try to find existing user by username
         user_row = await self.database.get_row("users", {"username": username})
         if user_row:
-            user_dict = dict(user_row)
-            return User(
-                user_id=user_dict["user_id"],
-                username=user_dict["username"],
-                role=UserRole(user_dict["role"]),
-                enabled=bool(user_dict["enabled"]),
-                created_at=datetime.fromisoformat(user_dict["created_at"]),
-                display_name=user_dict.get("display_name"),
-                avatar_url=user_dict.get("avatar_url"),
-            )
+            # Use get_user to ensure preferences are parsed correctly
+            user = await self.get_user(user_row["user_id"])
+            assert user is not None  # User exists in DB, so get_user must return it
+            return user
 
         # Create new system user
         display_name = f"System User ({username})"
@@ -471,7 +561,37 @@ class AuthenticationManager:
             await self.database.update("users", {"user_id": user.user_id}, updates)
 
         # Return updated user
-        return await self.get_user(user.user_id)  # type: ignore[return-value]
+        updated_user = await self.get_user(user.user_id)
+        assert updated_user is not None  # User exists, so get_user must return it
+        return updated_user
+
+    async def update_user_preferences(
+        self,
+        user: User,
+        preferences: dict[str, Any],
+    ) -> User:
+        """
+        Update a user's preferences.
+
+        :param user: The user to update.
+        :param preferences: New preferences dict (completely replaces existing preferences).
+        """
+        # Verify user exists
+        current_user = await self.get_user(user.user_id)
+        if not current_user:
+            raise ValueError(f"User {user.user_id} not found")
+
+        # Update database with new preferences (complete replacement)
+        await self.database.update(
+            "users",
+            {"user_id": user.user_id},
+            {"preferences": json_dumps(preferences)},
+        )
+
+        # Return updated user
+        updated_user = await self.get_user(user.user_id)
+        assert updated_user is not None  # User exists, so get_user must return it
+        return updated_user
 
     async def update_provider_link(
         self,
@@ -578,6 +698,16 @@ class AuthenticationManager:
         users = []
         for row in user_rows:
             row_dict = dict(row)
+            # Parse preferences
+            preferences = {}
+            if prefs_json := row_dict.get("preferences"):
+                try:
+                    preferences = json_loads(prefs_json)
+                except Exception:
+                    self.logger.warning(
+                        "Failed to parse preferences for user %s", row_dict["user_id"]
+                    )
+
             users.append(
                 User(
                     user_id=row_dict["user_id"],
@@ -587,6 +717,7 @@ class AuthenticationManager:
                     created_at=datetime.fromisoformat(row_dict["created_at"]),
                     display_name=row_dict.get("display_name"),
                     avatar_url=row_dict.get("avatar_url"),
+                    preferences=preferences,
                 )
             )
         return users

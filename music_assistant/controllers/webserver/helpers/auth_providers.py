@@ -16,9 +16,9 @@ from urllib.parse import urlparse
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
+from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.models.auth import AuthProviderType, User, UserRole
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant

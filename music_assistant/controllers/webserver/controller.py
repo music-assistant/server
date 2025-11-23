@@ -30,9 +30,23 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
+from music_assistant_models.auth import (
+    AuthProviderType,
+    AuthToken,
+    User,
+    UserAuthProvider,
+    UserRole,
+)
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import InvalidCommand
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InsufficientPermissions,
+    InvalidCommand,
+    InvalidDataError,
+    InvalidToken,
+)
 
 from music_assistant.constants import (
     CONF_BIND_IP,
@@ -46,7 +60,6 @@ from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
-from music_assistant.models.auth import AuthProviderType, AuthToken, UserAuthProvider, UserRole
 from music_assistant.models.core_controller import CoreController
 
 from .api_docs import generate_commands_reference, generate_openapi_spec, generate_schemas_reference
@@ -877,25 +890,23 @@ class WebserverController(CoreController):
     # User Management API Methods
 
     @api_command("auth/users", required_role="admin")
-    async def get_users(self) -> list[dict[str, Any]]:
+    async def get_users(self) -> list[User]:
         """
         Get all users (admin only).
 
-        :return: List of user dictionaries.
+        :return: List of user objects.
         """
-        users = await self.auth.list_users()
-        return [user.to_dict() for user in users]
+        return await self.auth.list_users()
 
     @api_command("auth/user", required_role="admin")
-    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+    async def get_user(self, user_id: str) -> User | None:
         """
         Get user by ID (admin only).
 
         :param user_id: The user ID.
-        :return: User dictionary or None if not found.
+        :return: User object or None if not found.
         """
-        user = await self.auth.get_user(user_id)
-        return user.to_dict() if user else None
+        return await self.auth.get_user(user_id)
 
     @api_command("auth/user/create", required_role="admin")
     async def create_user(
@@ -905,7 +916,7 @@ class WebserverController(CoreController):
         role: str = "user",
         display_name: str | None = None,
         avatar_url: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> User:
         """
         Create a new user with built-in authentication (admin only).
 
@@ -914,44 +925,39 @@ class WebserverController(CoreController):
         :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
-        :return: Created user information or error.
+        :return: Created user object.
         """
         # Validation
         if not username or len(username) < 3:
-            return {"success": False, "error": "Username must be at least 3 characters"}
+            raise InvalidDataError("Username must be at least 3 characters")
 
         if not password or len(password) < 8:
-            return {"success": False, "error": "Password must be at least 8 characters"}
+            raise InvalidDataError("Password must be at least 8 characters")
 
         # Validate role
         try:
             user_role = UserRole(role)
-        except ValueError:
-            return {"success": False, "error": "Invalid role. Must be 'admin' or 'user'"}
+        except ValueError as err:
+            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
 
-        try:
-            # Get built-in provider
-            builtin_provider = self.auth.login_providers.get("builtin")
-            if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
-                return {"success": False, "error": "Built-in auth provider not available"}
+        # Get built-in provider
+        builtin_provider = self.auth.login_providers.get("builtin")
+        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+            raise InvalidDataError("Built-in auth provider not available")
 
-            # Create user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=user_role
+        # Create user with password
+        user = await builtin_provider.create_user_with_password(username, password, role=user_role)
+
+        # Update optional fields if provided
+        if display_name or avatar_url:
+            updated_user = await self.auth.update_user(
+                user, display_name=display_name, avatar_url=avatar_url
             )
+            if updated_user:
+                user = updated_user
 
-            # Update optional fields if provided
-            if display_name or avatar_url:
-                user = await self.auth.update_user(
-                    user, display_name=display_name, avatar_url=avatar_url
-                )
-
-            self.logger.info("User created by admin: %s (role: %s)", username, role)
-            return {"success": True, "user": user.to_dict()}
-
-        except Exception as e:
-            self.logger.exception("Error creating user")
-            return {"success": False, "error": str(e)}
+        self.logger.info("User created by admin: %s (role: %s)", username, role)
+        return user
 
     @api_command("auth/user/enable", required_role="admin")
     async def enable_user(self, user_id: str) -> dict[str, Any]:
@@ -1009,12 +1015,12 @@ class WebserverController(CoreController):
             return {"success": False, "error": str(e)}
 
     @api_command("auth/me")
-    async def get_current_user_info(self) -> dict[str, Any]:
+    async def get_current_user_info(self) -> User:
         """Get current authenticated user information."""
         current_user_obj = get_current_user()
         if not current_user_obj:
-            return {"error": "Not authenticated"}
-        return current_user_obj.to_dict()
+            raise AuthenticationRequired("Not authenticated")
+        return current_user_obj
 
     @api_command("auth/user/update")
     async def update_user_profile(
@@ -1026,7 +1032,8 @@ class WebserverController(CoreController):
         password: str | None = None,
         old_password: str | None = None,
         role: str | None = None,
-    ) -> dict[str, Any]:
+        preferences: dict[str, Any] | None = None,
+    ) -> User:
         """
         Update user profile information.
 
@@ -1039,100 +1046,97 @@ class WebserverController(CoreController):
         :param password: New password (optional, minimum 8 characters).
         :param old_password: Current password (required when user updates own password).
         :param role: New role - "admin" or "user" (optional, admin only).
-        :return: Updated user information.
+        :param preferences: User preferences dict (completely replaces existing, optional).
+        :return: Updated user object.
         """
         current_user_obj = get_current_user()
         if not current_user_obj:
-            return {"success": False, "error": "Not authenticated"}
+            raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
         if user_id and user_id != current_user_obj.user_id:
             # Updating another user - requires admin
             if current_user_obj.role != UserRole.ADMIN:
-                return {"success": False, "error": "Admin access required"}
+                raise InsufficientPermissions("Admin access required")
             target_user = await self.auth.get_user(user_id)
             if not target_user:
-                return {"success": False, "error": "User not found"}
+                raise InvalidDataError("User not found")
             is_admin_update = True
         else:
             # Updating own profile
             target_user = current_user_obj
             is_admin_update = False
 
-        try:
-            # Update role (admin only)
-            if role:
-                if not is_admin_update:
-                    return {"success": False, "error": "Only admins can update user roles"}
+        # Update role (admin only)
+        if role:
+            if not is_admin_update:
+                raise InsufficientPermissions("Only admins can update user roles")
 
-                try:
-                    new_role = UserRole(role)
-                except ValueError:
-                    return {"success": False, "error": "Invalid role. Must be 'admin' or 'user'"}
+            try:
+                new_role = UserRole(role)
+            except ValueError as err:
+                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
 
-                success = await self.auth.update_user_role(
-                    target_user.user_id, new_role, current_user_obj
+            success = await self.auth.update_user_role(
+                target_user.user_id, new_role, current_user_obj
+            )
+            if not success:
+                raise InvalidDataError("Failed to update role")
+
+            # Refresh target user to get updated role
+            refreshed_user = await self.auth.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after role update")
+            target_user = refreshed_user
+
+        # Update basic profile fields
+        if username or display_name or avatar_url:
+            updated_user = await self.auth.update_user(
+                target_user,
+                username=username,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+            if not updated_user:
+                raise InvalidDataError("Failed to update user profile")
+            target_user = updated_user
+
+        # Update preferences if provided
+        if preferences is not None:
+            target_user = await self.auth.update_user_preferences(target_user, preferences)
+
+        # Update password if provided
+        if password:
+            if len(password) < 8:
+                raise InvalidDataError("Password must be at least 8 characters")
+
+            builtin_provider = self.auth.login_providers.get("builtin")
+            if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+                raise InvalidDataError("Built-in auth not available")
+
+            if is_admin_update:
+                # Admin can reset password without old password
+                await builtin_provider.reset_password(target_user, password)
+                self.logger.info(
+                    "Password reset for user %s by admin %s",
+                    target_user.username,
+                    current_user_obj.username,
+                )
+            else:
+                # User updating own password - requires old password verification
+                if not old_password:
+                    raise InvalidDataError("old_password is required to change your own password")
+
+                # Verify old password and change to new one
+                success = await builtin_provider.change_password(
+                    target_user, old_password, password
                 )
                 if not success:
-                    return {"success": False, "error": "Failed to update role"}
+                    raise AuthenticationFailed("Invalid current password")
 
-                # Refresh target user to get updated role
-                refreshed_user = await self.auth.get_user(target_user.user_id)
-                if not refreshed_user:
-                    return {"success": False, "error": "Failed to refresh user after role update"}
-                target_user = refreshed_user
+                self.logger.info("Password changed for user %s", target_user.username)
 
-            # Update basic profile fields
-            if username or display_name or avatar_url:
-                updated_user = await self.auth.update_user(
-                    target_user,
-                    username=username,
-                    display_name=display_name,
-                    avatar_url=avatar_url,
-                )
-                if not updated_user:
-                    return {"success": False, "error": "Failed to update user profile"}
-                target_user = updated_user
-
-            # Update password if provided
-            if password:
-                if len(password) < 8:
-                    return {"success": False, "error": "Password must be at least 8 characters"}
-
-                builtin_provider = self.auth.login_providers.get("builtin")
-                if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
-                    return {"success": False, "error": "Built-in auth not available"}
-
-                if is_admin_update:
-                    # Admin can reset password without old password
-                    await builtin_provider.reset_password(target_user, password)
-                    self.logger.info(
-                        "Password reset for user %s by admin %s",
-                        target_user.username,
-                        current_user_obj.username,
-                    )
-                else:
-                    # User updating own password - requires old password verification
-                    if not old_password:
-                        return {
-                            "success": False,
-                            "error": "old_password is required to change your own password",
-                        }
-
-                    # Verify old password and change to new one
-                    success = await builtin_provider.change_password(
-                        target_user, old_password, password
-                    )
-                    if not success:
-                        return {"success": False, "error": "Invalid current password"}
-
-                    self.logger.info("Password changed for user %s", target_user.username)
-
-            return {"success": True, "user": target_user.to_dict()}
-
-        except Exception as e:
-            self.logger.exception("Error updating user profile")
-            return {"success": False, "error": str(e)}
+        return target_user
 
     @api_command("auth/tokens")
     async def get_my_tokens(self, user_id: str | None = None) -> list[AuthToken]:
@@ -1403,7 +1407,7 @@ class WebsocketClientHandler:
                 await self._send_message(
                     ErrorResultMessage(
                         msg.message_id,
-                        401,
+                        AuthenticationRequired.error_code,
                         "Authentication required. Please send auth command first.",
                     )
                 )
@@ -1419,7 +1423,7 @@ class WebsocketClientHandler:
                     await self._send_message(
                         ErrorResultMessage(
                             msg.message_id,
-                            403,
+                            InsufficientPermissions.error_code,
                             "Admin access required",
                         )
                     )
@@ -1517,7 +1521,7 @@ class WebsocketClientHandler:
             await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
-                    400,
+                    AuthenticationRequired.error_code,
                     "token required in args",
                 )
             )
@@ -1529,7 +1533,7 @@ class WebsocketClientHandler:
             await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
-                    401,
+                    InvalidToken.error_code,
                     "Invalid or expired token",
                 )
             )
