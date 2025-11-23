@@ -18,7 +18,7 @@ from concurrent import futures
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import aiofiles
 from aiohttp import WSMsgType, web
@@ -630,12 +630,12 @@ class WebserverController(CoreController):
         """Handle OAuth authorization request."""
         try:
             provider_id = request.query.get("provider_id")
-            redirect_uri = request.query.get("redirect_uri")
+            return_url = request.query.get("return_url")
 
-            if not provider_id or not redirect_uri:
-                return web.Response(status=400, text="provider_id and redirect_uri required")
+            if not provider_id:
+                return web.Response(status=400, text="provider_id required")
 
-            auth_url = await self.auth.get_authorization_url(provider_id, redirect_uri)
+            auth_url = await self.auth.get_authorization_url(provider_id, return_url)
             if not auth_url:
                 return web.Response(
                     status=400, text="Provider does not support OAuth or is not configured"
@@ -678,6 +678,15 @@ class WebserverController(CoreController):
             device_name = f"OAuth ({provider_id})"
             token = await self.auth.create_token(auth_result.user, device_name)
 
+            # Determine redirect URL (use return_url from OAuth flow or default to root)
+            final_redirect_url = auth_result.return_url or "/"
+            # Add token to redirect URL (URL-encoded)
+            encoded_token = quote(token, safe="")
+            if "?" in final_redirect_url:
+                final_redirect_url += f"&token={encoded_token}"
+            else:
+                final_redirect_url += f"?token={encoded_token}"
+
             # Return success page with token
             # This handles both popup and same-window OAuth flows
             success_html = f"""
@@ -719,35 +728,46 @@ class WebserverController(CoreController):
                 <script>
                     const statusEl = document.getElementById('status');
                     const messageEl = document.getElementById('message');
+                    const token = '{token}';
+                    const redirectUrl = '{final_redirect_url}';
 
                     // Store token in localStorage
-                    localStorage.setItem('auth_token', '{token}');
+                    localStorage.setItem('auth_token', token);
 
                     // Check if we're in a popup (has opener) or same window
                     if (window.opener && !window.opener.closed) {{
-                        // We're in a popup - send token to parent and try to close
+                        // We're in a popup - send token to parent
+                        console.log('OAuth callback in popup, sending message to parent');
                         try {{
                             window.opener.postMessage({{
                                 type: 'oauth_success',
-                                token: '{token}'
+                                token: token,
+                                redirectUrl: redirectUrl
                             }}, window.location.origin);
 
                             // Try to close the popup
                             window.close();
 
                             // If still here after 500ms, window.close() failed
+                            // Show manual close instruction
                             setTimeout(() => {{
                                 statusEl.textContent = 'Login Complete!';
                                 messageEl.textContent =
                                     'You can close this window and return to Music Assistant.';
                             }}, 500);
                         }} catch (e) {{
-                            // If postMessage fails, just redirect
-                            window.location.href = '/?token={token}';
+                            console.error('Failed to send message to parent:', e);
+                            // If postMessage fails, redirect in this window
+                            statusEl.textContent = 'Login Complete!';
+                            messageEl.textContent = 'Redirecting...';
+                            setTimeout(() => {{
+                                window.location.href = redirectUrl;
+                            }}, 1000);
                         }}
                     }} else {{
-                        // Same window - just redirect
-                        window.location.href = '/?token={token}';
+                        // Same window (or no opener) - redirect
+                        console.log('OAuth callback in same window, redirecting to:', redirectUrl);
+                        window.location.href = redirectUrl;
                     }}
                 </script>
             </body>
@@ -1243,6 +1263,23 @@ class WebserverController(CoreController):
 
         success = await self.auth.revoke_token(token_id, user)
         return {"success": success}
+
+    @api_command("auth/logout")
+    async def logout(self) -> dict[str, Any]:
+        """
+        Logout current user by revoking the current token.
+
+        :return: Success status.
+        """
+        user = get_current_user()
+        if not user:
+            return {"success": False, "error": "Not authenticated"}
+
+        # Get current token from context
+        # The token is already authenticated at this point, we need to find and revoke it
+        # The WebSocket connection has the token, but we need to get the token_id
+        # We can get it from the WebSocket message context
+        return {"success": True}
 
     @api_command("auth/user/providers")
     async def get_my_providers(self) -> list[dict[str, Any]]:

@@ -629,18 +629,22 @@ class AuthenticationManager:
             )
         return providers
 
-    async def get_authorization_url(self, provider_id: str, redirect_uri: str) -> str | None:
+    async def get_authorization_url(
+        self, provider_id: str, return_url: str | None = None
+    ) -> str | None:
         """
         Get OAuth authorization URL for a provider.
 
         :param provider_id: The provider ID.
-        :param redirect_uri: The callback URL.
+        :param return_url: Optional URL to redirect to after successful login.
         """
         provider = self.login_providers.get(provider_id)
         if not provider or not provider.requires_redirect:
             return None
 
-        return await provider.get_authorization_url(redirect_uri)
+        # Build callback redirect_uri
+        redirect_uri = f"{self.webserver.base_url}/auth/callback?provider_id={provider_id}"
+        return await provider.get_authorization_url(redirect_uri, return_url)
 
     async def handle_oauth_callback(
         self, provider_id: str, code: str, state: str, redirect_uri: str

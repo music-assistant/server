@@ -355,8 +355,14 @@
         async function initiateOAuth(providerId) {
             try {
                 // Include provider_id in callback URL
-                const redirectUri = `${API_BASE}/auth/callback?provider_id=${providerId}`;
-                const response = await fetch(`${API_BASE}/auth/authorize?provider_id=${providerId}&redirect_uri=${encodeURIComponent(redirectUri)}`);
+                let authorizeUrl = `${API_BASE}/auth/authorize?provider_id=${providerId}`;
+
+                // Pass return_url to authorize endpoint if present
+                if (returnUrl) {
+                    authorizeUrl += `&return_url=${encodeURIComponent(returnUrl)}`;
+                }
+
+                const response = await fetch(authorizeUrl);
                 const data = await response.json();
 
                 if (data.authorization_url) {
@@ -372,20 +378,26 @@
 
         // Listen for OAuth success messages from popup window
         window.addEventListener('message', (event) => {
+            console.log('Received postMessage:', event.origin, event.data);
+
             // Verify the message is from our origin
             if (event.origin !== window.location.origin) {
+                console.log('Ignoring message from different origin:', event.origin);
                 return;
             }
 
             // Check if it's an OAuth success message
             if (event.data && event.data.type === 'oauth_success' && event.data.token) {
-                console.log('Received OAuth success from popup, redirecting...');
+                console.log('Received OAuth success from popup, redirecting to:', event.data.redirectUrl);
                 // Store token in localStorage
                 localStorage.setItem('auth_token', event.data.token);
-                // Redirect to home with token in URL
-                window.location.href = `/?token=${encodeURIComponent(event.data.token)}`;
+                // Redirect to the URL from OAuth callback (includes token)
+                window.location.href = event.data.redirectUrl || `/?token=${encodeURIComponent(event.data.token)}`;
+            } else {
+                console.log('Message is not an OAuth success message:', event.data);
             }
         });
+        console.log('OAuth message listener registered');
 
         // Load providers on page load
         loadProviders();

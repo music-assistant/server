@@ -43,6 +43,7 @@ class AuthResult:
     user: User | None = None
     error: str | None = None
     access_token: str | None = None
+    return_url: str | None = None
 
 
 class LoginProvider(ABC):
@@ -85,11 +86,14 @@ class LoginProvider(ABC):
         :param credentials: Provider-specific credentials (username/password, OAuth code, etc).
         """
 
-    async def get_authorization_url(self, redirect_uri: str) -> str | None:
+    async def get_authorization_url(
+        self, redirect_uri: str, return_url: str | None = None
+    ) -> str | None:
         """
         Get OAuth authorization URL if applicable.
 
         :param redirect_uri: The callback URL for OAuth flow.
+        :param return_url: Optional URL to redirect to after successful login.
         """
         return None
 
@@ -245,19 +249,23 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         return AuthResult(success=False, error="Use OAuth flow for Home Assistant authentication")
 
-    async def get_authorization_url(self, redirect_uri: str) -> str | None:
+    async def get_authorization_url(
+        self, redirect_uri: str, return_url: str | None = None
+    ) -> str | None:
         """
         Get Home Assistant OAuth authorization URL using hass_client.
 
         :param redirect_uri: The callback URL.
+        :param return_url: Optional URL to redirect to after successful login.
         """
         ha_url = self.config.get("ha_url")
         if not ha_url:
             return None
 
         state = secrets.token_urlsafe(32)
-        # Store state for verification
+        # Store state and return_url for verification and final redirect
         self._oauth_state = state
+        self._oauth_return_url = return_url
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -409,9 +417,12 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 AuthProviderType.HOME_ASSISTANT, ha_user_id
             )
 
+            # Get stored return_url from OAuth state
+            return_url = getattr(self, "_oauth_return_url", None)
+
             if user:
                 # Existing user
-                return AuthResult(success=True, user=user)
+                return AuthResult(success=True, user=user, return_url=return_url)
 
             # New HA user - check if self-registration allowed
             if not self.allow_self_registration:
@@ -432,7 +443,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 user, AuthProviderType.HOME_ASSISTANT, ha_user_id
             )
 
-            return AuthResult(success=True, user=user)
+            return AuthResult(success=True, user=user, return_url=return_url)
 
         except Exception as e:
             self.logger.exception("Error during Home Assistant OAuth callback")
