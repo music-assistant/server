@@ -680,8 +680,11 @@ class WebserverController(CoreController):
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
         # Check if setup is needed
-        if await self.auth.has_users():
-            # Already has users, redirect to login
+        # Allow setup if either:
+        # 1. No users exist yet (fresh install)
+        # 2. Users exist but onboarding not done (e.g., Ingress auto-created user)
+        if await self.auth.has_users() and self.mass.config.get(CONF_ONBOARD_DONE):
+            # Setup already completed, redirect to login
             return web.Response(status=302, headers={"Location": "/login"})
 
         # Serve setup page
@@ -706,8 +709,8 @@ class WebserverController(CoreController):
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user."""
-        # Check if setup is still needed
-        if await self.auth.has_users():
+        # Check if setup is still needed (allow if onboard_done is false)
+        if await self.auth.has_users() and self.mass.config.get(CONF_ONBOARD_DONE):
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=400
             )
@@ -745,19 +748,53 @@ class WebserverController(CoreController):
                     {"success": False, "error": "Built-in provider configuration error"}, status=500
                 )
 
-            # Create admin user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN, display_name=display_name
-            )
-
-            # If from Ingress, also link to HA provider
+            # Check if this is an Ingress setup where user already exists
+            user = None
             if from_ingress and is_request_from_ingress(request):
                 ha_user_id = request.headers.get("X-Remote-User-ID")
                 if ha_user_id:
-                    # Link user to Home Assistant provider
-                    await self.auth.link_user_to_provider(
-                        user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+                    # Try to find existing auto-created Ingress user
+                    user = await self.auth.get_user_by_provider_link(
+                        AuthProviderType.HOME_ASSISTANT, ha_user_id
                     )
+
+            if user:
+                # User already exists (auto-created from Ingress), update and add password
+                updates = {}
+                if display_name and not user.display_name:
+                    updates["display_name"] = display_name
+                    user.display_name = display_name
+
+                # Make user admin if not already
+                if user.role != UserRole.ADMIN:
+                    updates["role"] = UserRole.ADMIN.value
+                    user.role = UserRole.ADMIN
+
+                # Apply updates if any
+                if updates:
+                    await self.auth.database.update(
+                        "users",
+                        {"user_id": user.user_id},
+                        updates,
+                    )
+
+                # Add password authentication to existing user
+                password_hash = builtin_provider._hash_password(password, username)
+                await self.auth.link_user_to_provider(user, AuthProviderType.BUILTIN, password_hash)
+            else:
+                # Create new admin user with password
+                user = await builtin_provider.create_user_with_password(
+                    username, password, role=UserRole.ADMIN, display_name=display_name
+                )
+
+                # If from Ingress, also link to HA provider
+                if from_ingress and is_request_from_ingress(request):
+                    ha_user_id = request.headers.get("X-Remote-User-ID")
+                    if ha_user_id:
+                        # Link user to Home Assistant provider
+                        await self.auth.link_user_to_provider(
+                            user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+                        )
 
             # Create token for the new admin
             device_name = body.get(
