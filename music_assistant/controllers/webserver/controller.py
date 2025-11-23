@@ -713,22 +713,34 @@ class WebserverController(CoreController):
             </head>
             <body>
                 <div class="container">
-                    <h1>Login Successful!</h1>
-                    <p>Redirecting...</p>
+                    <h1 id="status">Login Successful!</h1>
+                    <p id="message">Redirecting...</p>
                 </div>
                 <script>
+                    const statusEl = document.getElementById('status');
+                    const messageEl = document.getElementById('message');
+
                     // Store token in localStorage
                     localStorage.setItem('auth_token', '{token}');
 
                     // Check if we're in a popup (has opener) or same window
-                    if (window.opener) {{
-                        // We're in a popup - send token to parent and close
+                    if (window.opener && !window.opener.closed) {{
+                        // We're in a popup - send token to parent and try to close
                         try {{
                             window.opener.postMessage({{
                                 type: 'oauth_success',
                                 token: '{token}'
                             }}, window.location.origin);
+
+                            // Try to close the popup
                             window.close();
+
+                            // If still here after 500ms, window.close() failed
+                            setTimeout(() => {{
+                                statusEl.textContent = 'Login Complete!';
+                                messageEl.textContent =
+                                    'You can close this window and return to Music Assistant.';
+                            }}, 500);
                         }} catch (e) {{
                             // If postMessage fails, just redirect
                             window.location.href = '/?token={token}';

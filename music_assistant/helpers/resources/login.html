@@ -370,6 +370,23 @@
             }
         }
 
+        // Listen for OAuth success messages from popup window
+        window.addEventListener('message', (event) => {
+            // Verify the message is from our origin
+            if (event.origin !== window.location.origin) {
+                return;
+            }
+
+            // Check if it's an OAuth success message
+            if (event.data && event.data.type === 'oauth_success' && event.data.token) {
+                console.log('Received OAuth success from popup, redirecting...');
+                // Store token in localStorage
+                localStorage.setItem('auth_token', event.data.token);
+                // Redirect to home with token in URL
+                window.location.href = `/?token=${encodeURIComponent(event.data.token)}`;
+            }
+        });
+
         // Load providers on page load
         loadProviders();
     </script>
