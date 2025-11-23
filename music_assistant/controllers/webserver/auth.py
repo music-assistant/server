@@ -35,8 +35,9 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
-# Token expiration (30 days by default)
-TOKEN_EXPIRATION_DAYS = 30
+# Token expiration constants (in days)
+TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
+TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
 
 # Config keys (defined in controller.py to avoid circular import)
 CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
@@ -137,6 +138,7 @@ class AuthenticationManager:
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 last_used_at TEXT,
+                is_long_lived INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
             """
@@ -244,11 +246,21 @@ class AuthenticationManager:
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
 
-        # Update last used timestamp
+        # Implement sliding expiration for short-lived tokens
+        is_long_lived = bool(token_row["is_long_lived"])
+        now = utc()
+        updates = {"last_used_at": now.isoformat()}
+
+        if not is_long_lived and token_row["expires_at"]:
+            # Short-lived token: extend expiration on each use (sliding window)
+            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            updates["expires_at"] = new_expires_at.isoformat()
+
+        # Update last used timestamp and potentially expiration
         await self.database.update(
             "auth_tokens",
             {"token_id": token_row["token_id"]},
-            {"last_used_at": utc().isoformat()},
+            updates,
         )
 
         # Get user
@@ -431,23 +443,28 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(self, user: User, name: str, expires_in_days: int | None = None) -> str:
+    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
         """
         Create a new access token for a user.
 
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
-        :param expires_in_days: Optional expiration in days (default: 30 days).
+        :param is_long_lived: Whether this is a long-lived token (default: False).
+            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
+            Long-lived tokens (True): No auto-renewal, expire after 10 years.
         """
         # Generate token
         token = secrets.token_urlsafe(48)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-        # Calculate expiration
-        if expires_in_days is None:
-            expires_in_days = TOKEN_EXPIRATION_DAYS
+        # Calculate expiration based on token type
         created_at = utc()
-        expires_at = utc() + timedelta(days=expires_in_days) if expires_in_days else None
+        if is_long_lived:
+            # Long-lived tokens expire after 10 years (no auto-renewal)
+            expires_at = created_at + timedelta(days=TOKEN_LONG_LIVED_EXPIRATION)
+        else:
+            # Short-lived tokens expire after 30 days (with auto-renewal on use)
+            expires_at = created_at + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
 
         # Store token
         token_data = {
@@ -456,7 +473,8 @@ class AuthenticationManager:
             "token_hash": token_hash,
             "name": name,
             "created_at": created_at.isoformat(),
-            "expires_at": expires_at.isoformat() if expires_at else None,
+            "expires_at": expires_at.isoformat(),
+            "is_long_lived": 1 if is_long_lived else 0,
         }
         await self.database.insert("auth_tokens", token_data)
 
@@ -615,17 +633,17 @@ class AuthenticationManager:
 
     async def create_long_lived_token(self, user: User, name: str) -> str:
         """
-        Create a long-lived access token (no expiration) for external apps/integrations.
+        Create a long-lived access token for external apps/integrations.
 
-        This is similar to Home Assistant's long-lived access tokens - they never expire
-        and are intended for external applications like the Home Assistant integration,
+        Long-lived tokens expire after 10 years and do NOT auto-renew on use.
+        They are intended for external applications like the Home Assistant integration,
         mobile apps, etc. Users can manage and revoke these tokens at any time.
 
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., "Home Assistant", "Mobile App").
         """
-        # Create a token with no expiration
-        token = await self.create_token(user, name, expires_in_days=None)
+        # Create a long-lived token
+        token = await self.create_token(user, name, is_long_lived=True)
 
         self.logger.info("Created long-lived token '%s' for user '%s'", name, user.username)
         return token

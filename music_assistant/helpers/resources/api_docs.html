@@ -592,9 +592,12 @@ curl -X POST {BASE_URL}/api \
                 </div>
 
                 <div class="info-box">
-                    <strong>Token Management:</strong> Regular tokens expire after 30 days. You can also create
-                    long-lived tokens (no expiration) for external integrations like the Home Assistant integration.
-                    Use the <code>auth/tokens</code> WebSocket commands to manage your tokens.
+                    <strong>Token Types:</strong>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><strong>Short-lived tokens:</strong> Created automatically during login. Expire after 30 days of inactivity but auto-renew on each use (sliding expiration window). Perfect for user sessions.</li>
+                        <li><strong>Long-lived tokens:</strong> Created via <code>auth/token/create</code> command. Expire after 10 years with no auto-renewal. Intended for external integrations (Home Assistant, mobile apps, API access).</li>
+                    </ul>
+                    Use the <code>auth/tokens</code> and <code>auth/token/create</code> WebSocket commands to manage your tokens.
                 </div>
 
                 <h3>User Management Commands</h3>
@@ -602,12 +605,14 @@ curl -X POST {BASE_URL}/api \
                 <ul style="margin-left: 30px; margin-bottom: 15px;">
                     <li><code>auth/users</code> - List all users (admin only)</li>
                     <li><code>auth/user</code> - Get user by ID (admin only)</li>
-                    <li><code>auth/tokens</code> - List your tokens</li>
-                    <li><code>auth/token/revoke</code> - Revoke a token</li>
-                    <li><code>auth/change_password</code> - Change your password</li>
-                    <li><code>auth/user/update_role</code> - Update user role (admin only)</li>
+                    <li><code>auth/user/create</code> - Create a new user (admin only)</li>
+                    <li><code>auth/user/update</code> - Update user profile, password, or role (admin for other users)</li>
                     <li><code>auth/user/enable</code> - Enable user (admin only)</li>
                     <li><code>auth/user/disable</code> - Disable user (admin only)</li>
+                    <li><code>auth/user/delete</code> - Delete user (admin only)</li>
+                    <li><code>auth/tokens</code> - List your tokens</li>
+                    <li><code>auth/token/create</code> - Create a new long-lived token</li>
+                    <li><code>auth/token/revoke</code> - Revoke a token</li>
                 </ul>
                 <p>See the <a href="{BASE_URL}/api-docs/commands#auth" style="color: #667eea;">Commands Reference</a> for detailed documentation of all auth commands.</p>
             </div>

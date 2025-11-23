@@ -45,7 +45,7 @@ from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
-from music_assistant.models.auth import AuthProviderType, UserAuthProvider, UserRole
+from music_assistant.models.auth import AuthProviderType, AuthToken, UserAuthProvider, UserRole
 from music_assistant.models.core_controller import CoreController
 
 from .api_docs import generate_commands_reference, generate_openapi_spec, generate_schemas_reference
@@ -369,7 +369,16 @@ class WebserverController(CoreController):
         if handler.authenticated or handler.required_role:
             # Skip auth for ingress requests (HA handles it)
             if not is_request_from_ingress(request):
-                user = await get_authenticated_user(request)
+                try:
+                    user = await get_authenticated_user(request)
+                except Exception as e:
+                    self.logger.exception("Authentication error")
+                    return web.Response(
+                        status=401,
+                        text=f"Authentication error: {e!s}",
+                        headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+                    )
+
                 if not user:
                     return web.Response(
                         status=401,
@@ -1014,12 +1023,12 @@ class WebserverController(CoreController):
             return {"success": False, "error": str(e)}
 
     @api_command("auth/tokens")
-    async def get_my_tokens(self, user_id: str | None = None) -> list[dict[str, Any]]:
+    async def get_my_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
         Get current user's auth tokens or another user's tokens (admin only).
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: List of token dictionaries.
+        :return: List of auth tokens.
         """
         current_user = get_current_user()
         if not current_user:
@@ -1035,15 +1044,20 @@ class WebserverController(CoreController):
         else:
             target_user = current_user
 
-        tokens = await self.auth.get_user_tokens(target_user)
-        return [token.to_dict() for token in tokens]
+        return await self.auth.get_user_tokens(target_user)
 
     @api_command("auth/token/create")
     async def create_user_token(self, name: str, user_id: str | None = None) -> dict[str, Any]:
         """
         Create a new long-lived access token for current user or another user (admin only).
 
-        :param name: The name/description for the token.
+        Long-lived tokens are intended for external integrations and API access.
+        They expire after 10 years and do NOT auto-renew on use.
+
+        Short-lived tokens (for regular user sessions) are only created during login
+        and auto-renew on each use (sliding 30-day expiration window).
+
+        :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
         :return: Dictionary with the new token.
         """
@@ -1061,8 +1075,8 @@ class WebserverController(CoreController):
         else:
             target_user = current_user
 
-        # Create the token
-        token = await self.auth.create_token(target_user, name)
+        # Create a long-lived token (only long-lived tokens can be created via this command)
+        token = await self.auth.create_long_lived_token(target_user, name)
         return {"success": True, "token": token}
 
     @api_command("auth/token/revoke")

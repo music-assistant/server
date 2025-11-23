@@ -103,6 +103,7 @@ class AuthToken:
     created_at: datetime = field(default_factory=datetime.utcnow)
     expires_at: datetime | None = None
     last_used_at: datetime | None = None
+    is_long_lived: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert AuthToken to dictionary."""
@@ -114,6 +115,7 @@ class AuthToken:
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+            "is_long_lived": self.is_long_lived,
         }
 
     @classmethod
@@ -131,6 +133,7 @@ class AuthToken:
             last_used_at=(
                 datetime.fromisoformat(data["last_used_at"]) if data.get("last_used_at") else None
             ),
+            is_long_lived=data.get("is_long_lived", False),
         )
 
 
