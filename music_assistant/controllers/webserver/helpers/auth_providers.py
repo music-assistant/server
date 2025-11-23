@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import secrets
 from abc import ABC, abstractmethod
@@ -271,6 +273,78 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ),
         )
 
+    def _decode_ha_jwt_token(self, access_token: str) -> str | None:
+        """
+        Decode Home Assistant JWT token to extract user ID.
+
+        :param access_token: The JWT access token from Home Assistant.
+        :return: The HA user ID or None if decoding fails.
+        """
+        try:
+            # JWT tokens have 3 parts separated by dots: header.payload.signature
+            parts = access_token.split(".")
+            if len(parts) >= 2:
+                # Decode the payload (second part)
+                # Add padding if needed (JWT base64 may not be padded)
+                payload = parts[1]
+                payload += "=" * (4 - len(payload) % 4)
+                decoded = base64.urlsafe_b64decode(payload)
+                token_data = json.loads(decoded)
+
+                # Log the token data to debug
+                self.logger.debug("Decoded HA JWT token data: %s", token_data)
+
+                # Home Assistant JWT tokens use 'iss' as the user ID
+                ha_user_id: str | None = token_data.get("iss")
+
+                if not ha_user_id:
+                    # Fallback to 'sub' if 'iss' is not present
+                    ha_user_id = token_data.get("sub")
+
+                if ha_user_id:
+                    return str(ha_user_id)
+                return None
+        except Exception as decode_error:
+            self.logger.error("Failed to decode HA JWT token: %s", decode_error)
+
+        return None
+
+    async def _fetch_ha_user_info(
+        self, ha_url: str, access_token: str, ha_user_id: str
+    ) -> tuple[str | None, str | None]:
+        """
+        Fetch user information from Home Assistant API.
+
+        :param ha_url: Home Assistant URL.
+        :param access_token: Access token for API requests.
+        :param ha_user_id: Home Assistant user ID.
+        :return: Tuple of (username, display_name) or (None, None) if fetch fails.
+        """
+        try:
+            # Get user info from HA's person API
+            user_info_url = f"{ha_url}/api/person"
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            async with self.mass.http_session.get(user_info_url, headers=headers) as response:
+                if response.status == 200:
+                    persons = await response.json()
+                    # Find the person linked to this user ID
+                    for person in persons:
+                        if person.get("user_id") == ha_user_id:
+                            username = person.get("id") or person.get("name")
+                            display_name = person.get("name")
+                            self.logger.debug(
+                                "Found HA person for user %s: username=%s, display_name=%s",
+                                ha_user_id,
+                                username,
+                                display_name,
+                            )
+                            return username, display_name
+        except Exception as fetch_error:
+            self.logger.warning("Failed to fetch HA user info: %s", fetch_error)
+
+        return None, None
+
     async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
         """
         Handle Home Assistant OAuth callback using hass_client.
@@ -287,31 +361,48 @@ class HomeAssistantOAuthProvider(LoginProvider):
         if not ha_url:
             return AuthResult(success=False, error="Home Assistant URL not configured")
 
+        # Ensure ha_url is a string for type checking
+        assert isinstance(ha_url, str)
+
         try:
             # Use base_url of callback as client_id (same as HA provider does)
             client_id = base_url(redirect_uri)
 
             # Use hass_client's get_token utility - no client_secret needed!
-            token_details = await get_token(ha_url, code, client_id=client_id)
+            try:
+                token_details = await get_token(ha_url, code, client_id=client_id)
+            except Exception as token_error:
+                self.logger.error(
+                    "Failed to get token from HA: %s (client_id: %s, ha_url: %s)",
+                    token_error,
+                    client_id,
+                    ha_url,
+                )
+                return AuthResult(
+                    success=False, error=f"Failed to exchange OAuth code: {token_error}"
+                )
+
             access_token = token_details.get("access_token")
+            if not access_token:
+                return AuthResult(success=False, error="No access token received from HA")
 
-            # Get user info from Home Assistant
-            userinfo_url = f"{ha_url}/api/"
-            headers = {"Authorization": f"Bearer {access_token}"}
-            async with self.mass.http_session.get(userinfo_url, headers=headers) as response:
-                if response.status != 200:
-                    return AuthResult(success=False, error="Failed to get user info from HA")
+            # Decode JWT token to get HA user ID
+            ha_user_id = self._decode_ha_jwt_token(access_token)
+            if not ha_user_id:
+                return AuthResult(success=False, error="Failed to decode token")
 
-            # Get current user info
-            userinfo_url = f"{ha_url}/api/auth/current_user"
-            async with self.mass.http_session.get(userinfo_url, headers=headers) as response:
-                user_info = await response.json()
+            # Fetch user info from Home Assistant API
+            username, display_name = await self._fetch_ha_user_info(
+                ha_url, access_token, ha_user_id
+            )
 
-            ha_user_id = user_info.get("id")
-            username = user_info.get("username") or user_info.get("name")
-
-            if not ha_user_id or not username:
-                return AuthResult(success=False, error="Failed to get user information from HA")
+            # If we couldn't get user info from API, use fallback
+            if not username:
+                # Use first 8 chars of user ID as username (e.g., "ha_e55d97f7")
+                username = f"ha_{ha_user_id[:8]}"
+                self.logger.debug(
+                    "Could not fetch HA user info, using generated username: %s", username
+                )
 
             # Check if user already linked to HA
             user = await self.auth_manager.get_user_by_provider_link(
@@ -333,7 +424,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
             user = await self.auth_manager.create_user(
                 username=username,
                 role=UserRole.USER,
-                display_name=user_info.get("name"),
+                display_name=display_name or username,  # Use fetched display name or fallback
             )
 
             # Link to Home Assistant

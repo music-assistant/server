@@ -18,6 +18,7 @@ from concurrent import futures
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import aiofiles
 from aiohttp import WSMsgType, web
@@ -446,9 +447,54 @@ class WebserverController(CoreController):
         # If no users exist, redirect to setup
         if not await self.auth.has_users():
             return_url = request.query.get("return_url", "")
-            setup_url = f"/setup?return_url={return_url}" if return_url else "/setup"
+            device_name = request.query.get("device_name", "")
+            setup_url = (
+                f"/setup?return_url={return_url}&device_name={device_name}"
+                if return_url
+                else "/setup"
+            )
             return web.Response(status=302, headers={"Location": setup_url})
 
+        # Check if this is an ingress request - if so, auto-authenticate and redirect with token
+        if is_request_from_ingress(request):
+            ingress_user_id = request.headers.get("X-Remote-User-ID")
+            ingress_username = request.headers.get("X-Remote-User-Name")
+
+            if ingress_user_id and ingress_username:
+                # Try to find existing user linked to this HA user ID
+                user = await self.auth.get_user_by_provider_link(
+                    AuthProviderType.HOME_ASSISTANT, ingress_user_id
+                )
+
+                if user:
+                    # User exists, create token and redirect
+                    device_name = request.query.get(
+                        "device_name", f"Home Assistant Ingress ({ingress_username})"
+                    )
+                    token = await self.auth.create_token(user, device_name)
+
+                    # Get return URL or default to root
+                    return_url = request.query.get("return_url", "/")
+
+                    # Redirect to return URL with token as query parameter
+                    parsed = urlparse(return_url)
+                    query_params = parse_qs(parsed.query)
+                    query_params["token"] = [token]
+                    new_query = urlencode(query_params, doseq=True)
+                    redirect_url = urlunparse(
+                        (
+                            parsed.scheme,
+                            parsed.netloc,
+                            parsed.path,
+                            parsed.params,
+                            new_query,
+                            parsed.fragment,
+                        )
+                    )
+
+                    return web.Response(status=302, headers={"Location": redirect_url})
+
+        # Not ingress or user doesn't exist - serve login page
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
             html_content = await f.read()
@@ -633,19 +679,64 @@ class WebserverController(CoreController):
             token = await self.auth.create_token(auth_result.user, device_name)
 
             # Return success page with token
+            # This handles both popup and same-window OAuth flows
             success_html = f"""
             <html>
             <head>
                 <title>Login Successful</title>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                            sans-serif;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    }}
+                    .container {{
+                        background: white;
+                        padding: 40px;
+                        border-radius: 12px;
+                        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                        text-align: center;
+                    }}
+                    h1 {{
+                        color: #667eea;
+                        margin-bottom: 10px;
+                    }}
+                    p {{
+                        color: #666;
+                    }}
+                </style>
             </head>
             <body>
-                <h1>Login Successful!</h1>
-                <p>Redirecting...</p>
+                <div class="container">
+                    <h1>Login Successful!</h1>
+                    <p>Redirecting...</p>
+                </div>
                 <script>
                     // Store token in localStorage
                     localStorage.setItem('auth_token', '{token}');
-                    // Redirect to home
-                    window.location.href = '/';
+
+                    // Check if we're in a popup (has opener) or same window
+                    if (window.opener) {{
+                        // We're in a popup - send token to parent and close
+                        try {{
+                            window.opener.postMessage({{
+                                type: 'oauth_success',
+                                token: '{token}'
+                            }}, window.location.origin);
+                            window.close();
+                        }} catch (e) {{
+                            // If postMessage fails, just redirect
+                            window.location.href = '/?token={token}';
+                        }}
+                    }} else {{
+                        // Same window - just redirect
+                        window.location.href = '/?token={token}';
+                    }}
                 </script>
             </body>
             </html>
