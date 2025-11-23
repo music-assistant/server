@@ -118,13 +118,16 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_AUTH_HA_ENABLED,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=False,
+                default_value=True,
                 label="Enable Home Assistant OAuth",
                 description="Allow users to sign in with their Home Assistant account. \n"
                 "Requires the Home Assistant provider (plugin) to be configured. \n"
                 "Uses hass_client for seamless authentication - "
                 "no manual OAuth app setup required!",
                 category="advanced",
+                hidden=not any(
+                    provider.domain == "homeassistant" for provider in self.mass.providers
+                ),
             ),
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -618,12 +621,12 @@ class WebserverController(CoreController):
         try:
             code = request.query.get("code")
             state = request.query.get("state")
-            provider_id = request.query.get("provider_id", "google")  # Default to google for now
+            provider_id = request.query.get("provider_id")
 
-            if not code or not state:
-                return web.Response(status=400, text="code and state required")
+            if not code or not state or not provider_id:
+                return web.Response(status=400, text="code, state, and provider_id required")
 
-            redirect_uri = f"{self.base_url}/auth/callback"
+            redirect_uri = f"{self.base_url}/auth/callback?provider_id={provider_id}"
             auth_result = await self.auth.handle_oauth_callback(
                 provider_id, code, state, redirect_uri
             )

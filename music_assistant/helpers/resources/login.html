@@ -354,7 +354,8 @@
         // Initiate OAuth flow
         async function initiateOAuth(providerId) {
             try {
-                const redirectUri = `${API_BASE}/auth/callback`;
+                // Include provider_id in callback URL
+                const redirectUri = `${API_BASE}/auth/callback?provider_id=${providerId}`;
                 const response = await fetch(`${API_BASE}/auth/authorize?provider_id=${providerId}&redirect_uri=${encodeURIComponent(redirectUri)}`);
                 const data = await response.json();
 
