@@ -651,7 +651,6 @@ def generate_openapi_spec(
                                         "schema_version": {"type": "integer"},
                                         "server_version": {"type": "string"},
                                         "onboard_done": {"type": "boolean"},
-                                        "requires_auth": {"type": "boolean"},
                                         "homeassistant_addon": {"type": "boolean"},
                                     },
                                 }

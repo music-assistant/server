@@ -300,11 +300,6 @@ class WebserverController(CoreController):
     async def _handle_server_info(self, request: web.Request) -> web.Response:
         """Handle request for server info."""
         server_info = self.mass.get_server_info()
-
-        # Override requires_auth for Ingress (HA handles authentication)
-        if is_request_from_ingress(request):
-            server_info.requires_auth = False
-
         # Add CORS headers to allow frontend to call from any origin
         return web.json_response(
             server_info.to_dict(),
@@ -1319,9 +1314,6 @@ class WebsocketClientHandler:
 
         # send server(version) info when client connects
         server_info = self.mass.get_server_info()
-        # Override requires_auth for Ingress (HA handles authentication)
-        if self._is_ingress:
-            server_info.requires_auth = False
         await self._send_message(server_info)
 
         # For Ingress connections, auto-create/link user and subscribe to events immediately

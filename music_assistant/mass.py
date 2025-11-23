@@ -259,7 +259,6 @@ class MusicAssistant:
             base_url=self.webserver.base_url,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
-            requires_auth=True,  # Default: auth required (overridden for Ingress)
         )
 
     @api_command("providers/manifests")
