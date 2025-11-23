@@ -1281,7 +1281,7 @@ class WebsocketClientHandler:
         self._logger = webserver.logger
         self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
         self._current_token: str | None = None  # Will be set after auth command
-        self._is_ingress = "X-Ingress-Path" in request.headers
+        self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
@@ -1557,29 +1557,36 @@ class WebsocketClientHandler:
         ingress_username = self.request.headers.get("X-Remote-User-Name")
         ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
 
-        if not ingress_user_id or not ingress_username:
-            self._logger.warning("Ingress headers missing user info")
-            return
+        if ingress_user_id and ingress_username:
+            # Try to find existing user linked to this HA user ID
+            user = await self.webserver.auth.get_user_by_provider_link(
+                AuthProviderType.HOME_ASSISTANT, ingress_user_id
+            )
 
-        # Try to find existing user linked to this HA user ID
-        user = await self.webserver.auth.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ingress_user_id
-        )
+            if not user:
+                # Auto-create user for Ingress (they're already authenticated by HA)
+                user = await self.webserver.auth.create_user(
+                    username=ingress_username,
+                    role=UserRole.USER,
+                    display_name=ingress_display_name,
+                )
+                # Link to Home Assistant provider
+                await self.webserver.auth.link_user_to_provider(
+                    user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+                )
 
-        if not user:
-            # Auto-create user for Ingress (they're already authenticated by HA)
-            user = await self.webserver.auth.create_user(
-                username=ingress_username,
+            self._authenticated_user = user
+            self._logger.debug("Ingress user authenticated: %s", user.username)
+        else:
+            # No HA user headers - create/use system user for HA integration
+            # This allows the Home Assistant integration to connect via the internal network
+            # without needing Ingress headers (e.g., when using the Python client)
+            user = await self.webserver.auth.get_or_create_system_user(
+                username="homeassistant_system",
                 role=UserRole.USER,
-                display_name=ingress_display_name,
             )
-            # Link to Home Assistant provider
-            await self.webserver.auth.link_user_to_provider(
-                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-        self._authenticated_user = user
-        self._logger.debug("Ingress user authenticated: %s", user.username)
+            self._authenticated_user = user
+            self._logger.debug("Ingress system user authenticated: %s", user.username)
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""

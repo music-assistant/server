@@ -373,6 +373,44 @@ class AuthenticationManager:
             avatar_url=avatar_url,
         )
 
+    async def get_or_create_system_user(
+        self,
+        username: str,
+        role: UserRole = UserRole.USER,
+    ) -> User:
+        """
+        Get or create a system user (e.g., for Home Assistant integration).
+
+        System users are special users created automatically for internal integrations.
+        They bypass normal authentication but are restricted to specific network paths.
+
+        :param username: The username for the system user.
+        :param role: The user role (default: USER).
+        """
+        # Try to find existing user by username
+        user_row = await self.database.get_row("users", {"username": username})
+        if user_row:
+            user_dict = dict(user_row)
+            return User(
+                user_id=user_dict["user_id"],
+                username=user_dict["username"],
+                role=UserRole(user_dict["role"]),
+                enabled=bool(user_dict["enabled"]),
+                created_at=datetime.fromisoformat(user_dict["created_at"]),
+                display_name=user_dict.get("display_name"),
+                avatar_url=user_dict.get("avatar_url"),
+            )
+
+        # Create new system user
+        display_name = f"System User ({username})"
+        user = await self.create_user(
+            username=username,
+            role=role,
+            display_name=display_name,
+        )
+        self.logger.info("Created system user: %s (role: %s)", username, role.value)
+        return user
+
     async def link_user_to_provider(
         self,
         user: User,

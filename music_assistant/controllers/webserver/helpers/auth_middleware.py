@@ -31,7 +31,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
     mass: MusicAssistant = request.app["mass"]
 
-    # Check for Home Assistant Ingress user headers
+    # Check for Home Assistant Ingress connections
     if is_request_from_ingress(request):
         ingress_user_id = request.headers.get("X-Remote-User-ID")
         ingress_username = request.headers.get("X-Remote-User-Name")
@@ -62,6 +62,16 @@ async def get_authenticated_user(request: web.Request) -> User | None:
             # Store in request context
             request[USER_CONTEXT_KEY] = user
             return user
+
+        # No HA user headers - create/use system user for HA integration
+        # This allows the Home Assistant integration to connect via the internal network
+        # without needing Ingress headers (e.g., when using the Python client)
+        user = await mass.webserver.auth.get_or_create_system_user(
+            username="homeassistant_system",
+            role=UserRole.USER,
+        )
+        request[USER_CONTEXT_KEY] = user
+        return user
 
     # Try to authenticate from Authorization header
     auth_header = request.headers.get("Authorization")
@@ -146,16 +156,13 @@ def set_current_token(token: str | None) -> None:
 
 
 def is_request_from_ingress(request: web.Request) -> bool:
-    """Check if request is coming from Home Assistant Ingress.
+    """Check if request is coming from Home Assistant Ingress (internal network).
+
+    Security is enforced by socket-level verification (IP/port binding), not headers.
+    Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
 
     :param request: The aiohttp request.
     """
-    # Check if request has X-Ingress-Path header
-    if "X-Ingress-Path" not in request.headers:
-        return False
-
-    # Security: Verify request is actually from the ingress TCP site
-    # to prevent header spoofing on the regular webserver
     # Check if ingress site is configured in the app
     ingress_site_params = request.app.get("ingress_site")
     if not ingress_site_params:
@@ -163,7 +170,8 @@ def is_request_from_ingress(request: web.Request) -> bool:
         return False
 
     try:
-        # Verify the request came through the ingress site by checking socket
+        # Security: Verify the request came through the ingress site by checking socket
+        # to prevent bypassing authentication on the regular webserver
         transport = request.transport
         if transport:
             sockname = transport.get_extra_info("sockname")

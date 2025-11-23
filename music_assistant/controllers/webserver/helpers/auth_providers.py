@@ -289,48 +289,53 @@ class HomeAssistantOAuthProvider(LoginProvider):
         self.logger.debug("Found HA provider, checking hass client")
 
         try:
-            # Try to get config from HA REST API (/api/config)
-            # This works more reliably than WebSocket and includes runtime-detected URLs
-            self.logger.debug("Fetching config from HA REST API: %s/api/config", ha_url)
+            # Access the hass client from the provider
+            hass_client = ha_provider.hass
+            if not hass_client:
+                self.logger.debug("No hass client found on provider")
+                return ha_url
 
-            # Get auth token from HA provider
-            token = ha_provider.config.get_value("token")
-            headers = {}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            if not hass_client.connected:
+                self.logger.debug("Hass client not connected")
+                return ha_url
 
-            async with self.mass.http_session.get(
-                f"{ha_url}/api/config",
-                headers=headers,
-            ) as response:
-                if response.status == 200:
-                    config = await response.json()
-                    self.logger.debug("Received config from HA REST API: %s", config)
+            self.logger.debug("Fetching network URLs from HA using network/url command")
 
-                    external_url = config.get("external_url")
-                    internal_url = config.get("internal_url")
-                    self.logger.debug(
-                        "Config URLs - external_url: %s, internal_url: %s",
-                        external_url,
-                        internal_url,
+            # Get network URLs from Home Assistant using WebSocket API
+            # This command returns internal, external, and cloud URLs
+            network_urls = await hass_client.send_command("network/url")
+            self.logger.debug("Received network URLs from HA: %s", network_urls)
+
+            if network_urls:
+                # Priority: external > cloud > internal
+                # External is the manually configured external URL
+                # Cloud is the Nabu Casa cloud URL
+                # Internal is the local network URL
+                external_url = network_urls.get("external")
+                cloud_url = network_urls.get("cloud")
+                internal_url = network_urls.get("internal")
+
+                self.logger.debug(
+                    "Network URLs - external: %s, cloud: %s, internal: %s",
+                    external_url,
+                    cloud_url,
+                    internal_url,
+                )
+
+                # Use external URL first, then cloud, then internal
+                final_url = cast("str", external_url or cloud_url or internal_url)
+                if final_url:
+                    self.logger.info(
+                        "Using HA URL for OAuth: %s (from network/url, configured was: %s)",
+                        final_url,
+                        ha_url,
                     )
-
-                    # Try external_url first, fall back to internal_url
-                    final_url = cast("str", external_url or internal_url)
-                    if final_url:
-                        self.logger.info(
-                            "Using HA URL for OAuth: %s (from REST API, configured was: %s)",
-                            final_url,
-                            ha_url,
-                        )
-                        return final_url
-                    self.logger.debug("No external or internal URL found in config")
-                else:
-                    self.logger.warning(
-                        "Failed to fetch config from HA REST API: HTTP %s", response.status
-                    )
+                    return final_url
+                self.logger.debug("No URLs found in network/url response")
+            else:
+                self.logger.debug("network/url response was empty")
         except Exception as err:
-            self.logger.warning("Failed to fetch external HA URL: %s", err, exc_info=True)
+            self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
 
         # Fallback to configured URL
         self.logger.debug("Falling back to configured URL: %s", ha_url)
