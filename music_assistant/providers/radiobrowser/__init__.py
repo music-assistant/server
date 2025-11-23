@@ -286,7 +286,7 @@ class RadioBrowserProvider(MusicProvider):
         return True
 
     @use_cache(3600 * 6)  # Cache for 6 hours
-    async def get_by_popularity(self) -> list[Radio]:
+    async def get_by_popularity(self) -> Sequence[Radio]:
         """Get radio stations by popularity."""
         try:
             stations = await self.radios.stations(
@@ -300,7 +300,7 @@ class RadioBrowserProvider(MusicProvider):
             raise ProviderUnavailableError(f"Failed to fetch popular stations: {err}") from err
 
     @use_cache(3600 * 6)  # Cache for 6 hours
-    async def get_by_votes(self) -> list[Radio]:
+    async def get_by_votes(self) -> Sequence[Radio]:
         """Get radio stations by votes."""
         try:
             stations = await self.radios.stations(
