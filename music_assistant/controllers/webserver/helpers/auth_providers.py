@@ -265,46 +265,30 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         ha_url = cast("str", self.config.get("ha_url")) if self.config.get("ha_url") else None
         if not ha_url:
-            self.logger.debug("No HA URL configured")
             return None
-
-        self.logger.debug("Checking if HA URL is internal supervisor URL: %s", ha_url)
 
         # Check if we're using the internal supervisor URL
         if "supervisor" not in ha_url.lower():
             # Not using internal URL, return as-is
-            self.logger.debug("Not using supervisor URL, returning as-is")
             return ha_url
-
-        self.logger.debug("Detected supervisor URL, attempting to fetch external URL from HA")
 
         # We're using internal URL - try to get external URL from HA provider
         ha_provider = self.mass.get_provider("hass")
         if not ha_provider:
             # No HA provider available, use configured URL
-            self.logger.debug("No HA provider available, using configured URL")
             return ha_url
 
         ha_provider = cast("HomeAssistantProvider", ha_provider)
-        self.logger.debug("Found HA provider, checking hass client")
 
         try:
             # Access the hass client from the provider
             hass_client = ha_provider.hass
-            if not hass_client:
-                self.logger.debug("No hass client found on provider")
+            if not hass_client or not hass_client.connected:
                 return ha_url
-
-            if not hass_client.connected:
-                self.logger.debug("Hass client not connected")
-                return ha_url
-
-            self.logger.debug("Fetching network URLs from HA using network/url command")
 
             # Get network URLs from Home Assistant using WebSocket API
             # This command returns internal, external, and cloud URLs
             network_urls = await hass_client.send_command("network/url")
-            self.logger.debug("Received network URLs from HA: %s", network_urls)
 
             if network_urls:
                 # Priority: external > cloud > internal
@@ -315,30 +299,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 cloud_url = network_urls.get("cloud")
                 internal_url = network_urls.get("internal")
 
-                self.logger.debug(
-                    "Network URLs - external: %s, cloud: %s, internal: %s",
-                    external_url,
-                    cloud_url,
-                    internal_url,
-                )
-
                 # Use external URL first, then cloud, then internal
                 final_url = cast("str", external_url or cloud_url or internal_url)
                 if final_url:
-                    self.logger.info(
-                        "Using HA URL for OAuth: %s (from network/url, configured was: %s)",
+                    self.logger.debug(
+                        "Using HA URL for OAuth: %s (from network/url, configured: %s)",
                         final_url,
                         ha_url,
                     )
                     return final_url
-                self.logger.debug("No URLs found in network/url response")
-            else:
-                self.logger.debug("network/url response was empty")
         except Exception as err:
             self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
 
         # Fallback to configured URL
-        self.logger.debug("Falling back to configured URL: %s", ha_url)
         return ha_url
 
     async def get_authorization_url(
@@ -368,10 +341,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 # HTTP - assume HA runs on default port 8123
                 inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
 
-            self.logger.info(
-                "HA external_url not configured, inferring from callback URL: %s (from %s)",
+            self.logger.debug(
+                "HA external_url not configured, inferring from callback URL: %s",
                 inferred_ha_url,
-                redirect_uri,
             )
             ha_url = inferred_ha_url
 
@@ -412,9 +384,6 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 decoded = base64.urlsafe_b64decode(payload)
                 token_data = json.loads(decoded)
 
-                # Log the token data to debug
-                self.logger.debug("Decoded HA JWT token data: %s", token_data)
-
                 # Home Assistant JWT tokens use 'iss' as the user ID
                 ha_user_id: str | None = token_data.get("iss")
 
@@ -448,17 +417,14 @@ class HomeAssistantOAuthProvider(LoginProvider):
         try:
             # Use context manager to automatically handle connect/disconnect
             async with HomeAssistantClient(ws_url, access_token, self.mass.http_session) as client:
-                # Use the auth/current_user command
-                # send_command expects command type as string, not dict
+                # Use the auth/current_user command to get user details
                 result = await client.send_command("auth/current_user")
-                self.logger.debug("HA auth/current_user result: %s", result)
 
                 if result:
                     # Extract username and display name from response
                     username = result.get("name") or result.get("username")
                     display_name = result.get("name")
                     if username:
-                        self.logger.info("Found HA user via WebSocket: %s", username)
                         return username, display_name
 
                 self.logger.warning("auth/current_user returned no user data")
@@ -506,7 +472,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
             )
 
-            self.logger.info("Linked existing user '%s' to Home Assistant provider", username)
+            self.logger.debug("Linked existing user '%s' to Home Assistant provider", username)
             return existing_user
 
         # New HA user - check if self-registration allowed
@@ -539,12 +505,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         if not hasattr(self, "_oauth_state") or state != self._oauth_state:
             return AuthResult(success=False, error="Invalid state parameter")
 
-        ha_url = self.config.get("ha_url")
+        # Get the correct HA URL (external URL if running as add-on)
+        # This must be the same URL used in get_authorization_url
+        ha_url = await self._get_external_ha_url()
         if not ha_url:
             return AuthResult(success=False, error="Home Assistant URL not configured")
-
-        # Ensure ha_url is a string for type checking
-        assert isinstance(ha_url, str)
 
         try:
             # Use base_url of callback as client_id (same as HA provider does)
