@@ -67,7 +67,6 @@ DEFAULT_SERVER_PORT = 8095
 INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
-CONF_AUTH_HA_ENABLED = "auth_ha_enabled"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
@@ -114,21 +113,6 @@ class WebserverController(CoreController):
                 "Use a reverse proxy or VPN to secure access.",
                 required=False,
             ),
-            # Authentication settings
-            ConfigEntry(
-                key=CONF_AUTH_HA_ENABLED,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Enable Home Assistant OAuth",
-                description="Allow users to sign in with their Home Assistant account. \n"
-                "Requires the Home Assistant provider (plugin) to be configured. \n"
-                "Uses hass_client for seamless authentication - "
-                "no manual OAuth app setup required!",
-                category="advanced",
-                hidden=not any(
-                    provider.domain == "homeassistant" for provider in self.mass.providers
-                ),
-            ),
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
@@ -168,7 +152,7 @@ class WebserverController(CoreController):
                 description="Allow users to create accounts via Home Assistant OAuth. \n"
                 "New users will have USER role by default.",
                 category="advanced",
-                depends_on=CONF_AUTH_HA_ENABLED,
+                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
             ),
         )
 

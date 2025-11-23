@@ -44,9 +44,13 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
             if not user:
                 # Auto-create user for Ingress (they're already authenticated by HA)
+                # First user gets ADMIN role, subsequent users get USER role
+                has_users = await mass.webserver.auth.has_users()
+                role = UserRole.USER if has_users else UserRole.ADMIN
+
                 user = await mass.webserver.auth.create_user(
                     username=ingress_username,
-                    role=UserRole.USER,
+                    role=role,
                     display_name=ingress_display_name,
                 )
                 # Link to Home Assistant provider
