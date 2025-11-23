@@ -50,7 +50,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         Prevents updating item_id for non-streaming providers to prevent path traversal attacks.
         """
-        # Build lookup dict of current mappings: (provider_instance, provider_domain) -> item_id
+        # Build lookup dict of current mappings: provider_instance -> item_id
         current_mappings = {
             mapping.provider_instance: mapping.item_id for mapping in current_item.provider_mappings
         }
