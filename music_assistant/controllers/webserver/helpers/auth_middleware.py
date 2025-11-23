@@ -15,8 +15,9 @@ if TYPE_CHECKING:
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
 
-# ContextVar for tracking current user across async calls
+# ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
+current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
@@ -124,6 +125,24 @@ def set_current_user(user: User | None) -> None:
     :param user: The user to set as current.
     """
     current_user.set(user)
+
+
+def get_current_token() -> str | None:
+    """
+    Get the current authentication token from context.
+
+    :return: The current token or None if not authenticated.
+    """
+    return current_token.get()
+
+
+def set_current_token(token: str | None) -> None:
+    """
+    Set the current authentication token in context.
+
+    :param token: The token to set as current.
+    """
+    current_token.set(token)
 
 
 def is_request_from_ingress(request: web.Request) -> bool:

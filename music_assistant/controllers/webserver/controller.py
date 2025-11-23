@@ -53,8 +53,10 @@ from .api_docs import generate_commands_reference, generate_openapi_spec, genera
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
+    get_current_token,
     get_current_user,
     is_request_from_ingress,
+    set_current_token,
     set_current_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider
@@ -632,6 +634,10 @@ class WebserverController(CoreController):
             provider_id = request.query.get("provider_id")
             return_url = request.query.get("return_url")
 
+            self.logger.debug(
+                "OAuth authorize request: provider_id=%s, return_url=%s", provider_id, return_url
+            )
+
             if not provider_id:
                 return web.Response(status=400, text="provider_id required")
 
@@ -680,12 +686,16 @@ class WebserverController(CoreController):
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"
+            self.logger.debug(
+                "OAuth callback: return_url=%s, token created", auth_result.return_url
+            )
             # Add token to redirect URL (URL-encoded)
             encoded_token = quote(token, safe="")
             if "?" in final_redirect_url:
                 final_redirect_url += f"&token={encoded_token}"
             else:
                 final_redirect_url += f"?token={encoded_token}"
+            self.logger.debug("OAuth callback: final_redirect_url=%s", final_redirect_url)
 
             # Return success page with token
             # This handles both popup and same-window OAuth flows
@@ -1276,9 +1286,16 @@ class WebserverController(CoreController):
             return {"success": False, "error": "Not authenticated"}
 
         # Get current token from context
-        # The token is already authenticated at this point, we need to find and revoke it
-        # The WebSocket connection has the token, but we need to get the token_id
-        # We can get it from the WebSocket message context
+        token = get_current_token()
+        if not token:
+            return {"success": False, "error": "No token in context"}
+
+        # Find and revoke the token
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        token_row = await self.auth.database.get_row("auth_tokens", {"token_hash": token_hash})
+        if token_row:
+            await self.auth.revoke_token(token_row["token_id"], user)
+
         return {"success": True}
 
     @api_command("auth/user/providers")
@@ -1331,6 +1348,7 @@ class WebsocketClientHandler:
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
         self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
+        self._current_token: str | None = None  # Will be set after auth command
         self._is_ingress = "X-Ingress-Path" in request.headers
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -1462,8 +1480,9 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user in context for API methods
+            # Set user and token in context for API methods
             set_current_user(self._authenticated_user)
+            set_current_token(self._current_token)
 
             # Check role if required
             if handler.required_role == "admin":
@@ -1587,8 +1606,9 @@ class WebsocketClientHandler:
             )
             return
 
-        # Store authenticated user
+        # Store authenticated user and token
         self._authenticated_user = user
+        self._current_token = token
         self._logger.info("WebSocket client authenticated as %s", user.username)
 
         # Send success response
