@@ -317,19 +317,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         match self.media_type:
             case MediaType.ARTIST:
-                return [cast("ItemCls", x) for x in searchresult.artists]
+                return cast("list[ItemCls]", searchresult.artists)
             case MediaType.ALBUM:
-                return [cast("ItemCls", x) for x in searchresult.albums]
+                return cast("list[ItemCls]", searchresult.albums)
             case MediaType.TRACK:
-                return [cast("ItemCls", x) for x in searchresult.tracks]
+                return cast("list[ItemCls]", searchresult.tracks)
             case MediaType.PLAYLIST:
-                return [cast("ItemCls", x) for x in searchresult.playlists]
+                return cast("list[ItemCls]", searchresult.playlists)
             case MediaType.AUDIOBOOK:
-                return [cast("ItemCls", x) for x in searchresult.audiobooks]
+                return cast("list[ItemCls]", searchresult.audiobooks)
             case MediaType.PODCAST:
-                return [cast("ItemCls", x) for x in searchresult.podcasts]
+                return cast("list[ItemCls]", searchresult.podcasts)
             case MediaType.RADIO:
-                return [cast("ItemCls", x) for x in searchresult.radio]
+                return cast("list[ItemCls]", searchresult.radio)
             case _:
                 return []
 
@@ -358,7 +358,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         for prov_mapping in item.provider_mappings:
             return (prov_mapping.provider_domain, prov_mapping.item_id)
 
-        return ("", "")
+        # No provider mappings found
+        msg = f"No provider mapping found for {item.name}"
+        raise MediaNotFoundError(msg)
 
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
