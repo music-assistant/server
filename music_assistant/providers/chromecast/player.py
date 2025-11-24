@@ -161,7 +161,8 @@ class ChromecastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        await asyncio.to_thread(self.cc.set_volume, volume_level / 100)
+        # Round to 2 decimal places to avoid floating-point precision issues
+        await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -388,7 +389,7 @@ class ChromecastPlayer(Player):
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
-        self._attr_volume_level = int(status.volume_level * 100)
+        self._attr_volume_level = round(status.volume_level * 100)
         self._attr_volume_muted = status.volume_muted
         new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
         self._attr_powered = new_powered
