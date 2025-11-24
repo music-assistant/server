@@ -20,6 +20,118 @@ LOGGER = logging.getLogger(__name__)
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
+def _resolve_generic_type_args(
+    args: tuple[Any, ...],
+    func: Callable[..., Coroutine[Any, Any, Any]],
+    config_value_type: Any,
+    media_item_type: Any,
+) -> tuple[list[Any], bool]:
+    """Resolve TypeVars and type aliases in generic type arguments.
+
+    :param args: Type arguments from a generic type (e.g., from list[T] or dict[K, V])
+    :param func: The function being analyzed
+    :param config_value_type: The ConfigValueType type alias to compare against
+    :param media_item_type: The MediaItemType type alias to compare against
+    :return: Tuple of (resolved_args, changed) where changed is True if any args were modified
+    """
+    new_args: list[Any] = []
+    changed = False
+
+    for arg in args:
+        # Check if arg matches ConfigValueType union (type alias that was expanded)
+        if arg == config_value_type:
+            # Replace with string reference to preserve type alias
+            new_args.append("ConfigValueType")
+            changed = True
+        # Check if arg matches MediaItemType union (type alias that was expanded)
+        elif arg == media_item_type:
+            # Replace with string reference to preserve type alias
+            new_args.append("MediaItemType")
+            changed = True
+        elif isinstance(arg, TypeVar):
+            # For ItemCls, resolve to concrete type
+            if arg.__name__ == "ItemCls" and hasattr(func, "__self__"):
+                if hasattr(func.__self__, "item_cls"):
+                    new_args.append(func.__self__.item_cls)
+                    changed = True
+                else:
+                    new_args.append(arg)
+            # For ConfigValue TypeVars, resolve to string name
+            elif "ConfigValue" in arg.__name__:
+                new_args.append("ConfigValueType")
+                changed = True
+            else:
+                new_args.append(arg)
+        # Check if arg is a Union containing a TypeVar
+        elif get_origin(arg) in (Union, UnionType):
+            union_args = get_args(arg)
+            for union_arg in union_args:
+                if isinstance(union_arg, TypeVar) and union_arg.__bound__ is not None:
+                    # Resolve the TypeVar in the union
+                    union_arg_index = union_args.index(union_arg)
+                    resolved = _resolve_typevar_in_union(
+                        union_arg, func, union_args, union_arg_index
+                    )
+                    new_args.append(resolved)
+                    changed = True
+                    break
+            else:
+                # No TypeVar found in union, keep as-is
+                new_args.append(arg)
+        else:
+            new_args.append(arg)
+
+    return new_args, changed
+
+
+def _resolve_typevar_in_union(
+    arg: TypeVar,
+    func: Callable[..., Coroutine[Any, Any, Any]],
+    args: tuple[Any, ...],
+    i: int,
+) -> Any:
+    """Resolve a TypeVar found in a Union to its concrete type.
+
+    :param arg: The TypeVar to resolve.
+    :param func: The function being analyzed.
+    :param args: All args from the Union.
+    :param i: Index of the TypeVar in the args.
+    """
+    bound_type = arg.__bound__
+    if not bound_type or not hasattr(arg, "__name__"):
+        return bound_type
+
+    type_var_name = arg.__name__
+
+    # Map TypeVar names to their type alias names
+    if "ConfigValue" in type_var_name:
+        return "ConfigValueType"
+
+    if type_var_name == "ItemCls":
+        # Resolve ItemCls to the actual media item class (e.g., Artist, Album, Track)
+        if hasattr(func, "__self__") and hasattr(func.__self__, "item_cls"):
+            resolved_type = func.__self__.item_cls
+            # Preserve other types in the union (like None for Optional)
+            other_args = [a for j, a in enumerate(args) if j != i]
+            if other_args:
+                # Reconstruct union with resolved type
+                return Union[resolved_type, *other_args]
+            return resolved_type
+        # Fallback to bound if we can't get item_cls
+        return bound_type
+
+    # Check if the bound is MediaItemType by comparing the union
+    from music_assistant_models.media_items import (  # noqa: PLC0415
+        MediaItemType as media_item_type,  # noqa: N813
+    )
+
+    if bound_type == media_item_type:
+        return "MediaItemType"
+
+    # Fallback to the bound type
+    return bound_type
+
+
 @dataclass
 class APICommandHandler:
     """Model for an API command handler."""
@@ -54,11 +166,55 @@ class APICommandHandler:
         # workaround for generic typevar ItemCls that needs to be resolved
         # to the real media item type. TODO: find a better way to do this
         # without this hack
+        # Import type aliases to compare against
+        from music_assistant_models.config_entries import (  # noqa: PLC0415
+            ConfigValueType as config_value_type,  # noqa: N813
+        )
+        from music_assistant_models.media_items import (  # noqa: PLC0415
+            MediaItemType as media_item_type,  # noqa: N813
+        )
+
         for key, value in type_hints.items():
+            # Handle generic types (list, tuple, dict, etc.) that may contain TypeVars
+            # For example: list[ItemCls] should become list[Artist]
+            # For example: dict[str, ConfigValueType] should preserve ConfigValueType
+            origin = get_origin(value)
+            if origin in (list, tuple, set, frozenset, dict):
+                args = get_args(value)
+                if args:
+                    new_args, changed = _resolve_generic_type_args(
+                        args, func, config_value_type, media_item_type
+                    )
+                    if changed:
+                        # Reconstruct the generic type with resolved TypeVars
+                        type_hints[key] = origin[tuple(new_args)]
+                continue
+
+            # Handle Union types that may contain TypeVars
+            # For example: _ConfigValueT | ConfigValueType should become just "ConfigValueType"
+            # when _ConfigValueT is bound to ConfigValueType
+            if origin is Union or origin is UnionType:
+                args = get_args(value)
+                # Check if union contains a TypeVar
+                # If the TypeVar's bound is a union that was flattened into the current union,
+                # we can just use the bound type for documentation purposes
+                typevar_found = False
+                for i, arg in enumerate(args):
+                    if isinstance(arg, TypeVar) and arg.__bound__ is not None:
+                        typevar_found = True
+                        type_hints[key] = _resolve_typevar_in_union(arg, func, args, i)
+                        break
+                if typevar_found:
+                    continue
             if not hasattr(value, "__name__"):
                 continue
             if value.__name__ == "ItemCls":
                 type_hints[key] = func.__self__.item_cls  # type: ignore[attr-defined]
+            # Resolve TypeVars to their bound type for API documentation
+            # This handles cases like _ConfigValueT which should show as ConfigValueType
+            elif isinstance(value, TypeVar):
+                if value.__bound__ is not None:
+                    type_hints[key] = value.__bound__
         return APICommandHandler(
             command=command,
             signature=inspect.signature(func),

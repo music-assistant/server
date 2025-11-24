@@ -29,6 +29,14 @@ def _format_type_name(type_hint: Any) -> str:
         ):
             return "PlayerState"
 
+    # Handle PluginSource - replace with PlayerSource (parent type)
+    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
+        if (
+            hasattr(type_hint, "__module__")
+            and type_hint.__module__ == "music_assistant.models.plugin"
+        ):
+            return "PlayerSource"
+
     # Map Python types to JSON types
     type_name_mapping = {
         "str": "string",
@@ -56,10 +64,87 @@ def _format_type_name(type_hint: Any) -> str:
     return type_str
 
 
+def _generate_type_alias_description(type_alias: Any, alias_name: str) -> str:
+    """Generate a human-readable description of a type alias from its definition.
+
+    :param type_alias: The type alias to describe (e.g., ConfigValueType)
+    :param alias_name: The name of the alias for display
+    :return: A human-readable description string
+    """
+    # Get the union args
+    args = get_args(type_alias)
+    if not args:
+        return f"Type alias for {alias_name}."
+
+    # Convert each type to a readable name
+    type_names = []
+    for arg in args:
+        origin = get_origin(arg)
+        if origin in (list, tuple):
+            # Handle list types
+            inner_args = get_args(arg)
+            if inner_args:
+                inner_type = inner_args[0]
+                if inner_type is bool:
+                    type_names.append("array of boolean")
+                elif inner_type is int:
+                    type_names.append("array of integer")
+                elif inner_type is float:
+                    type_names.append("array of number")
+                elif inner_type is str:
+                    type_names.append("array of string")
+                else:
+                    type_names.append(
+                        f"array of {getattr(inner_type, '__name__', str(inner_type))}"
+                    )
+            else:
+                type_names.append("array")
+        elif arg is type(None) or arg is NoneType:
+            type_names.append("null")
+        elif arg is bool:
+            type_names.append("boolean")
+        elif arg is int:
+            type_names.append("integer")
+        elif arg is float:
+            type_names.append("number")
+        elif arg is str:
+            type_names.append("string")
+        elif hasattr(arg, "__name__"):
+            type_names.append(arg.__name__)
+        else:
+            type_names.append(str(arg))
+
+    # Format the list nicely
+    if len(type_names) == 1:
+        types_str = type_names[0]
+    elif len(type_names) == 2:
+        types_str = f"{type_names[0]} or {type_names[1]}"
+    else:
+        types_str = f"{', '.join(type_names[:-1])}, or {type_names[-1]}"
+
+    return f"Type alias for {alias_name.lower()} types. Can be {types_str}."
+
+
 def _get_type_schema(  # noqa: PLR0911, PLR0915
     type_hint: Any, definitions: dict[str, Any]
 ) -> dict[str, Any]:
     """Convert a Python type hint to an OpenAPI schema."""
+    # Check if type_hint matches a type alias that was expanded by get_type_hints()
+    # Import type aliases to compare against
+    from music_assistant_models.config_entries import (  # noqa: PLC0415
+        ConfigValueType as config_value_type,  # noqa: N813
+    )
+    from music_assistant_models.media_items import (  # noqa: PLC0415
+        MediaItemType as media_item_type,  # noqa: N813
+    )
+
+    if type_hint == config_value_type:
+        # This is the expanded ConfigValueType, treat it as the type alias
+        return _get_type_schema("ConfigValueType", definitions)
+    if type_hint == media_item_type:
+        # This is the expanded MediaItemType, treat it as the type alias
+        return _get_type_schema("MediaItemType", definitions)
+
     # Handle string type hints from __future__ annotations
     if isinstance(type_hint, str):
         # Handle simple primitive type names
@@ -71,6 +156,47 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
             return {"type": "number"}
         if type_hint in ("bool", "boolean"):
             return {"type": "boolean"}
+
+        # Special handling for type aliases - create proper schema definitions
+        if type_hint == "ConfigValueType":
+            if "ConfigValueType" not in definitions:
+                from music_assistant_models.config_entries import (  # noqa: PLC0415
+                    ConfigValueType as config_value_type,  # noqa: N813
+                )
+
+                # Dynamically create oneOf schema with description from the actual type
+                cvt_args = get_args(config_value_type)
+                definitions["ConfigValueType"] = {
+                    "description": _generate_type_alias_description(
+                        config_value_type, "configuration value"
+                    ),
+                    "oneOf": [_get_type_schema(arg, definitions) for arg in cvt_args],
+                }
+            return {"$ref": "#/components/schemas/ConfigValueType"}
+
+        if type_hint == "MediaItemType":
+            if "MediaItemType" not in definitions:
+                from music_assistant_models.media_items import (  # noqa: PLC0415
+                    MediaItemType as media_item_type,  # noqa: N813
+                )
+
+                # Dynamically create oneOf schema with description from the actual type
+                mit_origin = get_origin(media_item_type)
+                if mit_origin in (Union, UnionType):
+                    mit_args = get_args(media_item_type)
+                    definitions["MediaItemType"] = {
+                        "description": _generate_type_alias_description(
+                            media_item_type, "media item"
+                        ),
+                        "oneOf": [_get_type_schema(arg, definitions) for arg in mit_args],
+                    }
+                else:
+                    definitions["MediaItemType"] = _get_type_schema(media_item_type, definitions)
+            return {"$ref": "#/components/schemas/MediaItemType"}
+
+        # Handle PluginSource - replace with PlayerSource (parent type)
+        if type_hint == "PluginSource":
+            return _get_type_schema("PlayerSource", definitions)
 
         # Check if it looks like a simple class name (no special chars, starts with uppercase)
         # Examples: "PlayerType", "DeviceInfo", "PlaybackState"
@@ -102,6 +228,18 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
         ):
             # Replace with PlayerState from music_assistant_models
             return _get_type_schema(PlayerState, definitions)
+
+    # Handle PluginSource - replace with PlayerSource (parent type)
+    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
+        # Check if this is PluginSource from music_assistant.models.plugin
+        if (
+            hasattr(type_hint, "__module__")
+            and type_hint.__module__ == "music_assistant.models.plugin"
+        ):
+            # Replace with PlayerSource from music_assistant.models.player
+            from music_assistant.models.player import PlayerSource  # noqa: PLC0415
+
+            return _get_type_schema(PlayerSource, definitions)
 
     # Handle Union types (including Optional)
     origin = get_origin(type_hint)
@@ -743,6 +881,62 @@ def _split_union_type(type_str: str) -> list[str]:
     return parts
 
 
+def _extract_generic_inner_type(type_str: str) -> str | None:
+    """Extract inner type from generic type like list[T] or dict[K, V].
+
+    :param type_str: Type string like "list[str]" or "dict[str, int]"
+    :return: Inner type string "str" or "str, int", or None if not a complete generic type
+    """
+    # Find the matching closing bracket
+    bracket_count = 0
+    start_idx = type_str.index("[") + 1
+    end_idx = -1
+    for i in range(start_idx, len(type_str)):
+        if type_str[i] == "[":
+            bracket_count += 1
+        elif type_str[i] == "]":
+            if bracket_count == 0:
+                end_idx = i
+                break
+            bracket_count -= 1
+
+    # Check if this is a complete generic type (ends with the closing bracket)
+    if end_idx == len(type_str) - 1:
+        return type_str[start_idx:end_idx].strip()
+    return None
+
+
+def _parse_dict_type_params(inner_type: str) -> tuple[str, str] | None:
+    """Parse key and value types from dict inner type string.
+
+    :param inner_type: The content inside dict[...], e.g., "str, ConfigValueType"
+    :return: Tuple of (key_type, value_type) or None if parsing fails
+    """
+    # Split on comma to get key and value types
+    # Need to be careful with nested types like dict[str, list[int]]
+    parts = []
+    current_part = ""
+    bracket_depth = 0
+    for char in inner_type:
+        if char == "[":
+            bracket_depth += 1
+            current_part += char
+        elif char == "]":
+            bracket_depth -= 1
+            current_part += char
+        elif char == "," and bracket_depth == 0:
+            parts.append(current_part.strip())
+            current_part = ""
+        else:
+            current_part += char
+    if current_part:
+        parts.append(current_part.strip())
+
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None
+
+
 def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
     """Convert Python type string to JSON/JavaScript type string.
 
@@ -762,6 +956,11 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
     # Remove module paths from type names (e.g., "music_assistant.models.Artist" -> "Artist")
     type_str = re.sub(r"[\w.]+\.(\w+)", r"\1", type_str)
 
+    # Check for type aliases that should be preserved as-is
+    # These will have schema definitions in the API docs
+    if type_str in ("ConfigValueType", "MediaItemType"):
+        return type_str
+
     # Map Python types to JSON types
     type_mappings = {
         "str": "string",
@@ -770,30 +969,24 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
         "bool": "boolean",
         "dict": "object",
         "Dict": "object",
+        "list": "array",
+        "tuple": "array",
+        "Tuple": "array",
         "None": "null",
         "NoneType": "null",
     }
 
-    # Check for List/list/UniqueList with type parameter BEFORE checking for union types
+    # Check for List/list/UniqueList/tuple with type parameter BEFORE checking for union types
     # This is important because list[A | B] contains " | " but should be handled as a list first
-    # We need to match list[...] where the brackets are balanced
-    if type_str.startswith(("list[", "List[", "UniqueList[")):  # codespell:ignore
-        # Find the matching closing bracket
-        bracket_count = 0
-        start_idx = type_str.index("[") + 1
-        end_idx = -1
-        for i in range(start_idx, len(type_str)):
-            if type_str[i] == "[":
-                bracket_count += 1
-            elif type_str[i] == "]":
-                if bracket_count == 0:
-                    end_idx = i
-                    break
-                bracket_count -= 1
-
-        # Check if this is a complete list type (ends with the closing bracket)
-        if end_idx == len(type_str) - 1:
-            inner_type = type_str[start_idx:end_idx].strip()
+    # codespell:ignore
+    if type_str.startswith(("list[", "List[", "UniqueList[", "tuple[", "Tuple[")):
+        inner_type = _extract_generic_inner_type(type_str)
+        if inner_type:
+            # Handle variable-length tuple (e.g., tuple[str, ...])
+            # The ellipsis means "variable length of this type"
+            if inner_type.endswith(", ..."):
+                # Remove the ellipsis and just use the type
+                inner_type = inner_type[:-5].strip()
             # Recursively convert the inner type
             inner_json_type = _python_type_to_json_type(inner_type, _depth + 1)
             # For list[A | B], wrap in parentheses to keep it as one unit
@@ -802,13 +995,28 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
                 return f"Array of ({inner_json_type})"
             return f"Array of {inner_json_type}"
 
+    # Check for dict/Dict with type parameters BEFORE checking for union types
+    # This is important because dict[str, A | B] contains " | "
+    # but should be handled as a dict first
+    # codespell:ignore
+    if type_str.startswith(("dict[", "Dict[")):
+        inner_type = _extract_generic_inner_type(type_str)
+        if inner_type:
+            parsed = _parse_dict_type_params(inner_type)
+            if parsed:
+                key_type_str, value_type_str = parsed
+                key_type = _python_type_to_json_type(key_type_str, _depth + 1)
+                value_type = _python_type_to_json_type(value_type_str, _depth + 1)
+                # Use more descriptive format: "object with {key_type} keys and {value_type} values"
+                return f"object with {key_type} keys and {value_type} values"
+
     # Handle Union types by splitting on | and recursively processing each part
     if " | " in type_str:
         # Use helper to split on | but respect brackets
         parts = _split_union_type(type_str)
 
-        # Filter out None types
-        parts = [part for part in parts if part != "None"]
+        # Filter out None/null types (None, NoneType, null all mean JSON null)
+        parts = [part for part in parts if part not in ("None", "NoneType", "null")]
 
         # If splitting didn't help (only one part or same as input), avoid infinite recursion
         if not parts or (len(parts) == 1 and parts[0] == type_str):
@@ -866,7 +1074,7 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
         type_name = match.group(0)
         # Check if it's a complex type (starts with capital letter)
         # Exclude basic types and "Array" (which is used in "Array of Type")
-        excluded = {"Union", "Optional", "List", "Dict", "Array"}
+        excluded = {"Union", "Optional", "List", "Dict", "Array", "None", "NoneType"}
         if type_name[0].isupper() and type_name not in excluded:
             # Create link to our schemas reference page
             schema_url = f"{server_url}/api-docs/schemas#schema-{type_name}"
@@ -926,7 +1134,10 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
 
         # Get return type
         return_type = handler.type_hints.get("return", Any)
-        return_type_str = _python_type_to_json_type(str(return_type))
+        # If type is already a string (e.g., "ConfigValueType"), use it directly
+        return_type_str = _python_type_to_json_type(
+            return_type if isinstance(return_type, str) else str(return_type)
+        )
 
         # Extract category from command name
         category = command.split("/")[0] if "/" in command else "general"
@@ -940,7 +1151,8 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
 
             is_required = param.default is inspect.Parameter.empty
             param_type = handler.type_hints.get(param_name, Any)
-            type_str = str(param_type)
+            # If type is already a string (e.g., "ConfigValueType"), use it directly
+            type_str = param_type if isinstance(param_type, str) else str(param_type)
             json_type_str = _python_type_to_json_type(type_str)
             param_desc = param_descriptions.get(param_name, "")
 
@@ -1523,7 +1735,10 @@ def generate_commands_reference(  # noqa: PLR0915
 
             # Get return type
             return_type = handler.type_hints.get("return", Any)
-            return_type_str = _python_type_to_json_type(str(return_type))
+            # If type is already a string (e.g., "ConfigValueType"), use it directly
+            return_type_str = _python_type_to_json_type(
+                return_type if isinstance(return_type, str) else str(return_type)
+            )
 
             html += f'                <div class="command" data-command="{command}">\n'
             html += (
@@ -1575,7 +1790,8 @@ def generate_commands_reference(  # noqa: PLR0915
                     continue
                 is_required = param.default is inspect.Parameter.empty
                 param_type = handler.type_hints.get(param_name, Any)
-                type_str = str(param_type)
+                # If type is already a string (e.g., "ConfigValueType"), use it directly
+                type_str = param_type if isinstance(param_type, str) else str(param_type)
                 json_type_str = _python_type_to_json_type(type_str)
                 param_desc = param_descriptions.get(param_name, "")
                 params.append((param_name, is_required, json_type_str, param_desc))
@@ -1632,6 +1848,14 @@ def generate_commands_reference(  # noqa: PLR0915
                         example_args[param_name] = {}
                     elif type_str == "null":
                         example_args[param_name] = None
+                    elif type_str == "ConfigValueType":
+                        # Type alias for config values - use string as example
+                        example_args[param_name] = "example_value"
+                    elif type_str == "MediaItemType":
+                        # Type alias for media items - use placeholder object
+                        example_args[param_name] = {
+                            "_comment": "See MediaItemType schema for details"
+                        }
                     elif type_str.startswith("Array of "):
                         # Array type with item type specified (e.g., "Array of Artist")
                         item_type = type_str[9:]  # Remove "Array of "

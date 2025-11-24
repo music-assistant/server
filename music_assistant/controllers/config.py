@@ -1005,7 +1005,7 @@ class ConfigController:
         domain: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    ) -> list[ConfigEntry]:
         """
         Return Config entries to configure a core controller.
 
@@ -1016,7 +1016,7 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
-        return (
+        return list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
