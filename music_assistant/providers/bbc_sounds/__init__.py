@@ -708,6 +708,7 @@ class BBCSoundsProvider(MusicProvider):
 
         return results
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         self.logger.debug(f"Getting podcast for {prov_podcast_id}")
