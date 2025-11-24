@@ -159,8 +159,8 @@ class _Constants:
     CONF_STREAM_FORMAT: str = "stream_format"
     CONF_STREAM_FORMAT_HLS: str = HLS
     CONF_STREAM_FORMAT_DASH: str = DASH
-    DEFAULT_EXPIRATION = 60 * 60 * 24 * 7  # 7 days
-    SHORT_EXPIRATION = 60 * 60  # 1 hour
+    DEFAULT_EXPIRATION = 60 * 60 * 24 * 30  # 30 days
+    SHORT_EXPIRATION = 60 * 60 * 3  # 3 hours
 
 
 class BBCSoundsProvider(MusicProvider):
