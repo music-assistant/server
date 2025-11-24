@@ -23,7 +23,7 @@ from music_assistant_models.errors import (
     InvalidToken,
 )
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
@@ -305,6 +305,17 @@ class WebsocketClientHandler:
             )
             return
 
+        # Security: Deny homeassistant system user on regular (non-Ingress) webserver
+        if not self._is_ingress and user.username == HOMEASSISTANT_SYSTEM_USER:
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    InvalidToken.error_code,
+                    "Home Assistant system user not allowed on regular webserver",
+                )
+            )
+            return
+
         # Store authenticated user and token
         self._authenticated_user = user
         self._current_token = token
@@ -334,7 +345,15 @@ class WebsocketClientHandler:
             )
 
             if not user:
+                # Security: Ensure at least one user exists (setup should have been completed)
+                if not await self.webserver.auth.has_users():
+                    # No users exist - setup has not been completed
+                    # This should not happen as the server redirects to /setup
+                    self._logger.warning("Ingress connection attempted before setup completed")
+                    return
+
                 # Auto-create user for Ingress (they're already authenticated by HA)
+                # Always create with USER role (admin is created during setup)
                 user = await self.webserver.auth.create_user(
                     username=ingress_username,
                     role=UserRole.USER,
@@ -348,15 +367,10 @@ class WebsocketClientHandler:
             self._authenticated_user = user
             self._logger.debug("Ingress user authenticated: %s", user.username)
         else:
-            # No HA user headers - create/use system user for HA integration
+            # No HA user headers - allow homeassistant system user to connect with token
             # This allows the Home Assistant integration to connect via the internal network
-            # without needing Ingress headers (e.g., when using the Python client)
-            user = await self.webserver.auth.get_or_create_system_user(
-                username="homeassistant_system",
-                role=UserRole.USER,
-            )
-            self._authenticated_user = user
-            self._logger.debug("Ingress system user authenticated: %s", user.username)
+            # The token authentication happens in _handle_auth_message
+            self._logger.debug("Ingress connection without user headers, expecting token auth")
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""

@@ -20,6 +20,9 @@ MIN_SCHEMA_VERSION: Final[int] = 28
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
+# Home Assistant system user
+HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
+
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
 VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"

@@ -25,7 +25,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import CONF_ONBOARD_DONE, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_ONBOARD_DONE, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -482,20 +482,19 @@ class AuthenticationManager:
             preferences=preferences,
         )
 
-    async def get_or_create_system_user(
-        self,
-        username: str,
-        role: UserRole = UserRole.USER,
-    ) -> User:
+    async def get_homeassistant_system_user(self) -> User:
         """
-        Get or create a system user (e.g., for Home Assistant integration).
+        Get or create the Home Assistant system user.
 
-        System users are special users created automatically for internal integrations.
-        They bypass normal authentication but are restricted to specific network paths.
+        This is a special system user created automatically for Home Assistant integration.
+        It bypasses normal authentication but is restricted to the ingress webserver.
 
-        :param username: The username for the system user.
-        :param role: The user role (default: USER).
+        :return: The Home Assistant system user.
         """
+        username = HOMEASSISTANT_SYSTEM_USER
+        display_name = "Home Assistant Integration"
+        role = UserRole.USER
+
         # Try to find existing user by username
         user_row = await self.database.get_row("users", {"username": username})
         if user_row:
@@ -505,14 +504,44 @@ class AuthenticationManager:
             return user
 
         # Create new system user
-        display_name = f"System User ({username})"
         user = await self.create_user(
             username=username,
             role=role,
             display_name=display_name,
         )
-        self.logger.info("Created system user: %s (role: %s)", username, role.value)
+        self.logger.debug("Created Home Assistant system user: %s (role: %s)", username, role.value)
         return user
+
+    async def get_homeassistant_system_user_token(self) -> str:
+        """
+        Get or create an auth token for the Home Assistant system user.
+
+        This method ensures only one active token exists for the HA integration.
+        If an old token exists, it is deleted and a new one is created.
+        The token auto-renews on use (expires after 30 days of inactivity).
+
+        :return: Authentication token for the Home Assistant system user.
+        """
+        token_name = "Home Assistant Integration"
+
+        # Get the system user
+        system_user = await self.get_homeassistant_system_user()
+
+        # Delete any existing tokens with this name to avoid accumulation
+        # We can't retrieve the plain token from the hash, so we always create a new one
+        existing_tokens = await self.database.get_rows(
+            "auth_tokens",
+            {"user_id": system_user.user_id, "name": token_name},
+        )
+        for token_row in existing_tokens:
+            await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+
+        # Create a new token for the system user
+        return await self.create_token(
+            user=system_user,
+            name=token_name,
+            is_long_lived=False,
+        )
 
     async def link_user_to_provider(
         self,
@@ -729,12 +758,19 @@ class AuthenticationManager:
         """
         Get all users (admin only).
 
+        System users are excluded from the list.
+
         :return: List of user objects.
         """
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
             row_dict = dict(row)
+
+            # Skip system users
+            if row_dict["username"] == HOMEASSISTANT_SYSTEM_USER:
+                continue
+
             # Parse preferences
             preferences = {}
             if prefs_json := row_dict.get("preferences"):

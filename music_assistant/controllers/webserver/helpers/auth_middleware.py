@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
@@ -36,39 +38,35 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         ingress_username = request.headers.get("X-Remote-User-Name")
         ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
 
-        if ingress_user_id and ingress_username:
-            # Try to find existing user linked to this HA user ID
-            user = await mass.webserver.auth.get_user_by_provider_link(
-                AuthProviderType.HOME_ASSISTANT, ingress_user_id
+        # Require all Ingress headers to be present for security
+        if not (ingress_user_id and ingress_username):
+            return None
+
+        # Try to find existing user linked to this HA user ID
+        user = await mass.webserver.auth.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, ingress_user_id
+        )
+
+        if not user:
+            # Security: Ensure at least one user exists (setup should have been completed)
+            if not await mass.webserver.auth.has_users():
+                # No users exist - setup has not been completed
+                # This should not happen as the server redirects to /setup
+                return None
+
+            # Auto-create user for Ingress (they're already authenticated by HA)
+            # Always create with USER role (admin is created during setup)
+            user = await mass.webserver.auth.create_user(
+                username=ingress_username,
+                role=UserRole.USER,
+                display_name=ingress_display_name,
+            )
+            # Link to Home Assistant provider
+            await mass.webserver.auth.link_user_to_provider(
+                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
             )
 
-            if not user:
-                # Auto-create user for Ingress (they're already authenticated by HA)
-                # First user gets ADMIN role, subsequent users get USER role
-                has_users = await mass.webserver.auth.has_users()
-                role = UserRole.USER if has_users else UserRole.ADMIN
-
-                user = await mass.webserver.auth.create_user(
-                    username=ingress_username,
-                    role=role,
-                    display_name=ingress_display_name,
-                )
-                # Link to Home Assistant provider
-                await mass.webserver.auth.link_user_to_provider(
-                    user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-                )
-
-            # Store in request context
-            request[USER_CONTEXT_KEY] = user
-            return user
-
-        # No HA user headers - create/use system user for HA integration
-        # This allows the Home Assistant integration to connect via the internal network
-        # without needing Ingress headers (e.g., when using the Python client)
-        user = await mass.webserver.auth.get_or_create_system_user(
-            username="homeassistant_system",
-            role=UserRole.USER,
-        )
+        # Store in request context
         request[USER_CONTEXT_KEY] = user
         return user
 
@@ -87,6 +85,11 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     # Authenticate with token (works for both user tokens and API keys)
     user = await mass.webserver.auth.authenticate_with_token(token)
     if user:
+        # Security: Deny homeassistant system user on regular (non-Ingress) webserver
+        if not is_request_from_ingress(request) and user.username == HOMEASSISTANT_SYSTEM_USER:
+            # Reject system user on regular webserver (should only use Ingress server)
+            return None
+
         # Store in request context
         request[USER_CONTEXT_KEY] = user
 
