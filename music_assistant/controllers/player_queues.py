@@ -1225,16 +1225,14 @@ class PlayerQueuesController(CoreController):
                 queue_item.media_item.item_id,
                 queue_item.media_item.provider,
             ):
-                assert isinstance(library_item, Track)
-                queue_item.media_item = library_item
+                queue_item.media_item = cast("Track", library_item)
             elif not queue_item.media_item.image or queue_item.media_item.provider.startswith(
                 "ytmusic"
             ):
                 # Youtube Music has poor thumbs by default, so we always fetch the full item
                 # this also catches the case where they have an unavailable item in a listing
                 fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
-                assert isinstance(fetched_item, Track)
-                queue_item.media_item = fetched_item
+                queue_item.media_item = cast("Track", fetched_item)
 
             # ensure we got the full (original) album set
             if album and (
@@ -1244,8 +1242,7 @@ class PlayerQueuesController(CoreController):
                     album.provider,
                 )
             ):
-                assert isinstance(library_album, Album)
-                queue_item.media_item.album = library_album
+                queue_item.media_item.album = cast("Album", library_album)
             elif album:
                 # Restore original album if we have no better alternative from the library
                 queue_item.media_item.album = album
