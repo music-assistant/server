@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import aiofiles
-from aiohttp import WSMsgType, web
+from aiohttp import ClientTimeout, WSMsgType, web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import (
@@ -286,6 +286,9 @@ class WebserverController(CoreController):
             # Add mass object to app for use in auth middleware
             app_state={"mass": self.mass},
         )
+        if self.mass.running_as_hass_addon:
+            # announce to HA supervisor
+            await self._announce_to_homeassistant()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -1279,6 +1282,32 @@ class WebserverController(CoreController):
         except Exception as e:
             self.logger.exception("Error unlinking provider")
             return {"success": False, "error": str(e)}
+
+    async def _announce_to_homeassistant(self) -> None:
+        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
+        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
+        addon_hostname = os.environ["HOSTNAME"]
+
+        discovery_payload = {
+            "service": "music_assistant",
+            "config": {"host": addon_hostname, "port": 8094},
+        }
+
+        try:
+            async with self.mass.http_session_no_ssl.post(
+                "http://supervisor/discovery",
+                headers={"Authorization": f"Bearer {supervisor_token}"},
+                json=discovery_payload,
+                timeout=ClientTimeout(total=10),
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+                self.logger.debug(
+                    "Successfully announced to Home Assistant. Discovery UUID: %s",
+                    result.get("uuid"),
+                )
+        except Exception as err:
+            self.logger.warning("Failed to announce to Home Assistant: %s", err)
 
 
 class WebsocketClientHandler:
