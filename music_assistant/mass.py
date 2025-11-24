@@ -485,6 +485,7 @@ class MusicAssistant:
         handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
         required_role: str | None = None,
+        alias: bool = False,
     ) -> Callable[[], None]:
         """Dynamically register a command on the API.
 
@@ -493,6 +494,8 @@ class MusicAssistant:
         :param authenticated: Whether authentication is required (default: True).
         :param required_role: Required user role ("admin" or "user")
             None means any authenticated user.
+        :param alias: Whether this is an alias for backward compatibility (default: False).
+            Aliases are not shown in API documentation but remain functional.
 
         Returns handle to unregister.
         """
@@ -500,7 +503,7 @@ class MusicAssistant:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(
-            command, handler, authenticated, required_role
+            command, handler, authenticated, required_role, alias
         )
 
         def unregister() -> None:

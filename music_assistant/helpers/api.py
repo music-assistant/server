@@ -30,6 +30,7 @@ class APICommandHandler:
     target: Callable[..., Coroutine[Any, Any, Any]]
     authenticated: bool = True
     required_role: str | None = None  # "admin" or "user" or None
+    alias: bool = False  # If True, this is an alias for backward compatibility
 
     @classmethod
     def parse(
@@ -38,6 +39,7 @@ class APICommandHandler:
         func: Callable[..., Coroutine[Any, Any, Any]],
         authenticated: bool = True,
         required_role: str | None = None,
+        alias: bool = False,
     ) -> APICommandHandler:
         """Parse APICommandHandler by providing a function.
 
@@ -46,6 +48,7 @@ class APICommandHandler:
         :param authenticated: Whether authentication is required (default: True).
         :param required_role: Required user role ("admin" or "user")
             None for any authenticated user.
+        :param alias: Whether this is an alias for backward compatibility (default: False).
         """
         type_hints = get_type_hints(func)
         # workaround for generic typevar ItemCls that needs to be resolved
@@ -63,6 +66,7 @@ class APICommandHandler:
             target=func,
             authenticated=authenticated,
             required_role=required_role,
+            alias=alias,
         )
 
 

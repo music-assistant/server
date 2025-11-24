@@ -102,7 +102,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.register_api_command(f"music/{api_base}/count", self.library_count)
         self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
         self.mass.register_api_command(f"music/{api_base}/get", self.get)
-        self.mass.register_api_command(f"music/{api_base}/get_{self.media_type}", self.get)
+        # Backward compatibility alias - prefer the generic "get" endpoint
+        self.mass.register_api_command(
+            f"music/{api_base}/get_{self.media_type}", self.get, alias=True
+        )
         self.mass.register_api_command(f"music/{api_base}/add", self.add_item_to_library)
         self.mass.register_api_command(f"music/{api_base}/update", self.update_item_in_library)
         self.mass.register_api_command(f"music/{api_base}/remove", self.remove_item_from_library)

@@ -62,7 +62,12 @@ from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
-from .api_docs import generate_commands_reference, generate_openapi_spec, generate_schemas_reference
+from .api_docs import (
+    generate_commands_json,
+    generate_commands_reference,
+    generate_openapi_spec,
+    generate_schemas_reference,
+)
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
@@ -211,6 +216,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/api-docs/", self._handle_api_intro))
         routes.append(("GET", "/api-docs/commands", self._handle_commands_reference))
         routes.append(("GET", "/api-docs/commands/", self._handle_commands_reference))
+        routes.append(("GET", "/api-docs/commands.json", self._handle_commands_json))
         routes.append(("GET", "/api-docs/schemas", self._handle_schemas_reference))
         routes.append(("GET", "/api-docs/schemas/", self._handle_schemas_reference))
         routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
@@ -441,6 +447,11 @@ class WebserverController(CoreController):
         """Handle request for commands reference page (generated on-the-fly)."""
         html = generate_commands_reference(self.mass.command_handlers, server_url=self.base_url)
         return web.Response(text=html, content_type="text/html")
+
+    async def _handle_commands_json(self, request: web.Request) -> web.Response:
+        """Handle request for commands JSON data (generated on-the-fly)."""
+        commands_data = generate_commands_json(self.mass.command_handlers)
+        return web.json_response(commands_data)
 
     async def _handle_schemas_reference(self, request: web.Request) -> web.Response:
         """Handle request for schemas reference page (generated on-the-fly)."""

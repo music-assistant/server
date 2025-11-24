@@ -424,6 +424,9 @@ def generate_openapi_spec(
 
     # Build all schemas from command handlers (this populates definitions)
     for handler in command_handlers.values():
+        # Skip aliases - they are for backward compatibility only
+        if handler.alias:
+            continue
         # Build parameter schemas
         for param_name in handler.signature.parameters:
             if param_name == "self":
@@ -888,6 +891,84 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
     return result
 
 
+def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> list[dict[str, Any]]:
+    """Generate JSON representation of all available API commands.
+
+    This is used by client libraries to sync their methods with the server API.
+
+    Returns a list of command objects with the following structure:
+    {
+        "command": str,  # Command name (e.g., "music/tracks/library_items")
+        "category": str,  # Category (e.g., "Music")
+        "summary": str,  # Short description
+        "description": str,  # Full description
+        "parameters": [  # List of parameters
+            {
+                "name": str,
+                "type": str,  # JSON type (string, integer, boolean, etc.)
+                "required": bool,
+                "description": str
+            }
+        ],
+        "return_type": str,  # Return type
+        "authenticated": bool,  # Whether authentication is required
+        "required_role": str | None,  # Required user role (if any)
+    }
+    """
+    commands_data = []
+
+    for command, handler in sorted(command_handlers.items()):
+        # Skip aliases - they are for backward compatibility only
+        if handler.alias:
+            continue
+        # Parse docstring
+        summary, description, param_descriptions = _parse_docstring(handler.target)
+
+        # Get return type
+        return_type = handler.type_hints.get("return", Any)
+        return_type_str = _python_type_to_json_type(str(return_type))
+
+        # Extract category from command name
+        category = command.split("/")[0] if "/" in command else "general"
+        category_display = category.replace("_", " ").title()
+
+        # Build parameters list
+        parameters = []
+        for param_name, param in handler.signature.parameters.items():
+            if param_name in ("self", "return_type"):
+                continue
+
+            is_required = param.default is inspect.Parameter.empty
+            param_type = handler.type_hints.get(param_name, Any)
+            type_str = str(param_type)
+            json_type_str = _python_type_to_json_type(type_str)
+            param_desc = param_descriptions.get(param_name, "")
+
+            parameters.append(
+                {
+                    "name": param_name,
+                    "type": json_type_str,
+                    "required": is_required,
+                    "description": param_desc,
+                }
+            )
+
+        commands_data.append(
+            {
+                "command": command,
+                "category": category_display,
+                "summary": summary or "",
+                "description": description or "",
+                "parameters": parameters,
+                "return_type": return_type_str,
+                "authenticated": handler.authenticated,
+                "required_role": handler.required_role,
+            }
+        )
+
+    return commands_data
+
+
 def generate_commands_reference(  # noqa: PLR0915
     command_handlers: dict[str, APICommandHandler],
     server_url: str = "http://localhost:8095",
@@ -898,6 +979,9 @@ def generate_commands_reference(  # noqa: PLR0915
     # Group commands by category
     categories: dict[str, list[tuple[str, APICommandHandler]]] = {}
     for command, handler in sorted(command_handlers.items()):
+        # Skip aliases - they are for backward compatibility only
+        if handler.alias:
+            continue
         category = command.split("/")[0] if "/" in command else "general"
         if category not in categories:
             categories[category] = []
@@ -1959,6 +2043,9 @@ def generate_schemas_reference(  # noqa: PLR0915
     schemas: dict[str, Any] = {}
 
     for handler in command_handlers.values():
+        # Skip aliases - they are for backward compatibility only
+        if handler.alias:
+            continue
         # Collect schemas from parameters
         for param_name in handler.signature.parameters:
             if param_name == "self":
@@ -2429,6 +2516,9 @@ def generate_html_docs(  # noqa: PLR0915
     # Group commands by category
     categories: dict[str, list[tuple[str, APICommandHandler]]] = {}
     for command, handler in sorted(command_handlers.items()):
+        # Skip aliases - they are for backward compatibility only
+        if handler.alias:
+            continue
         category = command.split("/")[0] if "/" in command else "general"
         if category not in categories:
             categories[category] = []
