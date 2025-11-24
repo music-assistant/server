@@ -242,14 +242,12 @@ class AuthenticationManager:
                     "ALTER TABLE users ADD COLUMN preferences TEXT DEFAULT '{}'"
                 )
                 await self.database.commit()
-                self.logger.info("Successfully added preferences column")
             except Exception as err:
                 # Column might already exist from a previous migration attempt
                 self.logger.debug("Could not add preferences column: %s", err)
                 # Check if column exists by trying to query it
                 try:
                     await self.database.execute("SELECT preferences FROM users LIMIT 1")
-                    self.logger.info("Preferences column already exists")
                 except Exception:
                     # Column doesn't exist - this is a real error
                     self.logger.error("Failed to add preferences column and column doesn't exist!")
