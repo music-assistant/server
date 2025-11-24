@@ -126,7 +126,7 @@ class AuthenticationManager:
             prev_version = 0
 
         # Perform migration if needed
-        if prev_version != 0 and prev_version < DB_SCHEMA_VERSION:
+        if prev_version < DB_SCHEMA_VERSION:
             self.logger.warning(
                 "Performing database migration from schema version %s to %s",
                 prev_version,
