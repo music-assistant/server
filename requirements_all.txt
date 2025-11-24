@@ -19,7 +19,7 @@ alexapy==1.29.9
 async-upnp-client==0.45.0
 audible==0.10.0
 bidict==0.23.1
-certifi==2025.10.5
+certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
 cryptography==46.0.3
