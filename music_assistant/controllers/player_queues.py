@@ -2165,6 +2165,10 @@ class PlayerQueuesController(CoreController):
         )
 
         album = getattr(item_to_report.media_item, "album", None)
+        # Build track name with version if available (for scrobbling)
+        track_name = item_to_report.media_item.name
+        if version := getattr(item_to_report.media_item, "version", None):
+            track_name = f"{track_name} ({version})"
         # signal 'media item played' event,
         # which is useful for plugins that want to do scrobbling
         self.mass.signal_event(
@@ -2173,7 +2177,7 @@ class PlayerQueuesController(CoreController):
             data=MediaItemPlaybackProgressReport(
                 uri=item_to_report.media_item.uri,
                 media_type=item_to_report.media_item.media_type,
-                name=item_to_report.media_item.name,
+                name=track_name,
                 artist=getattr(item_to_report.media_item, "artist_str", None),
                 artist_mbids=(
                     [a.mbid for a in artists if a.mbid]
