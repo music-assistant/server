@@ -18,8 +18,18 @@ from music_assistant_models.auth import (
     UserAuthProvider,
     UserRole,
 )
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InsufficientPermissions,
+    InvalidDataError,
+)
 
 from music_assistant.constants import CONF_ONBOARD_DONE, MASS_LOGGER_NAME
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_token,
+    get_current_user,
+)
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthResult,
     BuiltinLoginProvider,
@@ -28,6 +38,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginProvider,
     LoginProviderConfig,
 )
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -370,11 +381,13 @@ class AuthenticationManager:
         # Get user
         return await self.get_user(token_row["user_id"])
 
+    @api_command("auth/user", required_role="admin")
     async def get_user(self, user_id: str) -> User | None:
         """
-        Get a user by ID.
+        Get user by ID (admin only).
 
         :param user_id: The user ID.
+        :return: User object or None if not found.
         """
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row or not user_row["enabled"]:
@@ -663,37 +676,61 @@ class AuthenticationManager:
 
         return token
 
-    async def revoke_token(self, token_id: str, user: User) -> bool:
+    @api_command("auth/token/revoke")
+    async def revoke_token(self, token_id: str) -> None:
         """
-        Revoke an access token.
+        Revoke an auth token.
 
         :param token_id: The token ID to revoke.
-        :param user: The user revoking the token (must own it or be admin).
         """
+        user = get_current_user()
+        if not user:
+            raise AuthenticationRequired("Not authenticated")
+
         token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
         if not token_row:
-            return False
+            raise InvalidDataError("Token not found")
 
         # Check permissions - users can only revoke their own tokens unless admin
         if token_row["user_id"] != user.user_id and user.role != UserRole.ADMIN:
-            return False
+            raise InsufficientPermissions("You can only revoke your own tokens")
 
         await self.database.delete("auth_tokens", {"token_id": token_id})
-        return True
 
-    async def get_user_tokens(self, user: User) -> list[AuthToken]:
+    @api_command("auth/tokens")
+    async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
-        Get all tokens for a user.
+        Get current user's auth tokens or another user's tokens (admin only).
 
-        :param user: The user to get tokens for.
+        :param user_id: Optional user ID to get tokens for (admin only).
+        :return: List of auth tokens.
         """
+        current_user = get_current_user()
+        if not current_user:
+            return []
+
+        # If user_id is provided and different from current user, require admin
+        if user_id and user_id != current_user.user_id:
+            if current_user.role != UserRole.ADMIN:
+                return []
+            target_user = await self.get_user(user_id)
+            if not target_user:
+                return []
+        else:
+            target_user = current_user
+
         token_rows = await self.database.get_rows(
-            "auth_tokens", {"user_id": user.user_id}, limit=100
+            "auth_tokens", {"user_id": target_user.user_id}, limit=100
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
+    @api_command("auth/users", required_role="admin")
     async def list_users(self) -> list[User]:
-        """Get all users."""
+        """
+        Get all users (admin only).
+
+        :return: List of user objects.
+        """
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
@@ -744,43 +781,39 @@ class AuthenticationManager:
         )
         return True
 
-    async def enable_user(self, user_id: str, admin_user: User) -> bool:
+    @api_command("auth/user/enable", required_role="admin")
+    async def enable_user(self, user_id: str) -> None:
         """
-        Enable a user (admin only).
+        Enable user account (admin only).
 
-        :param user_id: The user ID to enable.
-        :param admin_user: The admin user performing the action.
+        :param user_id: The user ID.
         """
-        if admin_user.role != UserRole.ADMIN:
-            return False
-
         await self.database.update(
             "users",
             {"user_id": user_id},
             {"enabled": 1},
         )
-        return True
 
-    async def disable_user(self, user_id: str, admin_user: User) -> bool:
+    @api_command("auth/user/disable", required_role="admin")
+    async def disable_user(self, user_id: str) -> None:
         """
-        Disable a user (admin only).
+        Disable user account (admin only).
 
-        :param user_id: The user ID to disable.
-        :param admin_user: The admin user performing the action.
+        :param user_id: The user ID.
         """
-        if admin_user.role != UserRole.ADMIN:
-            return False
+        admin_user = get_current_user()
+        if not admin_user:
+            raise AuthenticationRequired("Not authenticated")
 
         # Cannot disable yourself
         if user_id == admin_user.user_id:
-            return False
+            raise InvalidDataError("Cannot disable your own account")
 
         await self.database.update(
             "users",
             {"user_id": user_id},
             {"enabled": 0},
         )
-        return True
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
         """Get list of available login providers (dynamically checks for HA provider)."""
@@ -832,19 +865,290 @@ class AuthenticationManager:
 
         return await provider.handle_oauth_callback(code, state, redirect_uri)
 
-    async def create_long_lived_token(self, user: User, name: str) -> str:
+    @api_command("auth/token/create")
+    async def create_long_lived_token(self, name: str, user_id: str | None = None) -> str:
         """
-        Create a long-lived access token for external apps/integrations.
+        Create a new long-lived access token for current user or another user (admin only).
 
-        Long-lived tokens expire after 10 years and do NOT auto-renew on use.
-        They are intended for external applications like the Home Assistant integration,
-        mobile apps, etc. Users can manage and revoke these tokens at any time.
+        Long-lived tokens are intended for external integrations and API access.
+        They expire after 10 years and do NOT auto-renew on use.
 
-        :param user: The user to create the token for.
-        :param name: A name/description for the token (e.g., "Home Assistant", "Mobile App").
+        Short-lived tokens (for regular user sessions) are only created during login
+        and auto-renew on each use (sliding 30-day expiration window).
+
+        :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
+        :param user_id: Optional user ID to create token for (admin only).
+        :return: The created token string.
         """
-        # Create a long-lived token
-        token = await self.create_token(user, name, is_long_lived=True)
+        current_user = get_current_user()
+        if not current_user:
+            raise AuthenticationRequired("Not authenticated")
 
-        self.logger.info("Created long-lived token '%s' for user '%s'", name, user.username)
+        # If user_id is provided and different from current user, require admin
+        if user_id and user_id != current_user.user_id:
+            if current_user.role != UserRole.ADMIN:
+                raise InsufficientPermissions(
+                    "Admin access required to create tokens for other users"
+                )
+            target_user = await self.get_user(user_id)
+            if not target_user:
+                raise InvalidDataError("User not found")
+        else:
+            target_user = current_user
+
+        # Create a long-lived token (only long-lived tokens can be created via this command)
+        token = await self.create_token(target_user, name, is_long_lived=True)
+        self.logger.info("Created long-lived token '%s' for user '%s'", name, target_user.username)
         return token
+
+    @api_command("auth/user/create", required_role="admin")
+    async def create_user_with_api(
+        self,
+        username: str,
+        password: str,
+        role: str = "user",
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+    ) -> User:
+        """
+        Create a new user with built-in authentication (admin only).
+
+        :param username: The username (minimum 3 characters).
+        :param password: The password (minimum 8 characters).
+        :param role: User role - "admin" or "user" (default: "user").
+        :param display_name: Optional display name.
+        :param avatar_url: Optional avatar URL.
+        :return: Created user object.
+        """
+        # Validation
+        if not username or len(username) < 3:
+            raise InvalidDataError("Username must be at least 3 characters")
+
+        if not password or len(password) < 8:
+            raise InvalidDataError("Password must be at least 8 characters")
+
+        # Validate role
+        try:
+            user_role = UserRole(role)
+        except ValueError as err:
+            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+
+        # Get built-in provider
+        builtin_provider = self.login_providers.get("builtin")
+        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+            raise InvalidDataError("Built-in auth provider not available")
+
+        # Create user with password
+        user = await builtin_provider.create_user_with_password(username, password, role=user_role)
+
+        # Update optional fields if provided
+        if display_name or avatar_url:
+            updated_user = await self.update_user(
+                user, display_name=display_name, avatar_url=avatar_url
+            )
+            if updated_user:
+                user = updated_user
+
+        self.logger.info("User created by admin: %s (role: %s)", username, role)
+        return user
+
+    @api_command("auth/user/delete", required_role="admin")
+    async def delete_user(self, user_id: str) -> None:
+        """
+        Delete user account (admin only).
+
+        :param user_id: The user ID.
+        """
+        admin_user = get_current_user()
+        if not admin_user:
+            raise AuthenticationRequired("Not authenticated")
+
+        # Don't allow deleting yourself
+        if user_id == admin_user.user_id:
+            raise InvalidDataError("Cannot delete your own account")
+
+        # Delete user from database
+        await self.database.delete("users", {"user_id": user_id})
+        await self.database.commit()
+
+    @api_command("auth/me")
+    async def get_current_user_info(self) -> User:
+        """Get current authenticated user information."""
+        current_user_obj = get_current_user()
+        if not current_user_obj:
+            raise AuthenticationRequired("Not authenticated")
+        return current_user_obj
+
+    async def _update_profile_password(
+        self,
+        target_user: User,
+        password: str,
+        old_password: str | None,
+        is_admin_update: bool,
+        current_user: User,
+    ) -> None:
+        """Update user password (helper method)."""
+        if len(password) < 8:
+            raise InvalidDataError("Password must be at least 8 characters")
+
+        builtin_provider = self.login_providers.get("builtin")
+        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+            raise InvalidDataError("Built-in auth not available")
+
+        if is_admin_update:
+            # Admin can reset password without old password
+            await builtin_provider.reset_password(target_user, password)
+            self.logger.info(
+                "Password reset for user %s by admin %s",
+                target_user.username,
+                current_user.username,
+            )
+        else:
+            # User updating own password - requires old password verification
+            if not old_password:
+                raise InvalidDataError("old_password is required to change your own password")
+
+            # Verify old password and change to new one
+            success = await builtin_provider.change_password(target_user, old_password, password)
+            if not success:
+                raise AuthenticationFailed("Invalid current password")
+
+            self.logger.info("Password changed for user %s", target_user.username)
+
+    @api_command("auth/user/update")
+    async def update_user_profile(
+        self,
+        user_id: str | None = None,
+        username: str | None = None,
+        display_name: str | None = None,
+        avatar_url: str | None = None,
+        password: str | None = None,
+        old_password: str | None = None,
+        role: str | None = None,
+        preferences: dict[str, Any] | None = None,
+    ) -> User:
+        """
+        Update user profile information.
+
+        Users can update their own profile. Admins can update any user including role and password.
+
+        :param user_id: User ID to update (optional, defaults to current user).
+        :param username: New username (optional).
+        :param display_name: New display name (optional).
+        :param avatar_url: New avatar URL (optional).
+        :param password: New password (optional, minimum 8 characters).
+        :param old_password: Current password (required when user updates own password).
+        :param role: New role - "admin" or "user" (optional, admin only).
+        :param preferences: User preferences dict (completely replaces existing, optional).
+        :return: Updated user object.
+        """
+        current_user_obj = get_current_user()
+        if not current_user_obj:
+            raise AuthenticationRequired("Not authenticated")
+
+        # Determine target user
+        if user_id and user_id != current_user_obj.user_id:
+            # Updating another user - requires admin
+            if current_user_obj.role != UserRole.ADMIN:
+                raise InsufficientPermissions("Admin access required")
+            target_user = await self.get_user(user_id)
+            if not target_user:
+                raise InvalidDataError("User not found")
+            is_admin_update = True
+        else:
+            # Updating own profile
+            target_user = current_user_obj
+            is_admin_update = False
+
+        # Update role (admin only)
+        if role:
+            if not is_admin_update:
+                raise InsufficientPermissions("Only admins can update user roles")
+
+            try:
+                new_role = UserRole(role)
+            except ValueError as err:
+                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+
+            success = await self.update_user_role(target_user.user_id, new_role, current_user_obj)
+            if not success:
+                raise InvalidDataError("Failed to update role")
+
+            # Refresh target user to get updated role
+            refreshed_user = await self.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after role update")
+            target_user = refreshed_user
+
+        # Update basic profile fields
+        if username or display_name or avatar_url:
+            updated_user = await self.update_user(
+                target_user,
+                username=username,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+            if not updated_user:
+                raise InvalidDataError("Failed to update user profile")
+            target_user = updated_user
+
+        # Update preferences if provided
+        if preferences is not None:
+            target_user = await self.update_user_preferences(target_user, preferences)
+
+        # Update password if provided
+        if password:
+            await self._update_profile_password(
+                target_user, password, old_password, is_admin_update, current_user_obj
+            )
+
+        return target_user
+
+    @api_command("auth/logout")
+    async def logout(self) -> None:
+        """Logout current user by revoking the current token."""
+        user = get_current_user()
+        if not user:
+            raise AuthenticationRequired("Not authenticated")
+
+        # Get current token from context
+        token = get_current_token()
+        if not token:
+            raise InvalidDataError("No token in context")
+
+        # Find and revoke the token
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        token_row = await self.database.get_row("auth_tokens", {"token_hash": token_hash})
+        if token_row:
+            await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+
+    @api_command("auth/user/providers")
+    async def get_my_providers(self) -> list[dict[str, Any]]:
+        """
+        Get current user's linked authentication providers.
+
+        :return: List of provider links.
+        """
+        user = get_current_user()
+        if not user:
+            return []
+
+        # Get provider links from database
+        rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
+        providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        return [p.to_dict() for p in providers]
+
+    @api_command("auth/user/unlink_provider", required_role="admin")
+    async def unlink_provider(self, user_id: str, provider_type: str) -> bool:
+        """
+        Unlink authentication provider from user (admin only).
+
+        :param user_id: The user ID.
+        :param provider_type: Provider type to unlink.
+        :return: True if successful.
+        """
+        await self.database.delete(
+            "user_auth_providers", {"user_id": user_id, "provider_type": provider_type}
+        )
+        await self.database.commit()
+        return True
