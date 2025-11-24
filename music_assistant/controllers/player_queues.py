@@ -2186,12 +2186,8 @@ class PlayerQueuesController(CoreController):
                 ),
                 album=(album.name if album else None),
                 album_mbid=(album.mbid if album else None),
-                album_artist=(getattr(album, "artist_str", None) if album else None),
-                album_artist_mbids=(
-                    [a.mbid for a in album.artists if a.mbid]
-                    if (album and hasattr(album, "artists") and album.artists)
-                    else None
-                ),
+                album_artist=(album.artist_str if album else None),
+                album_artist_mbids=([a.mbid for a in album.artists if a.mbid] if album else None),
                 image_url=(
                     self.mass.metadata.get_image_url(item_to_report.media_item.image, size=512)
                     if item_to_report.media_item.image
