@@ -430,7 +430,6 @@ class AudioTags:
         if audio_stream is None:
             msg = "No audio stream found"
             raise InvalidDataError(msg)
-
         has_cover_image = any(
             x for x in raw["streams"] if x.get("codec_name", "") in ("mjpeg", "png")
         )
@@ -640,24 +639,21 @@ def has_apev2_cover_art(input_file: str) -> bool:
 
     :param input_file: Path to the local audio file.
     """
-    try:
-        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
-        if audio is None or not hasattr(audio, "tags") or audio.tags is None:
-            return False
-
-        # APEv2 tags can have various cover art tag names
-        cover_tag_names = [
-            "Cover Art (Front)",
-            "COVER ART (FRONT)",
-            "Cover Art (front)",
-            "cover art (front)",
-            "COVERART",
-            "coverart",
-        ]
-
-        return any(tag_name in audio.tags for tag_name in cover_tag_names)
-    except Exception:
+    audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+    if audio is None or not hasattr(audio, "tags") or audio.tags is None:
         return False
+
+    # APEv2 tags can have various cover art tag names
+    cover_tag_names = [
+        "Cover Art (Front)",
+        "COVER ART (FRONT)",
+        "Cover Art (front)",
+        "cover art (front)",
+        "COVERART",
+        "coverart",
+    ]
+
+    return any(tag_name in audio.tags for tag_name in cover_tag_names)
 
 
 def get_apev2_image(input_file: str) -> bytes | None:
@@ -669,36 +665,32 @@ def get_apev2_image(input_file: str) -> bytes | None:
 
     :param input_file: Path to the local audio file.
     """
-    try:
-        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
-        if audio is None or not hasattr(audio, "tags") or audio.tags is None:
-            return None
-
-        # APEv2 cover art can use various tag names
-        cover_tag_names = [
-            "Cover Art (Front)",
-            "COVER ART (FRONT)",
-            "Cover Art (front)",
-            "cover art (front)",
-            "COVERART",
-            "coverart",
-        ]
-
-        for tag_name in cover_tag_names:
-            if tag_name in audio.tags:
-                cover_data = audio.tags[tag_name].value
-                if isinstance(cover_data, bytes):
-                    # APEv2 cover art format: description\x00image_data
-                    null_index = cover_data.find(b"\x00")
-                    if null_index != -1:
-                        # Extract image data after the null-terminated description
-                        return cover_data[null_index + 1 :]
-                    # No description field, return entire data as image
-                    return cover_data
+    audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+    if audio is None or not hasattr(audio, "tags") or audio.tags is None:
         return None
-    except Exception as err:
-        LOGGER.debug(f"Error extracting APEv2 cover art from {input_file}: {err}")
-        return None
+
+    # APEv2 cover art can use various tag names
+    cover_tag_names = [
+        "Cover Art (Front)",
+        "COVER ART (FRONT)",
+        "Cover Art (front)",
+        "cover art (front)",
+        "COVERART",
+        "coverart",
+    ]
+
+    for tag_name in cover_tag_names:
+        if tag_name in audio.tags:
+            cover_data = audio.tags[tag_name].value
+            if isinstance(cover_data, bytes):
+                # APEv2 cover art format: description\x00image_data
+                null_index = cover_data.find(b"\x00")
+                if null_index != -1:
+                    # Extract image data after the null-terminated description
+                    return cover_data[null_index + 1 :]
+                # No description field, return entire data as image
+                return cover_data
+    return None
 
 
 async def get_embedded_image(input_file: str) -> bytes | None:
