@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "pocketcasts",
+  "name": "Pocketcasts",
+  "description": "Stream podcasts from your Pocket Casts account.",
+  "codeowners": ["@yfhyou"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "stage": "experimental"
+}
