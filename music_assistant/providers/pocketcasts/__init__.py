@@ -61,9 +61,11 @@ POCKETCASTS_PODCAST_FULL_URL = "https://podcast-api.pocketcasts.com/podcast/full
 POCKETCASTS_PODCAST_EPISODES_URL = f"{POCKETCASTS_API_BASE}/user/podcast/episodes"
 POCKETCASTS_SYNC_UPDATE_EPISODE_URL = f"{POCKETCASTS_API_BASE}/sync/update_episode"
 POCKETCASTS_IN_PROGRESS_URL = f"{POCKETCASTS_API_BASE}/user/in_progress"
+POCKETCASTS_STARRED_URL = f"{POCKETCASTS_API_BASE}/user/starred"
 
 # Browse path constants
 BROWSE_IN_PROGRESS = "in_progress"
+BROWSE_STARRED = "starred"
 
 # Artwork URL pattern
 POCKETCASTS_ARTWORK_URL = "https://static.pocketcasts.com/discover/images/webp/200/{uuid}.webp"
@@ -425,7 +427,7 @@ class PocketCastsProvider(MusicProvider):
         base = f"{self.instance_id}://"
 
         if path == base or not path.startswith(base):
-            # Return root browse folders - add In Progress before default folders
+            # Return root browse folders - add custom folders before default folders
             default_folders = await super().browse(path)
             in_progress_folder = BrowseFolder(
                 item_id=BROWSE_IN_PROGRESS,
@@ -433,7 +435,13 @@ class PocketCastsProvider(MusicProvider):
                 path=f"{base}{BROWSE_IN_PROGRESS}",
                 name="In Progress",
             )
-            return [in_progress_folder, *default_folders]
+            starred_folder = BrowseFolder(
+                item_id=BROWSE_STARRED,
+                provider=self.domain,
+                path=f"{base}{BROWSE_STARRED}",
+                name="Starred",
+            )
+            return [in_progress_folder, starred_folder, *default_folders]
 
         # Parse subpath
         subpath = path[len(base) :]
@@ -441,8 +449,43 @@ class PocketCastsProvider(MusicProvider):
         if subpath == BROWSE_IN_PROGRESS:
             return list(await self._get_in_progress_episodes())
 
+        if subpath == BROWSE_STARRED:
+            return list(await self._get_starred_episodes())
+
         # Fall back to default browse handling
         return list(await super().browse(path))
+
+    async def _get_starred_episodes(self) -> list[PodcastEpisode]:
+        """Fetch starred episodes from Pocket Casts.
+
+        :return: List of starred PodcastEpisode items.
+        """
+        headers = await self._get_headers()
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_STARRED_URL,
+            headers=headers,
+            json={},
+        ) as response:
+            if response.status != 200:
+                self.logger.warning("Failed to fetch starred episodes: %s", response.status)
+                return []
+
+            data = await response.json()
+
+        episodes: list[PodcastEpisode] = []
+        for ep_data in data.get("episodes", []):
+            try:
+                episode = self._parse_browse_episode(ep_data)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse starred episode %s: %s",
+                    ep_data.get("uuid", "unknown"),
+                    err,
+                )
+
+        return episodes
 
     async def _get_in_progress_episodes(self) -> list[PodcastEpisode]:
         """Fetch episodes currently in progress from Pocket Casts.
@@ -465,7 +508,7 @@ class PocketCastsProvider(MusicProvider):
         episodes: list[PodcastEpisode] = []
         for ep_data in data.get("episodes", []):
             try:
-                episode = self._parse_in_progress_episode(ep_data)
+                episode = self._parse_browse_episode(ep_data)
                 episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
@@ -476,10 +519,10 @@ class PocketCastsProvider(MusicProvider):
 
         return episodes
 
-    def _parse_in_progress_episode(self, ep_data: dict[str, Any]) -> PodcastEpisode:
-        """Parse an in-progress episode from API response.
+    def _parse_browse_episode(self, ep_data: dict[str, Any]) -> PodcastEpisode:
+        """Parse an episode from browse API response.
 
-        :param ep_data: Episode data from /user/in_progress API.
+        :param ep_data: Episode data from browse APIs (in_progress, starred, etc.).
         :return: Parsed PodcastEpisode.
         """
         episode_uuid = ep_data["uuid"]
