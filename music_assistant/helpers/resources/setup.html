@@ -417,8 +417,8 @@
                 const data = await response.json();
 
                 if (response.ok && data.success) {
-                    // For Ingress setup, redirect to return_url with token
-                    if (isIngressSetup && returnUrl) {
+                    // Redirect to return_url with token if provided
+                    if (returnUrl) {
                         const targetUrl = new URL(returnUrl, window.location.origin);
                         targetUrl.searchParams.set('token', data.token);
                         window.location.href = targetUrl.toString();
