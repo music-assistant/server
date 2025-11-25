@@ -10,7 +10,10 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
