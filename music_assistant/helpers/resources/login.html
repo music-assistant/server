@@ -5,6 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - Music Assistant</title>
     <style>
+        :root {
+            --fg: #000000;
+            --background: #f5f5f5;
+            --overlay: #e7e7e7;
+            --panel: #ffffff;
+            --default: #ffffff;
+            --primary: #03a9f4;
+            --text-secondary: rgba(0, 0, 0, 0.6);
+            --text-tertiary: rgba(0, 0, 0, 0.4);
+            --border: rgba(0, 0, 0, 0.1);
+            --input-bg: rgba(0, 0, 0, 0.03);
+            --input-focus-bg: rgba(3, 169, 244, 0.05);
+            --primary-glow: rgba(3, 169, 244, 0.15);
+            --error-bg: rgba(244, 67, 54, 0.08);
+            --error-border: rgba(244, 67, 54, 0.2);
+            --error-text: #d32f2f;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --fg: #ffffff;
+                --background: #181818;
+                --overlay: #181818;
+                --panel: #232323;
+                --default: #000000;
+                --text-secondary: rgba(255, 255, 255, 0.7);
+                --text-tertiary: rgba(255, 255, 255, 0.4);
+                --border: rgba(255, 255, 255, 0.08);
+                --input-bg: rgba(255, 255, 255, 0.05);
+                --input-focus-bg: rgba(3, 169, 244, 0.08);
+                --primary-glow: rgba(3, 169, 244, 0.25);
+                --error-bg: rgba(244, 67, 54, 0.1);
+                --error-border: rgba(244, 67, 54, 0.25);
+                --error-text: #ff6b6b;
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,55 +50,60 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--background);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 20px;
+            color: var(--fg);
         }
 
         .login-container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
+                        0 0 0 1px var(--border);
             width: 100%;
             max-width: 400px;
-            padding: 40px 30px;
+            padding: 48px 40px;
         }
 
         .logo {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 24px;
         }
 
         .logo img {
-            width: 80px;
-            height: 80px;
+            width: 72px;
+            height: 72px;
+            object-fit: contain;
         }
 
         h1 {
             text-align: center;
-            color: #333;
+            color: var(--fg);
             font-size: 24px;
-            margin-bottom: 10px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
         }
 
         .subtitle {
             text-align: center;
-            color: #666;
+            color: var(--text-tertiary);
             font-size: 14px;
-            margin-bottom: 30px;
+            margin-bottom: 32px;
         }
 
         .error {
-            background: #fee;
-            border: 1px solid #fcc;
-            color: #c33;
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            font-size: 14px;
+            background: var(--error-bg);
+            border: 1px solid var(--error-border);
+            color: var(--error-text);
+            padding: 14px 16px;
+            border-radius: 10px;
+            margin-bottom: 22px;
+            font-size: 13px;
             display: none;
         }
 
@@ -70,63 +112,84 @@
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 22px;
         }
 
         label {
             display: block;
-            color: #555;
-            font-size: 14px;
+            color: var(--fg);
+            font-size: 13px;
             font-weight: 500;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
+            letter-spacing: 0.2px;
         }
 
         input[type="text"],
         input[type="password"] {
             width: 100%;
-            padding: 12px 15px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.3s;
+            padding: 14px 16px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 15px;
+            color: var(--fg);
+            transition: all 0.2s ease;
+        }
+
+        input[type="text"]::placeholder,
+        input[type="password"]::placeholder {
+            color: var(--text-tertiary);
         }
 
         input[type="text"]:focus,
         input[type="password"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary);
+            background: var(--input-focus-bg);
+            box-shadow: 0 0 0 3px var(--primary-glow);
         }
 
         .btn {
             width: 100%;
-            padding: 12px;
+            padding: 15px;
             border: none;
-            border-radius: 6px;
-            font-size: 16px;
+            border-radius: 10px;
+            font-size: 15px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
             margin-bottom: 12px;
         }
 
         .btn-primary {
-            background: #667eea;
+            background: var(--primary);
             color: white;
         }
 
         .btn-primary:hover {
-            background: #5568d3;
+            filter: brightness(1.1);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+            filter: brightness(0.95);
         }
 
         .btn-primary:disabled {
-            background: #ccc;
+            opacity: 0.5;
             cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            filter: none;
         }
 
         .btn-secondary {
-            background: white;
-            color: #333;
-            border: 1px solid #ddd;
+            background: var(--input-bg);
+            color: var(--fg);
+            border: 1px solid var(--border);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -134,12 +197,13 @@
         }
 
         .btn-secondary:hover {
-            background: #f5f5f5;
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
         }
 
         .divider {
             text-align: center;
-            margin: 25px 0;
+            margin: 28px 0;
             position: relative;
         }
 
@@ -150,19 +214,19 @@
             left: 0;
             right: 0;
             height: 1px;
-            background: #ddd;
+            background: var(--border);
         }
 
         .divider span {
-            background: white;
-            padding: 0 15px;
-            color: #999;
-            font-size: 14px;
+            background: var(--panel);
+            padding: 0 16px;
+            color: var(--text-tertiary);
+            font-size: 13px;
             position: relative;
         }
 
         .oauth-providers {
-            margin-top: 20px;
+            margin-top: 8px;
         }
 
         .provider-icon {
@@ -174,9 +238,9 @@
             display: inline-block;
             width: 16px;
             height: 16px;
-            border: 2px solid #fff;
+            border: 2px solid rgba(255, 255, 255, 0.3);
             border-radius: 50%;
-            border-top-color: transparent;
+            border-top-color: #fff;
             animation: spin 0.6s linear infinite;
         }
 
@@ -188,10 +252,10 @@
 <body>
     <div class="login-container">
         <div class="logo">
-            <img src="/logo.png" alt="Music Assistant Logo">
+            <img src="./logo.png" alt="Music Assistant">
         </div>
 
-        <h1>Welcome to Music Assistant</h1>
+        <h1>Music Assistant</h1>
         <p class="subtitle">Sign in to continue</p>
 
         <div id="error" class="error"></div>
@@ -199,12 +263,12 @@
         <form id="loginForm">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" id="username" name="username" required autofocus>
+                <input type="text" id="username" name="username" required autofocus placeholder="Enter your username">
             </div>
 
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required>
+                <input type="password" id="password" name="password" required placeholder="Enter your password">
             </div>
 
             <button type="submit" class="btn btn-primary" id="loginBtn">
@@ -398,6 +462,11 @@
                 const redirectUrl = event.data.redirectUrl || `/?token=${encodeURIComponent(event.data.token)}`;
                 window.location.href = redirectUrl;
             }
+        });
+
+        // Clear error on input
+        document.querySelectorAll('input').forEach(input => {
+            input.addEventListener('input', hideError);
         });
 
         // Load providers on page load

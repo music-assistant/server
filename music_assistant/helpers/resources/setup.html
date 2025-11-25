@@ -5,6 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant - Initial Setup</title>
     <style>
+        :root {
+            --fg: #000000;
+            --background: #f5f5f5;
+            --overlay: #e7e7e7;
+            --panel: #ffffff;
+            --default: #ffffff;
+            --primary: #03a9f4;
+            --text-secondary: rgba(0, 0, 0, 0.6);
+            --text-tertiary: rgba(0, 0, 0, 0.4);
+            --border: rgba(0, 0, 0, 0.1);
+            --input-bg: rgba(0, 0, 0, 0.03);
+            --input-focus-bg: rgba(3, 169, 244, 0.05);
+            --primary-glow: rgba(3, 169, 244, 0.15);
+            --error-bg: rgba(244, 67, 54, 0.08);
+            --error-border: rgba(244, 67, 54, 0.2);
+            --error-text: #d32f2f;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --fg: #ffffff;
+                --background: #181818;
+                --overlay: #181818;
+                --panel: #232323;
+                --default: #000000;
+                --text-secondary: rgba(255, 255, 255, 0.7);
+                --text-tertiary: rgba(255, 255, 255, 0.4);
+                --border: rgba(255, 255, 255, 0.08);
+                --input-bg: rgba(255, 255, 255, 0.05);
+                --input-focus-bg: rgba(3, 169, 244, 0.08);
+                --primary-glow: rgba(3, 169, 244, 0.25);
+                --error-bg: rgba(244, 67, 54, 0.1);
+                --error-border: rgba(244, 67, 54, 0.25);
+                --error-text: #ff6b6b;
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,103 +50,136 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--background);
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            color: var(--fg);
         }
 
         .setup-container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 40px;
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
+                        0 0 0 1px var(--border);
+            padding: 48px 40px;
             width: 100%;
-            max-width: 450px;
+            max-width: 420px;
         }
 
         .logo {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 36px;
+        }
+
+        .logo-icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 16px;
+        }
+
+        .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
         }
 
         .logo h1 {
-            color: #667eea;
-            font-size: 28px;
+            color: var(--fg);
+            font-size: 24px;
             font-weight: 600;
-            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
         }
 
         .logo p {
-            color: #666;
+            color: var(--text-tertiary);
             font-size: 14px;
+            font-weight: 400;
         }
 
         .info-box {
-            background: #f0f4ff;
-            border-left: 4px solid #667eea;
-            padding: 15px;
-            margin-bottom: 25px;
-            border-radius: 4px;
+            background: var(--input-focus-bg);
+            border-left: 3px solid var(--primary);
+            padding: 16px 18px;
+            margin-bottom: 28px;
+            border-radius: 0 8px 8px 0;
         }
 
         .info-box h3 {
-            color: #667eea;
-            font-size: 16px;
-            margin-bottom: 8px;
+            color: var(--primary);
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
         }
 
         .info-box p {
-            color: #555;
-            font-size: 14px;
-            line-height: 1.5;
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.6;
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 22px;
         }
 
         label {
             display: block;
-            color: #333;
-            font-size: 14px;
+            color: var(--fg);
+            font-size: 13px;
             font-weight: 500;
             margin-bottom: 8px;
+            letter-spacing: 0.2px;
         }
 
         input[type="text"],
         input[type="password"] {
             width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e1e8ed;
-            border-radius: 8px;
+            padding: 14px 16px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
             font-size: 15px;
-            transition: all 0.3s;
+            color: var(--fg);
+            transition: all 0.2s ease;
+        }
+
+        input[type="text"]::placeholder,
+        input[type="password"]::placeholder {
+            color: var(--text-tertiary);
         }
 
         input[type="text"]:focus,
         input[type="password"]:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--primary);
+            background: var(--input-focus-bg);
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+
+        input[type="text"]:disabled {
+            background: var(--overlay);
+            color: var(--text-tertiary);
+            cursor: not-allowed;
         }
 
         .password-requirements {
             margin-top: 8px;
             font-size: 12px;
-            color: #666;
+            color: var(--text-tertiary);
         }
 
         .error-message {
-            background: #fee;
-            color: #c33;
-            padding: 12px 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 14px;
+            background: var(--error-bg);
+            color: var(--error-text);
+            padding: 14px 16px;
+            border-radius: 10px;
+            margin-bottom: 22px;
+            font-size: 13px;
             display: none;
+            border: 1px solid var(--error-border);
         }
 
         .error-message.show {
@@ -118,36 +188,42 @@
 
         .submit-btn {
             width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 15px;
+            background: var(--primary);
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
+            border-radius: 10px;
+            font-size: 15px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
+            margin-top: 8px;
         }
 
         .submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            filter: brightness(1.1);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            transform: translateY(-1px);
         }
 
         .submit-btn:active {
             transform: translateY(0);
+            filter: brightness(0.95);
         }
 
         .submit-btn:disabled {
-            opacity: 0.6;
+            opacity: 0.5;
             cursor: not-allowed;
             transform: none;
+            box-shadow: none;
+            filter: none;
         }
 
         .loading {
             display: none;
             text-align: center;
-            padding: 20px;
+            padding: 30px 20px;
         }
 
         .loading.show {
@@ -155,12 +231,12 @@
         }
 
         .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
+            border: 2px solid var(--border);
+            border-top: 2px solid var(--primary);
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
+            width: 36px;
+            height: 36px;
+            animation: spin 0.8s linear infinite;
             margin: 0 auto;
         }
 
@@ -168,17 +244,26 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        .loading p {
+            margin-top: 16px;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
     <div class="setup-container">
         <div class="logo">
+            <div class="logo-icon">
+                <img src="./logo.png" alt="Music Assistant">
+            </div>
             <h1>Music Assistant</h1>
             <p>Initial Setup</p>
         </div>
 
         <div class="info-box">
-            <h3>Welcome!</h3>
+            <h3>Welcome</h3>
             <p>Create your administrator account to get started. This account will have full access to manage Music Assistant.</p>
         </div>
 
@@ -233,7 +318,7 @@
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <p style="margin-top: 15px; color: #666;">Setting up your account...</p>
+            <p>Setting up your account...</p>
         </div>
     </div>
 
@@ -257,8 +342,6 @@
             const usernameField = document.getElementById('username');
             usernameField.value = ingressUsername;
             usernameField.disabled = true;
-            usernameField.style.backgroundColor = '#f5f5f5';
-            usernameField.style.cursor = 'not-allowed';
         }
 
         function showError(message) {
