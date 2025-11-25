@@ -38,8 +38,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        # TODO: This is a type mismatch that requires a logic change to fix properly
-        self.mass.register_api_command(f"music/{api_base}/podcast_episodes", self.episodes)  # type: ignore[arg-type]
+        self.mass.register_api_command(f"music/{api_base}/podcast_episodes", self.episodes)
         self.mass.register_api_command(f"music/{api_base}/podcast_episode", self.episode)
         self.mass.register_api_command(f"music/{api_base}/podcast_versions", self.versions)
 
