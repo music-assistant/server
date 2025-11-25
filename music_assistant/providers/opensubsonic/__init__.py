@@ -43,6 +43,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.FAVORITE_ALBUMS_EDIT,
+    ProviderFeature.FAVORITE_ARTISTS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
 }
 
 
