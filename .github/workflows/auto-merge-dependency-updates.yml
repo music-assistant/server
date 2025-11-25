@@ -64,7 +64,7 @@ jobs:
       # IMPORTANT: Checkout the PR's head to validate file changes
       # This is required for the git commands in security check 5
       - name: Checkout PR branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2

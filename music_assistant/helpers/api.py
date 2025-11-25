@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
@@ -27,11 +27,11 @@ class APICommandHandler:
     command: str
     signature: inspect.Signature
     type_hints: dict[str, Any]
-    target: Callable[..., Coroutine[Any, Any, Any]]
+    target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
 
     @classmethod
     def parse(
-        cls, command: str, func: Callable[..., Coroutine[Any, Any, Any]]
+        cls, command: str, func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     ) -> APICommandHandler:
         """Parse APICommandHandler by providing a function."""
         type_hints = get_type_hints(func)

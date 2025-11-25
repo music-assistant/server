@@ -80,7 +80,7 @@ jobs:
       base_image_version: ${{ steps.validate.outputs.base_image_version }}
       branch: ${{ needs.preflight-checks.outputs.branch }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight-checks.outputs.branch }}
           fetch-depth: 0
@@ -176,7 +176,7 @@ jobs:
       release_id: ${{ steps.create_release.outputs.id }}
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.validate-and-build.outputs.branch }}
           fetch-depth: 0
@@ -301,7 +301,7 @@ jobs:
       - validate-and-build
       - create-release
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.validate-and-build.outputs.branch }}
 
@@ -399,7 +399,7 @@ jobs:
           esac
 
       - name: Checkout add-on repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: music-assistant/home-assistant-addon
           token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
