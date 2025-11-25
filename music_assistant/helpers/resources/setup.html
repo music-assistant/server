@@ -4,59 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant - Initial Setup</title>
+    <link rel="stylesheet" href="/resources/common.css">
     <style>
-        :root {
-            --fg: #000000;
-            --background: #f5f5f5;
-            --overlay: #e7e7e7;
-            --panel: #ffffff;
-            --default: #ffffff;
-            --primary: #03a9f4;
-            --text-secondary: rgba(0, 0, 0, 0.6);
-            --text-tertiary: rgba(0, 0, 0, 0.4);
-            --border: rgba(0, 0, 0, 0.1);
-            --input-bg: rgba(0, 0, 0, 0.03);
-            --input-focus-bg: rgba(3, 169, 244, 0.05);
-            --primary-glow: rgba(3, 169, 244, 0.15);
-            --error-bg: rgba(244, 67, 54, 0.08);
-            --error-border: rgba(244, 67, 54, 0.2);
-            --error-text: #d32f2f;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --fg: #ffffff;
-                --background: #181818;
-                --overlay: #181818;
-                --panel: #232323;
-                --default: #000000;
-                --text-secondary: rgba(255, 255, 255, 0.7);
-                --text-tertiary: rgba(255, 255, 255, 0.4);
-                --border: rgba(255, 255, 255, 0.08);
-                --input-bg: rgba(255, 255, 255, 0.05);
-                --input-focus-bg: rgba(3, 169, 244, 0.08);
-                --primary-glow: rgba(3, 169, 244, 0.25);
-                --error-bg: rgba(244, 67, 54, 0.1);
-                --error-border: rgba(244, 67, 54, 0.25);
-                --error-text: #ff6b6b;
-            }
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: var(--background);
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
-            color: var(--fg);
         }
 
         .setup-container {
@@ -121,69 +76,10 @@
             line-height: 1.6;
         }
 
-        .form-group {
-            margin-bottom: 22px;
-        }
-
-        label {
-            display: block;
-            color: var(--fg);
-            font-size: 13px;
-            font-weight: 500;
-            margin-bottom: 8px;
-            letter-spacing: 0.2px;
-        }
-
-        input[type="text"],
-        input[type="password"] {
-            width: 100%;
-            padding: 14px 16px;
-            background: var(--input-bg);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-size: 15px;
-            color: var(--fg);
-            transition: all 0.2s ease;
-        }
-
-        input[type="text"]::placeholder,
-        input[type="password"]::placeholder {
-            color: var(--text-tertiary);
-        }
-
-        input[type="text"]:focus,
-        input[type="password"]:focus {
-            outline: none;
-            border-color: var(--primary);
-            background: var(--input-focus-bg);
-            box-shadow: 0 0 0 3px var(--primary-glow);
-        }
-
-        input[type="text"]:disabled {
-            background: var(--overlay);
-            color: var(--text-tertiary);
-            cursor: not-allowed;
-        }
-
         .password-requirements {
             margin-top: 8px;
             font-size: 12px;
             color: var(--text-tertiary);
-        }
-
-        .error-message {
-            background: var(--error-bg);
-            color: var(--error-text);
-            padding: 14px 16px;
-            border-radius: 10px;
-            margin-bottom: 22px;
-            font-size: 13px;
-            display: none;
-            border: 1px solid var(--error-border);
-        }
-
-        .error-message.show {
-            display: block;
         }
 
         .submit-btn {

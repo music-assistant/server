@@ -43,9 +43,8 @@ from music_assistant.models.core_controller import CoreController
 
 from .api_docs import (
     generate_commands_json,
-    generate_commands_reference,
     generate_openapi_spec,
-    generate_schemas_reference,
+    generate_schemas_json,
 )
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
@@ -176,6 +175,10 @@ class WebserverController(CoreController):
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)
         routes.append(("GET", "/logo.png", handler))
+        # add common CSS for HTML resources
+        common_css_path = str(RESOURCES_DIR.joinpath("common.css"))
+        handler = partial(self._server.serve_static, common_css_path)
+        routes.append(("GET", "/resources/common.css", handler))
         # add info
         routes.append(("GET", "/info", self._handle_server_info))
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
@@ -197,6 +200,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/api-docs/commands.json", self._handle_commands_json))
         routes.append(("GET", "/api-docs/schemas", self._handle_schemas_reference))
         routes.append(("GET", "/api-docs/schemas/", self._handle_schemas_reference))
+        routes.append(("GET", "/api-docs/schemas.json", self._handle_schemas_json))
         routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
         routes.append(("GET", "/api-docs/swagger", self._handle_swagger_ui))
         routes.append(("GET", "/api-docs/swagger/", self._handle_swagger_ui))
@@ -424,20 +428,25 @@ class WebserverController(CoreController):
         )
         return web.json_response(spec)
 
-    async def _handle_commands_reference(self, request: web.Request) -> web.Response:
-        """Handle request for commands reference page (generated on-the-fly)."""
-        html = generate_commands_reference(self.mass.command_handlers, server_url=self.base_url)
-        return web.Response(text=html, content_type="text/html")
+    async def _handle_commands_reference(self, request: web.Request) -> web.FileResponse:
+        """Handle request for commands reference page."""
+        commands_html_path = str(RESOURCES_DIR.joinpath("commands_reference.html"))
+        return await self._server.serve_static(commands_html_path, request)
 
     async def _handle_commands_json(self, request: web.Request) -> web.Response:
         """Handle request for commands JSON data (generated on-the-fly)."""
         commands_data = generate_commands_json(self.mass.command_handlers)
         return web.json_response(commands_data)
 
-    async def _handle_schemas_reference(self, request: web.Request) -> web.Response:
-        """Handle request for schemas reference page (generated on-the-fly)."""
-        html = generate_schemas_reference(self.mass.command_handlers)
-        return web.Response(text=html, content_type="text/html")
+    async def _handle_schemas_reference(self, request: web.Request) -> web.FileResponse:
+        """Handle request for schemas reference page."""
+        schemas_html_path = str(RESOURCES_DIR.joinpath("schemas_reference.html"))
+        return await self._server.serve_static(schemas_html_path, request)
+
+    async def _handle_schemas_json(self, request: web.Request) -> web.Response:
+        """Handle request for schemas JSON data (generated on-the-fly)."""
+        schemas_data = generate_schemas_json(self.mass.command_handlers)
+        return web.json_response(schemas_data)
 
     async def _handle_swagger_ui(self, request: web.Request) -> web.FileResponse:
         """Handle request for Swagger UI."""

@@ -4,70 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant API Documentation</title>
+    <link rel="stylesheet" href="/resources/common.css">
     <style>
-        :root {
-            --fg: #000000;
-            --background: #f5f5f5;
-            --overlay: #e7e7e7;
-            --panel: #ffffff;
-            --default: #ffffff;
-            --primary: #03a9f4;
-            --text-secondary: rgba(0, 0, 0, 0.6);
-            --text-tertiary: rgba(0, 0, 0, 0.4);
-            --border: rgba(0, 0, 0, 0.1);
-            --input-bg: rgba(0, 0, 0, 0.03);
-            --input-focus-bg: rgba(3, 169, 244, 0.05);
-            --primary-glow: rgba(3, 169, 244, 0.15);
-            --code-bg: #2d2d2d;
-            --code-fg: #f8f8f2;
-            --code-comment: #75715e;
-            --code-string: #e6db74;
-            --code-keyword: #66d9ef;
-            --info-bg: rgba(3, 169, 244, 0.08);
-            --info-border: rgba(3, 169, 244, 0.3);
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --fg: #ffffff;
-                --background: #181818;
-                --overlay: #181818;
-                --panel: #232323;
-                --default: #000000;
-                --text-secondary: rgba(255, 255, 255, 0.7);
-                --text-tertiary: rgba(255, 255, 255, 0.4);
-                --border: rgba(255, 255, 255, 0.08);
-                --input-bg: rgba(255, 255, 255, 0.05);
-                --input-focus-bg: rgba(3, 169, 244, 0.08);
-                --primary-glow: rgba(3, 169, 244, 0.25);
-                --code-bg: #1a1a1a;
-                --info-bg: rgba(3, 169, 244, 0.12);
-                --info-border: rgba(3, 169, 244, 0.4);
-            }
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: var(--background);
             min-height: 100vh;
             padding: 40px 20px;
-            color: var(--fg);
-            line-height: 1.6;
         }
 
         .container {
             max-width: 1100px;
             margin: 0 auto;
-            background: var(--panel);
-            border-radius: 16px;
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
-                        0 0 0 1px var(--border);
             overflow: hidden;
         }
 
@@ -75,16 +21,6 @@
             text-align: center;
             padding: 48px 40px;
             border-bottom: 1px solid var(--border);
-        }
-
-        .logo {
-            margin-bottom: 24px;
-        }
-
-        .logo img {
-            width: 72px;
-            height: 72px;
-            object-fit: contain;
         }
 
         .header h1 {
@@ -187,15 +123,6 @@
         }
 
         .code-block {
-            background: var(--code-bg);
-            color: var(--code-fg);
-            padding: 24px;
-            border-radius: 10px;
-            overflow-x: auto;
-            margin: 20px 0;
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.6;
             white-space: pre-wrap;
         }
 
@@ -205,6 +132,136 @@
 
         .code-block .string {
             color: var(--code-string);
+        }
+
+        .code-block .keyword {
+            color: var(--code-keyword);
+        }
+
+        .highlight {
+            background: var(--input-focus-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            color: var(--primary);
+        }
+
+        code {
+            background: var(--input-bg);
+            color: var(--primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .info-box {
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        .info-box strong {
+            color: var(--primary);
+        }
+
+        .events-list {
+            background: var(--input-bg);
+            padding: 24px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .events-list h4 {
+            color: var(--fg);
+            font-weight: 600;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .events-list ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .events-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .events-list li:last-child {
+            border-bottom: none;
+        }
+
+        .events-list code {
+            background: var(--primary);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .client-links {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .client-link {
+            background: var(--input-bg);
+            color: var(--fg);
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .client-link:hover {
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        .footer {
+            background: var(--input-bg);
+            padding: 24px 40px;
+            text-align: center;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        ul {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        ul li {
+            color: var(--text-secondary);
+            margin-bottom: 8px;
         }
 
         .code-block .keyword {
