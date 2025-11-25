@@ -71,7 +71,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
 }
 
-FEATURES = {"catchup_segments": False, "check_blank_image": False}
+FEATURES = {"now_playing": False, "catchup_segments": False, "check_blank_image": False}
 
 type _StreamTypes = Literal["hls", "dash"]
 
@@ -306,7 +306,10 @@ class BBCSoundsProvider(MusicProvider):
                 raise self._stream_error(item_id, media_type)
 
             # Start a background task to keep these details updated
-            self.current_task = self.mass.create_task(self._watch_stream_details(stream_details))
+            if FEATURES["now_playing"]:
+                self.current_task = self.mass.create_task(
+                    self._watch_stream_details(stream_details)
+                )
             return stream_details
 
     async def _check_for_segments(self, vpid: str, stream_details: StreamDetails) -> None:
@@ -358,9 +361,7 @@ class BBCSoundsProvider(MusicProvider):
 
             if now_playing and stream_details.stream_metadata:
                 self.logger.debug(f"Now playing for {station_id}: {now_playing}")
-                self.logger.info(
-                    f"Seconds streamed for {station_id}: {stream_details.seconds_streamed}"
-                )
+
                 # removed check temporarily as images not working
                 if not FEATURES["check_blank_image"] or (
                     now_playing.image_url
@@ -762,7 +763,7 @@ class BBCSoundsProvider(MusicProvider):
         station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
         if station:
             ma_radio = await self.adaptor.new_object(station, force_type=Radio)
-            if ma_radio and isinstance(ma_radio, Radio):  # and station.stream :
+            if ma_radio and isinstance(ma_radio, Radio):
                 return ma_radio
         else:
             raise MusicAssistantError(f"No station found: {prov_radio_id}")
@@ -797,5 +798,5 @@ class BBCSoundsProvider(MusicProvider):
                 )
                 self.logger.info(f"Updated play status: {success}")
         # Cancel now playing task
-        if not is_playing and self.current_task:
+        if FEATURES["now_playing"] and not is_playing and self.current_task:
             self.current_task.cancel()

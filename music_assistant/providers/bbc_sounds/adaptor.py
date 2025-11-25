@@ -229,7 +229,10 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Station | LiveStation) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
+        from music_assistant.providers.bbc_sounds import (  # noqa: PLC0415
+            FEATURES,
+            _Constants,
+        )
 
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
@@ -240,11 +243,15 @@ class StationConverter(BaseConverter):
         programme_name = f"{show_time} • {show_title}"
         stream_details = None
         if station and source_obj.stream:
-            stream_metadata = StreamMetadata(
-                title=programme_name,
-            )
-            if station.image is not None:
-                stream_metadata.image_url = station.image.path
+            if FEATURES["now_playing"]:
+                stream_metadata = StreamMetadata(
+                    title=programme_name,
+                )
+
+                if station.image is not None:
+                    stream_metadata.image_url = station.image.path
+            else:
+                stream_metadata = None
 
             stream_details = StreamDetails(
                 stream_metadata=stream_metadata,
