@@ -628,9 +628,19 @@ class PocketCastsProvider(MusicProvider):
         # Duration in seconds
         duration = ep_data.get("duration", 0)
 
-        # Resume position - playedUpTo is in seconds
+        # Determine played status from playingStatus field
+        playing_status = ep_data.get("playingStatus", STATUS_NOT_PLAYED)
         played_up_to = ep_data.get("playedUpTo", 0)
-        resume_position_ms = int(played_up_to * 1000) if played_up_to else None
+
+        if playing_status == STATUS_COMPLETED:
+            fully_played = True
+            resume_position_ms = 0
+        elif playing_status == STATUS_IN_PROGRESS and played_up_to:
+            fully_played = False
+            resume_position_ms = int(played_up_to * 1000)
+        else:
+            fully_played = False
+            resume_position_ms = 0
 
         # Build images from podcast UUID
         images: UniqueList[MediaItemImage] = UniqueList()
@@ -678,6 +688,7 @@ class PocketCastsProvider(MusicProvider):
             podcast=podcast_mapping,
             provider_mappings={provider_mapping},
             metadata=metadata,
+            fully_played=fully_played,
             resume_position_ms=resume_position_ms,
         )
 
