@@ -89,9 +89,9 @@ class NicovideoStreamConverter(NicovideoConverterBase):
             media_type=MediaType.TRACK,
             # CUSTOM stream type enables optimized seeking for nicovideo's fMP4-based HLS:
             # 1. Generate dynamic playlist starting near target position (coarse seek)
-            # 2. Use input-side -ss within segment boundary (fine-tune)
-            # Note: Input-side -ss can't cross segment boundaries; output-side could but
-            # would require full decode of all prior segments.
+            # 2. Use input-side -ss for precise positioning (fine-tune)
+            # Without playlist reconstruction, input-side -ss on HLS results in empty output
+            # because FFmpeg cannot identify target segments before parsing the playlist.
             stream_type=StreamType.CUSTOM,
             duration=watch_data.video.duration,
             stream_metadata=StreamMetadata(
