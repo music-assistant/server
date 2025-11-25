@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -231,35 +231,16 @@ class AuthenticationManager:
         self.logger.info(
             "Migrating auth database from version %s to %s", from_version, DB_SCHEMA_VERSION
         )
+        # Migration to version 2: Recreate tables due to password salt breaking change
+        if from_version < 2:
+            # Drop all auth-related tables
+            await self.database.execute("DROP TABLE IF EXISTS auth_tokens")
+            await self.database.execute("DROP TABLE IF EXISTS user_auth_providers")
+            await self.database.execute("DROP TABLE IF EXISTS users")
+            await self.database.commit()
 
-        # Migration to version 1: Add preferences column to users table
-        if from_version < 1:
-            self.logger.info("Adding preferences column to users table")
-            try:
-                # Add preferences column with default empty JSON object
-                await self.database.execute(
-                    "ALTER TABLE users ADD COLUMN preferences TEXT DEFAULT '{}'"
-                )
-                await self.database.commit()
-            except Exception as err:
-                # Column might already exist from a previous migration attempt
-                self.logger.debug("Could not add preferences column: %s", err)
-                # Check if column exists by trying to query it
-                try:
-                    await self.database.execute("SELECT preferences FROM users LIMIT 1")
-                except Exception:
-                    # Column doesn't exist - this is a real error
-                    self.logger.error("Failed to add preferences column and column doesn't exist!")
-                    raise
-
-            # Set default value for existing rows (safe to run even if column existed)
-            try:
-                await self.database.execute(
-                    "UPDATE users SET preferences = '{}' WHERE preferences IS NULL"
-                )
-                await self.database.commit()
-            except Exception as err:
-                self.logger.warning("Could not update preferences for existing users: %s", err)
+            # Recreate tables with current schema
+            await self._create_database_tables()
 
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
         """

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music Assistant - Initial Setup</title>
+    <title>Music Assistant - Setup</title>
     <link rel="stylesheet" href="/resources/common.css">
     <style>
         body {
@@ -21,7 +21,7 @@
                         0 0 0 1px var(--border);
             padding: 48px 40px;
             width: 100%;
-            max-width: 420px;
+            max-width: 520px;
         }
 
         .logo {
@@ -55,12 +55,81 @@
             font-weight: 400;
         }
 
+        /* Step indicator */
+        .steps-indicator {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 32px;
+            gap: 12px;
+        }
+
+        .step-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--border);
+            transition: all 0.3s ease;
+        }
+
+        .step-dot.active {
+            background: var(--primary);
+            width: 32px;
+            border-radius: 5px;
+        }
+
+        .step-dot.completed {
+            background: var(--primary);
+            opacity: 0.5;
+        }
+
+        /* Step content */
+        .step {
+            display: none;
+        }
+
+        .step.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .step-header {
+            margin-bottom: 24px;
+        }
+
+        .step-header h2 {
+            color: var(--fg);
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .step-header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
         .info-box {
             background: var(--input-focus-bg);
             border-left: 3px solid var(--primary);
             padding: 16px 18px;
-            margin-bottom: 28px;
+            margin-bottom: 24px;
             border-radius: 0 8px 8px 0;
+        }
+
+        .info-box.ingress {
+            border-left-color: #4CAF50;
         }
 
         .info-box h3 {
@@ -70,10 +139,27 @@
             margin-bottom: 6px;
         }
 
+        .info-box.ingress h3 {
+            color: #4CAF50;
+        }
+
         .info-box p {
             color: var(--text-secondary);
             font-size: 13px;
             line-height: 1.6;
+            margin: 0;
+        }
+
+        .info-box p + p {
+            margin-top: 8px;
+        }
+
+        .info-box ul {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.8;
         }
 
         .password-requirements {
@@ -82,11 +168,16 @@
             color: var(--text-tertiary);
         }
 
-        .submit-btn {
-            width: 100%;
+        /* Buttons */
+        .step-actions {
+            margin-top: 24px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            flex: 1;
             padding: 15px;
-            background: var(--primary);
-            color: white;
             border: none;
             border-radius: 10px;
             font-size: 15px;
@@ -94,21 +185,25 @@
             cursor: pointer;
             transition: all 0.2s ease;
             letter-spacing: 0.3px;
-            margin-top: 8px;
         }
 
-        .submit-btn:hover {
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
             filter: brightness(1.1);
             box-shadow: 0 8px 24px var(--primary-glow);
             transform: translateY(-1px);
         }
 
-        .submit-btn:active {
+        .btn-primary:active {
             transform: translateY(0);
             filter: brightness(0.95);
         }
 
-        .submit-btn:disabled {
+        .btn-primary:disabled {
             opacity: 0.5;
             cursor: not-allowed;
             transform: none;
@@ -116,6 +211,49 @@
             filter: none;
         }
 
+        .btn-secondary {
+            background: var(--panel-secondary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--input-bg);
+            color: var(--fg);
+        }
+
+        /* Completion step */
+        .completion-icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 20px;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+        }
+
+        .completion-message {
+            text-align: center;
+        }
+
+        .completion-message h2 {
+            color: var(--fg);
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .completion-message p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        /* Loading state */
         .loading {
             display: none;
             text-align: center;
@@ -155,66 +293,121 @@
                 <img src="/logo.png" alt="Music Assistant">
             </div>
             <h1>Music Assistant</h1>
-            <p>Initial Setup</p>
+            <p id="logoSubtitle">Setup Wizard</p>
         </div>
 
-        <div class="info-box">
-            <h3>Welcome</h3>
-            <p>Create your administrator account to get started. This account will have full access to manage Music Assistant.</p>
+        <!-- Step indicator -->
+        <div class="steps-indicator">
+            <div class="step-dot active" data-step="0"></div>
+            <div class="step-dot" data-step="1"></div>
+            <div class="step-dot" data-step="2"></div>
         </div>
 
-        <div class="error-message" id="errorMessage"></div>
-
-        <form id="setupForm">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input
-                    type="text"
-                    id="username"
-                    name="username"
-                    required
-                    autocomplete="username"
-                    placeholder="Enter your username"
-                    minlength="3"
-                >
+        <!-- Step 0: Welcome -->
+        <div class="step active" data-step="0">
+            <div class="step-header">
+                <h2>Welcome to Music Assistant!</h2>
+                <p>Let's get you started with your personal music server. This setup wizard will guide you through the initial configuration.</p>
             </div>
 
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input
-                    type="password"
-                    id="password"
-                    name="password"
-                    required
-                    autocomplete="new-password"
-                    placeholder="Enter a secure password"
-                    minlength="8"
-                >
-                <div class="password-requirements">
-                    Minimum 8 characters recommended
+            <div class="info-box">
+                <h3>What you'll set up:</h3>
+                <p><strong>Step 1:</strong> Create your administrator account</p>
+                <p><strong>Step 2:</strong> Complete the setup process</p>
+            </div>
+
+            <div class="step-actions">
+                <button type="button" class="btn btn-primary" onclick="nextStep()">Get Started</button>
+            </div>
+        </div>
+
+        <!-- Step 1: Create Admin Account -->
+        <div class="step" data-step="1">
+            <div class="step-header">
+                <h2>Create Administrator Account</h2>
+                <p>Your admin credentials will be used to access the Music Assistant web interface and mobile apps.</p>
+            </div>
+
+            <div class="info-box ingress" id="ingressAccountInfo" style="display: none;">
+                <h3>About your login credentials</h3>
+                <p>While Home Assistant handles authentication for Ingress access, you'll need these credentials for:</p>
+                <ul>
+                    <li>Direct access to Music Assistant (outside Home Assistant)</li>
+                    <li>Music Assistant mobile apps</li>
+                    <li>API access and third-party integrations</li>
+                </ul>
+            </div>
+
+            <div class="error-message" id="errorMessage"></div>
+
+            <form id="setupForm">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input
+                        type="text"
+                        id="username"
+                        name="username"
+                        required
+                        autocomplete="username"
+                        placeholder="Enter your username"
+                        minlength="3"
+                    >
                 </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        required
+                        autocomplete="new-password"
+                        placeholder="Enter a secure password"
+                        minlength="8"
+                    >
+                    <div class="password-requirements">
+                        Minimum 8 characters recommended
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="confirmPassword">Confirm Password</label>
+                    <input
+                        type="password"
+                        id="confirmPassword"
+                        name="confirmPassword"
+                        required
+                        autocomplete="new-password"
+                        placeholder="Re-enter your password"
+                    >
+                </div>
+
+                <div class="step-actions">
+                    <button type="button" class="btn btn-secondary" onclick="previousStep()">Back</button>
+                    <button type="submit" class="btn btn-primary" id="createAccountBtn">Create Account</button>
+                </div>
+            </form>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Creating your account...</p>
+            </div>
+        </div>
+
+        <!-- Step 2: Completion -->
+        <div class="step" data-step="2">
+            <div class="completion-icon">
+                ✓
+            </div>
+            <div class="completion-message">
+                <h2>Setup Complete!</h2>
+                <p>Your Music Assistant server has been successfully configured and is ready to use.</p>
+                <p>You can now start adding music providers and connecting your speakers to begin enjoying your music library.</p>
             </div>
 
-            <div class="form-group">
-                <label for="confirmPassword">Confirm Password</label>
-                <input
-                    type="password"
-                    id="confirmPassword"
-                    name="confirmPassword"
-                    required
-                    autocomplete="new-password"
-                    placeholder="Re-enter your password"
-                >
+            <div class="step-actions">
+                <button type="button" class="btn btn-primary" onclick="completeSetup()">Continue to Music Assistant</button>
             </div>
-
-            <button type="submit" class="submit-btn" id="submitBtn">
-                Create Admin Account
-            </button>
-        </form>
-
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>Setting up your account...</p>
         </div>
     </div>
 
@@ -224,32 +417,74 @@
         const deviceName = urlParams.get('device_name');
         const returnUrl = urlParams.get('return_url');
 
-        const form = document.getElementById('setupForm');
-        const errorMessage = document.getElementById('errorMessage');
-        const submitBtn = document.getElementById('submitBtn');
-        const loading = document.getElementById('loading');
+        let currentStep = 0;
+        let authToken = null;
 
         // Check if this is an Ingress setup (variables injected by server)
         const isIngressSetup = typeof ingressUsername !== 'undefined' && ingressUsername;
 
-        // Configure UI for Ingress setup
+        // Initialize UI
         if (isIngressSetup) {
+            // Show ingress-specific information
+            document.getElementById('ingressAccountInfo').style.display = 'block';
+
             // Pre-fill and disable username field (provided by Home Assistant)
             const usernameField = document.getElementById('username');
             usernameField.value = ingressUsername;
             usernameField.disabled = true;
         }
 
+        function updateStepIndicator() {
+            document.querySelectorAll('.step-dot').forEach((dot, index) => {
+                dot.classList.remove('active', 'completed');
+                if (index === currentStep) {
+                    dot.classList.add('active');
+                } else if (index < currentStep) {
+                    dot.classList.add('completed');
+                }
+            });
+        }
+
+        function showStep(stepNumber) {
+            document.querySelectorAll('.step').forEach(step => {
+                step.classList.remove('active');
+            });
+            document.querySelector(`.step[data-step="${stepNumber}"]`).classList.add('active');
+            currentStep = stepNumber;
+            updateStepIndicator();
+
+            // Update logo subtitle
+            const subtitles = ['Setup Wizard', 'Create Account', 'All Set!'];
+            document.getElementById('logoSubtitle').textContent = subtitles[stepNumber];
+        }
+
+        function nextStep() {
+            if (currentStep < 2) {
+                showStep(currentStep + 1);
+            }
+        }
+
+        function previousStep() {
+            if (currentStep > 0) {
+                showStep(currentStep - 1);
+            }
+        }
+
         function showError(message) {
+            const errorMessage = document.getElementById('errorMessage');
             errorMessage.textContent = message;
             errorMessage.classList.add('show');
         }
 
         function hideError() {
+            const errorMessage = document.getElementById('errorMessage');
             errorMessage.classList.remove('show');
         }
 
         function setLoading(isLoading) {
+            const form = document.getElementById('setupForm');
+            const loading = document.getElementById('loading');
+
             if (isLoading) {
                 form.style.display = 'none';
                 loading.classList.add('show');
@@ -259,7 +494,8 @@
             }
         }
 
-        form.addEventListener('submit', async (e) => {
+        // Handle form submission
+        document.getElementById('setupForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             hideError();
 
@@ -313,16 +549,12 @@
                 const data = await response.json();
 
                 if (response.ok && data.success) {
-                    // Redirect to return_url with token if provided
-                    if (returnUrl) {
-                        const targetUrl = new URL(returnUrl, window.location.origin);
-                        targetUrl.searchParams.set('token', data.token);
-                        window.location.href = targetUrl.toString();
-                    } else {
-                        // Store the token and redirect to main page
-                        localStorage.setItem('auth_token', data.token);
-                        window.location.href = '/';
-                    }
+                    // Store token for later
+                    authToken = data.token;
+
+                    // Move to completion step
+                    setLoading(false);
+                    showStep(2);
                 } else {
                     setLoading(false);
                     showError(data.error || 'Setup failed. Please try again.');
@@ -333,6 +565,19 @@
                 console.error('Setup error:', error);
             }
         });
+
+        function completeSetup() {
+            // Redirect to return_url with token if provided
+            if (returnUrl) {
+                const targetUrl = new URL(returnUrl, window.location.origin);
+                targetUrl.searchParams.set('token', authToken);
+                window.location.href = targetUrl.toString();
+            } else {
+                // Store the token and redirect to main page
+                localStorage.setItem('auth_token', authToken);
+                window.location.href = '/';
+            }
+        }
 
         // Clear error on input
         document.querySelectorAll('input').forEach(input => {
