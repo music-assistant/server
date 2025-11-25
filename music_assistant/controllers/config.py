@@ -192,7 +192,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers", required_role="admin")
+    @api_command("config/providers")
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -213,7 +213,7 @@ class ConfigController:
             and prov_conf["domain"] in prov_entries
         ]
 
-    @api_command("config/providers/get", required_role="admin")
+    @api_command("config/providers/get")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -262,7 +262,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/providers/get_value", required_role="admin")
+    @api_command("config/providers/get_value")
     async def get_provider_config_value(
         self,
         instance_id: str,
@@ -300,7 +300,7 @@ class ConfigController:
         self._value_cache[cache_key] = val
         return val
 
-    @api_command("config/providers/get_entries", required_role="admin")
+    @api_command("config/providers/get_entries")
     async def get_provider_config_entries(  # noqa: PLR0915
         self,
         provider_domain: str,
@@ -467,7 +467,7 @@ class ConfigController:
             return
         self.remove(conf_key)
 
-    @api_command("config/players", required_role="admin")
+    @api_command("config/players")
     async def get_player_configs(
         self, provider: str | None = None, include_values: bool = False
     ) -> list[PlayerConfig]:
@@ -486,7 +486,7 @@ class ConfigController:
             and (provider in (None, raw_conf["provider"]))
         ]
 
-    @api_command("config/players/get", required_role="admin")
+    @api_command("config/players/get")
     async def get_player_config(
         self,
         player_id: str,
@@ -513,7 +513,7 @@ class ConfigController:
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
-    @api_command("config/players/get_entries", required_role="admin")
+    @api_command("config/players/get_entries")
     async def get_player_config_entries(
         self,
         player_id: str,
@@ -580,7 +580,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/players/get_value", required_role="admin")
+    @api_command("config/players/get_value")
     async def get_player_config_value(
         self,
         player_id: str,
