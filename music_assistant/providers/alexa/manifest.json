@@ -5,6 +5,6 @@
   "name": "Alexa",
   "description": "Stream to Amazon Alexa (Echo) devices.",
   "codeowners": ["@alams154"],
-  "requirements": ["alexapy==1.29.9"],
+  "requirements": ["alexapy==1.29.10"],
   "documentation": "https://www.music-assistant.io/player-support/alexa/"
 }
