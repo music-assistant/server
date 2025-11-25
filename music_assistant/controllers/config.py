@@ -712,7 +712,7 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
-    @api_command("config/players/dsp/get", required_role="admin")
+    @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
         Return the DSP Configuration for a player.
@@ -792,7 +792,7 @@ class ConfigController:
         )
         return config
 
-    @api_command("config/dsp_presets/get", required_role="admin")
+    @api_command("config/dsp_presets/get")
     async def get_dsp_presets(self) -> list[DSPConfigPreset]:
         """Return all user-defined DSP presets."""
         raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
@@ -930,7 +930,7 @@ class ConfigController:
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
-    @api_command("config/core/get", required_role="admin")
+    @api_command("config/core/get")
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
         raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
@@ -967,7 +967,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/core/get_value", required_role="admin")
+    @api_command("config/core/get_value")
     async def get_core_config_value(
         self,
         domain: str,
@@ -999,7 +999,7 @@ class ConfigController:
             else conf.values[key].default_value
         )
 
-    @api_command("config/core/get_entries", required_role="admin")
+    @api_command("config/core/get_entries")
     async def get_core_config_entries(
         self,
         domain: str,
