@@ -192,7 +192,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers")
+    @api_command("config/providers", required_role="admin")
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -213,7 +213,7 @@ class ConfigController:
             and prov_conf["domain"] in prov_entries
         ]
 
-    @api_command("config/providers/get")
+    @api_command("config/providers/get", required_role="admin")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -262,7 +262,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/providers/get_value")
+    @api_command("config/providers/get_value", required_role="admin")
     async def get_provider_config_value(
         self,
         instance_id: str,
@@ -300,7 +300,7 @@ class ConfigController:
         self._value_cache[cache_key] = val
         return val
 
-    @api_command("config/providers/get_entries")
+    @api_command("config/providers/get_entries", required_role="admin")
     async def get_provider_config_entries(  # noqa: PLR0915
         self,
         provider_domain: str,
@@ -407,7 +407,7 @@ class ConfigController:
             ),
         ]
 
-    @api_command("config/providers/save")
+    @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -431,7 +431,7 @@ class ConfigController:
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
-    @api_command("config/providers/remove")
+    @api_command("config/providers/remove", required_role="admin")
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -467,7 +467,7 @@ class ConfigController:
             return
         self.remove(conf_key)
 
-    @api_command("config/players")
+    @api_command("config/players", required_role="admin")
     async def get_player_configs(
         self, provider: str | None = None, include_values: bool = False
     ) -> list[PlayerConfig]:
@@ -486,7 +486,7 @@ class ConfigController:
             and (provider in (None, raw_conf["provider"]))
         ]
 
-    @api_command("config/players/get")
+    @api_command("config/players/get", required_role="admin")
     async def get_player_config(
         self,
         player_id: str,
@@ -513,7 +513,7 @@ class ConfigController:
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
-    @api_command("config/players/get_entries")
+    @api_command("config/players/get_entries", required_role="admin")
     async def get_player_config_entries(
         self,
         player_id: str,
@@ -580,7 +580,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/players/get_value")
+    @api_command("config/players/get_value", required_role="admin")
     async def get_player_config_value(
         self,
         player_id: str,
@@ -659,7 +659,7 @@ class ConfigController:
             }
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
-    @api_command("config/players/save")
+    @api_command("config/players/save", required_role="admin")
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
@@ -683,7 +683,7 @@ class ConfigController:
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
-    @api_command("config/players/remove")
+    @api_command("config/players/remove", required_role="admin")
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -712,7 +712,7 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
-    @api_command("config/players/dsp/get")
+    @api_command("config/players/dsp/get", required_role="admin")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
         Return the DSP Configuration for a player.
@@ -771,7 +771,7 @@ class ConfigController:
 
             return dsp_config
 
-    @api_command("config/players/dsp/save")
+    @api_command("config/players/dsp/save", required_role="admin")
     async def save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
         """
         Save/update DSPConfig for a player.
@@ -792,13 +792,13 @@ class ConfigController:
         )
         return config
 
-    @api_command("config/dsp_presets/get")
+    @api_command("config/dsp_presets/get", required_role="admin")
     async def get_dsp_presets(self) -> list[DSPConfigPreset]:
         """Return all user-defined DSP presets."""
         raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
         return [DSPConfigPreset.from_dict(preset) for preset in raw_presets.values()]
 
-    @api_command("config/dsp_presets/save")
+    @api_command("config/dsp_presets/save", required_role="admin")
     async def save_dsp_presets(self, preset: DSPConfigPreset) -> DSPConfigPreset:
         """
         Save/update a user-defined DSP presets.
@@ -823,7 +823,7 @@ class ConfigController:
 
         return preset
 
-    @api_command("config/dsp_presets/remove")
+    @api_command("config/dsp_presets/remove", required_role="admin")
     async def remove_dsp_preset(self, preset_id: str) -> None:
         """Remove a user-defined DSP preset."""
         self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
@@ -914,7 +914,7 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set(conf_key, default_config.to_raw())
 
-    @api_command("config/core")
+    @api_command("config/core", required_role="admin")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -930,7 +930,7 @@ class ConfigController:
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
-    @api_command("config/core/get")
+    @api_command("config/core/get", required_role="admin")
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
         raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
@@ -967,7 +967,7 @@ class ConfigController:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/core/get_value")
+    @api_command("config/core/get_value", required_role="admin")
     async def get_core_config_value(
         self,
         domain: str,
@@ -999,7 +999,7 @@ class ConfigController:
             else conf.values[key].default_value
         )
 
-    @api_command("config/core/get_entries")
+    @api_command("config/core/get_entries", required_role="admin")
     async def get_core_config_entries(
         self,
         domain: str,
@@ -1021,7 +1021,7 @@ class ConfigController:
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
 
-    @api_command("config/core/save")
+    @api_command("config/core/save", required_role="admin")
     async def save_core_config(
         self,
         domain: str,
@@ -1334,7 +1334,7 @@ class ConfigController:
             await _file.write(await async_json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
-    @api_command("config/providers/reload")
+    @api_command("config/providers/reload", required_role="admin")
     async def _reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         try:
