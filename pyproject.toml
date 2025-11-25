@@ -130,7 +130,6 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/media/base.py*$',
   '^music_assistant/controllers/media/tracks.py*$',
   '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
