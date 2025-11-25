@@ -20,7 +20,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
 }

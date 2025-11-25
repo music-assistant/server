@@ -15,6 +15,7 @@ from .sonic_provider import (
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
     CONF_OVERRIDE_OFFSET,
+    CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
     CONF_RECO_FAVES,
     CONF_RECO_SIZE,
@@ -43,6 +44,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.FAVORITE_ALBUMS_EDIT,
+    ProviderFeature.FAVORITE_ARTISTS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
 }
 
 
@@ -153,5 +157,16 @@ async def get_config_entries(
             required=True,
             description="How many recommendations from each enabled type should be included.",
             default_value=10,
+        ),
+        ConfigEntry(
+            key=CONF_PAGE_SIZE,
+            type=ConfigEntryType.INTEGER,
+            label="Number of items included per server request.",
+            required=True,
+            description="When enumerating items from the server, how many should be in each "
+            "request. Smaller will require more requests but is better for low bandwidth "
+            "connections. The Open Subsonic spec says the max value for this is 500 items.",
+            default_value=200,
+            category="advanced",
         ),
     )

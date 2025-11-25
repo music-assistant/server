@@ -6,6 +6,7 @@ import functools
 import itertools
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -1430,17 +1431,27 @@ for more details.
         __updated_items = 0
 
         known_ids = self._get_all_known_item_ids()
+        abs_ids_with_progress = set()
 
         for progress in progresses:
+            # save progress ids for later
+            ma_item_id = (
+                progress.library_item_id
+                if progress.episode_id is None
+                else f"{progress.library_item_id} {progress.episode_id}"
+            )
+            abs_ids_with_progress.add(ma_item_id)
+
             # Guard. Also makes sure, that we don't write to db again if no state change happened.
             # This is achieved by adding a Helper Progress in the update playlog functions, which
             # then has the most recent timestamp. If a subsequent progress sent by abs has an older
             # timestamp, we do not update again.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
-            if progress.current_time is not None and not progress.current_time >= 30:
-                # same as mass default, only > 30s
-                continue
+            if progress.current_time is not None:
+                if int(progress.current_time) != 0 and not progress.current_time >= 30:
+                    # same as mass default, only > 30s
+                    continue
             if progress.library_item_id not in known_ids:
                 continue
             __updated_items += 1
@@ -1449,6 +1460,32 @@ for more details.
             else:
                 await self._update_playlog_episode(progress)
         self.logger.debug(f"Updated {__updated_items} from full playlog.")
+
+        # Get MA's known progresses of ABS.
+        # In ABS the user may discard a progress, which removes the progress completely.
+        # There is no socket notification for this event.
+        ma_playlog_state = await self.mass.music.get_playlog_provider_item_ids(
+            provider_instance_id=self.instance_id
+        )
+        ma_ids_with_progress = {x for _, x in ma_playlog_state}
+        discarded_progress_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
+        for discarded_progress_id in discarded_progress_ids:
+            if len(discarded_progress_id.split(" ")) == 1:
+                if discarded_item := await self.mass.music.get_library_item_by_prov_id(
+                    media_type=MediaType.AUDIOBOOK,
+                    item_id=discarded_progress_id,
+                    provider_instance_id_or_domain=self.lookup_key,
+                ):
+                    self.progress_guard.add_progress(discarded_progress_id)
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            else:
+                with suppress(MediaNotFoundError):
+                    discarded_item = await self.get_podcast_episode(
+                        prov_episode_id=discarded_progress_id, add_progress=False
+                    )
+                    self.progress_guard.add_progress(*discarded_progress_id.split(" "))
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1463,11 +1500,14 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        await self.mass.music.mark_item_played(
-            mass_audiobook,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_audiobook)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_audiobook,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1481,11 +1521,14 @@ for more details.
             mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
         except MediaNotFoundError:
             return
-        await self.mass.music.mark_item_played(
-            mass_episode,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_episode)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_episode,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(

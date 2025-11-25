@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from propcache import under_cached_property as cached_property
@@ -26,6 +26,7 @@ from music_assistant.providers.musiccast.avt_helpers import (
     search_xml,
 )
 from music_assistant.providers.musiccast.constants import (
+    CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
     MC_CONTROL_SOURCE_IDS,
@@ -213,7 +214,7 @@ class MusicCastPlayer(Player):
 
         # UPDATE PLAYBACK INFORMATION
         # Note to self:
-        # player.current_media tells queue controller what is playing
+        # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
         if (
@@ -328,6 +329,15 @@ class MusicCastPlayer(Player):
         # this is not this player's id
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
+
+        # skip zone handling if disabled.
+        if bool(
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
+            )
+        ):
+            return
+
         _source = str(
             await self.mass.config.get_player_config_value(
                 player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
@@ -336,7 +346,9 @@ class MusicCastPlayer(Player):
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         mass_player = self.mass.players.get(player_id)
-        assert mass_player is not None
+        if mass_player is None:
+            # Do not assert here, should the player not yet exist
+            return
         if _source not in _allowed_sources:
             msg = (
                 "The switch source you specified for "
@@ -527,9 +539,18 @@ class MusicCastPlayer(Player):
     ) -> None:
         """Set multiple members.
 
-        If we are a server, this is called.
-        We can ignore removed devices, these are handled via ungroup individually.
+        This function is called on the server.
         """
+        # Removing players
+        if player_ids_to_remove:
+            for player_id in player_ids_to_remove:
+                if player := self.mass.players.get(player_id):
+                    assert isinstance(player, MusicCastPlayer)  # for type checking
+                    await player.ungroup()
+
+        # Adding players
+        if not player_ids_to_add:
+            return
         children: set[str] = set()  # set[ma_player_id]
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
@@ -571,9 +592,13 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:
@@ -595,6 +620,17 @@ class MusicCastPlayer(Player):
                 zone_entries = []
             else:
                 zone_entries = [
+                    ConfigEntry(
+                        key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Disable zone handling completely.",
+                        default_value=False,
+                        description="This disables zone handling completely. Other options "
+                        "will be ignored. Enable should you encounter playback issues while "
+                        "e.g. playing to main. You can also hide the player from the UI "
+                        "by taking advantage of 'Hide the player in the user interface' "
+                        "dropdown.",
+                    ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
                         label="Switch to this non-net source when leaving a group.",

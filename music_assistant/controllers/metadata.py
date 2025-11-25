@@ -11,7 +11,7 @@ import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
 from time import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import aiofiles
@@ -59,6 +59,7 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
+    from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
@@ -86,7 +87,7 @@ LOCALES = {
     "it_IT": "Italian",
     "lt_LT": "Lithuanian",
     "lv_LV": "Latvian",
-    "jp_JP": "Japanese",
+    "ja_JP": "Japanese",
     "ko_KR": "Korean",
     "nl_NL": "Dutch",
     "nb_NO": "Norwegian Bokmål",
@@ -119,9 +120,9 @@ class MetaDataController(CoreController):
     domain: str = "metadata"
     config: CoreConfig
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.cache = self.mass.cache
         self._pref_lang: str | None = None
         self.manifest.name = "Metadata controller"
@@ -352,7 +353,7 @@ class MetaDataController(CoreController):
             retrieved_item = await self.mass.music.get_item_by_uri(media_item.uri)
             if isinstance(retrieved_item, BrowseFolder):
                 return None  # can not happen, but guard for type checker
-            media_item = cast("MediaItemType", retrieved_item)
+            media_item = retrieved_item
 
         if media_item and media_item.metadata.images:
             for img in media_item.metadata.images:

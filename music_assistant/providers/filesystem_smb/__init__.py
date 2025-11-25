@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import platform
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
@@ -35,7 +36,8 @@ if TYPE_CHECKING:
 CONF_HOST = "host"
 CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
-CONF_MOUNT_OPTIONS = "mount_options"
+CONF_SMB_VERSION = "smb_version"
+CONF_CACHE_MODE = "cache_mode"
 
 
 async def setup(
@@ -92,10 +94,10 @@ async def get_config_entries(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Username",
-            required=True,
+            required=False,
             default_value="guest",
             description="The username to authenticate to the remote server. "
-            "For anynymous access you may want to try with the user `guest`.",
+            "Leave as 'guest' or empty for anonymous access.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
@@ -103,8 +105,8 @@ async def get_config_entries(
             label="Password",
             required=False,
             default_value=None,
-            description="The username to authenticate to the remote server. "
-            "For anynymous access you may want to try with the user `guest`.",
+            description="The password to authenticate to the remote server. "
+            "Leave empty for anonymous/guest access.",
         ),
         ConfigEntry(
             key=CONF_SUBFOLDER,
@@ -116,14 +118,38 @@ async def get_config_entries(
             "E.g. 'collections' or 'albums/A-K'.",
         ),
         ConfigEntry(
-            key=CONF_MOUNT_OPTIONS,
+            key=CONF_SMB_VERSION,
             type=ConfigEntryType.STRING,
-            label="Mount options",
+            label="SMB Version",
             required=False,
             category="advanced",
-            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0,iocharset=utf8",
-            description="[optional] Any additional mount options you "
-            "want to pass to the mount command if needed for your particular setup.",
+            default_value="3.0",
+            options=[
+                ConfigValueOption("Auto", ""),
+                ConfigValueOption("SMB 1.0", "1.0"),
+                ConfigValueOption("SMB 2.0", "2.0"),
+                ConfigValueOption("SMB 2.1", "2.1"),
+                ConfigValueOption("SMB 3.0", "3.0"),
+                ConfigValueOption("SMB 3.1.1", "3.1.1"),
+            ],
+            description="The SMB protocol version to use. SMB 3.0 or higher is recommended for "
+            "better performance and security. Use Auto to let the system negotiate.",
+        ),
+        ConfigEntry(
+            key=CONF_CACHE_MODE,
+            type=ConfigEntryType.STRING,
+            label="Cache Mode",
+            required=False,
+            category="advanced",
+            default_value="loose",
+            options=[
+                ConfigValueOption("Strict", "strict"),
+                ConfigValueOption("Loose (Recommended)", "loose"),
+                ConfigValueOption("None", "none"),
+            ],
+            description="Cache mode affects performance and consistency. "
+            "'Loose' provides better performance for read-heavy workloads "
+            "and is recommended for music libraries.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -189,68 +215,119 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
         server = str(self.config.get_value(CONF_HOST))
-        username = str(self.config.get_value(CONF_USERNAME))
+        username = str(self.config.get_value(CONF_USERNAME) or "guest")
         password = self.config.get_value(CONF_PASSWORD)
+        # Type narrowing: password can be str or None
+        password_str: str | None = str(password) if password is not None else None
         share = str(self.config.get_value(CONF_SHARE))
 
         # handle optional subfolder
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER))
+        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "")
         if subfolder:
             subfolder = subfolder.replace("\\", "/")
             if not subfolder.startswith("/"):
                 subfolder = "/" + subfolder
             subfolder = subfolder.removesuffix("/")
 
-        env_vars = {
-            **os.environ,
-            "USER": username,
-        }
+        env_vars = os.environ.copy()
 
         if platform.system() == "Darwin":
-            # NOTE: macOS does not support special characters in the username/password
-            password_str = f":{password}" if password else ""
-            mount_cmd = [
-                "mount",
-                "-t",
-                "smbfs",
-                f"//{username}{password_str}@{server}/{share}{subfolder}",
-                self.base_path,
-            ]
-
+            mount_cmd = self._build_macos_mount_cmd(
+                server, username, password_str, share, subfolder
+            )
         elif platform.system() == "Linux":
-            options = ["rw"]
-            if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
-                options += mount_options.split(",")
-            options_str = ",".join(options)
-
-            # pass the username+password using (scoped) env variables
-            # to prevent leaking in the process list and special chars supported
-            if password:
-                env_vars["PASSWD"] = str(password)
-
-            mount_cmd = [
-                "mount",
-                "-t",
-                "cifs",
-                "-o",
-                options_str,
-                f"//{server}/{share}{subfolder}",
-                self.base_path,
-            ]
+            mount_cmd = self._build_linux_mount_cmd(
+                server, username, password_str, share, subfolder
+            )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
 
         self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Using mount command: %s",
-            " ".join(mount_cmd),
-        )
+        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
+
+    def _build_macos_mount_cmd(
+        self, server: str, username: str, password: str | None, share: str, subfolder: str
+    ) -> list[str]:
+        """Build mount command for macOS."""
+        mount_options = []
+
+        # Add SMB version if specified
+        smb_version = str(self.config.get_value(CONF_SMB_VERSION) or "")
+        if smb_version:
+            # macOS uses different version format (e.g., smb2, smb3)
+            if smb_version.startswith("3"):
+                mount_options.extend(["-o", "protocol_vers_map=6"])  # SMB3
+            elif smb_version.startswith("2"):
+                mount_options.extend(["-o", "protocol_vers_map=4"])  # SMB2
+
+        # Construct credentials in URL format
+        # macOS mount_smbfs supports special characters in password when URL-encoded
+        encoded_password = f":{quote(str(password), safe='')}" if password else ""
+
+        return [
+            "mount",
+            "-t",
+            "smbfs",
+            *mount_options,
+            f"//{username}{encoded_password}@{server}/{share}{subfolder}",
+            self.base_path,
+        ]
+
+    def _build_linux_mount_cmd(
+        self, server: str, username: str, password: str | None, share: str, subfolder: str
+    ) -> list[str]:
+        """Build mount command for Linux."""
+        options = ["rw"]  # read-write access
+
+        # Handle username and password
+        if username and username.lower() != "guest":
+            options.append(f"username={username}")
+            if password:
+                options.append(f"password={password}")
+        else:
+            # Guest/anonymous access
+            options.append("guest")
+
+        # SMB version for better compatibility and performance
+        smb_version = str(self.config.get_value(CONF_SMB_VERSION) or "")
+        if smb_version:
+            options.append(f"vers={smb_version}")
+
+        # Cache mode for better performance
+        cache_mode = str(self.config.get_value(CONF_CACHE_MODE) or "loose")
+        options.append(f"cache={cache_mode}")
+
+        # Case insensitive by default (standard for SMB) and other performance options
+        options.extend(
+            [
+                "nocase",
+                "file_mode=0755",
+                "dir_mode=0755",
+                "uid=0",
+                "gid=0",
+                "iocharset=utf8",
+                "noperm",
+                "nobrl",
+                "mfsymlinks",
+                "noserverino",
+                "actimeo=30",
+            ]
+        )
+
+        return [
+            "mount",
+            "-t",
+            "cifs",
+            "-o",
+            ",".join(options),
+            f"//{server}/{share}{subfolder}",
+            self.base_path,
+        ]
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""

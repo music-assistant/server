@@ -7,7 +7,7 @@ import logging
 import os
 import pathlib
 import threading
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
 from uuid import uuid4
 
@@ -482,7 +482,7 @@ class MusicAssistant:
     def register_api_command(
         self,
         command: str,
-        handler: Callable[..., Coroutine[Any, Any, Any]],
+        handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
     ) -> Callable[[], None]:
         """
         Dynamically register a command on the API.

@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT
+from music_assistant.constants import (
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_SSL_FINGERPRINT,
+    CONF_USE_SSL,
+    CONF_VERIFY_SSL,
+)
 
 from .provider import FullyKioskProvider
 
@@ -63,6 +70,32 @@ async def get_config_entries(
             default_value="2323",
             label="Port to use to connect to the Fully Kiosk API (default is 2323).",
             required=True,
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_USE_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="Use HTTPS when connecting to the Fully Kiosk API.",
+            default_value=False,
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_VERIFY_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="Verify HTTPS certificates (recommended).",
+            default_value=True,
+            description="Disabling verification trusts any certificate (no validation).",
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_SSL_FINGERPRINT,
+            type=ConfigEntryType.STRING,
+            label="TLS certificate fingerprint",
+            description=(
+                "Optional SHA-256 hex fingerprint. When provided it must "
+                "match the device certificate and overrides the verify setting."
+            ),
+            required=False,
             category="advanced",
         ),
     )

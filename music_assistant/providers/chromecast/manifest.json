@@ -5,7 +5,7 @@
   "name": "Chromecast",
   "description": "Cast music and podcasts to Chromecast or Google Cast devices.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["PyChromecast==14.0.7"],
+  "requirements": ["PyChromecast==14.0.9"],
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,

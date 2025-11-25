@@ -39,7 +39,7 @@ class SnapCastProvider(PlayerProvider):
     """SnapCastProvider."""
 
     _snapserver: Snapserver
-    _snapserver_runner: asyncio.Task | None
+    _snapserver_runner: asyncio.Task[None] | None
     _snapserver_started: asyncio.Event | None
     _snapcast_server_host: str
     _snapcast_server_control_port: int
@@ -191,9 +191,9 @@ class SnapCastProvider(PlayerProvider):
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
-            async for data in snapserver_proc.iter_any():
-                data = data.decode().strip()  # noqa: PLW2901
-                for line in data.split("\n"):
+            async for raw_data in snapserver_proc.iter_any():
+                text = raw_data.decode().strip()
+                for line in text.split("\n"):
                     logger.debug(line)
                     if "(Snapserver) Version 0." in line:
                         # delay init a small bit to prevent race conditions
@@ -212,7 +212,7 @@ class SnapCastProvider(PlayerProvider):
         assert snap_id is not None  # for type checking
         return snap_id
 
-    def _generate_and_register_id(self, snap_client_id) -> str:
+    def _generate_and_register_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
         if snap_client_id not in search_dict:
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
@@ -254,8 +254,8 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                assert isinstance(ma_player, SnapCastPlayer)  # for type checking
+            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
+                ma_player = cast("SnapCastPlayer", player)
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
