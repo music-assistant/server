@@ -94,6 +94,9 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_USE_SSL: Final[str] = "use_ssl"
+CONF_VERIFY_SSL: Final[str] = "verify_ssl"
+CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 
 
 # config default values
