@@ -1206,6 +1206,31 @@ def generate_commands_reference(  # noqa: PLR0915
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant API - Commands Reference</title>
     <style>
+        :root {
+            --fg: #000000;
+            --background: #f5f5f5;
+            --panel: #ffffff;
+            --primary: #03a9f4;
+            --text-secondary: rgba(0, 0, 0, 0.6);
+            --border: rgba(0, 0, 0, 0.1);
+            --success: #4caf50;
+            --success-bg: rgba(76, 175, 80, 0.1);
+            --success-border: rgba(76, 175, 80, 0.3);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --fg: #ffffff;
+                --background: #181818;
+                --panel: #232323;
+                --text-secondary: rgba(255, 255, 255, 0.7);
+                --border: rgba(255, 255, 255, 0.08);
+                --success: #66bb6a;
+                --success-bg: rgba(102, 187, 106, 0.15);
+                --success-border: rgba(102, 187, 106, 0.4);
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -1214,15 +1239,17 @@ def generate_commands_reference(  # noqa: PLR0915
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
                          Ubuntu, Cantarell, sans-serif;
-            background: #f5f5f5;
+            background: var(--background);
+            color: var(--fg);
             line-height: 1.6;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: var(--panel);
+            color: var(--fg);
             padding: 1.5rem 2rem;
             text-align: center;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-bottom: 1px solid var(--border);
         }
         .header h1 {
             font-size: 1.8em;
@@ -1234,7 +1261,7 @@ def generate_commands_reference(  # noqa: PLR0915
             opacity: 0.9;
         }
         .nav-container {
-            background: white;
+            background: var(--panel);
             padding: 1rem 2rem;
             box-shadow: 0 2px 5px rgba(0,0,0,0.05);
             position: sticky;
@@ -1249,14 +1276,14 @@ def generate_commands_reference(  # noqa: PLR0915
             max-width: 600px;
             padding: 0.6rem 1rem;
             font-size: 0.95em;
-            border: 2px solid #ddd;
+            border: 2px solid var(--border);
             border-radius: 8px;
             display: block;
             margin: 0 auto;
         }
         .search-box input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary);
         }
         .quick-nav {
             display: flex;
@@ -1264,20 +1291,20 @@ def generate_commands_reference(  # noqa: PLR0915
             gap: 0.5rem;
             justify-content: center;
             padding-top: 0.5rem;
-            border-top: 1px solid #eee;
+            border-top: 1px solid var(--border);
         }
         .quick-nav a {
             padding: 0.4rem 1rem;
-            background: #f8f9fa;
-            color: #667eea;
+            background: var(--panel);
+            color: var(--primary);
             text-decoration: none;
             border-radius: 6px;
             font-size: 0.9em;
             transition: all 0.2s;
         }
         .quick-nav a:hover {
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
         }
         .container {
             max-width: 1200px;
@@ -1285,15 +1312,15 @@ def generate_commands_reference(  # noqa: PLR0915
             padding: 0 2rem;
         }
         .category {
-            background: white;
+            background: var(--panel);
             margin-bottom: 2rem;
             border-radius: 12px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.08);
             overflow: hidden;
         }
         .category-header {
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             padding: 1rem 1.5rem;
             font-size: 1.2em;
             font-weight: 600;
@@ -1301,10 +1328,10 @@ def generate_commands_reference(  # noqa: PLR0915
             user-select: none;
         }
         .category-header:hover {
-            background: #5568d3;
+            background: var(--primary);
         }
         .command {
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border);
         }
         .command:last-child {
             border-bottom: none;
@@ -1319,7 +1346,7 @@ def generate_commands_reference(  # noqa: PLR0915
             transition: background 0.2s;
         }
         .command-header:hover {
-            background: #f8f9fa;
+            background: var(--panel);
         }
         .command-title {
             display: flex;
@@ -1330,15 +1357,15 @@ def generate_commands_reference(  # noqa: PLR0915
         .command-name {
             font-size: 1.1em;
             font-weight: 600;
-            color: #667eea;
+            color: var(--primary);
             font-family: 'Monaco', 'Courier New', monospace;
         }
         .command-summary {
             font-size: 0.9em;
-            color: #888;
+            color: var(--text-secondary);
         }
         .command-expand-icon {
-            color: #667eea;
+            color: var(--primary);
             font-size: 1.2em;
             transition: transform 0.3s;
         }
@@ -1353,7 +1380,7 @@ def generate_commands_reference(  # noqa: PLR0915
             display: block;
         }
         .command-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-bottom: 1rem;
         }
         .return-type {
@@ -1381,15 +1408,15 @@ def generate_commands_reference(  # noqa: PLR0915
             margin-bottom: 0.5rem;
         }
         .param {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 0.5rem 1rem;
             margin: 0.5rem 0;
             border-radius: 6px;
-            border-left: 3px solid #667eea;
+            border-left: 3px solid var(--primary);
         }
         .param-name {
             font-family: 'Monaco', 'Courier New', monospace;
-            color: #667eea;
+            color: var(--primary);
             font-weight: 600;
         }
         .param-required {
@@ -1399,12 +1426,12 @@ def generate_commands_reference(  # noqa: PLR0915
             margin-left: 0.5rem;
         }
         .param-type {
-            color: #888;
+            color: var(--text-secondary);
             font-size: 0.9em;
             margin-left: 0.5rem;
         }
         .param-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-top: 0.25rem;
         }
         .example {
@@ -1430,8 +1457,8 @@ def generate_commands_reference(  # noqa: PLR0915
             position: absolute;
             top: 0.5rem;
             right: 0.5rem;
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             border: none;
             padding: 0.4rem 0.8rem;
             border-radius: 4px;
@@ -1439,7 +1466,7 @@ def generate_commands_reference(  # noqa: PLR0915
             font-size: 0.8em;
         }
         .copy-btn:hover {
-            background: #5568d3;
+            background: var(--primary);
         }
         .hidden {
             display: none;
@@ -1459,16 +1486,16 @@ def generate_commands_reference(  # noqa: PLR0915
             padding: 0.8rem 1.5rem;
             font-size: 1em;
             cursor: pointer;
-            color: #666;
+            color: var(--text-secondary);
             border-bottom: 3px solid transparent;
             transition: all 0.3s;
         }
         .tab-btn:hover {
-            color: #667eea;
+            color: var(--primary);
         }
         .tab-btn.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
+            color: var(--primary);
+            border-bottom-color: var(--primary);
         }
         .tab-content {
             display: none;
@@ -1487,7 +1514,7 @@ def generate_commands_reference(  # noqa: PLR0915
             padding: 1rem;
             font-family: 'Monaco', 'Courier New', monospace;
             font-size: 0.9em;
-            border: 2px solid #ddd;
+            border: 2px solid var(--border);
             border-radius: 8px;
             background: #2d2d2d;
             color: #f8f8f2;
@@ -1495,12 +1522,12 @@ def generate_commands_reference(  # noqa: PLR0915
         }
         .json-input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary);
         }
         .try-btn {
             align-self: flex-start;
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             border: none;
             padding: 0.8rem 2rem;
             border-radius: 8px;
@@ -1509,7 +1536,7 @@ def generate_commands_reference(  # noqa: PLR0915
             transition: background 0.3s;
         }
         .try-btn:hover {
-            background: #5568d3;
+            background: var(--primary);
         }
         .try-btn:disabled {
             background: #ccc;
@@ -1539,14 +1566,14 @@ def generate_commands_reference(  # noqa: PLR0915
             color: #2e7d32;
         }
         .type-link {
-            color: #667eea;
+            color: var(--primary);
             text-decoration: none;
-            border-bottom: 1px dashed #667eea;
+            border-bottom: 1px dashed var(--primary);
             transition: all 0.2s;
         }
         .type-link:hover {
-            color: #5568d3;
-            border-bottom-color: #5568d3;
+            color: var(--primary);
+            border-bottom-color: var(--primary);
         }
         .type-union {
             margin-top: 0.5rem;
@@ -1571,15 +1598,15 @@ def generate_commands_reference(  # noqa: PLR0915
             margin-top: 0.25rem;
         }
         .auth-section {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 1rem;
             border-radius: 8px;
             margin-bottom: 1rem;
-            border: 2px solid #e0e0e0;
+            border: 2px solid var(--border);
         }
         .auth-section.authenticated {
-            border-color: #4caf50;
-            background: #e8f5e9;
+            border-color: var(--success-border);
+            background: var(--success-bg);
         }
         .auth-status {
             display: flex;
@@ -1587,6 +1614,7 @@ def generate_commands_reference(  # noqa: PLR0915
             gap: 0.5rem;
             margin-bottom: 0.8rem;
             font-weight: 600;
+            color: var(--fg);
         }
         .auth-status-dot {
             width: 10px;
@@ -1595,7 +1623,7 @@ def generate_commands_reference(  # noqa: PLR0915
             background: #f44336;
         }
         .auth-status-dot.authenticated {
-            background: #4caf50;
+            background: var(--success);
         }
         .auth-form {
             display: flex;
@@ -1604,17 +1632,19 @@ def generate_commands_reference(  # noqa: PLR0915
         }
         .auth-form input {
             padding: 0.6rem;
-            border: 2px solid #ddd;
+            border: 2px solid var(--border);
             border-radius: 6px;
             font-size: 0.95em;
+            background: var(--panel);
+            color: var(--fg);
         }
         .auth-form input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary);
         }
         .auth-form button {
             padding: 0.6rem 1.2rem;
-            background: #667eea;
+            background: var(--primary);
             color: white;
             border: none;
             border-radius: 6px;
@@ -1623,7 +1653,7 @@ def generate_commands_reference(  # noqa: PLR0915
             transition: background 0.3s;
         }
         .auth-form button:hover {
-            background: #5568d3;
+            filter: brightness(1.1);
         }
         .auth-form button:disabled {
             background: #ccc;
@@ -1636,7 +1666,7 @@ def generate_commands_reference(  # noqa: PLR0915
         }
         .auth-user-details {
             font-size: 0.9em;
-            color: #666;
+            color: var(--text-secondary);
         }
         .auth-logout-btn {
             padding: 0.5rem 1rem;
@@ -1649,7 +1679,7 @@ def generate_commands_reference(  # noqa: PLR0915
             transition: background 0.3s;
         }
         .auth-logout-btn:hover {
-            background: #d32f2f;
+            filter: brightness(0.9);
         }
         .auth-error {
             background: #ffebee;
@@ -1676,10 +1706,21 @@ def generate_commands_reference(  # noqa: PLR0915
             background: #e3f2fd;
             color: #1976d2;
         }
+        .header .logo {
+            margin-bottom: 1rem;
+        }
+        .header .logo img {
+            width: 60px;
+            height: 60px;
+            object-fit: contain;
+        }
     </style>
 </head>
 <body>
     <div class="header">
+        <div class="logo">
+            <img src="../logo.png" alt="Music Assistant">
+        </div>
         <h1>Commands Reference</h1>
         <p>Complete list of Music Assistant API commands</p>
     </div>
@@ -1952,15 +1993,35 @@ def generate_commands_reference(  # noqa: PLR0915
         const USER_STORAGE_KEY = 'ma_api_user';
 
         // Check for existing token on page load
-        function checkAuth() {
+        async function checkAuth() {
             const token = localStorage.getItem(TOKEN_STORAGE_KEY);
             const userStr = localStorage.getItem(USER_STORAGE_KEY);
 
             if (token && userStr) {
                 try {
                     const user = JSON.parse(userStr);
-                    updateAuthUI(true, user);
+
+                    // Validate token by making a JSON-RPC call that requires auth
+                    const response = await fetch('/api', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                            command: 'info'
+                        })
+                    });
+
+                    if (response.ok) {
+                        // Token is valid
+                        updateAuthUI(true, user);
+                    } else {
+                        // Token is invalid (revoked, expired, etc.)
+                        clearAuth();
+                    }
                 } catch (e) {
+                    // Network error or invalid JSON
                     clearAuth();
                 }
             }
@@ -2221,18 +2282,26 @@ def generate_commands_reference(  # noqa: PLR0915
                     output.textContent = 'Success!\\n\\n' + JSON.stringify(result, null, 2);
                 } else {
                     output.className = 'response-output show error';
-                    // Try to extract a meaningful error message
-                    let errorMsg = 'Request failed';
-                    if (result.error) {
-                        errorMsg = result.error;
-                    } else if (result.message) {
-                        errorMsg = result.message;
-                    } else if (typeof result === 'string') {
-                        errorMsg = result;
+
+                    // Handle 401/403 - token invalid or revoked
+                    if (response.status === 401 || response.status === 403) {
+                        clearAuth();
+                        output.textContent = 'Authentication Error: Your session has expired '
+                            + 'or token was revoked. Please login again.';
                     } else {
-                        errorMsg = JSON.stringify(result, null, 2);
+                        // Try to extract a meaningful error message
+                        let errorMsg = 'Request failed';
+                        if (result.error) {
+                            errorMsg = result.error;
+                        } else if (result.message) {
+                            errorMsg = result.message;
+                        } else if (typeof result === 'string') {
+                            errorMsg = result;
+                        } else {
+                            errorMsg = JSON.stringify(result, null, 2);
+                        }
+                        output.textContent = 'Error: ' + errorMsg;
                     }
-                    output.textContent = 'Error: ' + errorMsg;
                 }
             } catch (error) {
                 output.className = 'response-output show error';
@@ -2294,6 +2363,31 @@ def generate_schemas_reference(  # noqa: PLR0915
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant API - Schemas Reference</title>
     <style>
+        :root {
+            --fg: #000000;
+            --background: #f5f5f5;
+            --panel: #ffffff;
+            --primary: #03a9f4;
+            --text-secondary: rgba(0, 0, 0, 0.6);
+            --border: rgba(0, 0, 0, 0.1);
+            --success: #4caf50;
+            --success-bg: rgba(76, 175, 80, 0.1);
+            --success-border: rgba(76, 175, 80, 0.3);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --fg: #ffffff;
+                --background: #181818;
+                --panel: #232323;
+                --text-secondary: rgba(255, 255, 255, 0.7);
+                --border: rgba(255, 255, 255, 0.08);
+                --success: #66bb6a;
+                --success-bg: rgba(102, 187, 106, 0.15);
+                --success-border: rgba(102, 187, 106, 0.4);
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -2302,15 +2396,17 @@ def generate_schemas_reference(  # noqa: PLR0915
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
                          Ubuntu, Cantarell, sans-serif;
-            background: #f5f5f5;
+            background: var(--background);
+            color: var(--fg);
             line-height: 1.6;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: var(--panel);
+            color: var(--fg);
             padding: 1.5rem 2rem;
             text-align: center;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-bottom: 1px solid var(--border);
         }
         .header h1 {
             font-size: 1.8em;
@@ -2322,7 +2418,7 @@ def generate_schemas_reference(  # noqa: PLR0915
             opacity: 0.9;
         }
         .nav-container {
-            background: white;
+            background: var(--panel);
             padding: 1rem 2rem;
             box-shadow: 0 2px 5px rgba(0,0,0,0.05);
             position: sticky;
@@ -2334,14 +2430,14 @@ def generate_schemas_reference(  # noqa: PLR0915
             max-width: 600px;
             padding: 0.6rem 1rem;
             font-size: 0.95em;
-            border: 2px solid #ddd;
+            border: 2px solid var(--border);
             border-radius: 8px;
             display: block;
             margin: 0 auto;
         }
         .search-box input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary);
         }
         .container {
             max-width: 1200px;
@@ -2349,7 +2445,7 @@ def generate_schemas_reference(  # noqa: PLR0915
             padding: 0 2rem;
         }
         .schema {
-            background: white;
+            background: var(--panel);
             margin-bottom: 1.5rem;
             border-radius: 12px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.08);
@@ -2357,8 +2453,8 @@ def generate_schemas_reference(  # noqa: PLR0915
             scroll-margin-top: 100px;
         }
         .schema-header {
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             padding: 1rem 1.5rem;
             cursor: pointer;
             user-select: none;
@@ -2367,7 +2463,7 @@ def generate_schemas_reference(  # noqa: PLR0915
             align-items: center;
         }
         .schema-header:hover {
-            background: #5568d3;
+            background: var(--primary);
         }
         .schema-name {
             font-size: 1.3em;
@@ -2389,7 +2485,7 @@ def generate_schemas_reference(  # noqa: PLR0915
             display: block;
         }
         .schema-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-bottom: 1rem;
             font-style: italic;
         }
@@ -2403,22 +2499,22 @@ def generate_schemas_reference(  # noqa: PLR0915
             font-size: 1.1em;
         }
         .property {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 0.75rem 1rem;
             margin: 0.5rem 0;
             border-radius: 6px;
-            border-left: 3px solid #667eea;
+            border-left: 3px solid var(--primary);
         }
         .property-name {
             font-family: 'Monaco', 'Courier New', monospace;
-            color: #667eea;
+            color: var(--primary);
             font-weight: 600;
             font-size: 1em;
         }
         .property-required {
             display: inline-block;
             background: #e74c3c;
-            color: white;
+            color: var(--fg);
             padding: 0.15rem 0.5rem;
             border-radius: 4px;
             font-size: 0.75em;
@@ -2428,7 +2524,7 @@ def generate_schemas_reference(  # noqa: PLR0915
         .property-optional {
             display: inline-block;
             background: #95a5a6;
-            color: white;
+            color: var(--fg);
             padding: 0.15rem 0.5rem;
             border-radius: 4px;
             font-size: 0.75em;
@@ -2438,7 +2534,7 @@ def generate_schemas_reference(  # noqa: PLR0915
         .property-nullable {
             display: inline-block;
             background: #f39c12;
-            color: white;
+            color: var(--fg);
             padding: 0.15rem 0.5rem;
             border-radius: 4px;
             font-size: 0.75em;
@@ -2446,25 +2542,25 @@ def generate_schemas_reference(  # noqa: PLR0915
             margin-left: 0.5rem;
         }
         .property-type {
-            color: #888;
+            color: var(--text-secondary);
             font-size: 0.9em;
             margin-left: 0.5rem;
             font-family: 'Monaco', 'Courier New', monospace;
         }
         .property-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-top: 0.25rem;
             font-size: 0.95em;
         }
         .type-link {
-            color: #667eea;
+            color: var(--primary);
             text-decoration: none;
-            border-bottom: 1px dashed #667eea;
+            border-bottom: 1px dashed var(--primary);
             transition: all 0.2s;
         }
         .type-link:hover {
-            color: #5568d3;
-            border-bottom-color: #5568d3;
+            color: var(--primary);
+            border-bottom-color: var(--primary);
         }
         .hidden {
             display: none;
@@ -2473,20 +2569,20 @@ def generate_schemas_reference(  # noqa: PLR0915
             display: inline-block;
             margin-bottom: 1rem;
             padding: 0.5rem 1rem;
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             text-decoration: none;
             border-radius: 6px;
             transition: background 0.2s;
         }
         .back-link:hover {
-            background: #5568d3;
+            background: var(--primary);
         }
         .openapi-link {
             display: inline-block;
             padding: 0.5rem 1rem;
             background: #2e7d32;
-            color: white;
+            color: var(--fg);
             text-decoration: none;
             border-radius: 6px;
             transition: background 0.2s;
@@ -2516,10 +2612,21 @@ def generate_schemas_reference(  # noqa: PLR0915
             font-size: 0.85em;
             color: #2e7d32;
         }
+        .header .logo {
+            margin-bottom: 1rem;
+        }
+        .header .logo img {
+            width: 60px;
+            height: 60px;
+            object-fit: contain;
+        }
     </style>
 </head>
 <body>
     <div class="header">
+        <div class="logo">
+            <img src="../logo.png" alt="Music Assistant">
+        </div>
         <h1>Schemas Reference</h1>
         <p>Data models and types used in the Music Assistant API</p>
     </div>
@@ -2775,8 +2882,8 @@ def generate_html_docs(  # noqa: PLR0915
             padding: 20px;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary) 100%);
+            color: var(--fg);
             padding: 40px 20px;
             text-align: center;
             margin-bottom: 30px;
@@ -2792,41 +2899,41 @@ def generate_html_docs(  # noqa: PLR0915
             opacity: 0.9;
         }
         .intro {
-            background: white;
+            background: var(--panel);
             padding: 30px;
             margin-bottom: 30px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .intro h2 {
-            color: #667eea;
+            color: var(--primary);
             margin-bottom: 15px;
         }
         .intro h3 {
-            color: #764ba2;
+            color: var(--primary);
             margin: 20px 0 10px 0;
         }
         .intro pre {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 15px;
             border-radius: 4px;
             overflow-x: auto;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid var(--primary);
         }
         .intro code {
             font-family: 'Monaco', 'Courier New', monospace;
             font-size: 0.9em;
         }
         .category {
-            background: white;
+            background: var(--panel);
             margin-bottom: 30px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             overflow: hidden;
         }
         .category-header {
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             padding: 20px;
             font-size: 1.5em;
             font-weight: bold;
@@ -2842,28 +2949,28 @@ def generate_html_docs(  # noqa: PLR0915
         .command-name {
             font-size: 1.2em;
             font-weight: bold;
-            color: #667eea;
+            color: var(--primary);
             font-family: 'Monaco', 'Courier New', monospace;
             margin-bottom: 10px;
         }
         .command-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-bottom: 15px;
         }
         .params, .returns {
             margin-top: 15px;
         }
         .params h4, .returns h4 {
-            color: #764ba2;
+            color: var(--primary);
             margin-bottom: 10px;
             font-size: 1em;
         }
         .param {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 10px;
             margin: 5px 0;
             border-radius: 4px;
-            border-left: 3px solid #667eea;
+            border-left: 3px solid var(--primary);
         }
         .param-name {
             font-weight: bold;
@@ -2871,7 +2978,7 @@ def generate_html_docs(  # noqa: PLR0915
             font-family: 'Monaco', 'Courier New', monospace;
         }
         .param-type {
-            color: #764ba2;
+            color: var(--primary);
             font-style: italic;
             font-size: 0.9em;
         }
@@ -2885,26 +2992,26 @@ def generate_html_docs(  # noqa: PLR0915
             font-size: 0.85em;
         }
         .param-description {
-            color: #666;
+            color: var(--text-secondary);
             margin-top: 5px;
         }
         .return-type {
-            background: #f8f9fa;
+            background: var(--panel);
             padding: 10px;
             border-radius: 4px;
-            border-left: 3px solid #764ba2;
+            border-left: 3px solid var(--primary);
             font-family: 'Monaco', 'Courier New', monospace;
-            color: #764ba2;
+            color: var(--primary);
         }
         .nav {
-            background: white;
+            background: var(--panel);
             padding: 20px;
             margin-bottom: 30px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .nav h3 {
-            color: #667eea;
+            color: var(--primary);
             margin-bottom: 15px;
         }
         .nav ul {
@@ -2914,7 +3021,7 @@ def generate_html_docs(  # noqa: PLR0915
             margin: 5px 0;
         }
         .nav a {
-            color: #667eea;
+            color: var(--primary);
             text-decoration: none;
             text-transform: capitalize;
         }
@@ -2923,15 +3030,15 @@ def generate_html_docs(  # noqa: PLR0915
         }
         .download-link {
             display: inline-block;
-            background: #667eea;
-            color: white;
+            background: var(--primary);
+            color: var(--fg);
             padding: 10px 20px;
             border-radius: 4px;
             text-decoration: none;
             margin-top: 10px;
         }
         .download-link:hover {
-            background: #764ba2;
+            background: var(--primary);
         }
     </style>
 </head>
