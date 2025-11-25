@@ -525,8 +525,11 @@ def parse_tags(
             extra_tags = parse_tags_mutagen(input_file)
             if extra_tags:
                 tags.tags.update(extra_tags)
-            # APEv2 cover art is not exposed as video streams by FFmpeg, check via mutagen
-            if not tags.has_cover_image and has_apev2_cover_art(input_file):
+            # APEv2 cover art is not exposed as video streams by FFmpeg
+            # For APEv2-only formats (wv, ape, mpc, tak, ofr), assume they might have cover art
+            # We avoid calling mutagen here to prevent double file reads (blocking I/O)
+            # The actual extraction happens later in get_apev2_image() if needed
+            if not tags.has_cover_image and _format_uses_apev2(tags.format):
                 tags.has_cover_image = True
         return tags
     except subprocess.CalledProcessError as err:
@@ -631,29 +634,23 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
         return result
 
 
-def has_apev2_cover_art(input_file: str) -> bool:
-    """Check if file has APEv2 cover art using mutagen.
+def _format_uses_apev2(format_name: str) -> bool:
+    """Check if an audio format exclusively uses APEv2 tags.
 
-    APEv2 tags (used by WavPack, Musepack, etc.) don't expose cover art
-    as video streams in FFmpeg, so we need to check directly with mutagen.
+    These formats ONLY use APEv2 tags and cannot have cover art detected by ffprobe's
+    video stream detection (unlike ID3's APIC which shows as mjpeg/png stream).
 
-    :param input_file: Path to the local audio file.
+    Formats checked: WavPack, Musepack, Monkey's Audio, OptimFROG, TAK.
+    Note: MP3 is NOT included as MP3 files almost always use ID3 tags, which are
+    already handled by ffprobe. Checking all MP3 files would impact performance.
+
+    :param format_name: The format name from ffprobe (e.g., "wv", "ape", "mpc").
     """
-    audio = mutagen.File(input_file)  # type: ignore[attr-defined]
-    if audio is None or not hasattr(audio, "tags") or audio.tags is None:
-        return False
-
-    # APEv2 tags can have various cover art tag names
-    cover_tag_names = [
-        "Cover Art (Front)",
-        "COVER ART (FRONT)",
-        "Cover Art (front)",
-        "cover art (front)",
-        "COVERART",
-        "coverart",
-    ]
-
-    return any(tag_name in audio.tags for tag_name in cover_tag_names)
+    # Map ffprobe format names to our check
+    # wv = WavPack, ape = Monkey's Audio, mpc/mpc8 = Musepack
+    # tak = TAK, ofr = OptimFROG
+    apev2_only_formats = {"wv", "ape", "mpc", "mpc8", "tak", "ofr"}
+    return format_name.lower() in apev2_only_formats
 
 
 def get_apev2_image(input_file: str) -> bytes | None:
@@ -698,12 +695,17 @@ async def get_embedded_image(input_file: str) -> bytes | None:
 
     Input_file may be a (local) filename or URL accessible by ffmpeg.
     """
-    # For local files, try mutagen first for APEv2 cover art support
+    # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
+    # Only check files with extensions that exclusively use APEv2 tags to avoid
+    # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
     if not input_file.startswith(("http://", "https://")) and os.path.isfile(input_file):
-        if img_data := await asyncio.to_thread(get_apev2_image, input_file):
-            return img_data
+        # Check file extension to determine if it's an APEv2-only format
+        ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
+        if ext in ("wv", "ape", "mpc", "tak", "ofr"):
+            if img_data := await asyncio.to_thread(get_apev2_image, input_file):
+                return img_data
 
-    # Use FFmpeg for all other cases (URLs, ID3 tags, etc.)
+    # Use FFmpeg for all other cases (URLs, ID3 tags, Vorbis comments, etc.)
     args = [
         "ffmpeg",
         "-hide_banner",
