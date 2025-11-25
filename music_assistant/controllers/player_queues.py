@@ -1754,33 +1754,33 @@ class PlayerQueuesController(CoreController):
                 raise InvalidDataError("ItemMapping has no URI")
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
         if media_item.media_type == MediaType.PLAYLIST:
-            assert isinstance(media_item, Playlist)
+            media_item = cast("Playlist", media_item)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
             return list(await self.get_playlist_tracks(media_item, start_item))
         if media_item.media_type == MediaType.ARTIST:
-            assert isinstance(media_item, Artist)
+            media_item = cast("Artist", media_item)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
-            assert isinstance(media_item, Album)
+            media_item = cast("Album", media_item)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
             return list(await self.get_album_tracks(media_item, start_item))
         if media_item.media_type == MediaType.AUDIOBOOK:
-            assert isinstance(media_item, Audiobook)
+            media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
                 media_item, start_item
             )
             return [media_item]
         if media_item.media_type == MediaType.PODCAST:
-            assert isinstance(media_item, Podcast)
+            media_item = cast("Podcast", media_item)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
             return list(await self.get_next_podcast_episodes(media_item, start_item))
         if media_item.media_type == MediaType.PODCAST_EPISODE:
-            assert isinstance(media_item, PodcastEpisode)
+            media_item = cast("PodcastEpisode", media_item)
             return list(await self.get_next_podcast_episodes(None, media_item))
         if media_item.media_type == MediaType.FOLDER:
-            assert isinstance(media_item, BrowseFolder)
+            media_item = cast("BrowseFolder", media_item)
             return list(await self._get_folder_tracks(media_item))
         # all other: single track or radio item
         return [cast("MediaItemType", media_item)]
