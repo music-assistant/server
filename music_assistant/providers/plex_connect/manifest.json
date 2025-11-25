@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "alpha",
+  "domain": "plex_connect",
+  "name": "Plex Connect Plugin",
+  "description": "Makes a Music Assistant player appear as a device in the official Plex apps.",
+  "codeowners": ["@anatosun"],
+  "requirements": ["plexapi==4.17.1"],
+  "icon": "mdi:plex",
+  "documentation": "https://music-assistant.io/plugins/plex-connect/",
+  "depends_on": "plex",
+  "multi_instance": true
+}
