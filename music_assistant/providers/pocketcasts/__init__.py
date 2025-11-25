@@ -198,17 +198,24 @@ class PocketCastsProvider(MusicProvider):
                 episode_item.metadata.label = episode_data["title"]
             if episode_data.get("show_notes"):
                 episode_item.metadata.description = episode_data["show_notes"]
-            if episode_data.get("thumbnail_url"):
-                episode_item.metadata.images = UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=episode_data["thumbnail_url"],
-                            provider=self.lookup_key,
-                            remotely_accessible=True,
-                        )
-                    ]
+            # Add thumbnail - use episode thumbnail if available, otherwise use podcast thumbnail
+            thumbnail_url = episode_data.get("thumbnail_url")
+            if not thumbnail_url:
+                # Fallback to podcast thumbnail
+                thumbnail_url = (
+                    f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg"
                 )
+
+            episode_item.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumbnail_url,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
             return episode_item
 
         except Exception as err:
@@ -241,8 +248,9 @@ class PocketCastsProvider(MusicProvider):
         # Not in library - fetch from podcast-api which redirects to static JSON
         LOGGER.debug("Podcast not in library, fetching from API: %s", prov_podcast_id)
 
-        if not self._client:
-            raise MediaNotFoundError("API client not initialized")
+        if not self._client or not self._client.session:
+            msg = f"Podcast {prov_podcast_id} not found in library and client not available"
+            raise MediaNotFoundError(msg)
 
         try:
             # This endpoint returns a 302 redirect to the static JSON with timestamp
@@ -267,7 +275,10 @@ class PocketCastsProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all episodes for a podcast."""
+        LOGGER.debug("=== PROVIDER get_podcast_episodes CALLED for %s ===", prov_podcast_id)
+
         if not self._client:
+            LOGGER.error("No client available!")
             return
 
         try:
@@ -275,12 +286,10 @@ class PocketCastsProvider(MusicProvider):
             LOGGER.debug(
                 "Got %d episodes from client for podcast %s", len(episodes), prov_podcast_id
             )
-
             for episode_data in episodes:
                 episode_item = self._convert_episode(episode_data, prov_podcast_id)
                 if episode_item:
                     yield episode_item
-
         except Exception as err:
             LOGGER.error("Error getting episodes for podcast %s: %s", prov_podcast_id, err)
 
@@ -380,3 +389,29 @@ class PocketCastsProvider(MusicProvider):
                 LOGGER.debug("Error searching Pocket Casts: %s", err)
 
         return results
+
+    async def get_podcast_episode(self, prov_item_id: str) -> PodcastEpisode:
+        """Get full podcast episode details by id."""
+        if not self._client:
+            msg = "Client not available"
+            raise MediaNotFoundError(msg)
+
+        # prov_item_id format is "podcast_uuid:episode_uuid"
+        podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
+
+        LOGGER.debug("Getting episode %s from podcast %s", episode_uuid, podcast_uuid)
+
+        # Fetch all episodes for the podcast
+        episodes = await self._client.get_podcast_episodes(podcast_uuid)
+
+        # Find the specific episode
+        for episode_data in episodes:
+            if episode_data["uuid"] == episode_uuid:
+                episode_item = self._convert_episode(episode_data, podcast_uuid)
+                if episode_item:
+                    return episode_item
+                msg = f"Failed to convert episode {episode_uuid}"
+                raise MediaNotFoundError(msg)
+
+        msg = f"Episode {episode_uuid} not found in podcast {podcast_uuid}"
+        raise MediaNotFoundError(msg)

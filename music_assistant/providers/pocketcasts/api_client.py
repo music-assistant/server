@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
@@ -111,22 +111,15 @@ class PocketCastsClient:
 
             async with self.session.get(
                 f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
-                allow_redirects=True,  # Explicitly enable redirects
+                allow_redirects=True,
             ) as response:
-                LOGGER.debug("Response status: %d", response.status)
-                LOGGER.debug("Response URL: %s", response.url)
-                LOGGER.debug("Response headers: %s", dict(response.headers))
-
                 if response.status == 200:
-                    text = await response.text()
-                    LOGGER.debug("Response text length: %d", len(text))
-                    LOGGER.debug("First 500 chars: %s", text[:500])
-
                     data = await response.json()
-                    LOGGER.debug("JSON keys: %s", list(data.keys()))
 
-                    # Episodes are at root level, not nested
-                    episodes: list[dict[str, Any]] = data.get("episodes", [])
+                    # Episodes are nested inside the podcast object
+                    podcast_obj = data.get("podcast", {})
+                    episodes: list[dict[str, Any]] = podcast_obj.get("episodes", [])
+
                     LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
                     return episodes
                 else:
@@ -247,8 +240,10 @@ class PocketCastsClient:
 
                     if response.status == 200:
                         result = await response.json()
-                        LOGGER.debug("Got podcast details: %s", result)
-                        return result.get("podcast")
+                        podcast_data = result.get("podcast")
+                        if podcast_data is not None:
+                            return cast("dict[str, Any]", podcast_data)
+                        return None
 
             LOGGER.debug("All podcast detail endpoints returned 404")
             return None
