@@ -340,9 +340,6 @@ class PandoraProvider(MusicProvider):
         except ValueError:
             return web.Response(status=400, text="Invalid track_num")
 
-        queue_id = request.query.get("queue_id")
-        queue_item_id = request.query.get("queue_item_id")
-
         # Calculate which fragment and which track within that fragment
         fragment_idx = track_num // TRACKS_PER_FRAGMENT
         track_idx = track_num % TRACKS_PER_FRAGMENT
@@ -376,24 +373,24 @@ class PandoraProvider(MusicProvider):
                 return web.Response(status=404, text="No audio URL available")
 
             # Update metadata if we have queue context
-            if queue_id and queue_item_id:
-                queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
-                if queue_item and queue_item.streamdetails:
-                    # Get the best quality album art
-                    album_art_url = None
-                    if album_art := track.get("albumArt"):
-                        # Get the 500px version (good balance of quality/size)
-                        album_art_url = next(
-                            (art["url"] for art in album_art if art.get("size") == 500),
-                            album_art[-1]["url"] if album_art else None,
-                        )
-                    queue_item.streamdetails.stream_metadata = StreamMetadata(
-                        title=track.get("songTitle", "Unknown Song"),
-                        artist=track.get("artistName", "Unknown Artist"),
-                        album=track.get("albumTitle"),
-                        image_url=album_art_url,
-                        duration=track.get("trackLength"),
-                    )
+            #            if queue_id and queue_item_id:
+            #                queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+            #                if queue_item and queue_item.streamdetails:
+            #                    # Get the best quality album art
+            #                    album_art_url = None
+            #                    if album_art := track.get("albumArt"):
+            #                        # Get the 500px version (good balance of quality/size)
+            #                        album_art_url = next(
+            #                           (art["url"] for art in album_art if art.get("size") == 500),
+            #                           album_art[-1]["url"] if album_art else None,
+            #                        )
+            #                    queue_item.streamdetails.stream_metadata = StreamMetadata(
+            #                        title=track.get("songTitle", "Unknown Song"),
+            #                        artist=track.get("artistName", "Unknown Artist"),
+            #                        album=track.get("albumTitle"),
+            #                        image_url=album_art_url,
+            #                        duration=track.get("trackLength"),
+            #                    )
             # Redirect to the actual audio URL
             return web.Response(status=302, headers={"Location": audio_url})
 
