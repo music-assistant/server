@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -59,6 +60,10 @@ POCKETCASTS_PODCAST_FULL_URL = "https://podcast-api.pocketcasts.com/podcast/full
 # Episode progress API endpoints
 POCKETCASTS_PODCAST_EPISODES_URL = f"{POCKETCASTS_API_BASE}/user/podcast/episodes"
 POCKETCASTS_SYNC_UPDATE_EPISODE_URL = f"{POCKETCASTS_API_BASE}/sync/update_episode"
+POCKETCASTS_IN_PROGRESS_URL = f"{POCKETCASTS_API_BASE}/user/in_progress"
+
+# Browse path constants
+BROWSE_IN_PROGRESS = "in_progress"
 
 # Artwork URL pattern
 POCKETCASTS_ARTWORK_URL = "https://static.pocketcasts.com/discover/images/webp/200/{uuid}.webp"
@@ -411,6 +416,135 @@ class PocketCastsProvider(MusicProvider):
                 return self._parse_podcast(podcast_data)
 
         raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
+
+    async def browse(self, path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this provider's items.
+
+        :param path: The path to browse, (e.g. provider_id://in_progress).
+        """
+        base = f"{self.instance_id}://"
+
+        if path == base or not path.startswith(base):
+            # Return root browse folders - add In Progress before default folders
+            default_folders = await super().browse(path)
+            in_progress_folder = BrowseFolder(
+                item_id=BROWSE_IN_PROGRESS,
+                provider=self.domain,
+                path=f"{base}{BROWSE_IN_PROGRESS}",
+                name="In Progress",
+            )
+            return [in_progress_folder, *default_folders]
+
+        # Parse subpath
+        subpath = path[len(base) :]
+
+        if subpath == BROWSE_IN_PROGRESS:
+            return list(await self._get_in_progress_episodes())
+
+        # Fall back to default browse handling
+        return list(await super().browse(path))
+
+    async def _get_in_progress_episodes(self) -> list[PodcastEpisode]:
+        """Fetch episodes currently in progress from Pocket Casts.
+
+        :return: List of PodcastEpisode items with resume positions set.
+        """
+        headers = await self._get_headers()
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_IN_PROGRESS_URL,
+            headers=headers,
+            json={},
+        ) as response:
+            if response.status != 200:
+                self.logger.warning("Failed to fetch in-progress episodes: %s", response.status)
+                return []
+
+            data = await response.json()
+
+        episodes: list[PodcastEpisode] = []
+        for ep_data in data.get("episodes", []):
+            try:
+                episode = self._parse_in_progress_episode(ep_data)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse in-progress episode %s: %s",
+                    ep_data.get("uuid", "unknown"),
+                    err,
+                )
+
+        return episodes
+
+    def _parse_in_progress_episode(self, ep_data: dict[str, Any]) -> PodcastEpisode:
+        """Parse an in-progress episode from API response.
+
+        :param ep_data: Episode data from /user/in_progress API.
+        :return: Parsed PodcastEpisode.
+        """
+        episode_uuid = ep_data["uuid"]
+        podcast_uuid = ep_data.get("podcastUuid", "")
+        title = ep_data.get("title", "Unknown Episode")
+        podcast_title = ep_data.get("podcastTitle", "Unknown Podcast")
+
+        # Episode ID format: "{podcast_uuid} {episode_uuid}" (matching main parser)
+        episode_id = f"{podcast_uuid} {episode_uuid}"
+
+        # Duration in seconds
+        duration = ep_data.get("duration", 0)
+
+        # Resume position - playedUpTo is in seconds
+        played_up_to = ep_data.get("playedUpTo", 0)
+        resume_position_ms = int(played_up_to * 1000) if played_up_to else None
+
+        # Build images from podcast UUID
+        images: UniqueList[MediaItemImage] = UniqueList()
+        if podcast_uuid:
+            artwork_url = POCKETCASTS_ARTWORK_URL.format(uuid=podcast_uuid)
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artwork_url,
+                    provider=self.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        # Create provider mapping
+        provider_mapping = ProviderMapping(
+            item_id=episode_id,
+            provider_domain=self.domain,
+            provider_instance=self.instance_id,
+            available=True,
+            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            url=ep_data.get("url", ""),
+        )
+
+        # Create metadata
+        metadata = MediaItemMetadata(
+            description=ep_data.get("showNotes"),
+            images=images if images else None,
+        )
+
+        # Create podcast item mapping for the parent podcast
+        podcast_mapping = ItemMapping(
+            media_type=MediaType.PODCAST,
+            item_id=podcast_uuid,
+            provider=self.lookup_key,
+            name=podcast_title,
+        )
+
+        return PodcastEpisode(
+            item_id=episode_id,
+            provider=self.lookup_key,
+            name=title,
+            duration=duration,
+            position=0,
+            podcast=podcast_mapping,
+            provider_mappings={provider_mapping},
+            metadata=metadata,
+            resume_position_ms=resume_position_ms,
+        )
 
     async def _get_podcast_episodes_data(
         self, podcast_uuid: str
