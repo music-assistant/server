@@ -62,10 +62,14 @@ POCKETCASTS_PODCAST_EPISODES_URL = f"{POCKETCASTS_API_BASE}/user/podcast/episode
 POCKETCASTS_SYNC_UPDATE_EPISODE_URL = f"{POCKETCASTS_API_BASE}/sync/update_episode"
 POCKETCASTS_IN_PROGRESS_URL = f"{POCKETCASTS_API_BASE}/user/in_progress"
 POCKETCASTS_STARRED_URL = f"{POCKETCASTS_API_BASE}/user/starred"
+POCKETCASTS_NEW_RELEASES_URL = f"{POCKETCASTS_API_BASE}/user/new_releases"
+POCKETCASTS_HISTORY_URL = f"{POCKETCASTS_API_BASE}/user/history"
 
 # Browse path constants
 BROWSE_IN_PROGRESS = "in_progress"
 BROWSE_STARRED = "starred"
+BROWSE_NEW_RELEASES = "new_releases"
+BROWSE_HISTORY = "history"
 
 # Artwork URL pattern
 POCKETCASTS_ARTWORK_URL = "https://static.pocketcasts.com/discover/images/webp/200/{uuid}.webp"
@@ -441,7 +445,25 @@ class PocketCastsProvider(MusicProvider):
                 path=f"{base}{BROWSE_STARRED}",
                 name="Starred",
             )
-            return [in_progress_folder, starred_folder, *default_folders]
+            new_releases_folder = BrowseFolder(
+                item_id=BROWSE_NEW_RELEASES,
+                provider=self.domain,
+                path=f"{base}{BROWSE_NEW_RELEASES}",
+                name="New Releases",
+            )
+            history_folder = BrowseFolder(
+                item_id=BROWSE_HISTORY,
+                provider=self.domain,
+                path=f"{base}{BROWSE_HISTORY}",
+                name="History",
+            )
+            return [
+                in_progress_folder,
+                new_releases_folder,
+                starred_folder,
+                history_folder,
+                *default_folders,
+            ]
 
         # Parse subpath
         subpath = path[len(base) :]
@@ -452,8 +474,78 @@ class PocketCastsProvider(MusicProvider):
         if subpath == BROWSE_STARRED:
             return list(await self._get_starred_episodes())
 
+        if subpath == BROWSE_NEW_RELEASES:
+            return list(await self._get_new_releases_episodes())
+
+        if subpath == BROWSE_HISTORY:
+            return list(await self._get_history_episodes())
+
         # Fall back to default browse handling
         return list(await super().browse(path))
+
+    async def _get_history_episodes(self) -> list[PodcastEpisode]:
+        """Fetch recently played episodes from Pocket Casts.
+
+        :return: List of recently played PodcastEpisode items (up to 100).
+        """
+        headers = await self._get_headers()
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_HISTORY_URL,
+            headers=headers,
+            json={},
+        ) as response:
+            if response.status != 200:
+                self.logger.warning("Failed to fetch history: %s", response.status)
+                return []
+
+            data = await response.json()
+
+        episodes: list[PodcastEpisode] = []
+        for ep_data in data.get("episodes", []):
+            try:
+                episode = self._parse_browse_episode(ep_data)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse history episode %s: %s",
+                    ep_data.get("uuid", "unknown"),
+                    err,
+                )
+
+        return episodes
+
+    async def _get_new_releases_episodes(self) -> list[PodcastEpisode]:
+        """Fetch new release episodes from Pocket Casts.
+
+        :return: List of new release PodcastEpisode items.
+        """
+        headers = await self._get_headers()
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_NEW_RELEASES_URL,
+            headers=headers,
+            json={},
+        ) as response:
+            if response.status != 200:
+                self.logger.warning("Failed to fetch new releases: %s", response.status)
+                return []
+
+            data = await response.json()
+
+        episodes: list[PodcastEpisode] = []
+        for ep_data in data.get("episodes", []):
+            try:
+                episode = self._parse_browse_episode(ep_data)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse new release episode %s: %s",
+                    ep_data.get("uuid", "unknown"),
+                    err,
+                )
+
+        return episodes
 
     async def _get_starred_episodes(self) -> list[PodcastEpisode]:
         """Fetch starred episodes from Pocket Casts.
