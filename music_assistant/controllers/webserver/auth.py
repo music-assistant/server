@@ -1,7 +1,4 @@
-"""Authentication manager for Music Assistant webserver.
-
-This is NOT a CoreController - it's a component of the webserver controller.
-"""
+"""Authentication manager for Music Assistant webserver."""
 
 from __future__ import annotations
 
@@ -25,7 +22,12 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import CONF_ONBOARD_DONE, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_AUTH_ALLOW_SELF_REGISTRATION,
+    CONF_ONBOARD_DONE,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -54,9 +56,6 @@ DB_SCHEMA_VERSION = 1
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
 TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
-
-# Config keys (defined in controller.py to avoid circular import)
-CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
 
 
 class AuthenticationManager:

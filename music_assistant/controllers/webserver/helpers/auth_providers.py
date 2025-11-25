@@ -138,10 +138,18 @@ class BuiltinLoginProvider(LoginProvider):
         if not username or not password:
             return AuthResult(success=False, error="Username and password required")
 
-        # Hash the password to use as provider_user_id
-        password_hash = self._hash_password(password, username)
+        # First, look up user by username to get user_id
+        # This is needed to create the password hash with user_id in the salt
+        user_row = await self.auth_manager.database.get_row("users", {"username": username})
+        if not user_row:
+            return AuthResult(success=False, error="Invalid username or password")
 
-        # Try to find user by provider link
+        user_id = user_row["user_id"]
+
+        # Hash the password using user_id for enhanced security
+        password_hash = self._hash_password(password, user_id)
+
+        # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, password_hash
         )
@@ -177,8 +185,8 @@ class BuiltinLoginProvider(LoginProvider):
             display_name=display_name,
         )
 
-        # Hash password and link to provider
-        password_hash = self._hash_password(password, username)
+        # Hash password using user_id for enhanced security
+        password_hash = self._hash_password(password, user.user_id)
         await self.auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, password_hash)
 
         return user
@@ -191,8 +199,8 @@ class BuiltinLoginProvider(LoginProvider):
         :param old_password: Current password for verification.
         :param new_password: The new password.
         """
-        # Verify old password first
-        old_password_hash = self._hash_password(old_password, user.username)
+        # Verify old password first using user_id
+        old_password_hash = self._hash_password(old_password, user.user_id)
         existing_user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, old_password_hash
         )
@@ -200,8 +208,8 @@ class BuiltinLoginProvider(LoginProvider):
         if not existing_user or existing_user.user_id != user.user_id:
             return False
 
-        # Update password link
-        new_password_hash = self._hash_password(new_password, user.username)
+        # Update password link with new hash using user_id
+        new_password_hash = self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
@@ -215,19 +223,21 @@ class BuiltinLoginProvider(LoginProvider):
         :param user: The user whose password to reset.
         :param new_password: The new password.
         """
-        # Hash new password and update provider link
-        new_password_hash = self._hash_password(new_password, user.username)
+        # Hash new password using user_id and update provider link
+        new_password_hash = self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
 
-    def _hash_password(self, password: str, salt: str) -> str:
+    def _hash_password(self, password: str, user_id: str) -> str:
         """
-        Hash password with salt.
+        Hash password with salt combining user ID and server ID.
 
         :param password: Plain text password.
-        :param salt: Salt (using username as salt).
+        :param user_id: User ID to include in salt (random token for high entropy).
         """
+        # Combine user_id (random) and server_id for maximum security
+        salt = f"{user_id}:{self.mass.server_id}"
         return hashlib.pbkdf2_hmac(
             "sha256", password.encode(), salt.encode(), iterations=100000
         ).hex()

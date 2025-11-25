@@ -103,8 +103,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.register_api_command(
             f"music/{api_base}/get_{self.media_type}", self.get, alias=True
         )
-        self.mass.register_api_command(f"music/{api_base}/update", self.update_item_in_library)
-        self.mass.register_api_command(f"music/{api_base}/remove", self.remove_item_from_library)
+        self.mass.register_api_command(
+            f"music/{api_base}/update", self.update_item_in_library, required_role="admin"
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/remove", self.remove_item_from_library, required_role="admin"
+        )
         self._db_add_lock = asyncio.Lock()
 
     async def add_item_to_library(

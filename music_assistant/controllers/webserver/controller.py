@@ -23,11 +23,12 @@ from aiohttp import ClientTimeout, web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, User, UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
+    CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_ONBOARD_DONE,
@@ -59,7 +60,6 @@ if TYPE_CHECKING:
 DEFAULT_SERVER_PORT = 8095
 INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
-CONF_AUTH_ALLOW_SELF_REGISTRATION = "auth_allow_self_registration"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
@@ -351,8 +351,17 @@ class WebserverController(CoreController):
 
         # Check authentication if required
         if handler.authenticated or handler.required_role:
-            # Skip auth for ingress requests (HA handles it)
-            if not is_request_from_ingress(request):
+            if is_request_from_ingress(request):
+                # Ingress authentication (Home Assistant)
+                user = await self._get_ingress_user(request)
+                if not user:
+                    # This should not happen - ingress requests should have user headers
+                    return web.Response(
+                        status=401,
+                        text="Ingress authentication failed - missing user information",
+                    )
+            else:
+                # Regular authentication (non-ingress)
                 try:
                     user = await get_authenticated_user(request)
                 except Exception as e:
@@ -370,15 +379,13 @@ class WebserverController(CoreController):
                         headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
                     )
 
-                # Set user in context for API methods
-                set_current_user(user)
-
-                # Check role if required
-                if handler.required_role == "admin" and user.role != UserRole.ADMIN:
-                    return web.Response(
-                        status=403,
-                        text="Admin access required",
-                    )
+            # Set user in context and check role
+            set_current_user(user)
+            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
+                return web.Response(
+                    status=403,
+                    text="Admin access required",
+                )
 
         try:
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
@@ -394,7 +401,7 @@ class WebserverController(CoreController):
             error_type = type(e).__name__
             error_msg = str(e)
             error = f"{error_type}: {error_msg}"
-            self.logger.error("Error executing command %s: %s", command_msg.command, error)
+            self.logger.exception("Error executing command %s: %s", command_msg.command, error)
             return web.Response(status=500, text=error)
 
     async def _handle_application_log(self, request: web.Request) -> web.Response:
@@ -450,8 +457,8 @@ class WebserverController(CoreController):
 
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page."""
-        # If no users exist, redirect to setup
-        if not await self.auth.has_users():
+        # If not yet onboarded, redirect to setup
+        if not self.mass.config.onboard_done or not await self.auth.has_users():
             return_url = request.query.get("return_url", "")
             device_name = request.query.get("device_name", "")
             setup_url = (
@@ -882,6 +889,50 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+    async def _get_ingress_user(self, request: web.Request) -> User | None:
+        """
+        Get or create user for ingress (Home Assistant) requests.
+
+        Extracts user information from Home Assistant ingress headers and either
+        finds the existing linked user or creates a new one.
+
+        :param request: The web request with HA ingress headers.
+        :return: User object or None if headers are missing.
+        """
+        ingress_user_id = request.headers.get("X-Remote-User-ID")
+        ingress_username = request.headers.get("X-Remote-User-Name")
+        ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
+
+        if not ingress_user_id or not ingress_username:
+            # No user headers available
+            return None
+
+        # Try to find existing user linked to this HA user ID
+        user = await self.auth.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, ingress_user_id
+        )
+
+        if not user:
+            # Security: Ensure at least one user exists (setup should have been completed)
+            if not await self.auth.has_users():
+                self.logger.warning("Ingress request attempted before setup completed")
+                return None
+
+            # Auto-create user for Ingress (they're already authenticated by HA)
+            # Always create with USER role (admin is created during setup)
+            user = await self.auth.create_user(
+                username=ingress_username,
+                role=UserRole.USER,
+                display_name=ingress_display_name,
+            )
+            # Link to Home Assistant provider
+            await self.auth.link_user_to_provider(
+                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+            )
+            self.logger.info("Auto-created ingress user: %s", ingress_username)
+
+        return user
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
