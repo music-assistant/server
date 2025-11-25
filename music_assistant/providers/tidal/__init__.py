@@ -71,6 +71,10 @@ async def get_config_entries(
             quality = str(values.get(CONF_QUALITY))
             base64_session = await TidalAuthManager.generate_auth_url(auth_helper, quality)
             values[CONF_TEMP_SESSION] = base64_session
+            # Tidal is using the ManualAuthenticationHelper just to send the user to an URL
+            # there is no actual oauth callback happening, instead the user is redirected
+            # to a non-existent page and needs to copy the URL from the browser and paste it
+            # we simply wait here to allow the user to start the auth
             await asyncio.sleep(15)
 
     if action == CONF_ACTION_COMPLETE_PKCE_LOGIN:
@@ -103,12 +107,15 @@ async def get_config_entries(
                 key=CONF_ACTION_CLEAR_AUTH,
                 type=ConfigEntryType.ACTION,
                 label="Reset authentication",
+                description="Reset the authentication for Tidal",
                 action=CONF_ACTION_CLEAR_AUTH,
+                value=None,
             ),
             ConfigEntry(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
                 label="Quality setting for Tidal:",
+                description="High = 16bit 44.1kHz\n\nMax = Up to 24bit 192kHz",
                 options=[
                     ConfigValueOption("High", "LOSSLESS"),
                     ConfigValueOption("Max", "HI_RES_LOSSLESS"),
@@ -123,6 +130,7 @@ async def get_config_entries(
                 type=ConfigEntryType.STRING,
                 label="Quality setting for Tidal:",
                 required=True,
+                description="High = 16bit 44.1kHz\n\nMax = Up to 24bit 192kHz",
                 options=[
                     ConfigValueOption("High", "LOSSLESS"),
                     ConfigValueOption("Max", "HI_RES_LOSSLESS"),
@@ -132,17 +140,22 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_START_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
-                label="After authenticating, you will be redirected to a page that prominently"
-                " displays 'Page Not Found' at the top. That is normal, you need to copy that URL"
-                " from the address bar and come back here",
+                label="The button below will redirect you to Tidal.com to authenticate.\n\n"
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Page Not Found' at the top. That is normal, you need to copy that URL from the "
+                "address bar and come back here",
                 hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_ACTION_START_PKCE_LOGIN,
                 type=ConfigEntryType.ACTION,
                 label="Starts the auth process via PKCE on Tidal.com",
+                description="This button will redirect you to Tidal.com to authenticate."
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Page Not Found' at the top.",
                 action=CONF_ACTION_START_PKCE_LOGIN,
                 depends_on=CONF_QUALITY,
+                action_label="Starts the auth process via PKCE on Tidal.com",
                 value=cast("str", values.get(CONF_TEMP_SESSION)) if values else None,
                 hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
@@ -157,13 +170,17 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_OOPS_URL,
                 type=ConfigEntryType.LABEL,
-                label="Copy the URL from the 'Page Not Found' page and paste into the field below.",
+                label="Copy the URL from the 'Page Not Found' page that you were previously"
+                " redirected to and paste it in the field below",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_OOPS_URL,
                 type=ConfigEntryType.STRING,
                 label="Oops URL from Tidal redirect",
+                description="This field should be filled manually by you after authenticating on"
+                " Tidal.com and being redirected to a page that prominently displays"
+                " 'Page Not Found' at the top.",
                 depends_on=CONF_ACTION_START_PKCE_LOGIN,
                 value=cast("str", values.get(CONF_OOPS_URL)) if values else None,
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
@@ -179,19 +196,24 @@ async def get_config_entries(
                 key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.ACTION,
                 label="Complete the auth process via PKCE on Tidal.com",
+                description="Click this after adding the 'Page Not Found' URL above, this will"
+                " complete the authentication process.",
                 action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 depends_on=CONF_OOPS_URL,
+                action_label="Complete the auth process via PKCE on Tidal.com",
                 value=None,
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
         )
 
+    # return the auth_data config entry
     return (
         *auth_entries,
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Tidal",
+            description="You need to link Music Assistant to your Tidal account.",
             hidden=True,
             value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
         ),
@@ -199,6 +221,7 @@ async def get_config_entries(
             key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Refresh token for Tidal",
+            description="You need to link Music Assistant to your Tidal account.",
             hidden=True,
             value=cast("str", values.get(CONF_REFRESH_TOKEN)) if values else None,
         ),
@@ -213,6 +236,7 @@ async def get_config_entries(
             key=CONF_USER_ID,
             type=ConfigEntryType.STRING,
             label="Your Tidal User ID",
+            description="This is your unique Tidal user ID.",
             hidden=True,
             value=cast("str", values.get(CONF_USER_ID)) if values else None,
         ),
