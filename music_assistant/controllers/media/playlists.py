@@ -420,7 +420,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    @guard_single_request  # type: ignore[type-var]  # TODO: fix typing for PlaylistController
+    @guard_single_request  # type: ignore[type-var]  # TODO: fix typing in util.py
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
