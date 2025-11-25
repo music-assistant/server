@@ -701,7 +701,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     if not input_file.startswith(("http://", "https://")) and os.path.isfile(input_file):
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
-        if ext in ("wv", "ape", "mpc", "tak", "ofr"):
+        if _format_uses_apev2(ext):
             if img_data := await asyncio.to_thread(get_apev2_image, input_file):
                 return img_data
 
