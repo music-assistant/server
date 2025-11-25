@@ -18,15 +18,15 @@ dependencies = [
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
-  "certifi==2025.10.5",
+  "certifi==2025.11.12",
   "colorlog==6.10.1",
   "cryptography==46.0.3",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "get-mac==0.9.2",
-  "mashumaro==3.16",
-  "music-assistant-frontend==2.17.8",
-  "music-assistant-models==1.1.68",
+  "mashumaro==3.17",
+  "music-assistant-frontend==2.17.9",
+  "music-assistant-models==1.1.70",
   "mutagen==1.47.0",
   "orjson==3.11.4",
   "pillow==11.3.0",
@@ -60,7 +60,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
   "tomli==2.3.0",
-  "ruff==0.14.4",
+  "ruff==0.14.6",
 ]
 
 [project.scripts]
@@ -130,12 +130,8 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/media/base.py*$',
-  '^music_assistant/controllers/media/playlists.py*$',
-  '^music_assistant/controllers/media/podcasts.py*$',
   '^music_assistant/controllers/media/tracks.py*$',
   '^music_assistant/controllers/music.py$',
-  '^music_assistant/controllers/player_queues.py$',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
