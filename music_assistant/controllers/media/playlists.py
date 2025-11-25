@@ -40,8 +40,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/create_playlist", self.create_playlist)
-        # TODO: This is a type mismatch that requires a logic change to fix properly
-        self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)  # type: ignore[arg-type]
+        self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks", self.add_playlist_tracks
         )
@@ -116,9 +115,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise ProviderUnavailableError
         else:
             provider = self.mass.get_provider("builtin")
-
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
+
         if "/" in name or "\\" in name or ".." in name:
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
@@ -127,16 +126,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # add the new playlist to the library
         return await self.add_item_to_library(playlist, False)
 
-    async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:  # noqa: PLR0915
+    async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add tracks to playlist."""
+        # ruff: noqa: PLR0915
         db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
         if not playlist:
-            raise MediaNotFoundError(f"Playlist with id {db_id} not found")
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
         if not playlist.is_editable:
-            raise InvalidDataError(f"Playlist {playlist.name} is not editable")
-
-        # grab provider for the playlist
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
+        # Validate uris to prevent code injection
+        for uri in uris:
+            # Prevent code injection via newlines in URIs
+            if "\n" in uri or "\r" in uri:
+                msg = "Invalid URI: newlines not allowed"
+                raise InvalidProviderURI(msg)
+            await parse_uri(uri)
+        # grab all existing track ids in the playlist so we can check for duplicates
         playlist_prov_map = next(iter(playlist.provider_mappings))
         playlist_prov = self.mass.get_provider(playlist_prov_map.provider_instance)
         if not playlist_prov or not playlist_prov.available:
@@ -171,7 +179,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             provider_instance_id_or_domain, rest = uri.split("://", 1)
             media_type_str, item_id = rest.split("/", 1)
             media_type = MediaType(media_type_str)
-
             if media_type == MediaType.ALBUM:
                 album_tracks = await self.mass.music.albums.tracks(
                     item_id, provider_instance_id_or_domain
@@ -179,12 +186,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 for track in album_tracks:
                     if track.uri is not None:
                         unwrapped_uris.append(track.uri)
-
             elif media_type == MediaType.PLAYLIST:
                 async for track in self.tracks(item_id, provider_instance_id_or_domain):
                     if track.uri is not None:
                         unwrapped_uris.append(track.uri)
-
             elif media_type == MediaType.TRACK:
                 unwrapped_uris.append(uri)
             else:
