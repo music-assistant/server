@@ -21,11 +21,9 @@ from pydantic import ValidationError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.nicovideo.constants import ApiPriority
 from music_assistant.providers.nicovideo.converters.manager import (
     NicovideoConverterManager,
 )
-from music_assistant.providers.nicovideo.helpers import log_verbose
 from music_assistant.providers.nicovideo.services.auth import NicovideoAuthService
 from music_assistant.providers.nicovideo.services.mylist import NicovideoMylistService
 from music_assistant.providers.nicovideo.services.search import NicovideoSearchService
@@ -48,8 +46,6 @@ class NicovideoServiceManager:
         self.reset_niconico_py_client()
 
         self.niconico_api_throttler = ThrottlerManager(rate_limit=5, period=1)
-        # Low priority throttler for background tag updates (slower rate)
-        self.niconico_api_throttler_low_priority = ThrottlerManager(rate_limit=1, period=1)
 
         self.logger = provider.logger
 
@@ -67,31 +63,6 @@ class NicovideoServiceManager:
     def reset_niconico_py_client(self) -> None:
         """Reset the niconico.py client instance."""
         self.niconico_py_client = NicoNico()
-
-    def _safe_summarize(self, value: object) -> str:
-        """Summarize a value safely for logs (mask secrets, truncate long)."""
-        try:
-            s = str(value)
-        except Exception:
-            return "<unprintable>"
-        low = s.lower()
-        if any(k in low for k in ("cookie", "token", "session", "password")):
-            return "<masked>"
-        return (s[:200] + "…") if len(s) > 200 else s
-
-    def _summarize_call_args(
-        self, args: tuple[object, ...], kwargs: dict[str, object]
-    ) -> tuple[str, str]:
-        """Create safe summaries for positional and keyword args."""
-        try:
-            arg_summary = ", ".join(self._safe_summarize(a) for a in args)
-        except Exception:
-            arg_summary = "<args>"
-        try:
-            kw_summary = ", ".join(f"{k}={self._safe_summarize(v)}" for k, v in kwargs.items())
-        except Exception:
-            kw_summary = "<kwargs>"
-        return arg_summary, kw_summary
 
     def _extract_caller_info(self) -> str:
         """Extract best-effort caller info file:function:line for diagnostics."""
@@ -152,42 +123,10 @@ class NicovideoServiceManager:
         **kwargs: P.kwargs,
     ) -> T | None:
         """Call function with API throttling."""
-        return await self._call_with_throttler_with_priority(
-            ApiPriority.HIGH, func, *args, **kwargs
-        )
-
-    async def _call_with_throttler_with_priority[T, **P](
-        self,
-        priority: ApiPriority,
-        func: Callable[P, T],
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> T | None:
-        """Call function with API throttling (unified method with priority support)."""
-        if priority == ApiPriority.HIGH:
-            throttler = self.niconico_api_throttler
-            throttler_name = "high_priority"
-        else:  # ApiPriority.LOW
-            throttler = self.niconico_api_throttler_low_priority
-            throttler_name = "low_priority"
-
-        operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
-        arg_summary, kw_summary = self._summarize_call_args(args, kwargs)
-        log_verbose(
-            self.logger,
-            "Acquire %s throttler for %s(%s%s%s)",
-            throttler_name,
-            operation,
-            arg_summary,
-            ", " if arg_summary and kw_summary else "",
-            kw_summary,
-        )
-
         try:
-            async with throttler.acquire():
-                result = await asyncio.to_thread(func, *args, **kwargs)
-                log_verbose(self.logger, "%s succeeded (priority=%s)", operation, throttler_name)
-                return result
+            async with self.niconico_api_throttler.acquire():
+                return await asyncio.to_thread(func, *args, **kwargs)
         except Exception as err:
+            operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
             self._log_call_exception(operation, err)
             return None
