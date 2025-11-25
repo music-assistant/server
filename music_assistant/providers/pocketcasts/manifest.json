@@ -1,0 +1,11 @@
+{
+  "domain": "pocketcasts",
+  "name": "Pocketcasts",
+  "description": "Stream podcasts from Pocketcasts.",
+  "documentation": "https://music-assistant.io/music-providers/pocketcasts/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false,
+  "stage": "beta"
+}
