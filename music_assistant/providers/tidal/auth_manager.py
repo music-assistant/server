@@ -126,7 +126,7 @@ class TidalAuthManager:
             return False
 
         # Check if token is expired
-        expires_at = self._auth_info.get("expires_at", 0)  # type: ignore[unreachable]
+        expires_at = self._auth_info.get("expires_at", 0)
         if expires_at > time.time() + TOKEN_REFRESH_BUFFER:
             return True
 
