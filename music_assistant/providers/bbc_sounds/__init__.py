@@ -720,8 +720,7 @@ class BBCSoundsProvider(MusicProvider):
             return ma_podcast
         raise MusicAssistantError("Incorrect format for podcast")
 
-    @use_cache(expiration=_Constants.SHORT_EXPIRATION)  # type: ignore[arg-type]
-    async def get_podcast_episodes(  # type: ignore[override]
+    async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
