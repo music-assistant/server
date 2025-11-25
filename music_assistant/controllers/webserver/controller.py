@@ -41,11 +41,7 @@ from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
-from .api_docs import (
-    generate_commands_json,
-    generate_openapi_spec,
-    generate_schemas_json,
-)
+from .api_docs import generate_commands_json, generate_openapi_spec, generate_schemas_json
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
@@ -86,7 +82,6 @@ class WebserverController(CoreController):
         )
         self.manifest.icon = "web-box"
         self.auth = AuthenticationManager(self)
-        self._ha_integration_token: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -894,16 +889,14 @@ class WebserverController(CoreController):
         addon_hostname = os.environ["HOSTNAME"]
 
         # Get or create auth token for the HA system user
-        # We cache the token in memory to avoid database queries on every announcement
-        if not self._ha_integration_token:
-            self._ha_integration_token = await self.auth.get_homeassistant_system_user_token()
+        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
 
         discovery_payload = {
             "service": "music_assistant",
             "config": {
                 "host": addon_hostname,
-                "port": 8094,
-                "auth_token": self._ha_integration_token,
+                "port": INGRESS_SERVER_PORT,
+                "auth_token": ha_integration_token,
             },
         }
 
