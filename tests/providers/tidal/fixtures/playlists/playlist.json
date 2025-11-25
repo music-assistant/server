@@ -1,0 +1,23 @@
+{
+    "uuid": "aabbcc-1122-3344-5566",
+    "title": "Test Playlist",
+    "description": "A test playlist for testing",
+    "creator": {
+        "id": 99999,
+        "name": "Test User",
+        "picture": null
+    },
+    "type": "USER",
+    "publicPlaylist": true,
+    "created": "2023-01-01T00:00:00.000+0000",
+    "lastUpdated": "2023-06-15T12:00:00.000+0000",
+    "numberOfTracks": 25,
+    "numberOfVideos": 0,
+    "duration": 5400,
+    "popularity": 45,
+    "image": "playlist-image-id",
+    "squareImage": "playlist-square-image-id",
+    "url": "http://www.tidal.com/playlist/aabbcc-1122-3344-5566",
+    "promotedArtists": [],
+    "lastItemAddedAt": "2023-06-15T12:00:00.000+0000"
+}

@@ -1,0 +1,49 @@
+{
+    "id": 112233,
+    "title": "Test Track",
+    "version": "Remastered",
+    "duration": 180,
+    "replayGain": -8.5,
+    "peak": 0.95,
+    "allowStreaming": true,
+    "streamReady": true,
+    "streamStartDate": "2023-01-01T00:00:00.000+0000",
+    "premiumStreamingOnly": false,
+    "trackNumber": 1,
+    "volumeNumber": 1,
+    "isrc": "US1234567890",
+    "copyright": "℗ 2023 Test Label",
+    "artists": [
+        {
+            "id": 12345,
+            "name": "Test Artist",
+            "picture": "1234-5678-90ab-cdef",
+            "type": "MAIN"
+        }
+    ],
+    "album": {
+        "id": 67890,
+        "title": "Test Album",
+        "cover": "abcd-ef01-2345-6789",
+        "videoCover": null,
+        "releaseDate": "2023-01-01"
+    },
+    "explicit": false,
+    "audioQuality": "LOSSLESS",
+    "audioModes": [
+        "STEREO"
+    ],
+    "mediaMetadata": {
+        "tags": [
+            "LOSSLESS",
+            "HIRES_LOSSLESS"
+        ]
+    },
+    "popularity": 60,
+    "mixes": {
+        "TRACK_MIX": "track_mix_id_456"
+    },
+    "url": "http://www.tidal.com/track/112233",
+    "djReady": true,
+    "stemReady": false
+}

@@ -82,7 +82,7 @@ class TidalAuthManager:
         self.http_session = http_session
         self.update_config = config_updater
         self.logger = logger
-        self._auth_info = None
+        self._auth_info: dict[str, Any] | None = None
         self.user = TidalUser()
 
     async def initialize(self, auth_data: str) -> bool:
@@ -138,7 +138,7 @@ class TidalAuthManager:
         if not self._auth_info:
             return False
 
-        refresh_token = self._auth_info.get("refresh_token")  # type: ignore[unreachable]
+        refresh_token = self._auth_info.get("refresh_token")
         if not refresh_token:
             return False
 
