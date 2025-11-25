@@ -21,10 +21,12 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemMetadata,
     MediaItemType,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    SearchResults,
     UniqueList,
 )
 from music_assistant_models.provider import ProviderManifest
@@ -48,6 +50,7 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -118,59 +121,35 @@ class PocketCastsProvider(MusicProvider):
         if self._client and self._client.session:
             await self._client.session.close()
 
-    def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast | None:
-        """Convert Pocket Casts podcast data to MA Podcast object."""
-        try:
-            LOGGER.debug("Raw podcast data: %s", podcast_data)
-            podcast_uuid = podcast_data.get("uuid")
-            if not podcast_uuid:
-                return None
+    def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
+        """Convert API podcast data to Podcast object."""
+        # Extract podcast metadata from nested structure
+        podcast_info = podcast_data.get("podcast", podcast_data)  # Handle both structures
 
-            podcast_item = Podcast(
-                item_id=podcast_uuid,
-                provider=self.lookup_key,
-                name=podcast_data.get("title", "Unknown Podcast"),
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=podcast_uuid,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
-            )
-            thumbnail_url = f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg"
-            podcast_item.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumbnail_url,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-            # Add metadata
-            if podcast_data.get("author"):
-                podcast_item.metadata.label = podcast_data["author"]
-            if podcast_data.get("description"):
-                podcast_item.metadata.description = podcast_data["description"]
-            if podcast_data.get("thumbnail_url"):
-                podcast_item.metadata.images = UniqueList(
+        return Podcast(
+            item_id=podcast_info["uuid"],
+            provider=self.domain,
+            name=podcast_info.get("title", ""),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=podcast_info["uuid"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                description=podcast_info.get("description"),
+                images=UniqueList(
                     [
                         MediaItemImage(
                             type=ImageType.THUMB,
-                            path=podcast_data["thumbnail_url"],
-                            provider=self.lookup_key,
-                            remotely_accessible=True,
+                            path=f"https://static.pocketcasts.com/discover/images/280/{podcast_info['uuid']}.jpg",
+                            provider=self.instance_id,
                         )
                     ]
-                )
-
-            return podcast_item
-
-        except Exception as err:
-            LOGGER.debug("Error converting podcast: %s", err)
-            return None
+                ),
+            ),
+        )
 
     def _convert_episode(
         self, episode_data: dict[str, Any], podcast_uuid: str
@@ -253,13 +232,36 @@ class PocketCastsProvider(MusicProvider):
             LOGGER.error("Error getting library podcasts: %s", err)
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get podcast details by ID."""
-        # For now, we'll fetch from library and find it
-        # In future, could add a dedicated get_podcast_details endpoint
+        """Get full podcast details."""
+        # First try library
         async for podcast in self.get_library_podcasts():
             if podcast.item_id == prov_podcast_id:
                 return podcast
-        raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
+
+        # Not in library - fetch from podcast-api which redirects to static JSON
+        LOGGER.debug("Podcast not in library, fetching from API: %s", prov_podcast_id)
+
+        if not self._client:
+            raise MediaNotFoundError("API client not initialized")
+
+        try:
+            # This endpoint returns a 302 redirect to the static JSON with timestamp
+            async with self._client.session.get(
+                f"https://podcast-api.pocketcasts.com/podcast/full/{prov_podcast_id}"
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return self._convert_podcast(data)
+                else:
+                    raise MediaNotFoundError(
+                        f"Podcast {prov_podcast_id} not found (status {response.status})"
+                    )
+
+        except Exception as err:
+            LOGGER.error("Error fetching podcast %s: %s", prov_podcast_id, err)
+            raise MediaNotFoundError(
+                f"podcast://{prov_podcast_id} not found on provider {self.domain}"
+            )
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -289,6 +291,8 @@ class PocketCastsProvider(MusicProvider):
 
         # Parse the path
         item_path = path.split("://", 1)[1] if "://" in path else path
+        LOGGER.debug("Browse called with path: %s, parsed to: %s", path, item_path)
+
         items: list[MediaItemType | BrowseFolder] = []
         if not item_path:
             # Root level - show subscribed podcasts
@@ -298,18 +302,22 @@ class PocketCastsProvider(MusicProvider):
                     podcast_item = self._convert_podcast(podcast_data)
                     if podcast_item:
                         items.append(podcast_item)
+                LOGGER.debug("Returning %d podcasts at root level", len(items))
                 return items
             except Exception as err:
                 LOGGER.exception("Error browsing podcasts: %s", err)
                 return []
         else:
             # Sub-path - show episodes for the podcast
+            LOGGER.debug("Fetching episodes for podcast: %s", item_path)
             try:
                 episodes = await self._client.get_podcast_episodes(item_path)
+                LOGGER.debug("Got %d episodes from API", len(episodes))
                 for episode_data in episodes:
                     episode_item = self._convert_episode(episode_data, item_path)
                     if episode_item:
                         items.append(episode_item)
+                LOGGER.debug("Converted %d episodes successfully", len(items))
                 return items
             except Exception as err:
                 LOGGER.exception("Error browsing episodes for %s: %s", item_path, err)
@@ -346,3 +354,29 @@ class PocketCastsProvider(MusicProvider):
                 )
 
         raise MediaNotFoundError(f"Episode {item_id} not found")
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """Search for podcasts."""
+        results = SearchResults()
+
+        if not self._client:
+            return results
+
+        if not media_types or MediaType.PODCAST in media_types:
+            try:
+                podcasts = await self._client.search_podcasts(search_query)
+
+                podcast_results = []
+                for podcast_data in podcasts[:limit]:
+                    podcast_item = self._convert_podcast(podcast_data)
+                    if podcast_item:
+                        podcast_results.append(podcast_item)
+
+                results.podcasts = podcast_results
+
+            except Exception as err:
+                LOGGER.debug("Error searching Pocket Casts: %s", err)
+
+        return results

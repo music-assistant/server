@@ -64,43 +64,11 @@ class PocketCastsClient:
                     raise LoginError("No token in login response")
 
                 LOGGER.info("Successfully logged in to Pocket Casts")
-                # Also login to play domain for episode access
-                LOGGER.info("Attempting to login to play.pocketcasts.com")
-                play_success = await self.login_play(email, password)
-                if not play_success:
-                    LOGGER.error("Failed to login to play domain - episodes may not work")
-                else:
-                    LOGGER.info("Successfully logged in to play domain")
                 return True
 
         except aiohttp.ClientError as err:
             LOGGER.error("Network error during login: %s", err)
             raise LoginError(f"Network error: {err}") from err
-
-    async def login_play(self, email: str, password: str) -> bool:
-        """Login to play.pocketcasts.com for episode access."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
-        try:
-            async with self.session.post(
-                "https://play.pocketcasts.com/users/sign_in",
-                data={"[user]email": email, "[user]password": password},
-            ) as response:
-                status = response.status
-                text = await response.text()
-                LOGGER.debug("Play login response status: %d", status)
-                LOGGER.debug("Play login response text: %s", text[:500])  # First 500 chars
-
-                if "Invalid email or password" in text:
-                    LOGGER.error("Play login rejected credentials")
-                    return False
-                # Cookies are automatically stored in session
-                LOGGER.info("Play login appeared successful")
-                return True
-        except Exception as err:
-            LOGGER.error("Error logging into play domain: %s", err)
-            return False
 
     def _headers(self) -> dict[str, str]:
         """Get headers with auth token."""
@@ -134,47 +102,40 @@ class PocketCastsClient:
             return []
 
     async def get_podcast_episodes(self, podcast_uuid: str) -> list[dict[str, Any]]:
-        """Get episodes for a specific podcast."""
+        """Get episodes for a specific podcast via API redirect."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        # Try multiple possible endpoints
-        endpoints_to_try = [
-            (f"{self.BASE_URL}/user/podcast/episodes", {"uuid": podcast_uuid}),
-            (f"{self.BASE_URL}/podcast/episodes", {"uuid": podcast_uuid}),
-            (f"{self.BASE_URL}/podcast/{podcast_uuid}/episodes", {}),
-            (f"{self.BASE_URL}/user/episodes", {"podcast_uuid": podcast_uuid}),
-        ]
+        try:
+            LOGGER.debug("Fetching episodes via API redirect for podcast %s", podcast_uuid)
 
-        for endpoint, data in endpoints_to_try:
-            try:
-                LOGGER.debug("Trying endpoint: %s with data: %s", endpoint, data)
+            async with self.session.get(
+                f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
+                allow_redirects=True,  # Explicitly enable redirects
+            ) as response:
+                LOGGER.debug("Response status: %d", response.status)
+                LOGGER.debug("Response URL: %s", response.url)
+                LOGGER.debug("Response headers: %s", dict(response.headers))
 
-                async with self.session.post(
-                    endpoint, headers=self._headers(), json=data if data else None
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        LOGGER.debug("Success! Response: %s", result)
-                        episodes: list[dict[str, Any]] = result.get("episodes", [])
-                        if episodes:
-                            LOGGER.info("Retrieved %d episodes from %s", len(episodes), endpoint)
-                            return episodes
-                    else:
-                        LOGGER.debug("Endpoint %s returned %d", endpoint, response.status)
+                if response.status == 200:
+                    text = await response.text()
+                    LOGGER.debug("Response text length: %d", len(text))
+                    LOGGER.debug("First 500 chars: %s", text[:500])
 
-            except Exception as err:
-                LOGGER.debug("Endpoint %s failed: %s", endpoint, err)
-                continue
+                    data = await response.json()
+                    LOGGER.debug("JSON keys: %s", list(data.keys()))
 
-        LOGGER.error("All episode endpoints failed for podcast %s", podcast_uuid)
-        # If no episodes returned, try getting the last episode directly
-        if not episodes and podcast_uuid == "2b1e5980-8a34-0132-ecdc-5f4c86fd3263":
-            last_ep_uuid = "ee604f1f-588a-4bee-9f88-0ddfaef8c12c"
-            episode = await self.get_single_episode(podcast_uuid, last_ep_uuid)
-            if episode:
-                return [episode]
-        return []
+                    # Episodes are at root level, not nested
+                    episodes: list[dict[str, Any]] = data.get("episodes", [])
+                    LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
+                    return episodes
+                else:
+                    LOGGER.error("Failed to get episodes: %d", response.status)
+                    return []
+
+        except Exception as err:
+            LOGGER.error("Error fetching episodes: %s", err)
+            return []
 
     async def get_in_progress_episodes(self) -> list[dict[str, Any]]:
         """Get episodes currently in progress."""
@@ -237,48 +198,61 @@ class PocketCastsClient:
             LOGGER.error("Error updating progress: %s", err)
             return False
 
-    async def refresh_podcast(self, podcast_uuid: str) -> bool:
-        """Refresh/sync a podcast to get latest episodes."""
+    async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
+        """Search for podcasts."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
         try:
+            LOGGER.debug("Searching for podcasts: %s", query)
+
+            # Try api domain first
             async with self.session.post(
-                f"{self.BASE_URL}/user/podcast/refresh",
-                headers=self._headers(),
-                json={"uuid": podcast_uuid},
+                f"{self.BASE_URL}/discover/search", headers=self._headers(), json={"term": query}
             ) as response:
-                return response.status == 200
-        except Exception as err:
-            LOGGER.error("Error refreshing podcast: %s", err)
-            return False
-
-    async def get_single_episode(
-        self, podcast_uuid: str, episode_uuid: str
-    ) -> dict[str, Any] | None:
-        """Get a single episode by UUID."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
-        try:
-            LOGGER.debug("Fetching single episode %s for podcast %s", episode_uuid, podcast_uuid)
-
-            async with self.session.post(
-                f"{self.BASE_URL}/user/podcast/episode",
-                headers=self._headers(),
-                json={"uuid": episode_uuid, "podcast_uuid": podcast_uuid},  # Add podcast_uuid
-            ) as response:
-                LOGGER.debug("Single episode response status: %d", response.status)
-
                 if response.status == 200:
                     data = await response.json()
-                    LOGGER.debug("Single episode response: %s", data)
-                    return data.get("episode")
+                    LOGGER.debug("Search response: %s", data)
+                    podcasts: list[dict[str, Any]] = data.get("podcasts", [])
+                    LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
+                    return podcasts
                 else:
                     text = await response.text()
-                    LOGGER.debug("Single episode failed: %s", text[:200])
+                    LOGGER.error("Search failed: %d - %s", response.status, text)
+                    return []
 
         except Exception as err:
-            LOGGER.exception("Error fetching single episode: %s", err)
+            LOGGER.error("Error searching: %s", err)
+            return []
 
-        return None
+    async def get_podcast_details(self, podcast_uuid: str) -> dict[str, Any] | None:
+        """Get details for any podcast by UUID (not just subscribed)."""
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching podcast details for %s", podcast_uuid)
+
+            # Try multiple possible endpoints
+            endpoints = [
+                (f"{self.BASE_URL}/discover/podcast", {"uuid": podcast_uuid}),
+                (f"{self.BASE_URL}/podcast/full/{podcast_uuid}", {}),
+            ]
+
+            for endpoint, data in endpoints:
+                async with self.session.post(
+                    endpoint, headers=self._headers(), json=data if data else None
+                ) as response:
+                    LOGGER.debug("Trying %s: status %d", endpoint, response.status)
+
+                    if response.status == 200:
+                        result = await response.json()
+                        LOGGER.debug("Got podcast details: %s", result)
+                        return result.get("podcast")
+
+            LOGGER.debug("All podcast detail endpoints returned 404")
+            return None
+
+        except Exception as err:
+            LOGGER.error("Error fetching podcast details: %s", err)
+            return None
