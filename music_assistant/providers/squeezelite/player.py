@@ -407,6 +407,7 @@ class SqueezelitePlayer(Player):
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
+        queue = None
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
