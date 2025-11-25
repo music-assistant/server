@@ -599,8 +599,14 @@ class TracksController(MediaControllerBase[Track]):
             db_artist = existing
 
         if not db_artist or overwrite:
+            # Convert ItemMapping to Artist if needed
+            artist_to_add = (
+                self.mass.music.artists.artist_from_item_mapping(artist)
+                if isinstance(artist, ItemMapping)
+                else artist
+            )
             db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, overwrite_existing=overwrite
+                artist_to_add, overwrite_existing=overwrite
             )
         # write (or update) record in track_artists table
         await self.mass.music.database.insert_or_replace(

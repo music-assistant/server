@@ -110,7 +110,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     async def add_item_to_library(
         self,
-        item: ItemCls | ItemMapping,
+        item: ItemCls,
         overwrite_existing: bool = False,
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
