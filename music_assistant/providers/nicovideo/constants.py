@@ -20,6 +20,10 @@ class ApiPriority(Enum):
 
 # Network constants
 NICOVIDEO_USER_AGENT = "Music Assistant/1.0"
+
+# Note: "Domand" is the actual spelling used in niconico's API (not a typo).
+# This appears in API endpoints like https://asset.domand.nicovideo.jp/ and throughout
+# their media delivery system (WatchMediaDomand, WatchMediaDomandVideo, WatchMediaDomandAudio, etc.)
 DOMAND_BID_COOKIE_NAME = "domand_bid"
 
 # Audio format constants based on niconico official specifications
