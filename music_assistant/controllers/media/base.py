@@ -333,35 +333,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             case _:
                 return []
 
-    async def get_provider_mapping(self, item: ItemCls) -> tuple[str, str]:
-        """Return (first) provider and item id."""
-        if not getattr(item, "provider_mappings", None):
-            if item.provider == "library":
-                item = await self.get_library_item(item.item_id)
-            return (item.provider, item.item_id)
-        for prefer_unique in (True, False):
-            for prov_mapping in item.provider_mappings:
-                if not prov_mapping.available:
-                    continue
-                provider = self.mass.get_provider(
-                    prov_mapping.provider_instance
-                    if prefer_unique
-                    else prov_mapping.provider_domain
-                )
-                if not provider:
-                    continue
-                provider = cast("MusicProvider", provider)
-                if prefer_unique and provider.is_streaming_provider:
-                    continue
-                return (prov_mapping.provider_instance, prov_mapping.item_id)
-        # last resort: return just the first entry
-        for prov_mapping in item.provider_mappings:
-            return (prov_mapping.provider_domain, prov_mapping.item_id)
-
-        # No provider mappings found
-        msg = f"No provider mapping found for {item.name}"
-        raise MediaNotFoundError(msg)
-
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
