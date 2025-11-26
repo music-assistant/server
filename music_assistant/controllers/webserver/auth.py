@@ -16,7 +16,6 @@ from music_assistant_models.auth import (
     UserRole,
 )
 from music_assistant_models.errors import (
-    AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
     InvalidDataError,
@@ -1042,7 +1041,6 @@ class AuthenticationManager:
         self,
         target_user: User,
         password: str,
-        old_password: str | None,
         is_admin_update: bool,
         current_user: User,
     ) -> None:
@@ -1054,24 +1052,16 @@ class AuthenticationManager:
         if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
             raise InvalidDataError("Built-in auth not available")
 
+        # Set/reset password for authenticated user
+        await builtin_provider.reset_password(target_user, password)
+
         if is_admin_update:
-            # Admin can reset password without old password
-            await builtin_provider.reset_password(target_user, password)
             self.logger.info(
                 "Password reset for user %s by admin %s",
                 target_user.username,
                 current_user.username,
             )
         else:
-            # User updating own password - requires old password verification
-            if not old_password:
-                raise InvalidDataError("old_password is required to change your own password")
-
-            # Verify old password and change to new one
-            success = await builtin_provider.change_password(target_user, old_password, password)
-            if not success:
-                raise AuthenticationFailed("Invalid current password")
-
             self.logger.info("Password changed for user %s", target_user.username)
 
     @api_command("auth/user/update")
@@ -1082,7 +1072,6 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         password: str | None = None,
-        old_password: str | None = None,
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
     ) -> User:
@@ -1096,7 +1085,6 @@ class AuthenticationManager:
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param old_password: Current password (required when user updates own password).
         :param role: New role - "admin" or "user" (optional, admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :return: Updated user object.
@@ -1158,7 +1146,7 @@ class AuthenticationManager:
         # Update password if provided
         if password:
             await self._update_profile_password(
-                target_user, password, old_password, is_admin_update, current_user_obj
+                target_user, password, is_admin_update, current_user_obj
             )
 
         return target_user
