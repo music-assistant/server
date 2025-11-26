@@ -191,10 +191,25 @@ def extract_frontend_changes(prs):
 
 
 def generate_release_notes(  # noqa: PLR0915
-    config, categories, uncategorized, contributors, previous_tag, frontend_changes=None
+    config,
+    categories,
+    uncategorized,
+    contributors,
+    previous_tag,
+    frontend_changes=None,
+    important_notes=None,
 ):
     """Generate the formatted release notes."""
     lines = []
+
+    # Add important notes section first if provided
+    if important_notes and important_notes.strip():
+        lines.append("## ⚠️ Important Notes")
+        lines.append("")
+        lines.append(important_notes.strip())
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
     # Add header if previous tag exists
     if previous_tag:
@@ -310,6 +325,7 @@ def main():
     branch = os.environ.get("BRANCH")
     channel = os.environ.get("CHANNEL")
     repo_name = os.environ.get("GITHUB_REPOSITORY")
+    important_notes = os.environ.get("IMPORTANT_NOTES", "")
 
     if not all([github_token, version, branch, channel, repo_name]):
         print("Error: Missing required environment variables")  # noqa: T201
@@ -367,6 +383,7 @@ def main():
             contributors_list,
             previous_tag,
             frontend_changes_list,
+            important_notes,
         )
 
     # Output to GitHub Actions
