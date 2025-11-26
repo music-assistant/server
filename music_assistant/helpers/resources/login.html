@@ -191,14 +191,10 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    // If return_url is provided, redirect to it with token as query parameter
-                    if (returnUrl) {
-                        const targetUrl = new URL(returnUrl);
-                        targetUrl.searchParams.set('token', data.token);
-                        window.location.href = targetUrl.toString();
+                    if (data.redirect_to) {
+                        window.location.href = data.redirect_to;
                     } else {
-                        // No return_url, redirect to root with token as query parameter
-                        window.location.href = `/?token=${encodeURIComponent(data.token)}`;
+                        window.location.href = `/?code=${encodeURIComponent(data.token)}`;
                     }
                 } else {
                     showError(data.error || 'Login failed');

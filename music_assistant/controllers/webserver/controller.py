@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
+from urllib.parse import quote
 
 import aiofiles
 from aiohttp import ClientTimeout, web
@@ -274,6 +274,41 @@ class WebserverController(CoreController):
         await self._server.close()
         await self.auth.close()
 
+    def register_websocket_client(self, client: WebsocketClientHandler) -> None:
+        """Register a WebSocket client for tracking."""
+        self.clients.add(client)
+
+    def unregister_websocket_client(self, client: WebsocketClientHandler) -> None:
+        """Unregister a WebSocket client."""
+        self.clients.discard(client)
+
+    def disconnect_websockets_for_token(self, token_id: str) -> None:
+        """Disconnect all WebSocket clients using a specific token."""
+        for client in list(self.clients):
+            if hasattr(client, "_token_id") and client._token_id == token_id:
+                username = (
+                    client._authenticated_user.username if client._authenticated_user else "unknown"
+                )
+                self.logger.warning(
+                    "Disconnecting WebSocket client due to token revocation: %s",
+                    username,
+                )
+                client._cancel()
+
+    def disconnect_websockets_for_user(self, user_id: str) -> None:
+        """Disconnect all WebSocket clients for a specific user."""
+        for client in list(self.clients):
+            if (
+                hasattr(client, "_authenticated_user")
+                and client._authenticated_user
+                and client._authenticated_user.user_id == user_id
+            ):
+                self.logger.warning(
+                    "Disconnecting WebSocket client due to user action: %s",
+                    client._authenticated_user.username,
+                )
+                client._cancel()
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
@@ -317,7 +352,7 @@ class WebserverController(CoreController):
             self.clients.add(connection)
             return await connection.handle_client()
         finally:
-            self.clients.remove(connection)
+            self.clients.discard(connection)
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
@@ -486,24 +521,20 @@ class WebserverController(CoreController):
                     )
                     token = await self.auth.create_token(user, device_name)
 
-                    # Get return URL or default to root
                     return_url = request.query.get("return_url", "/")
 
-                    # Redirect to return URL with token as query parameter
-                    parsed = urlparse(return_url)
-                    query_params = parse_qs(parsed.query)
-                    query_params["token"] = [token]
-                    new_query = urlencode(query_params, doseq=True)
-                    redirect_url = urlunparse(
-                        (
-                            parsed.scheme,
-                            parsed.netloc,
-                            parsed.path,
-                            parsed.params,
-                            new_query,
-                            parsed.fragment,
-                        )
-                    )
+                    # Insert code parameter before any hash fragment
+                    code_param = f"code={quote(token, safe='')}"
+                    if "#" in return_url:
+                        url_parts = return_url.split("#", 1)
+                        base_part = url_parts[0]
+                        hash_part = url_parts[1]
+                        separator = "&" if "?" in base_part else "?"
+                        redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
+                    elif "?" in return_url:
+                        redirect_url = f"{return_url}&{code_param}"
+                    else:
+                        redirect_url = f"{return_url}?{code_param}"
 
                     return web.Response(status=302, headers={"Location": redirect_url})
 
@@ -544,14 +575,33 @@ class WebserverController(CoreController):
             )
             token = await self.auth.create_token(auth_result.user, device_name)
 
-            # If return_url is provided, return it in the response for client-side redirect
+            # Prepare response data
             response_data = {
                 "success": True,
                 "token": token,
                 "user": auth_result.user.to_dict(),
             }
+
+            # If return_url provided, append code parameter and return as redirect_to
             if return_url:
-                response_data["return_url"] = return_url
+                # Insert code parameter before any hash fragment
+                code_param = f"code={quote(token, safe='')}"
+                if "#" in return_url:
+                    url_parts = return_url.split("#", 1)
+                    base_part = url_parts[0]
+                    hash_part = url_parts[1]
+                    separator = "&" if "?" in base_part else "?"
+                    redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
+                elif "?" in return_url:
+                    redirect_url = f"{return_url}&{code_param}"
+                else:
+                    redirect_url = f"{return_url}?{code_param}"
+
+                response_data["redirect_to"] = redirect_url
+                self.logger.debug(
+                    "Login successful, returning redirect_to: %s",
+                    redirect_url.replace(token, "***TOKEN***"),
+                )
 
             # Add CORS headers to allow login from any origin
             return web.json_response(

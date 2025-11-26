@@ -372,6 +372,23 @@ class AuthenticationManager:
         # Get user
         return await self.get_user(token_row["user_id"])
 
+    async def get_token_id_from_token(self, token: str) -> str | None:
+        """
+        Get token_id from a token string (for tracking revocation).
+
+        :param token: The access token.
+        :return: The token_id or None if token not found.
+        """
+        # Hash the token to look it up
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        # Find token in database
+        token_row = await self.database.get_row("auth_tokens", {"token_hash": token_hash})
+        if not token_row:
+            return None
+
+        return str(token_row["token_id"])
+
     @api_command("auth/user", required_role="admin")
     async def get_user(self, user_id: str) -> User | None:
         """
@@ -717,6 +734,9 @@ class AuthenticationManager:
 
         await self.database.delete("auth_tokens", {"token_id": token_id})
 
+        # Disconnect any WebSocket connections using this token
+        self.webserver.disconnect_websockets_for_token(token_id)
+
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
@@ -841,6 +861,9 @@ class AuthenticationManager:
             {"user_id": user_id},
             {"enabled": 0},
         )
+
+        # Disconnect all WebSocket connections for this user
+        self.webserver.disconnect_websockets_for_user(user_id)
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
         """Get list of available login providers (dynamically checks for HA provider)."""
@@ -998,6 +1021,9 @@ class AuthenticationManager:
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
+        # Disconnect all WebSocket connections for this user
+        self.webserver.disconnect_websockets_for_user(user_id)
+
     @api_command("auth/me")
     async def get_current_user_info(self) -> User:
         """Get current authenticated user information."""
@@ -1148,6 +1174,9 @@ class AuthenticationManager:
         token_row = await self.database.get_row("auth_tokens", {"token_hash": token_hash})
         if token_row:
             await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+
+            # Disconnect any WebSocket connections using this token
+            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
     @api_command("auth/user/providers")
     async def get_my_providers(self) -> list[dict[str, Any]]:

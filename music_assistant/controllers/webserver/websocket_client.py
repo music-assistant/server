@@ -50,6 +50,7 @@ class WebsocketClientHandler:
         self._logger = webserver.logger
         self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
         self._current_token: str | None = None  # Will be set after auth command
+        self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -124,6 +125,9 @@ class WebsocketClientHandler:
             if self._events_unsub_callback:
                 self._events_unsub_callback()
                 self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
+
+            # Unregister from webserver tracking
+            self.webserver.unregister_websocket_client(self)
 
             try:
                 self._to_write.put_nowait(None)
@@ -316,9 +320,13 @@ class WebsocketClientHandler:
             )
             return
 
-        # Store authenticated user and token
+        # Get token_id for tracking revocation events
+        token_id = await self.webserver.auth.get_token_id_from_token(token)
+
+        # Store authenticated user, token, and token_id
         self._authenticated_user = user
         self._current_token = token
+        self._token_id = token_id
         self._logger.info("WebSocket client authenticated as %s", user.username)
 
         # Send success response
@@ -331,6 +339,9 @@ class WebsocketClientHandler:
 
         # Subscribe to events after successful authentication
         self._subscribe_to_events()
+
+        # Register with webserver for tracking
+        self.webserver.register_websocket_client(self)
 
     async def _handle_ingress_auth(self) -> None:
         """Handle authentication for Ingress connections (auto-create/link user)."""

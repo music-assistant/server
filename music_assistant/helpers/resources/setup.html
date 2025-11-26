@@ -567,13 +567,10 @@
         });
 
         function completeSetup() {
-            // Redirect to return_url with token if provided
             if (returnUrl) {
-                const targetUrl = new URL(returnUrl, window.location.origin);
-                targetUrl.searchParams.set('token', authToken);
-                window.location.href = targetUrl.toString();
+                const separator = returnUrl.includes('?') ? '&' : '?';
+                window.location.href = `${returnUrl}${separator}code=${encodeURIComponent(authToken)}`;
             } else {
-                // Store the token and redirect to main page
                 localStorage.setItem('auth_token', authToken);
                 window.location.href = '/';
             }
