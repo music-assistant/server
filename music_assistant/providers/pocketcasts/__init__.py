@@ -51,6 +51,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
 
@@ -223,18 +224,16 @@ class PocketCastsProvider(MusicProvider):
             return None
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        """Retrieve library podcasts from Pocket Casts."""
+        """Get all podcasts from user's library."""
         if not self._client:
             return
 
         try:
             podcasts = await self._client.get_subscribed_podcasts()
-
             for podcast_data in podcasts:
-                podcast_item = self._convert_podcast(podcast_data)
+                podcast_item = self._convert_podcast({"podcast": podcast_data})
                 if podcast_item:
                     yield podcast_item
-
         except Exception as err:
             LOGGER.error("Error getting library podcasts: %s", err)
 
@@ -275,10 +274,7 @@ class PocketCastsProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all episodes for a podcast."""
-        LOGGER.debug("=== PROVIDER get_podcast_episodes CALLED for %s ===", prov_podcast_id)
-
         if not self._client:
-            LOGGER.error("No client available!")
             return
 
         try:
@@ -360,6 +356,7 @@ class PocketCastsProvider(MusicProvider):
                     ),
                     stream_type=StreamType.HTTP,
                     path=url,
+                    can_seek=True,
                 )
 
         raise MediaNotFoundError(f"Episode {item_id} not found")
@@ -408,10 +405,76 @@ class PocketCastsProvider(MusicProvider):
         for episode_data in episodes:
             if episode_data["uuid"] == episode_uuid:
                 episode_item = self._convert_episode(episode_data, podcast_uuid)
-                if episode_item:
-                    return episode_item
-                msg = f"Failed to convert episode {episode_uuid}"
-                raise MediaNotFoundError(msg)
+                if not episode_item:
+                    msg = f"Failed to convert episode {episode_uuid}"
+                    raise MediaNotFoundError(msg)
+
+                # Get playback position from in-progress list
+                in_progress = await self._client.get_in_progress_episodes()
+                for ep in in_progress:
+                    if ep.get("uuid") == episode_uuid:
+                        played_up_to = ep.get("playedUpTo", 0)  # seconds
+                        duration = ep.get("duration", 0)  # seconds
+
+                        # Set resume position in milliseconds
+                        episode_item.resume_position_ms = played_up_to * 1000
+
+                        # Consider played if > 90% complete
+                        if duration > 0:
+                            episode_item.fully_played = (played_up_to / duration) > 0.9
+
+                        LOGGER.debug(
+                            "Episode %s resume position: %d ms (%.1f%%)",
+                            episode_uuid,
+                            episode_item.resume_position_ms,
+                            (played_up_to / duration * 100) if duration > 0 else 0,
+                        )
+                        break
+
+                return episode_item
 
         msg = f"Episode {episode_uuid} not found in podcast {podcast_uuid}"
         raise MediaNotFoundError(msg)
+
+    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+        """Return the resume position (in seconds) for a podcast episode.
+
+        Returns: (fully_played, position_seconds)
+        """
+        LOGGER.warning("!!! GET_RESUME_POSITION CALLED for %s !!!", item_id)
+
+        if not self._client:
+            return (False, 0)
+
+        try:
+            # item_id format is "podcast_uuid:episode_uuid"
+            if ":" not in item_id:
+                return (False, 0)
+
+            _, episode_uuid = item_id.split(":", 1)
+
+            # Get in-progress episodes
+            in_progress = await self._client.get_in_progress_episodes()
+
+            for ep in in_progress:
+                if ep.get("uuid") == episode_uuid:
+                    played_up_to = int(ep.get("playedUpTo", 0))  # seconds
+                    duration = int(ep.get("duration", 0))
+
+                    # Consider fully played if > 90%
+                    fully_played = duration > 0 and (played_up_to / duration) > 0.9
+
+                    LOGGER.debug(
+                        "Resume position for %s: %d seconds (fully_played=%s)",
+                        episode_uuid,
+                        played_up_to,
+                        fully_played,
+                    )
+                    return (fully_played, played_up_to)
+
+            # Not in progress list
+            return (False, 0)
+
+        except Exception as err:
+            LOGGER.error("Error getting resume position: %s", err)
+            return (False, 0)
