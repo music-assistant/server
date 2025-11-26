@@ -420,6 +420,18 @@
         let currentStep = 0;
         let authToken = null;
 
+        // Validate URL to prevent XSS attacks
+        function isValidRedirectUrl(url) {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url, window.location.origin);
+                // Only allow http and https protocols
+                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+            } catch {
+                return false;
+            }
+        }
+
         // Check if this is an Ingress setup (variables injected by server)
         const isIngressSetup = typeof ingressUsername !== 'undefined' && ingressUsername;
 
@@ -567,7 +579,7 @@
         });
 
         function completeSetup() {
-            if (returnUrl) {
+            if (returnUrl && isValidRedirectUrl(returnUrl)) {
                 const separator = returnUrl.includes('?') ? '&' : '?';
                 window.location.href = `${returnUrl}${separator}code=${encodeURIComponent(authToken)}`;
             } else {

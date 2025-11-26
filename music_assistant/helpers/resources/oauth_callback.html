@@ -41,6 +41,18 @@
         const token = '{TOKEN}';
         const redirectUrl = '{REDIRECT_URL}';
 
+        // Validate URL to prevent XSS attacks
+        function isValidRedirectUrl(url) {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url, window.location.origin);
+                // Only allow http and https protocols
+                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+            } catch {
+                return false;
+            }
+        }
+
         // Check if we're in a popup (opened by window.open())
         const isPopup = window.opener !== null;
 
@@ -76,7 +88,11 @@
             statusEl.textContent = 'Login Successful!';
             messageEl.textContent = 'Redirecting...';
             localStorage.setItem('auth_token', token);
-            window.location.href = redirectUrl;
+            if (isValidRedirectUrl(redirectUrl)) {
+                window.location.href = redirectUrl;
+            } else {
+                window.location.href = '/';
+            }
         }
     </script>
 </body>
