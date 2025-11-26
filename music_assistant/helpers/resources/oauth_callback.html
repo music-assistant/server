@@ -4,95 +4,113 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login Successful</title>
+    <link rel="stylesheet" href="../resources/common.css">
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            margin: 0;
             padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
+
         .consent-banner {
             display: none;
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
+            background: var(--error-bg);
+            border: 1px solid var(--error-border);
+            border-left: 4px solid var(--error-text);
             padding: 20px;
             margin-bottom: 20px;
-            border-radius: 8px;
+            border-radius: 10px;
             max-width: 500px;
             width: 100%;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
         }
+
         .consent-banner.show {
             display: block;
         }
+
         .consent-banner h2 {
-            color: #856404;
+            color: var(--error-text);
             font-size: 16px;
             font-weight: 600;
             margin: 0 0 10px 0;
         }
+
         .consent-banner p {
-            color: #856404;
+            color: var(--fg);
             font-size: 14px;
             margin: 0 0 8px 0;
             line-height: 1.5;
         }
+
         .consent-banner .domain {
             font-weight: 600;
             font-family: 'Monaco', 'Menlo', monospace;
-            background: rgba(0,0,0,0.1);
+            background: var(--input-bg);
             padding: 2px 6px;
             border-radius: 4px;
         }
+
         .consent-banner .buttons {
             margin-top: 16px;
             display: flex;
             gap: 10px;
         }
+
         .consent-banner button {
             flex: 1;
             padding: 10px;
             border: none;
-            border-radius: 6px;
+            border-radius: 10px;
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
         }
+
         .consent-banner .btn-approve {
-            background: #667eea;
+            background: var(--primary);
             color: white;
         }
+
         .consent-banner .btn-approve:hover {
-            background: #5568d3;
+            filter: brightness(1.1);
         }
+
         .consent-banner .btn-cancel {
-            background: #e0e0e0;
-            color: #333;
+            background: var(--input-bg);
+            color: var(--fg);
+            border: 1px solid var(--border);
         }
+
         .consent-banner .btn-cancel:hover {
-            background: #d0d0d0;
+            background: var(--input-focus-bg);
         }
-        .container {
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+
+        .callback-container {
+            background: var(--panel);
+            padding: 48px 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
             text-align: center;
             max-width: 500px;
             width: 100%;
         }
+
         h1 {
-            color: #667eea;
-            margin-bottom: 10px;
+            color: var(--fg);
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 12px;
         }
+
         p {
-            color: #666;
+            color: var(--text-secondary);
+            font-size: 15px;
         }
     </style>
 </head>
@@ -106,7 +124,7 @@
             <button class="btn-approve" onclick="approveRedirect()">Authorize & Continue</button>
         </div>
     </div>
-    <div class="container">
+    <div class="callback-container">
         <h1 id="status">Login Successful!</h1>
         <p id="message">Redirecting...</p>
     </div>
