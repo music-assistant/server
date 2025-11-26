@@ -9,7 +9,6 @@ from collections.abc import Callable
 from dataclasses import MISSING
 from datetime import datetime
 from enum import Enum
-from re import Match
 from types import NoneType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -1068,7 +1067,7 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
     """
 
     # Find all complex types (capitalized words that aren't basic types)
-    def replace_type(match: Match[str]) -> str:
+    def replace_type(match: re.Match[str]) -> str:
         type_name = match.group(0)
         # Check if it's a complex type (starts with capital letter)
         # Exclude basic types and "Array" (which is used in "Array of Type")
