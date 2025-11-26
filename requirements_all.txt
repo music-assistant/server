@@ -18,6 +18,7 @@ aiovban>=0.6.3
 alexapy==1.29.10
 async-upnp-client==0.45.0
 audible==0.10.0
+auntie-sounds==1.1.1
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
@@ -53,6 +54,7 @@ pycryptodome==3.23.0
 pylast==6.0.0
 python-fullykiosk==0.0.14
 python-slugify==8.0.4
+pytz==2025.2
 pywidevine==1.9.0
 radios==0.3.2
 rokuecp==0.19.5
