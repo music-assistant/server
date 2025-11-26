@@ -51,8 +51,18 @@ class Webserver:
         static_routes: list[tuple[str, str, Handler]] | None = None,
         static_content: tuple[str, str, str] | None = None,
         ingress_tcp_site_params: tuple[str, int] | None = None,
+        app_state: dict[str, Any] | None = None,
     ) -> None:
-        """Async initialize of module."""
+        """Async initialize of module.
+
+        :param bind_ip: IP address to bind to.
+        :param bind_port: Port to bind to.
+        :param base_url: Base URL for the server.
+        :param static_routes: List of static routes to register.
+        :param static_content: Tuple of (path, directory, name) for static content.
+        :param ingress_tcp_site_params: Tuple of (host, port) for ingress TCP site.
+        :param app_state: Optional dict of key-value pairs to set on app before starting.
+        """
         self._base_url = base_url.removesuffix("/")
         self._bind_port = bind_port
         self._static_routes = static_routes
@@ -64,6 +74,10 @@ class Webserver:
                 "max_field_size": MAX_LINE_SIZE,
             },
         )
+        # Set app state before starting
+        if app_state:
+            for key, value in app_state.items():
+                self._webapp[key] = value
         self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
         # add static routes
         if self._static_routes:
@@ -95,6 +109,8 @@ class Webserver:
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress
         if ingress_tcp_site_params:
+            # Store ingress site reference in app for security checks
+            self._webapp["ingress_site"] = ingress_tcp_site_params
             self._ingress_tcp_site = web.TCPSite(
                 self._apprunner,
                 host=ingress_tcp_site_params[0],
