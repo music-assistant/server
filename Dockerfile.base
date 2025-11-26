@@ -118,6 +118,10 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
 # Resolve PyAV version from aioresonate's dependencies and build wheel
 RUN PYAV_VERSION=$(pip install --dry-run aioresonate 2>&1 | grep -oP 'av-\K[0-9.]+' | head -1) && \
+    if [ -z "$PYAV_VERSION" ]; then \
+        echo "ERROR: Failed to detect PyAV version from aioresonate dependencies" >&2; \
+        exit 1; \
+    fi && \
     echo "Building PyAV version: ${PYAV_VERSION}" && \
     pip wheel --no-binary av av==${PYAV_VERSION} -w /wheels/
 
