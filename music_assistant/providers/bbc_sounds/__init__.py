@@ -540,22 +540,23 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_subpath_menu(
         self, sub_path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        if not self.menu:
-            return []
-        sub_menu = self.menu.get(sub_path)
         item_list = []
+        if self.client.auth.is_logged_in:
+            if not self.menu:
+                return item_list
+            sub_menu = self.menu.get(sub_path)
 
-        if sub_menu and isinstance(sub_menu, Container):
-            if sub_menu.sub_items:
-                # We have some sub-items, so let's show those
-                for item in sub_menu.sub_items:
-                    new_item = await self._render_browse_item(item)
+            if sub_menu and isinstance(sub_menu, Container):
+                if sub_menu.sub_items:
+                    # We have some sub-items, so let's show those
+                    for item in sub_menu.sub_items:
+                        new_item = await self._render_browse_item(item)
+                        if new_item:
+                            item_list.append(new_item)
+                else:
+                    new_item = await self._render_browse_item(sub_menu)
                     if new_item:
                         item_list.append(new_item)
-            else:
-                new_item = await self._render_browse_item(sub_menu)
-                if new_item:
-                    item_list.append(new_item)
 
         if sub_path == "listen_live":
             for item in await self.client.stations.get_stations():
