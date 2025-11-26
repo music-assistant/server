@@ -1,0 +1,48 @@
+{
+  "items": [
+    {
+      "series": {
+        "id": 527007,
+        "title": "テストシリーズ68461151-527007",
+        "order": 2
+      },
+      "essential": {
+        "type": "essential",
+        "id": "sm45285955",
+        "title": "APIテスト用",
+        "registeredAt": "2025-01-01T00:00:00+09:00",
+        "count": {
+          "view": 1,
+          "comment": 1,
+          "mylist": 1,
+          "like": 1
+        },
+        "thumbnail": {
+          "url": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006",
+          "middleUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+          "largeUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L",
+          "listingUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+          "nHdUrl": "https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5"
+        },
+        "duration": 2,
+        "shortDescription": "This is a dummy description for testing purposes.",
+        "latestCommentSummary": "",
+        "isChannelVideo": false,
+        "isPaymentRequired": false,
+        "playbackPosition": 0.0,
+        "owner": {
+          "ownerType": "user",
+          "type": "user",
+          "visibility": "visible",
+          "id": "68461151",
+          "name": "ゲスト",
+          "iconUrl": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+        },
+        "requireSensitiveMasking": false,
+        "videoLive": null,
+        "isMuted": false
+      }
+    }
+  ],
+  "totalCount": 1
+}
