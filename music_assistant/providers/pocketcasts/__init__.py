@@ -6,10 +6,10 @@ Provides access to podcasts from a Pocket Casts account.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -64,12 +64,14 @@ POCKETCASTS_IN_PROGRESS_URL = f"{POCKETCASTS_API_BASE}/user/in_progress"
 POCKETCASTS_STARRED_URL = f"{POCKETCASTS_API_BASE}/user/starred"
 POCKETCASTS_NEW_RELEASES_URL = f"{POCKETCASTS_API_BASE}/user/new_releases"
 POCKETCASTS_HISTORY_URL = f"{POCKETCASTS_API_BASE}/user/history"
+POCKETCASTS_BOOKMARKS_URL = f"{POCKETCASTS_API_BASE}/user/bookmark/list"
 
 # Browse path constants
 BROWSE_IN_PROGRESS = "in_progress"
 BROWSE_STARRED = "starred"
 BROWSE_NEW_RELEASES = "new_releases"
 BROWSE_HISTORY = "history"
+BROWSE_BOOKMARKS = "bookmarks"
 
 # Artwork URL pattern
 POCKETCASTS_ARTWORK_URL = "https://static.pocketcasts.com/discover/images/webp/200/{uuid}.webp"
@@ -457,11 +459,18 @@ class PocketCastsProvider(MusicProvider):
                 path=f"{base}{BROWSE_HISTORY}",
                 name="History",
             )
+            bookmarks_folder = BrowseFolder(
+                item_id=BROWSE_BOOKMARKS,
+                provider=self.domain,
+                path=f"{base}{BROWSE_BOOKMARKS}",
+                name="Bookmarks",
+            )
             return [
                 in_progress_folder,
                 new_releases_folder,
                 starred_folder,
                 history_folder,
+                bookmarks_folder,
                 *default_folders,
             ]
 
@@ -479,6 +488,9 @@ class PocketCastsProvider(MusicProvider):
 
         if subpath == BROWSE_HISTORY:
             return list(await self._get_history_episodes())
+
+        if subpath == BROWSE_BOOKMARKS:
+            return list(await self._get_bookmarked_episodes())
 
         # Fall back to default browse handling
         return list(await super().browse(path))
@@ -514,6 +526,121 @@ class PocketCastsProvider(MusicProvider):
                 )
 
         return episodes
+
+    async def _get_bookmarked_episodes(self) -> list[PodcastEpisode]:
+        """Fetch bookmarked episodes from Pocket Casts.
+
+        Bookmarks are timestamps within episodes that the user has saved.
+        Each bookmark will be returned as an episode item that starts at
+        the bookmarked timestamp when played.
+
+        :return: List of PodcastEpisode items for bookmarks.
+        """
+        headers = await self._get_headers()
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_BOOKMARKS_URL,
+            headers=headers,
+            json={},
+        ) as response:
+            if response.status != 200:
+                self.logger.warning("Failed to fetch bookmarks: %s", response.status)
+                return []
+
+            data = await response.json()
+
+        episodes: list[PodcastEpisode] = []
+        for bookmark in data.get("bookmarks", []):
+            try:
+                episode = self._parse_bookmark(bookmark)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse bookmark %s: %s",
+                    bookmark.get("bookmarkUuid", "unknown"),
+                    err,
+                )
+
+        return episodes
+
+    def _parse_bookmark(self, bookmark: dict[str, Any]) -> PodcastEpisode:
+        """Parse a bookmark into a PodcastEpisode.
+
+        The bookmark will be displayed with its title and will start playback
+        at the bookmarked timestamp.
+
+        :param bookmark: Bookmark data from /user/bookmark/list API.
+        :return: Parsed PodcastEpisode that starts at the bookmark timestamp.
+        """
+        podcast_uuid = bookmark.get("podcastUuid", "")
+        episode_uuid = bookmark.get("episodeUuid", "")
+        bookmark_title = bookmark.get("title", "Bookmark")
+        bookmark_time = bookmark.get("time", 0)  # Seconds into episode
+
+        # Episode ID format: "{podcast_uuid} {episode_uuid}@bookmark:{timestamp}"
+        # The @bookmark:{timestamp} suffix tells get_resume_position to use this timestamp
+        # instead of fetching from the API
+        episode_id = f"{podcast_uuid} {episode_uuid}@bookmark:{bookmark_time}"
+
+        # Build images from podcast UUID
+        images: UniqueList[MediaItemImage] = UniqueList()
+        if podcast_uuid:
+            artwork_url = POCKETCASTS_ARTWORK_URL.format(uuid=podcast_uuid)
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artwork_url,
+                    provider=self.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        # Create provider mapping - URL will be fetched when playing
+        provider_mapping = ProviderMapping(
+            item_id=episode_id,
+            provider_domain=self.domain,
+            provider_instance=self.instance_id,
+            available=True,
+            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+        )
+
+        # Create metadata with bookmark info
+        metadata = MediaItemMetadata(
+            images=images if images else None,
+        )
+
+        # Create podcast item mapping
+        podcast_mapping = ItemMapping(
+            media_type=MediaType.PODCAST,
+            item_id=podcast_uuid,
+            provider=self.lookup_key,
+            name="",  # We don't have podcast title from bookmark API
+        )
+
+        # Use bookmark title as episode name, include timestamp info
+        display_name = f"{bookmark_title} @ {self._format_timestamp(bookmark_time)}"
+
+        return PodcastEpisode(
+            item_id=episode_id,
+            provider=self.lookup_key,
+            name=display_name,
+            duration=0,  # Unknown from bookmark data
+            position=0,
+            podcast=podcast_mapping,
+            provider_mappings={provider_mapping},
+            metadata=metadata,
+            fully_played=False,
+            resume_position_ms=bookmark_time * 1000,  # Start at bookmark timestamp
+        )
+
+    @staticmethod
+    def _format_timestamp(seconds: int) -> str:
+        """Format seconds into MM:SS or HH:MM:SS string."""
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
 
     async def _get_new_releases_episodes(self) -> list[PodcastEpisode]:
         """Fetch new release episodes from Pocket Casts.
@@ -883,8 +1010,20 @@ class PocketCastsProvider(MusicProvider):
         """Get full podcast episode details by id.
 
         :param prov_episode_id: Episode ID in format "{podcast_uuid} {episode_uuid}".
+            May include "@bookmark:{timestamp}" suffix for bookmark playback.
         """
-        parts = prov_episode_id.split(" ", 1)
+        # Check for bookmark suffix (format: "@bookmark:{timestamp}")
+        bookmark_suffix = ""
+        bookmark_time_ms = 0
+        if "@bookmark:" in prov_episode_id:
+            base_episode_id, bookmark_time_str = prov_episode_id.split("@bookmark:", 1)
+            bookmark_suffix = f"@bookmark:{bookmark_time_str}"
+            with suppress(ValueError):
+                bookmark_time_ms = int(bookmark_time_str) * 1000
+        else:
+            base_episode_id = prov_episode_id
+
+        parts = base_episode_id.split(" ", 1)
         if len(parts) != 2:
             raise MediaNotFoundError(f"Invalid episode ID format: {prov_episode_id}")
 
@@ -892,7 +1031,26 @@ class PocketCastsProvider(MusicProvider):
 
         # Fetch all episodes for the podcast and find the matching one
         async for episode in self.get_podcast_episodes(podcast_uuid):
-            if episode.item_id == prov_episode_id:
+            if episode.item_id == base_episode_id:
+                # If this is a bookmark request, modify the episode to use bookmark ID
+                if bookmark_suffix:
+                    bookmark_id = f"{episode.item_id}{bookmark_suffix}"
+                    # Update the episode item_id and provider mapping to include bookmark
+                    episode.item_id = bookmark_id
+                    episode.resume_position_ms = bookmark_time_ms
+                    # Update provider mappings with bookmark ID
+                    new_mappings = set()
+                    for mapping in episode.provider_mappings:
+                        new_mapping = ProviderMapping(
+                            item_id=bookmark_id,
+                            provider_domain=mapping.provider_domain,
+                            provider_instance=mapping.provider_instance,
+                            available=mapping.available,
+                            url=mapping.url,
+                            audio_format=mapping.audio_format,
+                        )
+                        new_mappings.add(new_mapping)
+                    episode.provider_mappings = new_mappings
                 return episode
 
         raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
@@ -903,10 +1061,15 @@ class PocketCastsProvider(MusicProvider):
         """Get streamdetails for a podcast episode.
 
         :param item_id: Episode ID in format "{podcast_uuid} {episode_uuid}".
+            May include "@bookmark:{timestamp}" suffix for bookmark playback.
         :param media_type: Type of media (should be PODCAST_EPISODE).
         """
+        # Strip bookmark suffix if present - get_podcast_episode handles this too
+        # but we need the base ID for the StreamDetails.item_id
+        base_item_id = item_id.split("@bookmark:")[0]
+
         # Fetch the episode to get the stream URL
-        episode = await self.get_podcast_episode(item_id)
+        episode = await self.get_podcast_episode(base_item_id)
 
         # Get stream URL from provider mapping
         stream_url: str | None = None
@@ -926,79 +1089,15 @@ class PocketCastsProvider(MusicProvider):
             item_id=item_id,
             audio_format=AudioFormat(content_type=content_type),
             media_type=media_type,
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.HTTP,
             path=stream_url,
             duration=episode.duration,
-            can_seek=True,
+            allow_seek=True,
+            extra_input_args=[
+                "-user_agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            ],
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the podcast episode.
-
-        Uses HTTP Range requests to support seeking without downloading from the beginning.
-
-        :param streamdetails: The stream details containing the URL and metadata.
-        :param seek_position: Position in seconds to seek to.
-        """
-        assert isinstance(streamdetails.path, str)
-        url = streamdetails.path
-        http_session = self.mass.http_session
-
-        headers: dict[str, str] = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-        }
-
-        # If seeking, we need the file size to calculate byte position
-        if seek_position and streamdetails.duration:
-            # Do HEAD request to get Content-Length if not already known
-            if not streamdetails.size:
-                async with http_session.head(url, allow_redirects=True, headers=headers) as resp:
-                    resp.raise_for_status()
-                    if size := resp.headers.get("Content-Length"):
-                        streamdetails.size = int(size)
-
-            # Calculate byte position and add Range header
-            if streamdetails.size:
-                skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
-                headers["Range"] = f"bytes={skip_bytes}-"
-                self.logger.debug(
-                    "Seeking to position %d seconds (byte %d of %d) for %s",
-                    seek_position,
-                    skip_bytes,
-                    streamdetails.size,
-                    streamdetails.uri,
-                )
-
-        timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-
-        async with http_session.get(
-            url, allow_redirects=True, headers=headers, timeout=timeout
-        ) as resp:
-            # Check if seek was successful (206 Partial Content)
-            if seek_position and resp.status == 206:
-                self.logger.debug(
-                    "HTTP Range seek successful for %s (status 206)",
-                    streamdetails.uri,
-                )
-                # Keep streamdetails.seek_position as-is (already set by caller)
-            elif seek_position and resp.status == 200:
-                # Server ignored Range header, streaming from beginning
-                self.logger.warning(
-                    "HTTP server does not support Range requests for %s, playing from beginning",
-                    streamdetails.uri,
-                )
-                # Reset seek position since we're actually starting from beginning
-                streamdetails.seek_position = 0
-
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_any():
-                yield chunk
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Get progress (resume point) details for the given podcast episode.
@@ -1006,11 +1105,31 @@ class PocketCastsProvider(MusicProvider):
         Called right before playback starts to ensure the resume position is correct.
 
         :param item_id: Episode ID in format "{podcast_uuid} {episode_uuid}".
+            May include "@bookmark:{timestamp}" suffix for bookmark playback.
         :param media_type: Type of media (should be PODCAST_EPISODE).
         :return: Tuple of (fully_played, resume_position_ms).
         """
         if media_type != MediaType.PODCAST_EPISODE:
             raise NotImplementedError
+
+        # Check for bookmark timestamp suffix (format: "@bookmark:{timestamp}")
+        if "@bookmark:" in item_id:
+            base_id, bookmark_suffix = item_id.split("@bookmark:", 1)
+            try:
+                bookmark_seconds = int(bookmark_suffix)
+                bookmark_ms = bookmark_seconds * 1000
+                self.logger.debug(
+                    "Using bookmark timestamp for %s: %d ms",
+                    base_id,
+                    bookmark_ms,
+                )
+                return False, bookmark_ms
+            except ValueError:
+                self.logger.warning(
+                    "Invalid bookmark timestamp in %s, falling back to API",
+                    item_id,
+                )
+                item_id = base_id  # Continue with normal flow
 
         parts = item_id.split(" ", 1)
         if len(parts) != 2:
@@ -1078,7 +1197,10 @@ class PocketCastsProvider(MusicProvider):
         if not isinstance(media_item, PodcastEpisode):
             return
 
-        parts = prov_item_id.split(" ", 1)
+        # Strip bookmark suffix if present (format: "@bookmark:{timestamp}")
+        base_item_id = prov_item_id.split("@bookmark:")[0]
+
+        parts = base_item_id.split(" ", 1)
         if len(parts) != 2:
             self.logger.warning("Invalid episode ID format for progress sync: %s", prov_item_id)
             return
