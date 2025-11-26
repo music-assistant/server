@@ -346,7 +346,19 @@ class SnapCastPlayer(Player):
         # prefer to reuse existing stream if possible
         if stream := self._get_snapstream(stream_name):
             return stream
-
+        # The control script is used only for music streams in the builtin server
+        # (queue_id is None only for announcement streams).
+        #        if self.provider._use_builtin_server and queue_id:
+        #            extra_args = (
+        #                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+        #                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
+        #                f"--api-port={self.mass.webserver.publish_port}%20"
+        #                f"--streamserver-ip={self.mass.streams.publish_ip}%20"
+        #                f"--streamserver-port={self.mass.streams.publish_port}"
+        #            )
+        #        else:
+        #            extra_args = ""
+            
         # Note: The control script feature is currently disabled because snapserver requires
         # controlscripts to be in /usr/share/snapserver/plug-ins/ but the script is in the
         # Python package directory. This feature was non-functional from before beta 16 due to a bug
