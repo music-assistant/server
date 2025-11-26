@@ -793,10 +793,13 @@ class BBCSoundsProvider(MusicProvider):
                 action = PlayStatus.PAUSED
 
             if action:
-                success = await self.client.streaming.update_play_status(
-                    pid=media_item.item_id, elapsed_time=position, action=action
-                )
-                self.logger.info(f"Updated play status: {success}")
+                try:
+                    success = await self.client.streaming.update_play_status(
+                        pid=media_item.item_id, elapsed_time=position, action=action
+                    )
+                    self.logger.info(f"Updated play status: {success}")
+                except exceptions.APIResponseError as err:
+                    self.logger.error(f"Error updating play status: {err}")
         # Cancel now playing task
         if FEATURES["now_playing"] and not is_playing and self.current_task:
             self.current_task.cancel()
