@@ -797,7 +797,7 @@ class BBCSoundsProvider(MusicProvider):
                     success = await self.client.streaming.update_play_status(
                         pid=media_item.item_id, elapsed_time=position, action=action
                     )
-                    self.logger.info(f"Updated play status: {success}")
+                    self.logger.debug(f"Updated play status: {success}")
                 except exceptions.APIResponseError as err:
                     self.logger.error(f"Error updating play status: {err}")
         # Cancel now playing task
