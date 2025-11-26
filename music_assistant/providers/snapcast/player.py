@@ -358,7 +358,7 @@ class SnapCastPlayer(Player):
         #            )
         #        else:
         #            extra_args = ""
-            
+
         # Note: The control script feature is currently disabled because snapserver requires
         # controlscripts to be in /usr/share/snapserver/plug-ins/ but the script is in the
         # Python package directory. This feature was non-functional from before beta 16 due to a bug
