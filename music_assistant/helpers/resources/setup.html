@@ -582,11 +582,26 @@
 
         function completeSetup() {
             if (returnUrl && isValidRedirectUrl(returnUrl)) {
-                const separator = returnUrl.includes('?') ? '&' : '?';
-                window.location.href = `${returnUrl}${separator}code=${encodeURIComponent(authToken)}`;
+                // Insert code and onboard parameters before any hash fragment
+                let finalUrl = returnUrl;
+
+                if (returnUrl.includes('#')) {
+                    // Split URL by hash
+                    const parts = returnUrl.split('#', 2);
+                    const basePart = parts[0];
+                    const hashPart = parts[1];
+                    const separator = basePart.includes('?') ? '&' : '?';
+                    finalUrl = `${basePart}${separator}code=${encodeURIComponent(authToken)}&onboard=true#${hashPart}`;
+                } else {
+                    const separator = returnUrl.includes('?') ? '&' : '?';
+                    finalUrl = `${returnUrl}${separator}code=${encodeURIComponent(authToken)}&onboard=true`;
+                }
+
+                window.location.href = finalUrl;
             } else {
-                localStorage.setItem('auth_token', authToken);
-                window.location.href = '/';
+                // No return URL - redirect to root with onboard flag
+                // Frontend will handle navigation to onboarding flow
+                window.location.href = '/?code=' + encodeURIComponent(authToken) + '&onboard=true';
             }
         }
 
