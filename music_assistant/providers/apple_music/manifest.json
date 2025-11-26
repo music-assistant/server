@@ -5,7 +5,7 @@
   "name": "Apple Music",
   "description": "Stream Apple Music’s full catalogue and playlists.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["pywidevine==1.8.0"],
+  "requirements": ["pywidevine==1.9.0"],
   "documentation": "https://music-assistant.io/music-providers/apple-music/",
   "multi_instance": true
 }

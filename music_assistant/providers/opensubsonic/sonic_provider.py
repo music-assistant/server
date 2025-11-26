@@ -78,6 +78,7 @@ CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
 CONF_PLAYED_ALBUMS = "recommend_played"
 CONF_RECO_SIZE = "recommendation_count"
+CONF_PAGE_SIZE = "pagination_size"
 
 CACHE_CATEGORY_PODCAST_CHANNEL = 1
 CACHE_CATEGORY_PODCAST_EPISODES = 2
@@ -97,6 +98,7 @@ class OpenSonicProvider(MusicProvider):
     _show_new: bool = True
     _show_played: bool = True
     _reco_limit: int = 10
+    _pagination_size: int = 200
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -139,6 +141,8 @@ class OpenSonicProvider(MusicProvider):
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
         self._reco_limit = int(str(self.config.get_value(CONF_RECO_SIZE)))
+        self._pagination_size = int(str(self.config.get_value(CONF_PAGE_SIZE)))
+        self._pagination_size = min(self._pagination_size, 500)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -239,6 +243,32 @@ class OpenSonicProvider(MusicProvider):
 
         return SearchResults(artists=ar, albums=al, tracks=tr)
 
+    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+        """Set or clear favorite on the server."""
+        # The subsonic spec does not support favorite-ing anything but artists, albums, and tracks
+        if media_type not in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK):
+            return
+
+        track_ids: list[str] = []
+        album_ids: list[str] = []
+        artist_ids: list[str] = []
+
+        if media_type == MediaType.ARTIST:
+            artist_ids.append(prov_item_id)
+        elif media_type == MediaType.ALBUM:
+            album_ids.append(prov_item_id)
+        elif media_type == MediaType.TRACK:
+            track_ids.append(prov_item_id)
+
+        if favorite:
+            await self._run_async(
+                self.conn.star, sids=track_ids, album_ids=album_ids, artist_ids=artist_ids
+            )
+        else:
+            await self._run_async(
+                self.conn.unstar, sids=track_ids, album_ids=album_ids, artist_ids=artist_ids
+            )
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Provide a generator for reading all artists."""
         artists = await self._run_async(self.conn.get_artists)
@@ -261,7 +291,7 @@ class OpenSonicProvider(MusicProvider):
         returning 500 items per invocation.
         """
         offset = 0
-        size = 500
+        size = self._pagination_size
         albums = await self._run_async(
             self.conn.get_album_list2,
             ltype="alphabeticalByArtist",
@@ -293,7 +323,7 @@ class OpenSonicProvider(MusicProvider):
         """
         query = ""
         offset = 0
-        count = 500
+        count = self._pagination_size
         try:
             results = await self._run_async(
                 self.conn.search3,
