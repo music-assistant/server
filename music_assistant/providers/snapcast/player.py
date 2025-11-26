@@ -349,9 +349,9 @@ class SnapCastPlayer(Player):
 
         # Note: The control script feature is currently disabled because snapserver requires
         # controlscripts to be in /usr/share/snapserver/plug-ins/ but the script is in the
-        # Python package directory. This feature was non-functional from beta 7-15 due to a bug
+        # Python package directory. This feature was non-functional from before beta 16 due to a bug
         # and needs proper implementation before re-enabling.
-        # See: https://github.com/music-assistant/server/issues/XXXX
+        # See: https://github.com/music-assistant/server/issues/4452
         extra_args = ""
 
         attempts = 50
