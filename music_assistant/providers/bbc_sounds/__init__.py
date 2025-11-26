@@ -544,7 +544,7 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_subpath_menu(
         self, sub_path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        item_list = []
+        item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
         if self.client.auth.is_logged_in:
             if not self.menu:
                 return item_list
