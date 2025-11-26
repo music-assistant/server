@@ -11,13 +11,6 @@ COPY requirements_all.txt .
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install build tools for PyAV compilation (for aioresonate)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # create venv which will be copied to the final image
 ENV VIRTUAL_ENV=/app/venv
 RUN uv venv $VIRTUAL_ENV
@@ -28,10 +21,16 @@ RUN uv venv $VIRTUAL_ENV
 RUN uv pip install \
     -r requirements_all.txt
 
-# Reinstall PyAV from source to use system FFmpeg instead of bundled FFmpeg
-# Use the version already resolved by requirements_all.txt to ensure compatibility
-RUN uv pip install --no-binary av --force-reinstall --no-deps \
-    "av==$($VIRTUAL_ENV/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("av"))')"
+# Install PyAV from pre-built wheel (built against system FFmpeg in base image)
+# First verify the wheel version matches what pip resolved to avoid version mismatch
+RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('av'))") && \
+    WHEEL_VERSION=$(ls /usr/local/share/pyav-wheels/av*.whl | grep -oP 'av-\K[0-9.]+') && \
+    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
+      echo "ERROR: PyAV version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
+      echo "Please rebuild the base image with the correct PyAV version." && \
+      exit 1; \
+    fi && \
+    uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
 
 # Install Music Assistant from prebuilt wheel
 ARG MASS_VERSION
