@@ -64,7 +64,7 @@ async def get_libraries(
         return all_libraries
 
     if cache := await mass.cache.get(
-        cache_key, checksum=auth_token, provider=instance_id or "default"
+        cache_key, checksum=auth_token, provider=instance_id or local_server_ip
     ):
         return cast("list[str]", cache)
 
