@@ -276,12 +276,12 @@ class AuthenticationManager:
                 ha_url,
             )
 
-    async def _ensure_ha_oauth_provider(self) -> None:
-        """Ensure HA OAuth provider is registered if HA provider is available (dynamic check)."""
-        # Check if already registered
-        if "homeassistant" in self.login_providers:
-            return
+    async def _sync_ha_oauth_provider(self) -> None:
+        """
+        Sync HA OAuth provider with HA provider availability (dynamic check).
 
+        Adds the provider if HA is available, removes it if HA is not available.
+        """
         # Find HA provider
         ha_provider = None
         for provider in self.mass.providers:
@@ -290,25 +290,31 @@ class AuthenticationManager:
                 break
 
         if ha_provider:
-            # Get allow_self_registration config
-            allow_self_registration = bool(
-                self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION, True)
-            )
+            # HA provider exists and is available - ensure OAuth provider is registered
+            if "homeassistant" not in self.login_providers:
+                # Get allow_self_registration config
+                allow_self_registration = bool(
+                    self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION, True)
+                )
 
-            # Get URL from the HA provider config
-            ha_url = ha_provider.config.get_value("url")
-            assert isinstance(ha_url, str)
-            ha_config: HomeAssistantProviderConfig = {
-                "ha_url": ha_url,
-                "allow_self_registration": allow_self_registration,
-            }
-            self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
-                self.mass, "homeassistant", ha_config
-            )
-            self.logger.info(
-                "Home Assistant OAuth provider dynamically enabled (using URL: %s)",
-                ha_url,
-            )
+                # Get URL from the HA provider config
+                ha_url = ha_provider.config.get_value("url")
+                assert isinstance(ha_url, str)
+                ha_config: HomeAssistantProviderConfig = {
+                    "ha_url": ha_url,
+                    "allow_self_registration": allow_self_registration,
+                }
+                self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
+                    self.mass, "homeassistant", ha_config
+                )
+                self.logger.info(
+                    "Home Assistant OAuth provider dynamically enabled (using URL: %s)",
+                    ha_url,
+                )
+        # HA provider not available - remove OAuth provider if present
+        elif "homeassistant" in self.login_providers:
+            del self.login_providers["homeassistant"]
+            self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
 
     async def has_users(self) -> bool:
         """Check if any users exist in the system."""
@@ -867,8 +873,8 @@ class AuthenticationManager:
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
         """Get list of available login providers (dynamically checks for HA provider)."""
-        # Ensure HA OAuth provider is registered if HA provider is available
-        await self._ensure_ha_oauth_provider()
+        # Sync HA OAuth provider with HA provider availability
+        await self._sync_ha_oauth_provider()
 
         providers = []
         for provider_id, provider in self.login_providers.items():
