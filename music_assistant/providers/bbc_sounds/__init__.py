@@ -212,7 +212,9 @@ class BBCSoundsProvider(MusicProvider):
         if not self.menu or (
             isinstance(self.menu, Menu) and self.menu.sub_items and len(self.menu.sub_items) == 0
         ):
-            await self._fetch_menu()
+            is_uk_listener = await self.client.auth.is_uk_listener
+            if self.client.auth.is_logged_in and is_uk_listener:
+                await self._fetch_menu()
 
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
         return ProviderMapping(
@@ -467,6 +469,8 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_full_menu(
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if not self.menu:
+            await self._fetch_menu()
         if not self.menu or not self.menu.sub_items:
             raise MusicAssistantError("Menu API response is empty or invalid")
         menu_items = []
@@ -721,8 +725,7 @@ class BBCSoundsProvider(MusicProvider):
             return ma_podcast
         raise MusicAssistantError("Incorrect format for podcast")
 
-    @use_cache(expiration=_Constants.SHORT_EXPIRATION)  # type: ignore[arg-type]
-    async def get_podcast_episodes(  # type: ignore[override]
+    async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
@@ -794,10 +797,13 @@ class BBCSoundsProvider(MusicProvider):
                 action = PlayStatus.PAUSED
 
             if action:
-                success = await self.client.streaming.update_play_status(
-                    pid=media_item.item_id, elapsed_time=position, action=action
-                )
-                self.logger.info(f"Updated play status: {success}")
+                try:
+                    success = await self.client.streaming.update_play_status(
+                        pid=media_item.item_id, elapsed_time=position, action=action
+                    )
+                    self.logger.debug(f"Updated play status: {success}")
+                except exceptions.APIResponseError as err:
+                    self.logger.error(f"Error updating play status: {err}")
         # Cancel now playing task
         if FEATURES["now_playing"] and not is_playing and self.current_task:
             self.current_task.cancel()

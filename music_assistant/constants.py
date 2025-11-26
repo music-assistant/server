@@ -14,11 +14,14 @@ from music_assistant_models.media_items import AudioFormat
 APPLICATION_NAME: Final = "Music Assistant"
 
 
-API_SCHEMA_VERSION: Final[int] = 27
-MIN_SCHEMA_VERSION: Final[int] = 24
+API_SCHEMA_VERSION: Final[int] = 28
+MIN_SCHEMA_VERSION: Final[int] = 28
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
+
+# Home Assistant system user
+HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -97,6 +100,7 @@ CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
 CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
+CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
 
 
 # config default values
