@@ -27,7 +27,7 @@ async def get_libraries(
     """
     Get all music libraries for all plex servers.
 
-    Returns a dict of Library names in format {'servername / library name':'baseurl'}
+    Returns a list of Library names in format ['servername / library name', ...]
 
     :param mass: MusicAssistant instance.
     :param auth_token: Authentication token for Plex server.
