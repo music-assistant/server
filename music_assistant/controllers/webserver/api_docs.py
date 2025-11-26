@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import collections.abc
 import inspect
+import re
 from collections.abc import Callable
 from dataclasses import MISSING
 from datetime import datetime
 from enum import Enum
+from re import Match
 from types import NoneType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -944,8 +946,6 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
         type_str: The type string to convert
         _depth: Internal recursion depth tracker (do not set manually)
     """
-    import re  # noqa: PLC0415
-
     # Prevent infinite recursion
     if _depth > 50:
         return "any"
@@ -1066,8 +1066,6 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
         server_url: Base server URL for building links
         as_list: If True and type contains |, format as "Any of:" bullet list
     """
-    import re  # noqa: PLC0415
-    from re import Match  # noqa: PLC0415
 
     # Find all complex types (capitalized words that aren't basic types)
     def replace_type(match: Match[str]) -> str:

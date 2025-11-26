@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import json
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -373,9 +374,9 @@ class WebserverController(CoreController):
                 cmd_data_dict["message_id"] = "unknown"
                 command_msg = CommandMessage.from_dict(cmd_data_dict)
             else:
-                error = f"Missing field in JSON: {e!s}"
+                error = f"Missing field in JSON: {e.field_name}"
                 self.logger.error("Unhandled JSONRPC API error: %s", error)
-                return web.Response(status=400, text=error)
+                return web.Response(status=400, text="Invalid JSON: missing required field")
 
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(command_msg.command)
@@ -400,10 +401,10 @@ class WebserverController(CoreController):
                 try:
                     user = await get_authenticated_user(request)
                 except Exception as e:
-                    self.logger.exception("Authentication error")
+                    self.logger.exception("Authentication error: %s", e)
                     return web.Response(
                         status=401,
-                        text=f"Authentication error: {e!s}",
+                        text="Authentication failed",
                         headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
                     )
 
@@ -437,7 +438,7 @@ class WebserverController(CoreController):
             error_msg = str(e)
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
-            return web.Response(status=500, text=error)
+            return web.Response(status=500, text="Internal server error")
 
     async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
@@ -815,12 +816,12 @@ class WebserverController(CoreController):
             ingress_username = request.headers.get("X-Remote-User-Name", "")
             ingress_display_name = request.headers.get("X-Remote-User-Display-Name", "")
 
-            # Inject ingress user info into the page
+            # Inject ingress user info into the page (use json.dumps to escape properly)
             html_content = html_content.replace(
                 "const deviceName = urlParams.get('device_name');",
                 f"const deviceName = urlParams.get('device_name');\n"
-                f"        const ingressUsername = '{ingress_username}';\n"
-                f"        const ingressDisplayName = '{ingress_display_name}';",
+                f"        const ingressUsername = {json.dumps(ingress_username)};\n"
+                f"        const ingressDisplayName = {json.dumps(ingress_display_name)};",
             )
 
         return web.Response(text=html_content, content_type="text/html")

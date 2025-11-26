@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
@@ -22,7 +22,7 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 def _resolve_generic_type_args(
     args: tuple[Any, ...],
-    func: Callable[..., Coroutine[Any, Any, Any]],
+    func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
     config_value_type: Any,
     media_item_type: Any,
 ) -> tuple[list[Any], bool]:
@@ -86,7 +86,7 @@ def _resolve_generic_type_args(
 
 def _resolve_typevar_in_union(
     arg: TypeVar,
-    func: Callable[..., Coroutine[Any, Any, Any]],
+    func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
     args: tuple[Any, ...],
     i: int,
 ) -> Any:
@@ -139,7 +139,7 @@ class APICommandHandler:
     command: str
     signature: inspect.Signature
     type_hints: dict[str, Any]
-    target: Callable[..., Coroutine[Any, Any, Any]]
+    target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     authenticated: bool = True
     required_role: str | None = None  # "admin" or "user" or None
     alias: bool = False  # If True, this is an alias for backward compatibility
@@ -148,7 +148,7 @@ class APICommandHandler:
     def parse(
         cls,
         command: str,
-        func: Callable[..., Coroutine[Any, Any, Any]],
+        func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
         required_role: str | None = None,
         alias: bool = False,
