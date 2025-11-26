@@ -212,7 +212,9 @@ class BBCSoundsProvider(MusicProvider):
         if not self.menu or (
             isinstance(self.menu, Menu) and self.menu.sub_items and len(self.menu.sub_items) == 0
         ):
-            await self._fetch_menu()
+            is_uk_listener = await self.client.auth.is_uk_listener
+            if self.client.auth.is_logged_in and is_uk_listener:
+                await self._fetch_menu()
 
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
         return ProviderMapping(
@@ -467,6 +469,8 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_full_menu(
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if not self.menu:
+            await self._fetch_menu()
         if not self.menu or not self.menu.sub_items:
             raise MusicAssistantError("Menu API response is empty or invalid")
         menu_items = []
