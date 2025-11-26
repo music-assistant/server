@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import logging
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -18,6 +19,49 @@ from music_assistant.helpers.util import try_parse_bool
 LOGGER = logging.getLogger(__name__)
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+# Cache for resolved type alias strings to avoid repeated imports
+_TYPE_ALIAS_CACHE: dict[str, Any] = {}
+
+
+def _resolve_string_type(type_str: str) -> Any:
+    """
+    Resolve a string type reference back to the actual type.
+
+    This is needed when type aliases like ConfigValueType are converted to strings
+    during type hint resolution to avoid isinstance() errors with complex unions.
+
+    Uses a module-level cache to avoid repeated imports.
+
+    :param type_str: String name of the type (e.g., "ConfigValueType").
+    :return: The actual type object, or the string if resolution fails.
+    """
+    # Check cache first
+    if type_str in _TYPE_ALIAS_CACHE:
+        return _TYPE_ALIAS_CACHE[type_str]
+
+    type_alias_map = {
+        "ConfigValueType": ("music_assistant_models.config_entries", "ConfigValueType"),
+        "MediaItemType": ("music_assistant_models.media_items", "MediaItemType"),
+    }
+
+    if type_str not in type_alias_map:
+        # Cache the string itself for unknown types
+        _TYPE_ALIAS_CACHE[type_str] = type_str
+        return type_str
+
+    module_name, type_name = type_alias_map[type_str]
+    try:
+        module = importlib.import_module(module_name)
+        resolved_type = getattr(module, type_name)
+        # Cache the successfully resolved type
+        _TYPE_ALIAS_CACHE[type_str] = resolved_type
+        return resolved_type
+    except (ImportError, AttributeError) as err:
+        LOGGER.warning("Failed to resolve type alias %s: %s", type_str, err)
+        # Cache the string to avoid repeated failed attempts
+        _TYPE_ALIAS_CACHE[type_str] = type_str
+        return type_str
 
 
 def _resolve_generic_type_args(
@@ -287,6 +331,14 @@ def parse_value(  # noqa: PLR0911
     allow_value_convert: bool = False,
 ) -> Any:
     """Try to parse a value from raw (json) data and type annotations."""
+    # Resolve string type hints early for proper handling
+    if isinstance(value_type, str):
+        value_type = _resolve_string_type(value_type)
+        # If still a string after resolution, return value as-is
+        if isinstance(value_type, str):
+            LOGGER.debug("Unknown string type hint: %s, returning value as-is", value_type)
+            return value
+
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
         if (
             "media_type" in value
