@@ -92,12 +92,14 @@
         const deviceName = urlParams.get('device_name');
 
         // Validate URL to prevent XSS attacks
+        // Note: Server-side validation is the primary security layer
         function isValidRedirectUrl(url) {
             if (!url) return false;
             try {
                 const parsed = new URL(url, window.location.origin);
-                // Only allow http and https protocols
-                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+                // Allow http, https, and custom mobile app schemes
+                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
+                return allowedProtocols.includes(parsed.protocol);
             } catch {
                 return false;
             }

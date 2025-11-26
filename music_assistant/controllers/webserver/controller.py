@@ -39,6 +39,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -703,6 +704,12 @@ class WebserverController(CoreController):
             if not provider_id:
                 return web.Response(status=400, text="provider_id required")
 
+            # Validate return_url if provided
+            if return_url:
+                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                if not is_valid:
+                    return web.Response(status=400, text="Invalid return_url")
+
             auth_url = await self.auth.get_authorization_url(provider_id, return_url)
             if not auth_url:
                 return web.Response(
@@ -748,6 +755,19 @@ class WebserverController(CoreController):
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"
+            requires_consent = False
+
+            # Validate redirect URL for security
+            if auth_result.return_url:
+                is_valid, category = is_allowed_redirect_url(
+                    auth_result.return_url, request, self.base_url
+                )
+                if not is_valid:
+                    self.logger.warning("Invalid return_url blocked: %s", auth_result.return_url)
+                    final_redirect_url = "/"
+                elif category == "external":
+                    # External domain - require user consent
+                    requires_consent = True
             # Add token to redirect URL (URL-encoded)
             # Important: Insert token BEFORE any hash fragment (e.g., #/) to ensure
             # it's in query params, not inside the hash where Vue Router can't access it easily
@@ -781,6 +801,9 @@ class WebserverController(CoreController):
             # Replace template placeholders
             success_html = success_html.replace("{TOKEN}", token)
             success_html = success_html.replace("{REDIRECT_URL}", final_redirect_url)
+            success_html = success_html.replace(
+                "{REQUIRES_CONSENT}", "true" if requires_consent else "false"
+            )
 
             return web.Response(text=success_html, content_type="text/html")
         except Exception:
@@ -805,6 +828,13 @@ class WebserverController(CoreController):
         if await self.auth.has_users() and self.mass.config.get(CONF_ONBOARD_DONE):
             # Setup already completed, redirect to login
             return web.Response(status=302, headers={"Location": "/login"})
+
+        # Validate return_url if provided
+        return_url = request.query.get("return_url")
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+            if not is_valid:
+                return web.Response(status=400, text="Invalid return_url")
 
         # Serve setup page
         setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))

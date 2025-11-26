@@ -8,11 +8,75 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
             margin: 0;
+            padding: 20px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .consent-banner {
+            display: none;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        .consent-banner.show {
+            display: block;
+        }
+        .consent-banner h2 {
+            color: #856404;
+            font-size: 16px;
+            font-weight: 600;
+            margin: 0 0 10px 0;
+        }
+        .consent-banner p {
+            color: #856404;
+            font-size: 14px;
+            margin: 0 0 8px 0;
+            line-height: 1.5;
+        }
+        .consent-banner .domain {
+            font-weight: 600;
+            font-family: 'Monaco', 'Menlo', monospace;
+            background: rgba(0,0,0,0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .consent-banner .buttons {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+        }
+        .consent-banner button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .consent-banner .btn-approve {
+            background: #667eea;
+            color: white;
+        }
+        .consent-banner .btn-approve:hover {
+            background: #5568d3;
+        }
+        .consent-banner .btn-cancel {
+            background: #e0e0e0;
+            color: #333;
+        }
+        .consent-banner .btn-cancel:hover {
+            background: #d0d0d0;
         }
         .container {
             background: white;
@@ -20,6 +84,8 @@
             border-radius: 12px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
             text-align: center;
+            max-width: 500px;
+            width: 100%;
         }
         h1 {
             color: #667eea;
@@ -31,6 +97,15 @@
     </style>
 </head>
 <body>
+    <div class="consent-banner" id="consentBanner">
+        <h2>⚠️ External Application Authorization</h2>
+        <p>The application at <span class="domain" id="redirectDomain"></span> is requesting access to your Music Assistant instance.</p>
+        <p>Only authorize if you trust this application.</p>
+        <div class="buttons">
+            <button class="btn-cancel" onclick="denyRedirect()">Cancel</button>
+            <button class="btn-approve" onclick="approveRedirect()">Authorize & Continue</button>
+        </div>
+    </div>
     <div class="container">
         <h1 id="status">Login Successful!</h1>
         <p id="message">Redirecting...</p>
@@ -40,59 +115,83 @@
         const messageEl = document.getElementById('message');
         const token = '{TOKEN}';
         const redirectUrl = '{REDIRECT_URL}';
+        const requiresConsent = {REQUIRES_CONSENT};
 
         // Validate URL to prevent XSS attacks
+        // Note: Server-side validation is the primary security layer
         function isValidRedirectUrl(url) {
             if (!url) return false;
             try {
                 const parsed = new URL(url, window.location.origin);
-                // Only allow http and https protocols
-                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+                // Allow http, https, and custom mobile app schemes
+                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
+                return allowedProtocols.includes(parsed.protocol);
             } catch {
                 return false;
             }
         }
 
-        // Check if we're in a popup (opened by window.open())
-        const isPopup = window.opener !== null;
+        function performRedirect() {
+            const isPopup = window.opener !== null;
 
-        if (isPopup) {
-            // Popup mode - send token to parent and close
-            statusEl.textContent = 'Login Complete!';
-            messageEl.textContent = 'Closing popup...';
+            if (isPopup) {
+                // Popup mode - send token to parent and close
+                statusEl.textContent = 'Login Complete!';
+                messageEl.textContent = 'Closing popup...';
 
-            // Send message to parent window
-            if (window.opener && !window.opener.closed) {
-                try {
-                    window.opener.postMessage({
-                        type: 'oauth_success',
-                        token: token,
-                        redirectUrl: redirectUrl
-                    }, window.location.origin);
-                } catch (e) {
-                    console.error('Failed to send postMessage:', e);
+                if (window.opener && !window.opener.closed) {
+                    try {
+                        window.opener.postMessage({
+                            type: 'oauth_success',
+                            token: token,
+                            redirectUrl: redirectUrl
+                        }, window.location.origin);
+                    } catch (e) {
+                        console.error('Failed to send postMessage:', e);
+                    }
+                }
+
+                setTimeout(() => {
+                    window.close();
+                    setTimeout(() => {
+                        messageEl.textContent = 'Please close this window manually and return to the login page.';
+                    }, 500);
+                }, 1000);
+            } else {
+                // Same window mode - redirect directly
+                localStorage.setItem('auth_token', token);
+                if (isValidRedirectUrl(redirectUrl)) {
+                    window.location.href = redirectUrl;
+                } else {
+                    window.location.href = '/';
                 }
             }
+        }
 
-            // Close popup after short delay
-            setTimeout(() => {
-                window.close();
-                // If still open after 500ms, show manual instruction
-                setTimeout(() => {
-                    messageEl.textContent = 'Please close this window manually ' +
-                        'and return to the login page.';
-                }, 500);
-            }, 1000);
-        } else {
-            // Same window mode - redirect directly
-            statusEl.textContent = 'Login Successful!';
-            messageEl.textContent = 'Redirecting...';
-            localStorage.setItem('auth_token', token);
-            if (isValidRedirectUrl(redirectUrl)) {
-                window.location.href = redirectUrl;
-            } else {
-                window.location.href = '/';
+        function approveRedirect() {
+            document.getElementById('consentBanner').classList.remove('show');
+            performRedirect();
+        }
+
+        function denyRedirect() {
+            window.location.href = '/';
+        }
+
+        // Check if consent is required
+        if (requiresConsent) {
+            // Show consent banner with domain
+            try {
+                const parsed = new URL(redirectUrl);
+                document.getElementById('redirectDomain').textContent = parsed.origin;
+            } catch {
+                document.getElementById('redirectDomain').textContent = 'unknown';
             }
+            document.getElementById('consentBanner').classList.add('show');
+            statusEl.textContent = 'Authorization Required';
+            messageEl.textContent = 'Please review the authorization request above.';
+        } else {
+            // Trusted domain, proceed with redirect
+            performRedirect();
         }
     </script>
 </body>
