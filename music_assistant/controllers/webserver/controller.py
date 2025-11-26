@@ -768,30 +768,26 @@ class WebserverController(CoreController):
                 elif category == "external":
                     # External domain - require user consent
                     requires_consent = True
-            # Add token to redirect URL (URL-encoded)
-            # Important: Insert token BEFORE any hash fragment (e.g., #/) to ensure
-            # it's in query params, not inside the hash where Vue Router can't access it easily
-            encoded_token = quote(token, safe="")
+            # Add code parameter to redirect URL (the token URL-encoded)
+            # Important: Insert code BEFORE any hash fragment (e.g., #/) to ensure
+            # it's in query params, not inside the hash where Vue Router can't access it
+            code_param = f"code={quote(token, safe='')}"
 
-            # Split URL by hash to insert token in the right place
+            # Split URL by hash to insert code in the right place
             if "#" in final_redirect_url:
                 # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
                 url_parts = final_redirect_url.split("#", 1)
                 base_url = url_parts[0]
                 hash_part = url_parts[1]
 
-                # Add token to base URL (before hash)
-                if "?" in base_url:
-                    base_url += f"&token={encoded_token}"
-                else:
-                    base_url += f"?token={encoded_token}"
-
-                final_redirect_url = f"{base_url}#{hash_part}"
+                # Add code to base URL (before hash)
+                separator = "&" if "?" in base_url else "?"
+                final_redirect_url = f"{base_url}{separator}{code_param}#{hash_part}"
             # No hash fragment, simple case
             elif "?" in final_redirect_url:
-                final_redirect_url += f"&token={encoded_token}"
+                final_redirect_url = f"{final_redirect_url}&{code_param}"
             else:
-                final_redirect_url += f"?token={encoded_token}"
+                final_redirect_url = f"{final_redirect_url}?{code_param}"
 
             # Load OAuth callback success page template and inject token and redirect URL
             oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
