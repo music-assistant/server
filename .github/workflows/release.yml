@@ -15,6 +15,9 @@ on:
           - stable
           - beta
           - nightly
+      important_notes:
+        description: "Important notes (breaking changes, critical info, etc.)"
+        required: false
   workflow_call:
     inputs:
       version:
@@ -25,6 +28,10 @@ on:
         description: "Release channel"
         required: true
         type: string
+      important_notes:
+        description: "Important notes (breaking changes, critical info, etc.)"
+        required: false
+        type: string
     secrets:
       PYPI_TOKEN:
         required: true
@@ -34,8 +41,8 @@ on:
 env:
   PYTHON_VERSION: "3.12"
   BASE_IMAGE_VERSION_STABLE: "1.3.1"
-  BASE_IMAGE_VERSION_BETA: "1.4.8"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.4.8"
+  BASE_IMAGE_VERSION_BETA: "1.4.9"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.4.9"
 
 jobs:
   preflight-checks:
@@ -131,7 +138,7 @@ jobs:
           echo "✅ Version $VERSION is valid for $CHANNEL channel"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6.0.0
+        uses: actions/setup-python@v6.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -224,6 +231,7 @@ jobs:
           branch: ${{ needs.validate-and-build.outputs.branch }}
           channel: ${{ inputs.channel }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          important-notes: ${{ inputs.important_notes }}
 
       - name: Format release title
         id: format_title
