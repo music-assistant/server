@@ -71,7 +71,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
 }
 
-FEATURES = {"now_playing": False, "catchup_segments": False, "check_blank_image": False}
+FEATURES = {"now_playing": True, "catchup_segments": False, "check_blank_image": False}
 
 type _StreamTypes = Literal["hls", "dash"]
 
@@ -307,11 +307,8 @@ class BBCSoundsProvider(MusicProvider):
             if not stream_details:
                 raise self._stream_error(item_id, media_type)
 
-            # Start a background task to keep these details updated
             if FEATURES["now_playing"]:
-                self.current_task = self.mass.create_task(
-                    self._watch_stream_details(stream_details)
-                )
+                stream_details.stream_metadata_update_callback = self._update_stream_metadata
             return stream_details
 
     async def _check_for_segments(self, vpid: str, stream_details: StreamDetails) -> None:
@@ -349,41 +346,41 @@ class BBCSoundsProvider(MusicProvider):
         else:
             self.logger.warning("No segments found")
 
-    async def _watch_stream_details(self, stream_details: StreamDetails) -> None:
-        station_id = stream_details.data["station"]
+    async def _update_stream_metadata(
+        self, stream_details: StreamDetails, elapsed_time: int
+    ) -> None:
+        if not stream_details or not stream_details.stream_metadata:
+            return
 
-        while True:
-            if not stream_details.stream_metadata:
-                await asyncio.sleep(_Constants.NOW_PLAYING_REFRESH_TIME)
-                continue
+        station_id = stream_details.data.get("station")
+        if not station_id:
+            return
 
-            now_playing = await self.client.schedules.currently_playing_song(
-                station_id, image_size=_Constants.DEFAULT_IMAGE_SIZE
-            )
+        now_playing = await self.client.schedules.currently_playing_song(
+            station_id, image_size=_Constants.DEFAULT_IMAGE_SIZE
+        )
 
-            if now_playing and stream_details.stream_metadata:
-                self.logger.debug(f"Now playing for {station_id}: {now_playing}")
+        if now_playing and stream_details.stream_metadata:
+            self.logger.debug(f"Now playing for {station_id}: {now_playing}")
 
-                # removed check temporarily as images not working
-                if not FEATURES["check_blank_image"] or (
-                    now_playing.image_url
-                    and _Constants.BLANK_IMAGE_NAME not in now_playing.image_url
-                ):
-                    stream_details.stream_metadata.image_url = now_playing.image_url
-                song = now_playing.titles["secondary"]
-                artist = now_playing.titles["primary"]
-                stream_details.stream_metadata.title = song
-                stream_details.stream_metadata.artist = artist
-            elif stream_details.stream_metadata:
-                station = await self.client.stations.get_station(station_id=station_id)
-                if station:
-                    self.logger.debug(f"Station details: {station}")
-                    display = self._station_programme_display(station)
-                    if display:
-                        stream_details.stream_metadata.title = display
-                        stream_details.stream_metadata.artist = None
-                        stream_details.stream_metadata.image_url = station.image_url
-            await asyncio.sleep(_Constants.NOW_PLAYING_REFRESH_TIME)
+            # removed check temporarily as images not working
+            if not FEATURES["check_blank_image"] or (
+                now_playing.image_url and _Constants.BLANK_IMAGE_NAME not in now_playing.image_url
+            ):
+                stream_details.stream_metadata.image_url = now_playing.image_url
+            song = now_playing.titles["secondary"]
+            artist = now_playing.titles["primary"]
+            stream_details.stream_metadata.title = song
+            stream_details.stream_metadata.artist = artist
+        elif stream_details.stream_metadata:
+            station = await self.client.stations.get_station(station_id=station_id)
+            if station:
+                self.logger.debug(f"Station details: {station}")
+                display = self._station_programme_display(station)
+                if display:
+                    stream_details.stream_metadata.title = display
+                    stream_details.stream_metadata.artist = None
+                    stream_details.stream_metadata.image_url = station.image_url
 
     def _station_programme_display(self, station: LiveStation) -> str | None:
         if station and station.titles:
@@ -804,6 +801,3 @@ class BBCSoundsProvider(MusicProvider):
                     self.logger.debug(f"Updated play status: {success}")
                 except exceptions.APIResponseError as err:
                     self.logger.error(f"Error updating play status: {err}")
-        # Cancel now playing task
-        if FEATURES["now_playing"] and not is_playing and self.current_task:
-            self.current_task.cancel()
