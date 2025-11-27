@@ -4,230 +4,403 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music Assistant API Documentation</title>
+    <link rel="stylesheet" href="../resources/common.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-                Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.7;
-            color: #2c3e50;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            padding: 20px;
+            padding: 40px 20px;
         }
+
         .container {
-            max-width: 1000px;
+            max-width: 1100px;
             margin: 0 auto;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
         }
+
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px 40px;
             text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 15px;
+            padding: 48px 40px;
+            border-bottom: 1px solid var(--border);
         }
-        .header .logo {
-            width: 60px;
-            height: 60px;
-        }
+
         .header h1 {
-            font-size: 2.2em;
-            margin: 0;
+            color: var(--fg);
+            font-size: 32px;
             font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
         }
+
         .header .version {
-            font-size: 1em;
-            opacity: 0.9;
-            font-weight: 300;
+            color: var(--text-tertiary);
+            font-size: 14px;
         }
+
         .content {
-            padding: 35px 40px;
+            padding: 40px;
         }
+
         .section {
-            margin-bottom: 35px;
+            margin-bottom: 48px;
         }
+
+        .section:last-child {
+            margin-bottom: 0;
+        }
+
         .section h2 {
-            color: #667eea;
-            font-size: 1.6em;
-            margin-bottom: 15px;
-            padding-bottom: 8px;
-            border-bottom: 2px solid #667eea;
+            color: var(--primary);
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--primary);
         }
+
         .section h3 {
-            color: #764ba2;
-            font-size: 1.3em;
-            margin: 25px 0 12px 0;
+            color: var(--fg);
+            font-size: 18px;
+            font-weight: 600;
+            margin: 32px 0 16px 0;
         }
+
         .section p {
-            margin-bottom: 12px;
-            font-size: 1em;
-            line-height: 1.6;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            font-size: 15px;
         }
+
         .api-boxes {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 20px;
-            margin: 20px 0;
+            margin: 24px 0;
         }
+
         .api-box {
-            background: #f8f9fa;
-            padding: 25px;
+            background: var(--input-bg);
+            padding: 28px;
             border-radius: 12px;
-            border-left: 5px solid #667eea;
-            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
         }
+
         .api-box:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.2);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            border-color: var(--primary);
         }
+
         .api-box h4 {
-            color: #667eea;
-            font-size: 1.2em;
-            margin-bottom: 10px;
+            color: var(--fg);
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
         }
+
         .api-box p {
-            color: #666;
+            color: var(--text-secondary);
+            font-size: 14px;
             margin-bottom: 20px;
-            font-size: 0.95em;
         }
+
         .api-box .btn {
             display: inline-block;
-            background: #667eea;
+            background: var(--primary);
             color: white;
             padding: 12px 24px;
-            border-radius: 6px;
+            border-radius: 10px;
             text-decoration: none;
-            font-weight: 500;
-            transition: background 0.3s;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s ease;
         }
+
         .api-box .btn:hover {
-            background: #764ba2;
+            filter: brightness(1.1);
+            box-shadow: 0 4px 12px var(--primary-glow);
+            transform: translateY(-1px);
         }
+
         .code-block {
-            background: #2d2d2d;
-            color: #f8f8f2;
-            padding: 25px;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 20px 0;
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 0.9em;
-            line-height: 1.6;
             white-space: pre-wrap;
         }
+
         .code-block .comment {
-            color: #75715e;
+            color: var(--code-comment);
         }
+
         .code-block .string {
-            color: #e6db74;
+            color: var(--code-string);
         }
+
         .code-block .keyword {
-            color: #66d9ef;
+            color: var(--code-keyword);
         }
-        .code-block .number {
-            color: #ae81ff;
-        }
+
         .highlight {
-            background: #fff3cd;
+            background: var(--input-focus-bg);
             padding: 2px 6px;
-            border-radius: 3px;
+            border-radius: 4px;
             font-weight: 500;
+            color: var(--primary);
         }
+
+        code {
+            background: var(--input-bg);
+            color: var(--primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
         .info-box {
-            background: #e7f3ff;
-            border-left: 4px solid #2196F3;
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-left: 4px solid var(--primary);
             padding: 20px;
             margin: 20px 0;
-            border-radius: 6px;
+            border-radius: 10px;
         }
+
         .info-box strong {
-            color: #2196F3;
+            color: var(--primary);
         }
+
         .events-list {
-            background: #f8f9fa;
-            padding: 25px;
-            border-radius: 8px;
+            background: var(--input-bg);
+            padding: 24px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
             margin: 20px 0;
         }
+
         .events-list h4 {
-            color: #667eea;
-            margin-bottom: 15px;
-            font-size: 1.2em;
+            color: var(--fg);
+            font-weight: 600;
+            margin-bottom: 16px;
+            font-size: 16px;
         }
+
         .events-list ul {
             list-style: none;
             padding-left: 0;
         }
+
         .events-list li {
-            padding: 8px 0;
-            border-bottom: 1px solid #e0e0e0;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
         }
+
         .events-list li:last-child {
             border-bottom: none;
         }
+
         .events-list code {
-            background: #667eea;
+            background: var(--primary);
             color: white;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.9em;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
             font-weight: 500;
         }
+
         .client-links {
             display: flex;
             gap: 15px;
             margin: 20px 0;
             flex-wrap: wrap;
         }
+
         .client-link {
-            background: #764ba2;
-            color: white;
+            background: var(--input-bg);
+            color: var(--fg);
             padding: 12px 24px;
-            border-radius: 6px;
+            border-radius: 10px;
             text-decoration: none;
-            font-weight: 500;
-            transition: background 0.3s;
+            font-weight: 600;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
             display: inline-flex;
             align-items: center;
             gap: 8px;
         }
+
         .client-link:hover {
-            background: #667eea;
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
+            transform: translateY(-1px);
         }
+
         .footer {
-            background: #f8f9fa;
-            padding: 30px 40px;
+            background: var(--input-bg);
+            padding: 24px 40px;
             text-align: center;
-            color: #666;
-            border-top: 1px solid #e0e0e0;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        ul {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        ul li {
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .code-block .keyword {
+            color: var(--code-keyword);
+        }
+
+        .highlight {
+            background: var(--input-focus-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            color: var(--primary);
+        }
+
+        code {
+            background: var(--input-bg);
+            color: var(--primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .info-box {
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        .info-box strong {
+            color: var(--primary);
+        }
+
+        .events-list {
+            background: var(--input-bg);
+            padding: 24px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .events-list h4 {
+            color: var(--fg);
+            font-weight: 600;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .events-list ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .events-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .events-list li:last-child {
+            border-bottom: none;
+        }
+
+        .events-list code {
+            background: var(--primary);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .client-links {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .client-link {
+            background: var(--input-bg);
+            color: var(--fg);
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .client-link:hover {
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        .footer {
+            background: var(--input-bg);
+            padding: 24px 40px;
+            text-align: center;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        ul {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        ul li {
+            color: var(--text-secondary);
+            margin-bottom: 8px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <svg class="logo" viewBox="0 0 240 240" fill="none">
-                <g clip-path="url(#clipPath19)" transform="translate(0,2)">
-                    <path d="m 109.394,4.3814 c 5.848,-5.84187 15.394,-5.84187 21.212,0 l 98.788,98.8876 c 5.848,5.842 10.606,17.374 10.606,25.638 v 90.11 l -0.005,0.356 c -0.206,8.086 -6.881,14.628 -14.995,14.628 H 15 C 6.75759,234.001 2.40473e-5,227.22 0,218.987 v -90.11 c 1.20331e-4,-8.264 4.78834,-19.796 10.6064,-25.638 z" fill="#f2f4f9"/>
-                    <path d="m 109.394,4.3814 c 5.848,-5.84187 15.394,-5.84187 21.212,0 l 98.788,98.8876 c 5.848,5.842 10.606,17.374 10.606,25.638 v 90.11 l -0.005,0.356 c -0.206,8.086 -6.881,14.628 -14.995,14.628 H 15 C 6.75759,234.001 2.40473e-5,227.22 0,218.987 v -90.11 c 1.20331e-4,-8.264 4.78834,-19.796 10.6064,-25.638 z M 36,120.001 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.5817,-8 -8,-8 z m 32,0 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.5817,-8 -8,-8 z m 32,0 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.582,-8 -8,-8 z m 58.393,0.426 c -4.193,-1.395 -8.722,0.873 -10.118,5.065 l -26.796,80.509 h 16.863 l 25.114,-75.457 c 1.395,-4.192 -0.872,-8.721 -5.063,-10.117 z m 30.315,5.065 c -1.395,-4.192 -5.925,-6.46 -10.117,-5.065 -4.192,1.396 -6.46,5.925 -5.065,10.117 l 25.116,75.457 h 16.862 z" fill="#18bcf2"/>
-                </g>
-                <defs>
-                    <clipPath id="clipPath19" clipPathUnits="userSpaceOnUse">
-                        <rect width="239.88728" height="239.55457" x="0.14213564" y="0.010407645"/>
-                    </clipPath>
-                </defs>
-            </svg>
+            <div class="logo">
+                <img src="/logo.png" alt="Music Assistant">
+            </div>
             <h1>Music Assistant API</h1>
             <div class="version">Version {VERSION}</div>
         </div>
@@ -286,7 +459,25 @@
 <span class="comment"># Connect to WebSocket</span>
 ws://{SERVER_HOST}/ws
 
-<span class="comment"># Send a command (message_id is REQUIRED)</span>
+<span class="comment"># Step 1: Authenticate (REQUIRED as first command)</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"auth"</span>,
+  <span class="string">"args"</span>: {
+    <span class="string">"token"</span>: <span class="string">"your_access_token"</span>
+  }
+}
+
+<span class="comment"># Auth response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"authenticated"</span>: <span class="keyword">true</span>,
+    <span class="string">"user"</span>: {<span class="comment">...user info...</span>}
+  }
+}
+
+<span class="comment"># Step 2: Send commands (message_id is REQUIRED)</span>
 {
   <span class="string">"message_id"</span>: <span class="string">"unique-id-123"</span>,
   <span class="string">"command"</span>: <span class="string">"players/all"</span>,
@@ -317,16 +508,18 @@ ws://{SERVER_HOST}/ws
                     since each HTTP request is isolated. The response returns the command result directly.
                 </div>
                 <div class="code-block">
-<span class="comment"># Get all players</span>
+<span class="comment"># Get all players (requires authentication)</span>
 curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
   -H <span class="string">"Content-Type: application/json"</span> \
   -d <span class="string">'{
     "command": "players/all",
     "args": {}
   }'</span>
 
-<span class="comment"># Play media on a player</span>
+<span class="comment"># Play media on a player (requires authentication)</span>
 curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
   -H <span class="string">"Content-Type: application/json"</span> \
   -d <span class="string">'{
     "command": "player_queues/play_media",
@@ -336,7 +529,7 @@ curl -X POST {BASE_URL}/api \
     }
   }'</span>
 
-<span class="comment"># Get server info</span>
+<span class="comment"># Get server info (no authentication required)</span>
 curl {BASE_URL}/info
                 </div>
             </div>
@@ -459,7 +652,7 @@ api.subscribe(<span class="string">'player_updated'</span>, (event) => {
             <div class="section">
                 <h2>Best Practices</h2>
                 <p><strong>✓ Do:</strong></p>
-                <ul style="margin-left: 30px; margin-bottom: 15px;">
+                <ul>
                     <li>Use WebSocket API for real-time applications</li>
                     <li>Handle connection drops and reconnect automatically</li>
                     <li>Subscribe to relevant events instead of polling</li>
@@ -467,7 +660,7 @@ api.subscribe(<span class="string">'player_updated'</span>, (event) => {
                     <li>Implement proper error handling</li>
                 </ul>
                 <p><strong>✗ Don't:</strong></p>
-                <ul style="margin-left: 30px;">
+                <ul>
                     <li>Poll the REST API frequently for updates (use WebSocket events instead)</li>
                     <li>Send commands without waiting for previous responses</li>
                     <li>Ignore error responses</li>
@@ -477,19 +670,132 @@ api.subscribe(<span class="string">'player_updated'</span>, (event) => {
 
             <div class="section">
                 <h2>Authentication</h2>
-                <div class="info-box">
-                    <strong>Note:</strong> Authentication is not yet implemented but will be added
-                    in a future release. For now, ensure your Music Assistant server is not directly
-                    exposed to the internet. Use a VPN or reverse proxy for secure access.
+                <p>
+                    As of API Schema Version 28, <span class="highlight">authentication is now mandatory</span> for all API access
+                    (except when accessed through Home Assistant Ingress).
+                </p>
+
+                <h3>Authentication Overview</h3>
+                <p>Music Assistant supports the following authentication methods:</p>
+                <ul>
+                    <li><strong>Username/Password</strong> - Built-in authentication provider</li>
+                    <li><strong>Home Assistant OAuth</strong> - OAuth flow for HA users (optional)</li>
+                    <li><strong>Bearer Tokens</strong> - Token-based authentication for HTTP and WebSocket</li>
+                </ul>
+
+                <h3>HTTP Authentication Endpoints</h3>
+                <p>The following HTTP endpoints are available for authentication (no auth required):</p>
+                <div class="code-block">
+<span class="comment"># Get server info (includes onboard_done status)</span>
+GET {BASE_URL}/info
+
+<span class="comment"># Get available login providers</span>
+GET {BASE_URL}/auth/providers
+
+<span class="comment"># Login with credentials (built-in provider is default)</span>
+POST {BASE_URL}/auth/login
+{
+  <span class="string">"credentials"</span>: {
+    <span class="string">"username"</span>: <span class="string">"your_username"</span>,
+    <span class="string">"password"</span>: <span class="string">"your_password"</span>
+  }
+}
+
+<span class="comment"># Or specify a different provider (e.g., Home Assistant OAuth)</span>
+POST {BASE_URL}/auth/login
+{
+  <span class="string">"provider_id"</span>: <span class="string">"homeassistant"</span>,
+  <span class="string">"credentials"</span>: {<span class="comment">...provider-specific...</span>}
+}
+
+<span class="comment"># Response includes access token</span>
+{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"token"</span>: <span class="string">"your_access_token"</span>,
+  <span class="string">"user"</span>: { <span class="comment">...user info...</span> }
+}
+
+<span class="comment"># First-time setup (only if no users exist)</span>
+POST {BASE_URL}/setup
+{
+  <span class="string">"username"</span>: <span class="string">"admin"</span>,
+  <span class="string">"password"</span>: <span class="string">"secure_password"</span>
+}
                 </div>
+
+                <h3>Using Bearer Tokens</h3>
+                <p>Once you have an access token, include it in all HTTP requests:</p>
+                <div class="code-block">
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "players/all",
+    "args": {}
+  }'</span>
+                </div>
+
+                <h3>WebSocket Authentication</h3>
+                <p>
+                    After establishing a WebSocket connection, you <strong>must</strong> send an
+                    <code>auth</code> command as the first message:
+                </p>
+                <div class="code-block">
+<span class="comment"># Send auth command immediately after connection</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"auth"</span>,
+  <span class="string">"args"</span>: {
+    <span class="string">"token"</span>: <span class="string">"your_access_token"</span>
+  }
+}
+
+<span class="comment"># Response on success</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"authenticated"</span>: <span class="keyword">true</span>,
+    <span class="string">"user"</span>: {
+      <span class="string">"user_id"</span>: <span class="string">"..."</span>,
+      <span class="string">"username"</span>: <span class="string">"your_username"</span>,
+      <span class="string">"role"</span>: <span class="string">"admin"</span>
+    }
+  }
+}
+                </div>
+
+                <div class="info-box">
+                    <strong>Token Types:</strong>
+                    <ul style="margin-top: 12px;">
+                        <li><strong>Short-lived tokens:</strong> Created automatically during login. Expire after 30 days of inactivity but auto-renew on each use (sliding expiration window). Perfect for user sessions.</li>
+                        <li><strong>Long-lived tokens:</strong> Created via <code>auth/token/create</code> command. Expire after 10 years with no auto-renewal. Intended for external integrations (Home Assistant, mobile apps, API access).</li>
+                    </ul>
+                    Use the <code>auth/tokens</code> and <code>auth/token/create</code> WebSocket commands to manage your tokens.
+                </div>
+
+                <h3>User Management Commands</h3>
+                <p>The following WebSocket commands are available for authentication management:</p>
+                <ul>
+                    <li><code>auth/users</code> - List all users (admin only)</li>
+                    <li><code>auth/user</code> - Get user by ID (admin only)</li>
+                    <li><code>auth/user/create</code> - Create a new user (admin only)</li>
+                    <li><code>auth/user/update</code> - Update user profile, password, or role (admin for other users)</li>
+                    <li><code>auth/user/enable</code> - Enable user (admin only)</li>
+                    <li><code>auth/user/disable</code> - Disable user (admin only)</li>
+                    <li><code>auth/user/delete</code> - Delete user (admin only)</li>
+                    <li><code>auth/tokens</code> - List your tokens</li>
+                    <li><code>auth/token/create</code> - Create a new long-lived token</li>
+                    <li><code>auth/token/revoke</code> - Revoke a token</li>
+                </ul>
+                <p>See the <a href="{BASE_URL}/api-docs/commands#auth" style="color: var(--primary); text-decoration: none; font-weight: 500;">Commands Reference</a> for detailed documentation of all auth commands.</p>
             </div>
         </div>
 
         <div class="footer">
             <p>
                 Music Assistant {VERSION} •
-                <a href="https://music-assistant.io" style="color: #667eea;">music-assistant.io</a> •
-                <a href="https://github.com/music-assistant" style="color: #667eea;">GitHub</a>
+                <a href="https://music-assistant.io">music-assistant.io</a> •
+                <a href="https://github.com/music-assistant">GitHub</a>
             </p>
         </div>
     </div>

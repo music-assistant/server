@@ -129,7 +129,7 @@ class NicovideoVideoService(NicovideoBaseService):
         if not hls_url:
             raise UnplayableMediaError("Failed to get HLS content URL")
 
-        return hls_url
+        return str(hls_url)
 
     async def _fetch_media_playlist_text(self, hls_url: str, domand_bid: str) -> str:
         """Fetch media playlist text from HLS stream.
