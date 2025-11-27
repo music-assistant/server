@@ -115,7 +115,7 @@ def get_multizone_info(
             for group in status["multizone"]["dynamic_groups"]:
                 if udn := group.get("uuid"):
                     uuid = UUID(udn.replace("-", ""))
-                    dynamic_groups.add(uuid)  # Fix: Adding UUID to set[UUID]
+                    dynamic_groups.add(uuid)
 
         if "multizone" in status and "groups" in status["multizone"]:
             for group in status["multizone"]["groups"]:
@@ -123,7 +123,7 @@ def get_multizone_info(
                     continue
                 if group["multichannel_group"] and (udn := group.get("uuid")):
                     uuid = UUID(udn.replace("-", ""))
-                    multichannel_groups.add(uuid)  # Fix: Adding UUID to set[UUID]
+                    multichannel_groups.add(uuid)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
         pass
     return (dynamic_groups, multichannel_groups)
