@@ -10,10 +10,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import (
-    MediaNotFoundError,
-    ProviderUnavailableError,
-)
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
@@ -102,10 +99,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.register_api_command(f"music/{api_base}/count", self.library_count)
         self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
         self.mass.register_api_command(f"music/{api_base}/get", self.get)
-        self.mass.register_api_command(f"music/{api_base}/get_{self.media_type}", self.get)
-        self.mass.register_api_command(f"music/{api_base}/add", self.add_item_to_library)
-        self.mass.register_api_command(f"music/{api_base}/update", self.update_item_in_library)
-        self.mass.register_api_command(f"music/{api_base}/remove", self.remove_item_from_library)
+        # Backward compatibility alias - prefer the generic "get" endpoint
+        self.mass.register_api_command(
+            f"music/{api_base}/get_{self.media_type}", self.get, alias=True
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/update", self.update_item_in_library, required_role="admin"
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/remove", self.remove_item_from_library, required_role="admin"
+        )
         self._db_add_lock = asyncio.Lock()
 
     async def add_item_to_library(

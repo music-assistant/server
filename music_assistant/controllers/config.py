@@ -407,7 +407,7 @@ class ConfigController:
             ),
         ]
 
-    @api_command("config/providers/save")
+    @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -431,7 +431,7 @@ class ConfigController:
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
-    @api_command("config/providers/remove")
+    @api_command("config/providers/remove", required_role="admin")
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -659,7 +659,7 @@ class ConfigController:
             }
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
-    @api_command("config/players/save")
+    @api_command("config/players/save", required_role="admin")
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
@@ -683,7 +683,7 @@ class ConfigController:
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
-    @api_command("config/players/remove")
+    @api_command("config/players/remove", required_role="admin")
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -771,7 +771,7 @@ class ConfigController:
 
             return dsp_config
 
-    @api_command("config/players/dsp/save")
+    @api_command("config/players/dsp/save", required_role="admin")
     async def save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
         """
         Save/update DSPConfig for a player.
@@ -798,7 +798,7 @@ class ConfigController:
         raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
         return [DSPConfigPreset.from_dict(preset) for preset in raw_presets.values()]
 
-    @api_command("config/dsp_presets/save")
+    @api_command("config/dsp_presets/save", required_role="admin")
     async def save_dsp_presets(self, preset: DSPConfigPreset) -> DSPConfigPreset:
         """
         Save/update a user-defined DSP presets.
@@ -823,7 +823,7 @@ class ConfigController:
 
         return preset
 
-    @api_command("config/dsp_presets/remove")
+    @api_command("config/dsp_presets/remove", required_role="admin")
     async def remove_dsp_preset(self, preset_id: str) -> None:
         """Remove a user-defined DSP preset."""
         self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
@@ -914,7 +914,7 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set(conf_key, default_config.to_raw())
 
-    @api_command("config/core")
+    @api_command("config/core", required_role="admin")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -1005,7 +1005,7 @@ class ConfigController:
         domain: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    ) -> list[ConfigEntry]:
         """
         Return Config entries to configure a core controller.
 
@@ -1016,12 +1016,12 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
-        return (
+        return list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
 
-    @api_command("config/core/save")
+    @api_command("config/core/save", required_role="admin")
     async def save_core_config(
         self,
         domain: str,
@@ -1249,15 +1249,6 @@ class ConfigController:
             ]
             changed = True
 
-        # set 'onboard_done' flag if we have any (non default) provider configs
-        if self._data.get(CONF_ONBOARD_DONE) is None:
-            default_providers = {x.domain for x in self.mass.get_provider_manifests() if x.builtin}
-            for provider_config in self._data.get(CONF_PROVIDERS, {}).values():
-                if provider_config["domain"] not in default_providers:
-                    self._data[CONF_ONBOARD_DONE] = True
-                    changed = True
-                    break
-
         # migrate player_group entries
         ugp_found = False
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
@@ -1343,7 +1334,7 @@ class ConfigController:
             await _file.write(await async_json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
-    @api_command("config/providers/reload")
+    @api_command("config/providers/reload", required_role="admin")
     async def _reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         try:
