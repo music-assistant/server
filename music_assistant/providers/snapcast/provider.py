@@ -178,16 +178,12 @@ class SnapCastProvider(PlayerProvider):
                 )
 
         # Copy control script to plugin directory to enable metadata and playback control
-        # Note: Using copy instead of symlink as snapserver may have sandboxing restrictions
         plugin_dir = Path("/usr/share/snapserver/plug-ins")
         control_dest = plugin_dir / "control.py"
-
         try:
             plugin_dir.mkdir(parents=True, exist_ok=True)
-
             # Clean up existing file
             control_dest.unlink(missing_ok=True)
-
             if not CONTROL_SCRIPT.exists():
                 logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
             else:
@@ -196,9 +192,7 @@ class SnapCastProvider(PlayerProvider):
                 # Ensure it's executable
                 control_dest.chmod(0o755)
                 self._controlscript_available = True
-
                 logger.debug("Copied controlscript to: %s", control_dest)
-
         except (OSError, PermissionError) as err:
             logger.warning(
                 "Could not copy controlscript (metadata/control disabled): %s",
