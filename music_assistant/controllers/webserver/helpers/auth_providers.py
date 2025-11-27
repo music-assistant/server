@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -38,6 +39,8 @@ class LoginRateLimiter:
         self._failed_attempts: dict[str, list[datetime]] = {}
         # Time window for tracking attempts (30 minutes)
         self._tracking_window = timedelta(minutes=30)
+        # Lock for thread-safe access to _failed_attempts
+        self._lock = asyncio.Lock()
 
     def _cleanup_old_attempts(self, username: str) -> None:
         """
@@ -95,62 +98,65 @@ class LoginRateLimiter:
         :param username: The username attempting to log in.
         :return: Tuple of (allowed, delay_seconds). If not allowed, includes remaining delay.
         """
-        self._cleanup_old_attempts(username)
+        async with self._lock:
+            self._cleanup_old_attempts(username)
 
-        if username not in self._failed_attempts or not self._failed_attempts[username]:
+            if username not in self._failed_attempts or not self._failed_attempts[username]:
+                return True, 0
+
+            # Get the most recent failed attempt
+            last_attempt = self._failed_attempts[username][-1]
+            required_delay = self.get_delay(username)
+
+            if required_delay == 0:
+                return True, 0
+
+            # Calculate how much time has passed since last attempt
+            time_since_last = (utc() - last_attempt).total_seconds()
+
+            if time_since_last < required_delay:
+                # Still in cooldown period
+                remaining_delay = int(required_delay - time_since_last)
+                return False, remaining_delay
+
             return True, 0
 
-        # Get the most recent failed attempt
-        last_attempt = self._failed_attempts[username][-1]
-        required_delay = self.get_delay(username)
-
-        if required_delay == 0:
-            return True, 0
-
-        # Calculate how much time has passed since last attempt
-        time_since_last = (utc() - last_attempt).total_seconds()
-
-        if time_since_last < required_delay:
-            # Still in cooldown period
-            remaining_delay = int(required_delay - time_since_last)
-            return False, remaining_delay
-
-        return True, 0
-
-    def record_failed_attempt(self, username: str) -> None:
+    async def record_failed_attempt(self, username: str) -> None:
         """
         Record a failed login attempt.
 
         :param username: The username that failed to log in.
         """
-        self._cleanup_old_attempts(username)
+        async with self._lock:
+            self._cleanup_old_attempts(username)
 
-        if username not in self._failed_attempts:
-            self._failed_attempts[username] = []
+            if username not in self._failed_attempts:
+                self._failed_attempts[username] = []
 
-        self._failed_attempts[username].append(utc())
+            self._failed_attempts[username].append(utc())
 
-        # Log warning for suspicious activity
-        attempt_count = len(self._failed_attempts[username])
-        if attempt_count == 10:
-            LOGGER.warning(
-                "Suspicious login activity: 10 failed attempts for username '%s'", username
-            )
-        elif attempt_count == 20:
-            LOGGER.warning(
-                "High suspicious login activity: 20 failed attempts for username '%s'. "
-                "Consider manually disabling this account.",
-                username,
-            )
+            # Log warning for suspicious activity
+            attempt_count = len(self._failed_attempts[username])
+            if attempt_count == 10:
+                LOGGER.warning(
+                    "Suspicious login activity: 10 failed attempts for username '%s'", username
+                )
+            elif attempt_count == 20:
+                LOGGER.warning(
+                    "High suspicious login activity: 20 failed attempts for username '%s'. "
+                    "Consider manually disabling this account.",
+                    username,
+                )
 
-    def clear_attempts(self, username: str) -> None:
+    async def clear_attempts(self, username: str) -> None:
         """
         Clear failed attempts for a username (called after successful login).
 
         :param username: The username to clear.
         """
-        if username in self._failed_attempts:
-            del self._failed_attempts[username]
+        async with self._lock:
+            if username in self._failed_attempts:
+                del self._failed_attempts[username]
 
 
 class LoginProviderConfig(TypedDict, total=False):
@@ -293,7 +299,7 @@ class BuiltinLoginProvider(LoginProvider):
         if not user_row:
             # Record failed attempt even if username doesn't exist
             # This prevents username enumeration timing attacks
-            self._rate_limiter.record_failed_attempt(username)
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
 
         user_id = user_row["user_id"]
@@ -308,17 +314,17 @@ class BuiltinLoginProvider(LoginProvider):
 
         if not user:
             # Record failed attempt
-            self._rate_limiter.record_failed_attempt(username)
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
 
         # Check if user is enabled
         if not user.enabled:
             # Record failed attempt for disabled accounts too
-            self._rate_limiter.record_failed_attempt(username)
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="User account is disabled")
 
         # Successful login - clear any failed attempts
-        self._rate_limiter.clear_attempts(username)
+        await self._rate_limiter.clear_attempts(username)
         return AuthResult(success=True, user=user)
 
     async def create_user_with_password(
