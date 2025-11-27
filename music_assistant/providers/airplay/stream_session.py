@@ -440,7 +440,6 @@ class AirPlayStreamSession:
                 "-readrate_initial_burst",
                 f"{AIRPLAY_PRELOAD_CHUNKS}",
             ],
-            # extra_input_args=["-y", "-re"],
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg
