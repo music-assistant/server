@@ -35,7 +35,7 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-AIRPLAY_PRELOAD_CHUNKS: Final[int] = 3  # Number of PCM chunks to preload before throttling back
+AIRPLAY_PRELOAD_CHUNKS: Final[int] = 5  # Number of PCM chunks to preload before throttling back
 AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
     200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
 )
