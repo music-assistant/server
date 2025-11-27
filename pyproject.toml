@@ -134,7 +134,6 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/chromecast/.*$',
   '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]

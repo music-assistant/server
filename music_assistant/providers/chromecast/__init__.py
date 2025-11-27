@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from pychromecast.controllers.media import MediaController
 
@@ -23,20 +23,24 @@ SUPPORTED_FEATURES: set[ProviderFeature] = (
 )  # we don't have any special supported features (yet)
 
 # Monkey patch the Media controller here to store the queue items
+# TODO: Refactor this monkey patch into a proper MediaController subclass or wrapper
+# to avoid runtime attribute injection and `# type: ignore` lines.
+# The current approach dynamically adds `current_item_id` and `items` to MediaStatus,
+# which is not represented in pychromecast's type hints.
 _patched_process_media_status_org = MediaController._process_media_status
 
 
-def _patched_process_media_status(self: MediaController, data: dict) -> None:
+def _patched_process_media_status(self: MediaController, data: dict[str, object]) -> None:
     """Process STATUS message(s) of the media controller."""
     _patched_process_media_status_org(self, data)
-    for status_msg in data.get("status", []):
+    for status_msg in cast("list[dict[str, Any]]", data.get("status", [])):
         if items := status_msg.get("items"):
-            self.status.current_item_id = status_msg.get("currentItemId", 0)
-            self.status.items = items
+            self.status.current_item_id = status_msg.get("currentItemId", 0)  # type: ignore[attr-defined]
+            self.status.items = items  # type: ignore[attr-defined]
 
 
 # Apply the monkey patch
-MediaController._process_media_status = _patched_process_media_status
+MediaController._process_media_status = _patched_process_media_status  # type: ignore[method-assign]
 
 
 async def setup(

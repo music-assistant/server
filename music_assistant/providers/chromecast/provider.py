@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import logging
 import threading
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
@@ -49,9 +51,11 @@ class ChromecastProvider(PlayerProvider):
         manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
         self.browser = CastBrowser(
             SimpleCastListener(
-                add_callback=self._on_chromecast_discovered,
-                remove_callback=self._on_chromecast_removed,
-                update_callback=self._on_chromecast_discovered,
+                add_callback=cast("Callable[[UUID, str], None]", self._on_chromecast_discovered),
+                remove_callback=cast(
+                    "Callable[[UUID, str, CastInfo], None]", self._on_chromecast_removed
+                ),
+                update_callback=cast("Callable[[UUID, str], None]", self._on_chromecast_discovered),
             ),
             self.mass.aiozc.zeroconf,
             known_hosts=manual_ip_config,
@@ -98,10 +102,10 @@ class ChromecastProvider(PlayerProvider):
 
         assert self.browser is not None  # for type checking
         with self._discover_lock:
-            disc_info: CastInfo = self.browser.devices[uuid]
+            disc_info: CastInfo = self.browser.devices[UUID(uuid)]
 
             if disc_info.uuid is None:
-                self.logger.error("Discovered chromecast without uuid %s", disc_info)
+                self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]
                 return
 
             player_id = str(disc_info.uuid)
@@ -150,7 +154,12 @@ class ChromecastProvider(PlayerProvider):
         castplayer = ChromecastPlayer(self, player_id, cast_info=cast_info, chromecast=chromecast)
         await self.mass.players.register_or_update(castplayer)
 
-    def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
+    def _on_chromecast_removed(
+        self,
+        uuid: str,
+        service: tuple[Any, ...],
+        cast_info: object,
+    ) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
         player_id = str(service[1])
         friendly_name = service[3]

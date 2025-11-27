@@ -161,8 +161,7 @@ class ChromecastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        # Round to 2 decimal places to avoid floating-point precision issues
-        await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
+        await asyncio.to_thread(self.cc.set_volume, volume_level / 100)
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -263,7 +262,7 @@ class ChromecastPlayer(Player):
         if not (current_media := self.current_media):
             return
         if not (
-            "/flow/" in self._attr_current_media.uri
+            "/flow/" in current_media.uri
             or self.current_media.media_type
             in (
                 MediaType.RADIO,
@@ -362,8 +361,6 @@ class ChromecastPlayer(Player):
 
     def on_new_cast_status(self, status: CastStatus) -> None:
         """Handle updated CastStatus."""
-        if status is None:
-            return  # guard
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Received cast status for %s - app_id: %s - volume: %s",
@@ -389,7 +386,7 @@ class ChromecastPlayer(Player):
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
-        self._attr_volume_level = round(status.volume_level * 100)
+        self._attr_volume_level = int(status.volume_level * 100)
         self._attr_volume_muted = status.volume_muted
         new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
         self._attr_powered = new_powered
@@ -411,10 +408,13 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            if not (group_player := self.mass.players.get(self.active_cast_group)):
+            player_obj = self.mass.players.get(self.active_cast_group)
+            if not player_obj:
                 return
-            if not isinstance(group_player, ChromecastPlayer):
+            # Now assert/check the type to satisfy MyPy
+            if not isinstance(player_obj, ChromecastPlayer):
                 return
+            group_player = player_obj
             status = group_player.cc.media_controller.status
 
         # player state
