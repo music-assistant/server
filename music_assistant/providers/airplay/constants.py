@@ -35,7 +35,13 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+AIRPLAY_PRELOAD_CHUNKS: Final[int] = 3  # Number of PCM chunks to preload before throttling back
+AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
+    200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
+)
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+AIRPLAY2_OUTPUT_BUFFER_DURATION_MS: Final[int] = 2000  # Required to respect ntpstart
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"
