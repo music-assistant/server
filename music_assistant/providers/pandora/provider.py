@@ -227,7 +227,7 @@ class PandoraProvider(MusicProvider):
                     )
                 yield Radio(
                     item_id=station["stationId"],
-                    provider=self.domain,
+                    provider=self.instance_id,
                     name=station["name"],
                     metadata=MediaItemMetadata(
                         images=UniqueList([station_image]) if station_image else None,
@@ -423,9 +423,3 @@ class PandoraProvider(MusicProvider):
                     break
 
         return SearchResults(radio=results)
-
-    async def browse(self, path: str) -> list[Radio]:
-        """Browse radio stations."""
-        # For now, just return all stations like get_library_radios
-        # Could be enhanced with categories/genres in the future
-        return [station async for station in self.get_library_radios()]
