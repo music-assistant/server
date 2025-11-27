@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import shutil
 import socket
 from pathlib import Path
 from typing import cast
@@ -176,25 +177,31 @@ class SnapCastProvider(PlayerProvider):
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
 
-        # Create symlink for control script to enable metadata and playback control
+        # Copy control script to plugin directory to enable metadata and playback control
+        # Note: Using copy instead of symlink as snapserver may have sandboxing restrictions
         plugin_dir = Path("/usr/share/snapserver/plug-ins")
-        control_symlink = plugin_dir / "control.py"
+        control_dest = plugin_dir / "control.py"
+
         try:
             plugin_dir.mkdir(parents=True, exist_ok=True)
-            # Clean up existing file or broken symlink
-            control_symlink.unlink(missing_ok=True)
+
+            # Clean up existing file
+            control_dest.unlink(missing_ok=True)
+
             if not CONTROL_SCRIPT.exists():
                 logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
             else:
-                control_symlink.symlink_to(CONTROL_SCRIPT)
+                # Copy the control script to the plugin directory
+                shutil.copy2(CONTROL_SCRIPT, control_dest)
+                # Ensure it's executable
+                control_dest.chmod(0o755)
                 self._controlscript_available = True
 
-                logger.debug(
-                    "Created controlscript symlink: %s -> %s", control_symlink, CONTROL_SCRIPT
-                )
+                logger.debug("Copied controlscript to: %s", control_dest)
+
         except (OSError, PermissionError) as err:
             logger.warning(
-                "Could not create controlscript symlink (metadata/control disabled): %s",
+                "Could not copy controlscript (metadata/control disabled): %s",
                 err,
             )
 
