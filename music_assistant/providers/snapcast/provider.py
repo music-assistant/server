@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import socket
+from pathlib import Path
 from typing import cast
 
 from bidict import bidict
@@ -29,6 +30,7 @@ from music_assistant.providers.snapcast.constants import (
     CONF_SERVER_TRANSPORT_CODEC,
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
+    CONTROL_SCRIPT,
     DEFAULT_SNAPSERVER_PORT,
     SNAPWEB_DIR,
 )
@@ -46,6 +48,7 @@ class SnapCastProvider(PlayerProvider):
     _ids_map: bidict[str, str]  # ma_id / snapclient_id
     _use_builtin_server: bool
     _stop_called: bool
+    _controlscript_available: bool
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -53,6 +56,7 @@ class SnapCastProvider(PlayerProvider):
         logging.getLogger("snapcast").setLevel(self.logger.level)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
+        self._controlscript_available = False
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
@@ -171,6 +175,28 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.exception(
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
+
+        # Create symlink for control script to enable metadata and playback control
+        plugin_dir = Path("/usr/share/snapserver/plug-ins")
+        control_symlink = plugin_dir / "control.py"
+        try:
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            # Clean up existing file or broken symlink
+            control_symlink.unlink(missing_ok=True)
+            if not CONTROL_SCRIPT.exists():
+                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
+            else:
+                control_symlink.symlink_to(CONTROL_SCRIPT)
+                self._controlscript_available = True
+
+                logger.debug(
+                    "Created controlscript symlink: %s -> %s", control_symlink, CONTROL_SCRIPT
+                )
+        except (OSError, PermissionError) as err:
+            logger.warning(
+                "Could not create controlscript symlink (metadata/control disabled): %s",
+                err,
+            )
 
         args = [
             "snapserver",

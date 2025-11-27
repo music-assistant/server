@@ -3,6 +3,7 @@
 import asyncio
 import random
 import time
+import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -24,6 +25,7 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
+    CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
@@ -348,23 +350,22 @@ class SnapCastPlayer(Player):
             return stream
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
-        #        if self.provider._use_builtin_server and queue_id:
-        #            extra_args = (
-        #                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
-        #                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
-        #                f"--api-port={self.mass.webserver.publish_port}%20"
-        #                f"--streamserver-ip={self.mass.streams.publish_ip}%20"
-        #                f"--streamserver-port={self.mass.streams.publish_port}"
-        #            )
-        #        else:
-        #            extra_args = ""
-
-        # Note: The control script feature is currently disabled because snapserver requires
-        # controlscripts to be in /usr/share/snapserver/plug-ins/ but the script is in the
-        # Python package directory. This feature was non-functional from before beta 16 due to a bug
-        # and needs proper implementation before re-enabling.
-        # See: https://github.com/music-assistant/server/issues/4452
-        extra_args = ""
+        # A symlink is created at startup from /usr/share/snapserver/plug-ins/control.py
+        # to the actual script location to satisfy snapserver's plugin directory requirement.
+        if (
+            self.provider._use_builtin_server
+            and queue_id
+            and self.provider._controlscript_available
+        ):
+            extra_args = (
+                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
+                f"--api-port={self.mass.webserver.publish_port}%20"
+                f"--streamserver-ip={self.mass.streams.publish_ip}%20"
+                f"--streamserver-port={self.mass.streams.publish_port}"
+            )
+        else:
+            extra_args = ""
 
         attempts = 50
         while attempts:
