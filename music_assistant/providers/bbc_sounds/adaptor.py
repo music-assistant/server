@@ -428,9 +428,21 @@ class PodcastConverter(BaseConverter):
                 seconds_streamed=(int(episode.position) if episode.position else 0),
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
-            metadata = StreamMetadata(
-                title=f"BBC {episode.metadata.description}", uri=source_obj.stream
-            )
+            # Try to work out the best network/series name to display
+            if source_obj.network and source_obj.network.id == "bbc_webonly":
+                title = "BBC News"
+            elif source_obj.network:
+                title = f"BBC {source_obj.network.short_title}"
+            elif source_obj.container:
+                title = source_obj.container.title
+            elif episode.metadata and episode.metadata.description:
+                title = episode.metadata.description
+            elif source_obj.titles:
+                title = source_obj.titles["primary"]
+            else:
+                title = ""
+
+            metadata = StreamMetadata(title=title, uri=source_obj.stream)
             if episode.metadata.images:
                 metadata.image_url = episode.metadata.images[0].path
 
