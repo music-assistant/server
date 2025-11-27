@@ -205,14 +205,14 @@ class PlayerController(CoreController):
         :return: List of Player objects.
         """
         current_user = get_current_user()
-        user_filter = current_user.player_filter if current_user else []
+        user_filter = current_user.player_filter if current_user else None
         return [
             player
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
             and (provider_filter is None or player.provider.lookup_key == provider_filter)
-            and (not user_filter or player.player_id in user_filter)
+            and (user_filter is None or player.player_id in user_filter)
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
 
