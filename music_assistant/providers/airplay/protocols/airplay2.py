@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from music_assistant_models.enums import PlaybackState
@@ -11,7 +12,6 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
-    CONF_READ_AHEAD_BUFFER,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -59,9 +59,6 @@ class AirPlay2Stream(AirPlayProtocol):
         player_id = self.player.player_id
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
-        read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER, return_type=int
-        )
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
@@ -88,8 +85,6 @@ class AirPlay2Stream(AirPlayProtocol):
             txt_kv,
             "--ntpstart",
             str(start_ntp),
-            "--latency",
-            str(read_ahead),
             "--volume",
             str(self.player.volume_level),
             "--loglevel",
@@ -112,7 +107,7 @@ class AirPlay2Stream(AirPlayProtocol):
         if self.prov.logger.level > logging.INFO:
             num_lines *= 10
         for _ in range(num_lines):
-            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
+            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore").strip()
             self.player.logger.debug(line)
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
@@ -161,6 +156,7 @@ class AirPlay2Stream(AirPlayProtocol):
                 logger.log(VERBOSE_LOG_LEVEL, line)
             else:  # for now, log unknown lines as error
                 logger.error(line)
+            await asyncio.sleep(0)  # Yield to event loop
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         await self.stop()

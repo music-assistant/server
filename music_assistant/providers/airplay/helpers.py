@@ -156,14 +156,11 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                     cli_path,
                     "--testrun",
                 ]
+                passing_output = "cliap2 check"
 
             returncode, output = await check_output(*args)
             _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
-            if (
-                protocol == StreamingProtocol.RAOP
-                and returncode == 0
-                and output.strip().decode() == passing_output
-            ) or (protocol == StreamingProtocol.AIRPLAY2 and returncode == 0):
+            if returncode == 0 and output.strip().decode() == passing_output:
                 return cli_path
         except OSError:
             pass
@@ -291,6 +288,7 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     fraction = seconds - whole_seconds
 
     # Convert to NTP format (upper 32 bits = seconds, lower 32 bits = fraction)
+    # What happens if the sum of existing fraction and new fraction exceeds 1 second?
     ntp_seconds = whole_seconds << 32
     ntp_fraction = int(fraction * (1 << 32))
 
