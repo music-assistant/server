@@ -38,6 +38,7 @@ RANDOM_ARTIST = "random_artist"
 RANDOM_ALBUM = "random_album"
 RANDOM_TRACKS = "random_tracks"
 RECENTLY_PLAYED = "recently_played"
+RECENTLY_ADDED_TRACKS = "recently_added_tracks"
 
 BUILTIN_PLAYLISTS = {
     ALL_FAVORITE_TRACKS: "All favorited tracks",
@@ -45,6 +46,7 @@ BUILTIN_PLAYLISTS = {
     RANDOM_ALBUM: "Random Album (from library)",
     RANDOM_TRACKS: "500 Random tracks (from library)",
     RECENTLY_PLAYED: "Recently played tracks",
+    RECENTLY_ADDED_TRACKS: "Recently added tracks",
 }
 BUILTIN_PLAYLISTS_ENTRIES = [
     ConfigEntry(
