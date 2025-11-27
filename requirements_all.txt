@@ -18,7 +18,7 @@ aiovban>=0.6.3
 alexapy==1.29.10
 async-upnp-client==0.45.0
 audible==0.10.0
-auntie-sounds==1.1.3
+auntie-sounds==1.1.4
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
