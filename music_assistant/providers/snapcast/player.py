@@ -25,7 +25,6 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
-    CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
@@ -358,7 +357,7 @@ class SnapCastPlayer(Player):
             and self.provider._controlscript_available
         ):
             extra_args = (
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
                 f"--api-port={self.mass.webserver.publish_port}%20"
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
