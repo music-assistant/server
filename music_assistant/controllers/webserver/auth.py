@@ -1070,7 +1070,7 @@ class AuthenticationManager:
         if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
             raise InvalidDataError("Built-in auth not available")
 
-        # Set/reset password for authenticated user
+        # Update password (used for both admin resets and user password changes)
         await builtin_provider.reset_password(target_user, password)
 
         if is_admin_update:
