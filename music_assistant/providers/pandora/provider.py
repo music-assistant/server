@@ -79,7 +79,7 @@ async def get_config_entries(
     return (
         ConfigEntry(
             key=CONF_USERNAME,
-            type=ConfigEntryType.SECURE_STRING,
+            type=ConfigEntryType.STRING,
             label="Username",
             required=True,
             description="Your Pandora account email address",
