@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -9,7 +10,7 @@ import logging
 import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_u
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -26,6 +28,135 @@ if TYPE_CHECKING:
     from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+
+class LoginRateLimiter:
+    """Rate limiter for login attempts to prevent brute force attacks."""
+
+    def __init__(self) -> None:
+        """Initialize the rate limiter."""
+        # Track failed attempts per username: {username: [timestamp1, timestamp2, ...]}
+        self._failed_attempts: dict[str, list[datetime]] = {}
+        # Time window for tracking attempts (30 minutes)
+        self._tracking_window = timedelta(minutes=30)
+        # Lock for thread-safe access to _failed_attempts
+        self._lock = asyncio.Lock()
+
+    def _cleanup_old_attempts(self, username: str) -> None:
+        """
+        Remove failed attempts outside the tracking window.
+
+        :param username: The username to clean up.
+        """
+        if username not in self._failed_attempts:
+            return
+
+        cutoff_time = utc() - self._tracking_window
+        self._failed_attempts[username] = [
+            timestamp for timestamp in self._failed_attempts[username] if timestamp > cutoff_time
+        ]
+
+        # Remove username if no attempts left
+        if not self._failed_attempts[username]:
+            del self._failed_attempts[username]
+
+    def get_delay(self, username: str) -> int:
+        """
+        Get the delay in seconds before next login attempt is allowed.
+
+        Progressive delays based on failed attempts:
+        - 1-2 attempts: no delay
+        - 3-5 attempts: 30 seconds
+        - 6-9 attempts: 60 seconds
+        - 10-14 attempts: 120 seconds
+        - 15+ attempts: 300 seconds (5 minutes)
+
+        :param username: The username attempting to log in.
+        :return: Delay in seconds (0 if no delay needed).
+        """
+        self._cleanup_old_attempts(username)
+
+        if username not in self._failed_attempts:
+            return 0
+
+        attempt_count = len(self._failed_attempts[username])
+
+        if attempt_count < 3:
+            return 0
+        if attempt_count < 6:
+            return 30
+        if attempt_count < 10:
+            return 60
+        if attempt_count < 15:
+            return 120
+        return 300  # 5 minutes max delay
+
+    async def check_rate_limit(self, username: str) -> tuple[bool, int]:
+        """
+        Check if login attempt is allowed and apply delay if needed.
+
+        :param username: The username attempting to log in.
+        :return: Tuple of (allowed, delay_seconds). If not allowed, includes remaining delay.
+        """
+        async with self._lock:
+            self._cleanup_old_attempts(username)
+
+            if username not in self._failed_attempts or not self._failed_attempts[username]:
+                return True, 0
+
+            # Get the most recent failed attempt
+            last_attempt = self._failed_attempts[username][-1]
+            required_delay = self.get_delay(username)
+
+            if required_delay == 0:
+                return True, 0
+
+            # Calculate how much time has passed since last attempt
+            time_since_last = (utc() - last_attempt).total_seconds()
+
+            if time_since_last < required_delay:
+                # Still in cooldown period
+                remaining_delay = int(required_delay - time_since_last)
+                return False, remaining_delay
+
+            return True, 0
+
+    async def record_failed_attempt(self, username: str) -> None:
+        """
+        Record a failed login attempt.
+
+        :param username: The username that failed to log in.
+        """
+        async with self._lock:
+            self._cleanup_old_attempts(username)
+
+            if username not in self._failed_attempts:
+                self._failed_attempts[username] = []
+
+            self._failed_attempts[username].append(utc())
+
+            # Log warning for suspicious activity
+            attempt_count = len(self._failed_attempts[username])
+            if attempt_count == 10:
+                LOGGER.warning(
+                    "Suspicious login activity: 10 failed attempts for username '%s'", username
+                )
+            elif attempt_count == 20:
+                LOGGER.warning(
+                    "High suspicious login activity: 20 failed attempts for username '%s'. "
+                    "Consider manually disabling this account.",
+                    username,
+                )
+
+    async def clear_attempts(self, username: str) -> None:
+        """
+        Clear failed attempts for a username (called after successful login).
+
+        :param username: The username to clear.
+        """
+        async with self._lock:
+            if username in self._failed_attempts:
+                del self._failed_attempts[username]
 
 
 class LoginProviderConfig(TypedDict, total=False):
@@ -116,6 +247,17 @@ class LoginProvider(ABC):
 class BuiltinLoginProvider(LoginProvider):
     """Built-in username/password login provider."""
 
+    def __init__(self, mass: MusicAssistant, provider_id: str, config: LoginProviderConfig) -> None:
+        """
+        Initialize built-in login provider.
+
+        :param mass: MusicAssistant instance.
+        :param provider_id: Unique identifier for this provider instance.
+        :param config: Provider-specific configuration.
+        """
+        super().__init__(mass, provider_id, config)
+        self._rate_limiter = LoginRateLimiter()
+
     @property
     def provider_type(self) -> AuthProviderType:
         """Return the provider type."""
@@ -138,10 +280,26 @@ class BuiltinLoginProvider(LoginProvider):
         if not username or not password:
             return AuthResult(success=False, error="Username and password required")
 
+        # Check rate limit before attempting authentication
+        allowed, remaining_delay = await self._rate_limiter.check_rate_limit(username)
+        if not allowed:
+            self.logger.warning(
+                "Rate limit exceeded for username '%s'. %d seconds remaining.",
+                username,
+                remaining_delay,
+            )
+            return AuthResult(
+                success=False,
+                error=f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+            )
+
         # First, look up user by username to get user_id
         # This is needed to create the password hash with user_id in the salt
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
         if not user_row:
+            # Record failed attempt even if username doesn't exist
+            # This prevents username enumeration timing attacks
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
 
         user_id = user_row["user_id"]
@@ -155,12 +313,18 @@ class BuiltinLoginProvider(LoginProvider):
         )
 
         if not user:
+            # Record failed attempt
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="Invalid username or password")
 
         # Check if user is enabled
         if not user.enabled:
+            # Record failed attempt for disabled accounts too
+            await self._rate_limiter.record_failed_attempt(username)
             return AuthResult(success=False, error="User account is disabled")
 
+        # Successful login - clear any failed attempts
+        await self._rate_limiter.clear_attempts(username)
         return AuthResult(success=True, user=user)
 
     async def create_user_with_password(
@@ -169,6 +333,8 @@ class BuiltinLoginProvider(LoginProvider):
         password: str,
         role: UserRole = UserRole.USER,
         display_name: str | None = None,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new built-in user with password.
@@ -177,12 +343,16 @@ class BuiltinLoginProvider(LoginProvider):
         :param password: The password (will be hashed).
         :param role: The user role (default: USER).
         :param display_name: Optional display name.
+        :param player_filter: Optional list of player IDs user has access to.
+        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         # Create the user
         user = await self.auth_manager.create_user(
             username=username,
             role=role,
             display_name=display_name,
+            player_filter=player_filter,
+            provider_filter=provider_filter,
         )
 
         # Hash password using user_id for enhanced security

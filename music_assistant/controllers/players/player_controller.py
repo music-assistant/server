@@ -39,6 +39,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
+    InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
@@ -70,6 +71,7 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
@@ -119,10 +121,20 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             )
             return
 
+        current_user = get_current_user()
+        if (
+            current_user
+            and current_user.player_filter
+            and player.player_id not in current_user.player_filter
+        ):
+            msg = f"{current_user.username} does not have access to player {player.display_name}"
+            raise InsufficientPermissions(msg)
+
         self.logger.debug(
-            "Handling command %s for player %s",
+            "Handling command %s for player %s (%s)",
             func.__name__,
             player.display_name,
+            f"by user {current_user.username}" if current_user else "unauthenticated",
         )
         try:
             await func(self, *args, **kwargs)
@@ -192,12 +204,15 @@ class PlayerController(CoreController):
 
         :return: List of Player objects.
         """
+        current_user = get_current_user()
+        user_filter = current_user.player_filter if current_user else None
         return [
             player
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
             and (provider_filter is None or player.provider.lookup_key == provider_filter)
+            and (user_filter is None or player.player_id in user_filter)
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
 

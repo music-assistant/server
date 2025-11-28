@@ -497,6 +497,11 @@ class MusicController(CoreController):
             )
         return result
 
+    @api_command("music/recently_added_tracks")
+    async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
+        """Return a list of the last added tracks."""
+        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
+
     @api_command("music/in_progress_items")
     async def in_progress_items(self, limit: int = 10) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
@@ -1359,6 +1364,22 @@ class MusicController(CoreController):
                 translation_key="recently_played",
                 icon="mdi-motion-play",
                 items=await self.recently_played(limit=10),
+            ),
+            RecommendationFolder(
+                item_id="recently_added_tracks",
+                provider="library",
+                name="Recently added tracks",
+                translation_key="recently_added_tracks",
+                icon="music-note-plus",
+                items=await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+            ),
+            RecommendationFolder(
+                item_id="recently_added_albums",
+                provider="library",
+                name="Recently added albums",
+                translation_key="recently_added_albums",
+                icon="music-note-plus",
+                items=await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
             ),
             RecommendationFolder(
                 item_id="random_artists",

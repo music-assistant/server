@@ -50,7 +50,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
 
 from .audio_buffer import AudioBuffer
-from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
@@ -77,7 +76,6 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
-STREAMDETAILS_EXPIRATION: Final[int] = 60 * 15  # 15 minutes
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
@@ -255,11 +253,10 @@ async def get_stream_details(
         )
     buffer: AudioBuffer | None = None
     if queue_item.streamdetails and (
-        (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
+        (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration) > time.time()
         or ((buffer := queue_item.streamdetails.buffer) and buffer.is_valid(seek_position))
     ):
-        # already got a fresh/unused (or cached) streamdetails
-        # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds
+        # already got a fresh/unused (or unexpired) streamdetails
         streamdetails = queue_item.streamdetails
     else:
         # retrieve streamdetails from provider

@@ -21,11 +21,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import shortuuid
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -62,9 +58,7 @@ from music_assistant_models.media_items import (
     UniqueList,
     media_from_dict,
 )
-from music_assistant_models.playback_progress_report import (
-    MediaItemPlaybackProgressReport,
-)
+from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -2052,6 +2046,25 @@ class PlayerQueuesController(CoreController):
             if queue.next_item and queue.next_item.streamdetails:
                 queue.next_item.streamdetails.dsp = dsp
 
+        # handle updating stream_metadata if needed
+        if (
+            queue.current_item
+            and (streamdetails := queue.current_item.streamdetails)
+            and streamdetails.stream_metadata_update_callback
+            and (
+                streamdetails.stream_metadata_last_updated is None
+                or (
+                    time.time() - streamdetails.stream_metadata_last_updated
+                    >= streamdetails.stream_metadata_update_interval
+                )
+            )
+        ):
+            self.mass.create_task(
+                streamdetails.stream_metadata_update_callback(
+                    streamdetails, int(queue.corrected_elapsed_time)
+                )
+            )
+
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
         if (
@@ -2240,10 +2253,10 @@ class PlayerQueuesController(CoreController):
         if not item_to_report:
             return  # guard against invalid items
 
-        if not item_to_report.media_item:
+        if not (media_item := item_to_report.media_item):
             # only report on media items
             return
-        assert item_to_report.media_item.uri is not None  # uri is set in __post_init__
+        assert media_item.uri is not None  # uri is set in __post_init__
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
@@ -2286,40 +2299,48 @@ class PlayerQueuesController(CoreController):
         # add entry to playlog - this also handles resume of podcasts/audiobooks
         self.mass.create_task(
             self.mass.music.mark_item_played(
-                item_to_report.media_item,
+                media_item,
                 fully_played=fully_played,
                 seconds_played=seconds_played,
                 is_playing=is_playing,
             )
         )
 
-        album = getattr(item_to_report.media_item, "album", None)
+        album: Album | ItemMapping | None = getattr(media_item, "album", None)
         # signal 'media item played' event,
         # which is useful for plugins that want to do scrobbling
-        artists = getattr(item_to_report.media_item, "artists", None)
-        artists_list = [a.name for a in artists] if artists else None
+        artists: list[Artist | ItemMapping] = getattr(media_item, "artists", [])
+        artists_names = [a.name for a in artists]
         self.mass.signal_event(
             EventType.MEDIA_ITEM_PLAYED,
-            object_id=item_to_report.media_item.uri,
+            object_id=media_item.uri,
             data=MediaItemPlaybackProgressReport(
-                uri=item_to_report.media_item.uri,
-                media_type=item_to_report.media_item.media_type,
-                name=item_to_report.media_item.name,
-                version=getattr(item_to_report.media_item, "version", None),
-                artist=getattr(item_to_report.media_item, "artist_str", None),
-                artists=artists_list,
+                uri=media_item.uri,
+                media_type=media_item.media_type,
+                name=media_item.name,
+                version=getattr(media_item, "version", None),
+                artist=(
+                    getattr(media_item, "artist_str", None) or artists_names[0]
+                    if artists_names
+                    else None
+                ),
+                artists=artists_names,
                 artist_mbids=[a.mbid for a in artists if a.mbid] if artists else None,
-                album=(album.name if album else None),
-                album_mbid=(album.mbid if album else None),
-                album_artist=(album.artist_str if album else None),
-                album_artist_mbids=([a.mbid for a in album.artists if a.mbid] if album else None),
+                album=album.name if album else None,
+                album_mbid=album.mbid if album else None,
+                album_artist=(album.artist_str if isinstance(album, Album) else None),
+                album_artist_mbids=(
+                    [a.mbid for a in album.artists if a.mbid] if isinstance(album, Album) else None
+                ),
                 image_url=(
-                    self.mass.metadata.get_image_url(item_to_report.media_item.image, size=512)
+                    self.mass.metadata.get_image_url(
+                        item_to_report.media_item.image, prefer_proxy=False
+                    )
                     if item_to_report.media_item.image
                     else None
                 ),
                 duration=duration,
-                mbid=(getattr(item_to_report.media_item, "mbid", None)),
+                mbid=(getattr(media_item, "mbid", None)),
                 seconds_played=seconds_played,
                 fully_played=fully_played,
                 is_playing=is_playing,
