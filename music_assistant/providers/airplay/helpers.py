@@ -288,7 +288,6 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     fraction = seconds - whole_seconds
 
     # Convert to NTP format (upper 32 bits = seconds, lower 32 bits = fraction)
-    # What happens if the sum of existing fraction and new fraction exceeds 1 second?
     ntp_seconds = whole_seconds << 32
     ntp_fraction = int(fraction * (1 << 32))
 

@@ -18,8 +18,8 @@ from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_tim
 
 from .constants import (
     AIRPLAY2_CONNECT_TIME_MS,
-    AIRPLAY2_OUTPUT_BUFFER_DURATION_MS,
-    AIRPLAY_PRELOAD_CHUNKS,
+    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
+    AIRPLAY_PRELOAD_SECONDS,
     AIRPLAY_PROCESS_SPAWN_TIME_MS,
     CONF_ENABLE_LATE_JOIN,
     ENABLE_LATE_JOIN_DEFAULT,
@@ -104,7 +104,7 @@ class AirPlayStreamSession:
         # Plus we need to cater for process spawn and initialisation time
         wait_start = (
             AIRPLAY2_CONNECT_TIME_MS
-            + AIRPLAY2_OUTPUT_BUFFER_DURATION_MS
+            + AIRPLAY_OUTPUT_BUFFER_DURATION_MS
             + AIRPLAY_PROCESS_SPAWN_TIME_MS
             + (250 * len(self.sync_clients))
         )  # in milliseconds
