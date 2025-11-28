@@ -61,6 +61,7 @@ from .constants import (
     RANDOM_ALBUM,
     RANDOM_ARTIST,
     RANDOM_TRACKS,
+    RECENTLY_ADDED_TRACKS,
     RECENTLY_PLAYED,
     StoredItem,
 )
@@ -619,6 +620,14 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    async def _get_builtin_playlist_recently_added_tracks(self) -> list[Track]:
+        result: list[Track] = []
+        recent_tracks = await self.mass.music.recently_added_tracks(100)
+        for idx, track in enumerate(recent_tracks, 1):
+            track.position = idx
+            result.append(track)
+        return result
+
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str
     ) -> list[Track] | UniqueList[Track]:
@@ -630,6 +639,7 @@ class BuiltinProvider(MusicProvider):
                 RANDOM_ALBUM: self._get_builtin_playlist_random_album,
                 RANDOM_ARTIST: self._get_builtin_playlist_random_artist,
                 RECENTLY_PLAYED: self._get_builtin_playlist_recently_played,
+                RECENTLY_ADDED_TRACKS: self._get_builtin_playlist_recently_added_tracks,
             }[builtin_playlist_id]()
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")

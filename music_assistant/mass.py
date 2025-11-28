@@ -45,6 +45,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players.player_controller import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
@@ -276,8 +277,14 @@ class MusicAssistant:
         self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
         """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+
         return [
-            x for x in self._providers.values() if provider_type is None or provider_type == x.type
+            x
+            for x in self._providers.values()
+            if (provider_type is None or provider_type == x.type)
+            and (not user_provider_filter or x.instance_id in user_provider_filter)
         ]
 
     @api_command("logging/get")

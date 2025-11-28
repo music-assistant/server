@@ -135,6 +135,15 @@
         const redirectUrl = '{REDIRECT_URL}';
         const requiresConsent = {REQUIRES_CONSENT};
 
+        // Detect if running in PWA/standalone mode
+        // iOS Safari sets window.navigator.standalone
+        // Other browsers support display-mode media query
+        const isPWA = (window.navigator.standalone === true) ||
+                      window.matchMedia('(display-mode: standalone)').matches ||
+                      window.matchMedia('(display-mode: minimal-ui)').matches;
+
+        console.log('OAuth callback - isPWA:', isPWA, 'opener:', window.opener !== null);
+
         // Validate URL to prevent XSS attacks
         // Note: Server-side validation is the primary security layer
         function isValidRedirectUrl(url) {
@@ -151,6 +160,29 @@
 
         function performRedirect() {
             const isPopup = window.opener !== null;
+
+            // PWA mode: Always use direct redirect since popups don't work properly
+            // The OAuth flow on iOS PWAs opens in Safari, then redirects back to PWA
+            // This means window.opener is always null and localStorage is not shared
+            if (isPWA) {
+                statusEl.textContent = 'Login Complete!';
+                messageEl.textContent = 'Returning to app...';
+
+                // Don't store token in localStorage here - it's already in the redirect URL
+                // The frontend will extract it from the URL query parameter
+                // PWAs on iOS may not share localStorage between Safari and the PWA context
+
+                console.log('PWA mode - redirecting to:', redirectUrl);
+
+                // Navigate to redirect URL (token is already in URL as query param 'code')
+                if (isValidRedirectUrl(redirectUrl)) {
+                    window.location.href = redirectUrl;
+                } else {
+                    console.warn('Invalid redirect URL, using fallback:', redirectUrl);
+                    window.location.href = '/';
+                }
+                return;
+            }
 
             if (isPopup) {
                 // Popup mode - send token to parent and close
