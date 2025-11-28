@@ -18,7 +18,6 @@ from snapcast.control.server import Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.snapcast.constants import (
@@ -33,7 +32,6 @@ from music_assistant.providers.snapcast.constants import (
     CONF_USE_EXTERNAL_SERVER,
     CONTROL_SCRIPT,
     DEFAULT_SNAPSERVER_PORT,
-    SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.player import SnapCastPlayer
 
@@ -136,6 +134,34 @@ class SnapCastProvider(PlayerProvider):
             if self._snapserver_started is not None:
                 self._snapserver_started.clear()
 
+    def _setup_controlscript(self) -> bool:
+        """Copy control script to plugin directory (blocking I/O).
+
+        :return: True if successful, False otherwise.
+        """
+        plugin_dir = Path("/usr/share/snapserver/plug-ins")
+        control_dest = plugin_dir / "control.py"
+        logger = self.logger.getChild("snapserver")
+        try:
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            # Clean up existing file
+            control_dest.unlink(missing_ok=True)
+            if not CONTROL_SCRIPT.exists():
+                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
+                return False
+            # Copy the control script to the plugin directory
+            shutil.copy2(CONTROL_SCRIPT, control_dest)
+            # Ensure it's executable
+            control_dest.chmod(0o755)
+            logger.debug("Copied controlscript to: %s", control_dest)
+            return True
+        except (OSError, PermissionError) as err:
+            logger.warning(
+                "Could not copy controlscript (metadata/control disabled): %s",
+                err,
+            )
+            return False
+
     async def _builtin_server_runner(self) -> None:
         """Start running the builtin snapserver."""
         assert self._snapserver_started is not None  # for type checking
@@ -176,56 +202,8 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.exception(
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
-
-        # Copy control script to plugin directory to enable metadata and playback control
-        plugin_dir = Path("/usr/share/snapserver/plug-ins")
-        control_dest = plugin_dir / "control.py"
-        try:
-            plugin_dir.mkdir(parents=True, exist_ok=True)
-            # Clean up existing file
-            control_dest.unlink(missing_ok=True)
-            if not CONTROL_SCRIPT.exists():
-                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
-            else:
-                # Copy the control script to the plugin directory
-                shutil.copy2(CONTROL_SCRIPT, control_dest)
-                # Ensure it's executable
-                control_dest.chmod(0o755)
-                self._controlscript_available = True
-                logger.debug("Copied controlscript to: %s", control_dest)
-        except (OSError, PermissionError) as err:
-            logger.warning(
-                "Could not copy controlscript (metadata/control disabled): %s",
-                err,
-            )
-
-        args = [
-            "snapserver",
-            # config settings taken from
-            # https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf
-            f"--server.datadir={self.mass.storage_path}",
-            "--http.enabled=true",
-            "--http.port=1780",
-            f"--http.doc_root={SNAPWEB_DIR}",
-            "--tcp.enabled=true",
-            f"--tcp.port={self._snapcast_server_control_port}",
-            "--stream.sampleformat=48000:16:2",
-            f"--stream.buffer={self._snapcast_server_buffer_size}",
-            f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
-            f"--stream.codec={self._snapcast_server_transport_codec}",
-            f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
-            f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
-        ]
-        async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
-            # keep reading from stdout until exit
-            async for raw_data in snapserver_proc.iter_any():
-                text = raw_data.decode().strip()
-                for line in text.split("\n"):
-                    logger.debug(line)
-                    if "(Snapserver) Version 0." in line:
-                        # delay init a small bit to prevent race conditions
-                        # where we try to connect too soon
-                        self.mass.loop.call_later(2, self._snapserver_started.set)
+        # Copy control script to plugin directory (run in executor to avoid blocking)
+        self._controlscript_available = await asyncio.to_thread(self._setup_controlscript)
 
     def _get_ma_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
