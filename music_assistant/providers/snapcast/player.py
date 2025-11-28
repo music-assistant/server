@@ -349,8 +349,6 @@ class SnapCastPlayer(Player):
             return stream
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
-        # A symlink is created at startup from /usr/share/snapserver/plug-ins/control.py
-        # to the actual script location to satisfy snapserver's plugin directory requirement.
         if (
             self.provider._use_builtin_server
             and queue_id
