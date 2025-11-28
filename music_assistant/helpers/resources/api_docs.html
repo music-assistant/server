@@ -789,6 +789,78 @@ curl -X POST {BASE_URL}/api \
                 </ul>
                 <p>See the <a href="{BASE_URL}/api-docs/commands#auth" style="color: var(--primary); text-decoration: none; font-weight: 500;">Commands Reference</a> for detailed documentation of all auth commands.</p>
             </div>
+
+            <div class="section">
+                <h2>Remote Access (WebRTC)</h2>
+                <p>
+                    Music Assistant supports <span class="highlight">remote access via WebRTC</span>, enabling you to connect to your
+                    Music Assistant instance from anywhere without port forwarding or VPN configuration.
+                </p>
+
+                <h3>How It Works</h3>
+                <p>
+                    Remote access uses WebRTC technology to establish a secure, peer-to-peer connection between
+                    your remote client (PWA) and your local Music Assistant server:
+                </p>
+                <ul>
+                    <li><strong>WebRTC Data Channel:</strong> Establishes encrypted connection through NAT/firewalls</li>
+                    <li><strong>Signaling Server:</strong> Cloud-based server coordinates connection setup</li>
+                    <li><strong>Remote ID:</strong> Unique identifier (format: MA-XXXX-XXXX) to connect to your instance</li>
+                    <li><strong>API Bridge:</strong> Remote commands work identically to local WebSocket API</li>
+                </ul>
+
+                <h3>Getting Your Remote ID</h3>
+                <p>Use the <code>remote_access/info</code> WebSocket command to get your Remote ID and connection status:</p>
+                <div class="code-block">
+<span class="comment"># Get remote access information</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"remote-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"remote_access/info"</span>,
+  <span class="string">"args"</span>: {}
+}
+
+<span class="comment"># Response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"remote-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"enabled"</span>: <span class="keyword">true</span>,
+    <span class="string">"connected"</span>: <span class="keyword">true</span>,
+    <span class="string">"remote_id"</span>: <span class="string">"MA-K7G3-P2M4"</span>,
+    <span class="string">"signaling_url"</span>: <span class="string">"wss://signaling.music-assistant.io/ws"</span>
+  }
+}
+                </div>
+
+                <h3>Connecting Remotely</h3>
+                <p>To connect from outside your local network:</p>
+                <ol style="margin-left: 24px; color: var(--text-secondary);">
+                    <li>Get your Remote ID from the <code>remote_access/info</code> command</li>
+                    <li>Open the Music Assistant PWA from any device (https://app.music-assistant.io)</li>
+                    <li>Enter your Remote ID when prompted</li>
+                    <li>Authenticate with your username and password (or OAuth)</li>
+                    <li>Full API access over encrypted WebRTC connection</li>
+                </ol>
+
+                <div class="info-box">
+                    <strong>Availability Notice:</strong> Remote access is currently only available to users who:
+                    <ul style="margin-top: 12px;">
+                        <li>Have the Home Assistant integration configured</li>
+                        <li>Possess an active <a href="https://www.nabucasa.com/" style="color: var(--primary); text-decoration: none; font-weight: 500;">Home Assistant Cloud</a> subscription</li>
+                    </ul>
+                    This limitation exists because remote access relies on cloud-based STUN/TURN servers provided by Home Assistant Cloud
+                    to establish WebRTC connections through NAT/firewalls. These servers are expensive to host and are made available
+                    as part of the Home Assistant Cloud service.
+                </div>
+
+                <h3>Security</h3>
+                <p>Remote access maintains the same security standards as local access:</p>
+                <ul>
+                    <li><strong>End-to-end encryption:</strong> All data encrypted via WebRTC (DTLS/SRTP)</li>
+                    <li><strong>Authentication required:</strong> Same login and token system as local access</li>
+                    <li><strong>No data inspection:</strong> Signaling server cannot decrypt your commands or data</li>
+                    <li><strong>Role-based access:</strong> Admin and user permissions work identically</li>
+                </ul>
+            </div>
         </div>
 
         <div class="footer">

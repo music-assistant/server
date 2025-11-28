@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
 # Signaling server URL
-SIGNALING_SERVER_URL = "wss://ma-signaling-server.onrender.com/ws"
+SIGNALING_SERVER_URL = "wss://signaling.music-assistant.io/ws"
 
 # Internal config key for storing the remote ID
 _CONF_REMOTE_ID = "remote_id"

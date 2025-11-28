@@ -105,7 +105,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
-                label="Please note that the webserver is unprotected. "
+                label="Please note that the webserver is unencrypted. "
                 "Never ever expose the webserver directly to the internet! \n\n"
                 "Use a reverse proxy or VPN to secure access.",
                 required=False,
@@ -175,10 +175,9 @@ class WebserverController(CoreController):
             filepath = os.path.join(frontend_dir, filename)
             handler = partial(self._server.serve_static, filepath)
             routes.append(("GET", f"/{filename}", handler))
-        # add index
-        index_path = os.path.join(frontend_dir, "index.html")
-        handler = partial(self._server.serve_static, index_path)
-        routes.append(("GET", "/", handler))
+        # add index (with onboarding check)
+        self._index_path = os.path.join(frontend_dir, "index.html")
+        routes.append(("GET", "/", self._handle_index))
         # add logo
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)
@@ -506,8 +505,25 @@ class WebserverController(CoreController):
         swagger_html_path = str(RESOURCES_DIR.joinpath("swagger_ui.html"))
         return await self._server.serve_static(swagger_html_path, request)
 
+    async def _handle_index(self, request: web.Request) -> web.StreamResponse:
+        """Handle request for index page with onboarding check."""
+        # If not yet onboarded, redirect to setup
+        if not self.mass.config.onboard_done or not await self.auth.has_users():
+            # Preserve return_url parameter if present (will be passed back after setup)
+            # The setup page will add onboard=true when redirecting back
+            return_url = request.query.get("return_url")
+            if return_url:
+                setup_url = f"/setup?return_url={urllib.parse.quote(return_url, safe='')}"
+            else:
+                # Default: redirect back to root (index) after setup with onboard=true
+                setup_url = f"/setup?return_url={urllib.parse.quote('/', safe='')}"
+            return web.Response(status=302, headers={"Location": setup_url})
+
+        # Serve the Vue frontend index.html
+        return await self._server.serve_static(self._index_path, request)
+
     async def _handle_login_page(self, request: web.Request) -> web.Response:
-        """Handle request for login page."""
+        """Handle request for login page (external client OAuth callback scenario)."""
         # If not yet onboarded, redirect to setup
         if not self.mass.config.onboard_done or not await self.auth.has_users():
             return_url = request.query.get("return_url", "")
@@ -519,42 +535,7 @@ class WebserverController(CoreController):
             )
             return web.Response(status=302, headers={"Location": setup_url})
 
-        # Check if this is an ingress request - if so, auto-authenticate and redirect with token
-        if is_request_from_ingress(request):
-            ingress_user_id = request.headers.get("X-Remote-User-ID")
-            ingress_username = request.headers.get("X-Remote-User-Name")
-
-            if ingress_user_id and ingress_username:
-                # Try to find existing user linked to this HA user ID
-                user = await self.auth.get_user_by_provider_link(
-                    AuthProviderType.HOME_ASSISTANT, ingress_user_id
-                )
-
-                if user:
-                    # User exists, create token and redirect
-                    device_name = request.query.get(
-                        "device_name", f"Home Assistant Ingress ({ingress_username})"
-                    )
-                    token = await self.auth.create_token(user, device_name)
-
-                    return_url = request.query.get("return_url", "/")
-
-                    # Insert code parameter before any hash fragment
-                    code_param = f"code={quote(token, safe='')}"
-                    if "#" in return_url:
-                        url_parts = return_url.split("#", 1)
-                        base_part = url_parts[0]
-                        hash_part = url_parts[1]
-                        separator = "&" if "?" in base_part else "?"
-                        redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
-                    elif "?" in return_url:
-                        redirect_url = f"{return_url}&{code_param}"
-                    else:
-                        redirect_url = f"{return_url}?{code_param}"
-
-                    return web.Response(status=302, headers={"Location": redirect_url})
-
-        # Not ingress or user doesn't exist - serve login page
+        # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
             html_content = await f.read()
@@ -939,7 +920,6 @@ class WebserverController(CoreController):
                     user = await self.auth.get_user_by_provider_link(
                         AuthProviderType.HOME_ASSISTANT, ha_user_id
                     )
-
             if user:
                 # User already exists (auto-created from Ingress), update and add password
                 updates = {}

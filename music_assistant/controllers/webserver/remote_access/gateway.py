@@ -68,7 +68,7 @@ class WebRTCGateway:
 
     def __init__(
         self,
-        signaling_url: str = "wss://ma-signaling-server.onrender.com/ws",
+        signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
         remote_id: str | None = None,
