@@ -442,7 +442,46 @@ class SpotifyConnectProvider(PluginProvider):
         if self._connected_spotify_username:
             self.mass.create_task(self._check_spotify_provider_match())
 
-    async def _librespot_runner(self) -> None:  # noqa: PLR0915
+    def _process_librespot_stderr_line(self, line: str) -> None:
+        """
+        Process a single line from librespot stderr output.
+
+        :param line: A line from librespot's stderr output.
+        """
+        if (
+            not self._librespot_started.is_set()
+            and "Using StdoutSink (pipe) with format: S16" in line
+        ):
+            self._librespot_started.set()
+        if "error sending packet Os" in line:
+            return
+        if "dropping truncated packet" in line:
+            return
+        if "couldn't parse packet from " in line:
+            return
+        if "Authenticated as '" in line:
+            # Extract username from librespot authentication message
+            # Format: "Authenticated as 'username'"
+            try:
+                parts = line.split("Authenticated as '")
+                if len(parts) > 1:
+                    username_part = parts[1].split("'")
+                    if len(username_part) > 0 and username_part[0]:
+                        username = username_part[0]
+                        self._connected_spotify_username = username
+                        self.logger.debug("Authenticated to Spotify as: %s", username)
+                        # Check for provider match now that we have the username
+                        self.mass.create_task(self._check_spotify_provider_match())
+                    else:
+                        self.logger.warning("Could not parse Spotify username from line: %s", line)
+                else:
+                    self.logger.warning("Could not parse Spotify username from line: %s", line)
+            except Exception as err:
+                self.logger.warning("Error parsing Spotify username from line: %s - %s", line, err)
+            return
+        self.logger.debug(line)
+
+    async def _librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
         self.logger.info("Starting Spotify Connect background daemon")
@@ -493,44 +532,7 @@ class SpotifyConnectProvider(PluginProvider):
 
             # keep reading logging from stderr until exit
             async for line in librespot.iter_stderr():
-                if (
-                    not self._librespot_started.is_set()
-                    and "Using StdoutSink (pipe) with format: S16" in line
-                ):
-                    self._librespot_started.set()
-                if "error sending packet Os" in line:
-                    continue
-                if "dropping truncated packet" in line:
-                    continue
-                if "couldn't parse packet from " in line:
-                    continue
-                if "Authenticated as '" in line:
-                    # Extract username from librespot authentication message
-                    # Format: "Authenticated as 'username'"
-                    try:
-                        parts = line.split("Authenticated as '")
-                        if len(parts) > 1:
-                            username_part = parts[1].split("'")
-                            if len(username_part) > 0 and username_part[0]:
-                                username = username_part[0]
-                                self._connected_spotify_username = username
-                                self.logger.debug("Authenticated to Spotify as: %s", username)
-                                # Check for provider match now that we have the username
-                                self.mass.create_task(self._check_spotify_provider_match())
-                            else:
-                                self.logger.warning(
-                                    "Could not parse Spotify username from line: %s", line
-                                )
-                        else:
-                            self.logger.warning(
-                                "Could not parse Spotify username from line: %s", line
-                            )
-                    except Exception as err:
-                        self.logger.warning(
-                            "Error parsing Spotify username from line: %s - %s", line, err
-                        )
-                    continue
-                self.logger.debug(line)
+                self._process_librespot_stderr_line(line)
         finally:
             await librespot.close()
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
