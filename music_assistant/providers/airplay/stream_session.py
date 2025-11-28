@@ -438,7 +438,7 @@ class AirPlayStreamSession:
                 "-readrate",
                 "1",
                 "-readrate_initial_burst",
-                f"{AIRPLAY_PRELOAD_CHUNKS}",
+                f"{AIRPLAY_PRELOAD_SECONDS}",
             ],
         )
         await ffmpeg.start()
