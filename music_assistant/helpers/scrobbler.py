@@ -122,9 +122,9 @@ class ScrobblerConfig:
                 type=ConfigEntryType.BOOLEAN,
                 label="Suffix version to track names",
                 required=True,
-                description="""Whether to add the version as suffix to track names,
-                    e.g. 'Amazing Track (Live)'.""",
-                default_value=False,
+                description="Whether to add the version as suffix to track names,"
+                "e.g. 'Amazing Track (Live)'.",
+                default_value=True,
                 value=values.get(CONF_VERSION_SUFFIX) if values else None,
             )
         ]
@@ -132,4 +132,4 @@ class ScrobblerConfig:
     @staticmethod
     def create_from_config(config: Config) -> ScrobblerConfig:
         """Extract relevant shared config values."""
-        return ScrobblerConfig(bool(config.get_value(CONF_VERSION_SUFFIX, False)))
+        return ScrobblerConfig(bool(config.get_value(CONF_VERSION_SUFFIX, True)))
