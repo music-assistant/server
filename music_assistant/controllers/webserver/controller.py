@@ -52,6 +52,7 @@ from .helpers.auth_middleware import (
     set_current_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider
+from .remote_access import RemoteAccessManager
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
@@ -84,6 +85,7 @@ class WebserverController(CoreController):
         )
         self.manifest.icon = "web-box"
         self.auth = AuthenticationManager(self)
+        self.remote_access = RemoteAccessManager(self)
 
     @property
     def base_url(self) -> str:
@@ -148,6 +150,15 @@ class WebserverController(CoreController):
                 "New users will have USER role by default.",
                 category="advanced",
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+            ),
+            ConfigEntry(
+                key="remote_id",
+                type=ConfigEntryType.STRING,
+                label="Remote ID",
+                description="Unique identifier for WebRTC remote access. "
+                "Generated automatically and should not be changed.",
+                required=False,
+                hidden=True,
             ),
         )
 
@@ -216,6 +227,8 @@ class WebserverController(CoreController):
         routes.append(("POST", "/setup", self._handle_setup))
         # Initialize authentication manager
         await self.auth.setup()
+        # Initialize remote access manager
+        await self.remote_access.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -275,6 +288,7 @@ class WebserverController(CoreController):
             await client.disconnect()
         await self._server.close()
         await self.auth.close()
+        await self.remote_access.close()
 
     def register_websocket_client(self, client: WebsocketClientHandler) -> None:
         """Register a WebSocket client for tracking."""
@@ -752,6 +766,29 @@ class WebserverController(CoreController):
             # Create token
             device_name = f"OAuth ({provider_id})"
             token = await self.auth.create_token(auth_result.user, device_name)
+
+            # Check if this is a remote client OAuth flow
+            if auth_result.return_url and auth_result.return_url.startswith(
+                "urn:ietf:wg:oauth:2.0:oob:auto:"
+            ):
+                # Extract session ID from return URL
+                session_id = auth_result.return_url.split(":")[-1]
+                # Store token in pending sessions
+                if session_id in self.auth._pending_oauth_sessions:
+                    self.auth._pending_oauth_sessions[session_id] = token
+                    # Show success page for remote auth
+                    success_html = """
+                    <html>
+                    <head><title>Authentication Successful</title></head>
+                    <body style="font-family: Arial, sans-serif; text-align: center;
+                                 padding: 50px;">
+                        <h1 style="color: #4CAF50;">✓ Authentication Successful</h1>
+                        <p>You have successfully authenticated with Music Assistant.</p>
+                        <p>You can now close this window and return to your application.</p>
+                    </body>
+                    </html>
+                    """
+                    return web.Response(text=success_html, content_type="text/html")
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"

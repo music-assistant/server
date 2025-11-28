@@ -73,6 +73,8 @@ class AuthenticationManager:
         self.database: DatabaseConnection = None  # type: ignore[assignment]
         self.login_providers: dict[str, LoginProvider] = {}
         self.logger = LOGGER
+        # Pending OAuth sessions for remote clients (session_id -> token)
+        self._pending_oauth_sessions: dict[str, str | None] = {}
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -893,6 +895,139 @@ class AuthenticationManager:
                 }
             )
         return providers
+
+    @api_command("auth/login", authenticated=False)
+    async def login(
+        self,
+        username: str | None = None,
+        password: str | None = None,
+        provider_id: str = "builtin",
+        **extra_credentials: Any,
+    ) -> dict[str, Any]:
+        """Authenticate user with credentials via WebSocket.
+
+        This command allows clients to authenticate over the WebSocket connection
+        using username/password or other provider-specific credentials.
+
+        :param username: Username for authentication (for builtin provider).
+        :param password: Password for authentication (for builtin provider).
+        :param provider_id: The login provider ID (defaults to "builtin").
+        :param extra_credentials: Additional provider-specific credentials.
+        :return: Authentication result with access token if successful.
+        """
+        # Build credentials dict from parameters
+        credentials: dict[str, Any] = {}
+        if username is not None:
+            credentials["username"] = username
+        if password is not None:
+            credentials["password"] = password
+        credentials.update(extra_credentials)
+
+        auth_result = await self.authenticate_with_credentials(provider_id, credentials)
+
+        if not auth_result.success:
+            return {
+                "success": False,
+                "error": auth_result.error or "Authentication failed",
+            }
+
+        if not auth_result.user:
+            return {
+                "success": False,
+                "error": "Authentication failed: no user returned",
+            }
+
+        # Create short-lived access token
+        token = await self.create_token(
+            auth_result.user,
+            is_long_lived=False,
+            name=f"WebSocket Session - {auth_result.user.username}",
+        )
+
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": auth_result.user.user_id,
+                "username": auth_result.user.username,
+                "display_name": auth_result.user.display_name,
+                "role": auth_result.user.role.value,
+            },
+        }
+
+    @api_command("auth/providers", authenticated=False)
+    async def get_providers(self) -> list[dict[str, Any]]:
+        """Get list of available authentication providers.
+
+        Returns information about all available login providers including
+        whether they require OAuth redirect flow.
+        """
+        return await self.get_login_providers()
+
+    @api_command("auth/authorization_url", authenticated=False)
+    async def get_auth_url(
+        self, provider_id: str, for_remote_client: bool = False
+    ) -> dict[str, str | None]:
+        """Get OAuth authorization URL for remote authentication.
+
+        For OAuth providers (like Home Assistant), this returns the URL that
+        the user should visit in their browser to authorize the application.
+
+        :param provider_id: The provider ID (e.g., "hass").
+        :param for_remote_client: If True, creates a pending session for remote OAuth flow.
+        :return: Dictionary with authorization_url and session_id (if remote).
+        """
+        # Generate session ID for remote clients
+        session_id = None
+        return_url = None
+
+        if for_remote_client:
+            session_id = secrets.token_urlsafe(32)
+            # Mark session as pending
+            self._pending_oauth_sessions[session_id] = None
+            # Use special return URL that will capture the token
+            return_url = f"urn:ietf:wg:oauth:2.0:oob:auto:{session_id}"
+
+        auth_url = await self.get_authorization_url(provider_id, return_url)
+        if not auth_url:
+            return {
+                "authorization_url": None,
+                "error": "Provider does not support OAuth or does not exist",
+            }
+
+        return {
+            "authorization_url": auth_url,
+            "session_id": session_id,  # Only set for remote clients
+        }
+
+    @api_command("auth/oauth_status", authenticated=False)
+    async def check_oauth_status(self, session_id: str) -> dict[str, Any]:
+        """Check status of pending OAuth authentication.
+
+        Remote clients use this to poll for completion of the OAuth flow.
+
+        :param session_id: The session ID from get_auth_url.
+        :return: Status and token if authentication completed.
+        """
+        if session_id not in self._pending_oauth_sessions:
+            return {
+                "status": "invalid",
+                "error": "Invalid or expired session ID",
+            }
+
+        token = self._pending_oauth_sessions.get(session_id)
+        if token is None:
+            return {
+                "status": "pending",
+                "message": "Waiting for user to complete authentication",
+            }
+
+        # Authentication completed, return token and clean up
+        del self._pending_oauth_sessions[session_id]
+        return {
+            "status": "completed",
+            "access_token": token,
+        }
 
     async def get_authorization_url(
         self, provider_id: str, return_url: str | None = None
