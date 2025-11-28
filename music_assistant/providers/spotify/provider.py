@@ -1075,13 +1075,7 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
 
     async def _put_data_unthrottled(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
-        """
-        Put data on api without throttling.
-
-        :param endpoint: API endpoint to call.
-        :param data: Optional JSON data to send.
-        :param kwargs: Additional parameters for the request.
-        """
+        """Put data on api without throttling."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         auth_info = kwargs.pop("auth_info", await self.login())
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
@@ -1107,13 +1101,7 @@ class SpotifyProvider(MusicProvider):
 
     @throttle_with_retries
     async def _put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
-        """
-        Put data on api with throttling.
-
-        :param endpoint: API endpoint to call.
-        :param data: Optional JSON data to send.
-        :param kwargs: Additional parameters for the request.
-        """
+        """Put data on api with throttling."""
         await self._put_data_unthrottled(endpoint, data, **kwargs)
 
     @throttle_with_retries

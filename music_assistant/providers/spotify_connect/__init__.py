@@ -174,6 +174,8 @@ class SpotifyConnectProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._librespot_bin = await get_librespot_binary()
+        if self.mass.players.get(self.mass_player_id):
+            self._setup_player_daemon()
 
         # Subscribe to events
         self._on_unload_callbacks.append(
@@ -440,46 +442,7 @@ class SpotifyConnectProvider(PluginProvider):
         if self._connected_spotify_username:
             self.mass.create_task(self._check_spotify_provider_match())
 
-    def _process_librespot_stderr_line(self, line: str) -> None:
-        """
-        Process a single line from librespot stderr output.
-
-        :param line: A line from librespot's stderr output.
-        """
-        if (
-            not self._librespot_started.is_set()
-            and "Using StdoutSink (pipe) with format: S16" in line
-        ):
-            self._librespot_started.set()
-        if "error sending packet Os" in line:
-            return
-        if "dropping truncated packet" in line:
-            return
-        if "couldn't parse packet from " in line:
-            return
-        if "Authenticated as '" in line:
-            # Extract username from librespot authentication message
-            # Format: "Authenticated as 'username'"
-            try:
-                parts = line.split("Authenticated as '")
-                if len(parts) > 1:
-                    username_part = parts[1].split("'")
-                    if len(username_part) > 0 and username_part[0]:
-                        username = username_part[0]
-                        self._connected_spotify_username = username
-                        self.logger.debug("Authenticated to Spotify as: %s", username)
-                        # Check for provider match now that we have the username
-                        self.mass.create_task(self._check_spotify_provider_match())
-                    else:
-                        self.logger.warning("Could not parse Spotify username from line: %s", line)
-                else:
-                    self.logger.warning("Could not parse Spotify username from line: %s", line)
-            except Exception as err:
-                self.logger.warning("Error parsing Spotify username from line: %s - %s", line, err)
-            return
-        self.logger.debug(line)
-
-    async def _librespot_runner(self) -> None:
+    async def _librespot_runner(self) -> None:  # noqa: PLR0915
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
         self.logger.info("Starting Spotify Connect background daemon")
@@ -489,10 +452,11 @@ class SpotifyConnectProvider(PluginProvider):
         await check_output("mkfifo", self.named_pipe)
         await asyncio.sleep(0.1)
         try:
-            # Get initial volume from player, or use 100 as fallback
-            initial_volume = 100
-            if self.player and self.player.volume_level:
-                initial_volume = self.player.volume_level
+            # Get initial volume from player, or use 20 as fallback to prevent heart attacks
+            initial_volume = 20
+            _player = self.mass.players.get(self.mass_player_id)
+            if _player and _player.volume_level:
+                initial_volume = _player.volume_level
 
             args: list[str] = [
                 self._librespot_bin,
@@ -529,7 +493,44 @@ class SpotifyConnectProvider(PluginProvider):
 
             # keep reading logging from stderr until exit
             async for line in librespot.iter_stderr():
-                self._process_librespot_stderr_line(line)
+                if (
+                    not self._librespot_started.is_set()
+                    and "Using StdoutSink (pipe) with format: S16" in line
+                ):
+                    self._librespot_started.set()
+                if "error sending packet Os" in line:
+                    continue
+                if "dropping truncated packet" in line:
+                    continue
+                if "couldn't parse packet from " in line:
+                    continue
+                if "Authenticated as '" in line:
+                    # Extract username from librespot authentication message
+                    # Format: "Authenticated as 'username'"
+                    try:
+                        parts = line.split("Authenticated as '")
+                        if len(parts) > 1:
+                            username_part = parts[1].split("'")
+                            if len(username_part) > 0 and username_part[0]:
+                                username = username_part[0]
+                                self._connected_spotify_username = username
+                                self.logger.debug("Authenticated to Spotify as: %s", username)
+                                # Check for provider match now that we have the username
+                                self.mass.create_task(self._check_spotify_provider_match())
+                            else:
+                                self.logger.warning(
+                                    "Could not parse Spotify username from line: %s", line
+                                )
+                        else:
+                            self.logger.warning(
+                                "Could not parse Spotify username from line: %s", line
+                            )
+                    except Exception as err:
+                        self.logger.warning(
+                            "Error parsing Spotify username from line: %s - %s", line, err
+                        )
+                    continue
+                self.logger.debug(line)
         finally:
             await librespot.close()
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
@@ -557,13 +558,13 @@ class SpotifyConnectProvider(PluginProvider):
             self.mass.create_task(self.unload())
             return
         if event.event == EventType.PLAYER_ADDED:
-            self.player = self.mass.players.get(self.mass_player_id)
             self._setup_player_daemon()
             return
         if event.event == EventType.PLAYER_UPDATED:
             # Check for volume changes and sync to Spotify
-            if self.player and self.player.volume_level is not None:
-                self.mass.create_task(self._on_volume(self.player.volume_level))
+            _player = self.mass.players.get(self.mass_player_id)
+            if _player and _player.volume_level is not None:
+                self.mass.create_task(self._on_volume(_player.volume_level))
             return
 
     async def _handle_custom_webservice(self, request: Request) -> Response:  # noqa: PLR0915
