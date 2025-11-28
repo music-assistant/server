@@ -196,17 +196,25 @@
                             token: token,
                             redirectUrl: redirectUrl
                         }, window.location.origin);
+                        console.log('Successfully sent postMessage to opener');
                     } catch (e) {
                         console.error('Failed to send postMessage:', e);
                     }
                 }
 
+                // Modern browsers allow window.close() for windows opened via window.open()
+                // Try to close immediately after sending the message
                 setTimeout(() => {
+                    // First try to close the window
                     window.close();
+
+                    // Schedule a check to see if close was successful
+                    // If the window is still open after 300ms, it means close() was blocked
                     setTimeout(() => {
-                        messageEl.textContent = 'Please close this window manually and return to the login page.';
-                    }, 500);
-                }, 1000);
+                        // This will only execute if the window wasn't closed
+                        messageEl.textContent = 'Authentication successful! You can close this window.';
+                    }, 300);
+                }, 100);
             } else {
                 // Same window mode - redirect directly
                 localStorage.setItem('auth_token', token);

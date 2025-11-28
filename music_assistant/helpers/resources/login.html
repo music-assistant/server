@@ -220,6 +220,9 @@
             }
         });
 
+        // Store reference to OAuth popup
+        let oauthPopup = null;
+
         // Initiate OAuth flow
         async function initiateOAuth(providerId) {
             try {
@@ -240,13 +243,13 @@
                     const height = 700;
                     const left = (screen.width - width) / 2;
                     const top = (screen.height - height) / 2;
-                    const popup = window.open(
+                    oauthPopup = window.open(
                         data.authorization_url,
                         'oauth_popup',
                         `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
                     );
 
-                    if (!popup) {
+                    if (!oauthPopup) {
                         showError('Failed to open popup. Please allow popups for this site.');
                     }
                 } else {
@@ -266,6 +269,11 @@
 
             // Check if it's an OAuth success message
             if (event.data && event.data.type === 'oauth_success' && event.data.token) {
+                // Close the popup window if it's still open
+                if (oauthPopup && !oauthPopup.closed) {
+                    oauthPopup.close();
+                }
+
                 // Store token in localStorage
                 localStorage.setItem('auth_token', event.data.token);
 
