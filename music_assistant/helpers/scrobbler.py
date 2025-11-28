@@ -11,7 +11,6 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
