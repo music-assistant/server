@@ -38,7 +38,6 @@ class TidalAPIClient:
         self.logger = provider.logger
         self.mass = provider.mass
 
-    @throttle_with_retries  # type: ignore[type-var]
     async def get(
         self, endpoint: str, **kwargs: Any
     ) -> dict[str, Any] | tuple[dict[str, Any], str]:
@@ -93,6 +92,7 @@ class TidalAPIClient:
         kwargs["json"] = data
         return cast("dict[str, Any]", await self._request("DELETE", endpoint, **kwargs))
 
+    @throttle_with_retries  # type: ignore[type-var]
     async def _request(
         self, method: str, endpoint: str, **kwargs: Any
     ) -> dict[str, Any] | tuple[dict[str, Any], str]:
@@ -148,7 +148,7 @@ class TidalAPIClient:
             raise ResourceTemporarilyUnavailable("API error")
 
         try:
-            if not response.content_length or response.content_length == 0:
+            if response.status == 204 or response.content_length == 0:
                 data = {"success": True}
             else:
                 data = await response.json()
