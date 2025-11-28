@@ -558,6 +558,13 @@ class SpotifyConnectProvider(PluginProvider):
                 self._spotify_provider = None
                 self._update_source_capabilities()
 
+        # handle paused event - clear in_use_by so UI shows correct active source
+        # this happens when MA starts playing while Spotify Connect was active
+        if event_name == "paused" and self._source_details.in_use_by:
+            self.logger.debug("Spotify Connect paused, releasing player %s", self.mass_player_id)
+            self._source_details.in_use_by = None
+            self.mass.players.trigger_player_update(self.mass_player_id)
+
         # handle session connected event
         # this player has become the active spotify connect player
         # we need to start the playback
