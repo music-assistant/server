@@ -13,7 +13,11 @@ from music_assistant.constants import (
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
+RESONATE_CAST_APP_ID = "938CBF87"
+RESONATE_CAST_NAMESPACE = "urn:x-cast:resonate"
 CONF_USE_MASS_APP = "use_mass_app"
+CONF_USE_RESONATE_MODE = "use_resonate_mode"
+CONF_RESONATE_SYNC_DELAY = "resonate_sync_delay"
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
