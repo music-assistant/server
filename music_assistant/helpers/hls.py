@@ -1,4 +1,4 @@
-"""RFC 8216-compliant HLS playlist parser.
+"""RFC 8216-based HLS utilities.
 
 For simple variant stream selection from master playlists, use helpers.playlists.parse_m3u.
 """
@@ -54,7 +54,7 @@ class HLSMediaPlaylist:
 
 
 class HLSMediaPlaylistParser:
-    """RFC 8216-compliant HLS media playlist parser."""
+    """RFC 8216-based HLS media playlist parser."""
 
     def __init__(self, hls_playlist_text: str) -> None:
         """Initialize parser with playlist text."""
