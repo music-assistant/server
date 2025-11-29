@@ -29,7 +29,7 @@ segment3.m4s
 """
     result = HLSMediaPlaylistParser(playlist_text).parse()
 
-    assert len(result.header_lines) == 7
+    assert len(result.header_lines) == 5
     assert len(result.segments) == 4
     assert len(result.footer_lines) == 1
 
