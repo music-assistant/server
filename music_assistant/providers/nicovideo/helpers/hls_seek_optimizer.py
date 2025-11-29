@@ -1,4 +1,11 @@
-"""HLS seek optimizer for nicovideo provider."""
+"""HLS seek optimizer for nicovideo provider.
+
+This module implements a workaround for FFmpeg's seeking limitations with fragmented MP4
+HLS playlists (see https://trac.ffmpeg.org/ticket/7359).
+
+NOTE: This entire module can be removed once Music Assistant requires FFmpeg 8.0+,
+      which fixes the input-side -ss seeking issue (commit 380a518c, 2024-11-10).
+"""
 
 from __future__ import annotations
 
