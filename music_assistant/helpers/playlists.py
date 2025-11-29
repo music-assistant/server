@@ -55,8 +55,6 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
     stream selection and quality sorting, but does not preserve segment-level
     details or playlist structure.
 
-    For detailed HLS segment manipulation, use helpers.hls.HLSPlaylistParser instead.
-
     Based on https://github.com/dvndrsn/M3uParser/blob/master/m3uparser.py
     """
     # From Mozilla gecko source: https://github.com/mozilla/gecko-dev/blob/c4c1adbae87bf2d128c39832d72498550ee1b4b8/dom/media/DecoderTraits.cpp#L47-L52

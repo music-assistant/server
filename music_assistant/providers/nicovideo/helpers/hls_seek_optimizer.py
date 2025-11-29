@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant.helpers.hls import HLSPlaylistStructure
+from music_assistant.helpers.hls import HLSMediaPlaylist
 from music_assistant.providers.nicovideo.constants import (
     DOMAND_BID_COOKIE_NAME,
     NICOVIDEO_USER_AGENT,
@@ -58,7 +58,7 @@ class HLSSeekOptimizer:
         Args:
             hls_data: HLS streaming data containing parsed playlist and authentication info
         """
-        self.parsed_playlist: HLSPlaylistStructure = hls_data.parsed_hls_playlist
+        self.parsed_playlist: HLSMediaPlaylist = hls_data.parsed_hls_playlist
         self.domand_bid = hls_data.domand_bid
 
     def _calculate_start_segment(self, seek_position: int) -> tuple[int, float]:

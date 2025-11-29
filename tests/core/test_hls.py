@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.helpers.hls import HLSPlaylistParser, HLSSegment
+from music_assistant.helpers.hls import HLSMediaPlaylistParser, HLSMediaSegment
 
 
 def test_basic_vod_playlist() -> None:
@@ -27,12 +27,15 @@ segment2.m4s
 segment3.m4s
 #EXT-X-ENDLIST
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
 
     assert len(result.header_lines) == 7
     assert len(result.segments) == 4
     assert len(result.footer_lines) == 1
-    assert result.total_duration == pytest.approx(21.02604, rel=1e-6)
+
+    # Check total duration
+    total_duration = sum(segment.duration for segment in result.segments)
+    assert total_duration == pytest.approx(21.02604, rel=1e-6)
 
     # Check first segment inherits MAP from header
     assert result.segments[0].segment_url == "segment0.m4s"
@@ -67,7 +70,7 @@ https://example.com/segment2681.ts
 #EXTINF:9.009,
 https://example.com/segment2682.ts
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
 
     assert len(result.segments) == 3
 
@@ -106,7 +109,7 @@ video.mp4
 video.mp4
 #EXT-X-ENDLIST
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
 
     assert len(result.segments) == 3
     assert result.segments[0].byterange_line == "#EXT-X-BYTERANGE:1000@0"
@@ -140,7 +143,7 @@ ad_segment.ts
 segment2.ts
 #EXT-X-ENDLIST
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
 
     assert len(result.segments) == 4
 
@@ -171,18 +174,18 @@ segment2.ts
 
 
 def test_segment_properties() -> None:
-    """Test HLSSegment properties (duration, title) and comment handling."""
+    """Test HLSMediaSegment properties (duration, title) and comment handling."""
     # Test duration extraction
-    segment = HLSSegment(extinf_line="#EXTINF:5.967528,", segment_url="test.m4s")
+    segment = HLSMediaSegment(extinf_line="#EXTINF:5.967528,", segment_url="test.m4s")
     assert segment.duration == pytest.approx(5.967528, rel=1e-6)
 
     # Test duration with title
-    segment = HLSSegment(extinf_line="#EXTINF:10.5,Track Title", segment_url="test.m4s")
+    segment = HLSMediaSegment(extinf_line="#EXTINF:10.5,Track Title", segment_url="test.m4s")
     assert segment.duration == pytest.approx(10.5, rel=1e-6)
     assert segment.title == "Track Title"
 
     # Test malformed EXTINF
-    segment = HLSSegment(extinf_line="malformed", segment_url="test.m4s")
+    segment = HLSMediaSegment(extinf_line="malformed", segment_url="test.m4s")
     assert segment.duration == 0.0
 
     # Test comment lines and title extraction in playlist
@@ -195,7 +198,7 @@ segment1.ts
 segment2.ts
 #EXT-X-ENDLIST
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
     assert len(result.segments) == 2
     assert result.segments[0].title == "Test Title"
     assert result.segments[1].title is None
@@ -218,7 +221,7 @@ segment2.ts
 segment3.ts
 #EXT-X-ENDLIST
 """
-    result = HLSPlaylistParser.parse(playlist_text)
+    result = HLSMediaPlaylistParser(playlist_text).parse()
 
     # First two segments inherit key1 and init.mp4
     assert result.segments[0].key_line == '#EXT-X-KEY:METHOD=AES-128,URI="key1.bin"'
@@ -235,16 +238,16 @@ def test_invalid_playlists() -> None:
     """Test error handling for invalid playlist formats."""
     # No #EXTM3U header
     with pytest.raises(InvalidDataError, match="must start with #EXTM3U"):
-        HLSPlaylistParser.parse("#EXTINF:10.0\nsegment.ts")
+        HLSMediaPlaylistParser("#EXTINF:10.0\nsegment.ts").parse()
 
     # Empty playlist
     with pytest.raises(InvalidDataError, match="must start with #EXTM3U"):
-        HLSPlaylistParser.parse("")
+        HLSMediaPlaylistParser("").parse()
 
     # No segments
     with pytest.raises(InvalidDataError, match="no segments found"):
-        HLSPlaylistParser.parse("#EXTM3U\n#EXT-X-VERSION:3")
+        HLSMediaPlaylistParser("#EXTM3U\n#EXT-X-VERSION:3").parse()
 
     # EXTINF without segment URL
     with pytest.raises(InvalidDataError, match="without preceding segment URL"):
-        HLSPlaylistParser.parse("#EXTM3U\n#EXTINF:10.0,\n#EXTINF:10.0,")
+        HLSMediaPlaylistParser("#EXTM3U\n#EXTINF:10.0,\n#EXTINF:10.0,").parse()
