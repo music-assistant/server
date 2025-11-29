@@ -61,11 +61,10 @@ class HLSSegment:
 
 @dataclass
 class HLSPlaylistStructure:
-    """HLS playlist structure with all components preserved for reconstruction.
+    """HLS playlist structure with all components preserved.
 
     This class preserves the complete HLS playlist structure including headers,
-    encryption, and segments to enable dynamic reconstruction (e.g., for seek
-    optimization in VOD streams).
+    encryption, and segments to enable dynamic manipulation.
 
     This implementation supports both MPEG-2 TS and fMP4 segment formats, handling
     encryption (#EXT-X-KEY), discontinuities (#EXT-X-DISCONTINUITY), byte-range
@@ -98,7 +97,7 @@ class HLSPlaylistParser:
     """HLS playlist parser.
 
     Parses HLS playlist text line by line, maintaining internal state
-    and building HLSPlaylistStructure result.
+    to build structured HLSPlaylistStructure result.
     """
 
     def __init__(self) -> None:

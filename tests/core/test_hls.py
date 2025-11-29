@@ -34,7 +34,7 @@ segment3.m4s
     assert len(result.footer_lines) == 1
     assert result.total_duration == pytest.approx(21.02604, rel=1e-6)
 
-    # Check first segment - standard format with MAP before each segment
+    # Check first segment inherits MAP from header
     assert result.segments[0].segment_url == "segment0.m4s"
     assert result.segments[0].duration == pytest.approx(5.967528, rel=1e-6)
     assert (
