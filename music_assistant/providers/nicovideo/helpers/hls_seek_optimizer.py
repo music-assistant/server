@@ -141,8 +141,8 @@ class HLSSeekOptimizer:
         extra_input_args = ["-headers", headers]
 
         # Stage 2: Apply input-side -ss for fine-tuning within the segment
-        # if offset_within_segment > 0:
-        # extra_input_args.extend(["-ss", str(offset_within_segment)])
+        if offset_within_segment > 0:
+            extra_input_args.extend(["-ss", str(offset_within_segment)])
 
         return SeekOptimizedStreamContext(
             dynamic_playlist_text=dynamic_playlist_text,
