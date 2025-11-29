@@ -1,4 +1,7 @@
-"""HLS playlist parsing and manipulation utilities."""
+"""RFC 8216-compliant HLS media playlist parser.
+
+For simple variant stream selection from master playlists, use helpers.playlists.parse_m3u.
+"""
 
 from __future__ import annotations
 
@@ -94,10 +97,14 @@ class HLSPlaylistStructure:
 
 
 class HLSPlaylistParser:
-    """HLS playlist parser.
+    """RFC 8216-compliant HLS media playlist parser with full segment detail preservation.
 
-    Parses HLS playlist text line by line, maintaining internal state
-    to build structured HLSPlaylistStructure result.
+    This parser maintains complete playlist structure (headers, per-segment metadata,
+    footers) to enable dynamic manipulation such as segment filtering, playlist
+    reconstruction, and precise seeking operations.
+
+    For simple variant stream selection from HLS master playlists, use
+    helpers.playlists.parse_m3u instead.
     """
 
     def __init__(self) -> None:
