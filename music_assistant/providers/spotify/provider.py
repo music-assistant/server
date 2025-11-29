@@ -1074,8 +1074,9 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
 
-    async def _put_data_unthrottled(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
-        """Put data on api without throttling."""
+    @throttle_with_retries
+    async def _put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
+        """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         auth_info = kwargs.pop("auth_info", await self.login())
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
@@ -1098,11 +1099,6 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-
-    @throttle_with_retries
-    async def _put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
-        """Put data on api with throttling."""
-        await self._put_data_unthrottled(endpoint, data, **kwargs)
 
     @throttle_with_retries
     async def _post_data(

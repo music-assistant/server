@@ -353,10 +353,9 @@ class SpotifyConnectProvider(PluginProvider):
 
         try:
             # Spotify Web API expects volume as percentage (0-100)
-            # Use unthrottled version to avoid delays during rapid volume changes
-            await self._spotify_provider._put_data_unthrottled(
-                f"me/player/volume?volume_percent={volume}"
-            )
+            # Use throttler bypass to avoid delays when setting the volume
+            async with self._spotify_provider.throttler.bypass():
+                await self._spotify_provider._put_data(f"me/player/volume?volume_percent={volume}")
         except Exception as err:
             self.logger.debug("Failed to sync volume to Spotify via Web API: %s", err)
             # Don't raise - volume sync is best-effort
