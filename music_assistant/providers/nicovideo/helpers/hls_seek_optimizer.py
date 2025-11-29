@@ -103,8 +103,37 @@ class HLSSeekOptimizer:
         lines.extend(self.parsed_playlist.header_lines)
 
         # Add segments from start_segment_idx onward
+        # Track previous segment's key_line and map_line to emit only when changed
+        prev_key_line: str | None = None
+        prev_map_line: str | None = None
+
         for segment in self.parsed_playlist.segments[start_segment_idx:]:
+            # Add discontinuity marker if present
+            if segment.discontinuity:
+                lines.append("#EXT-X-DISCONTINUITY")
+
+            # Add program date/time if present
+            if segment.program_date_time:
+                lines.append(segment.program_date_time)
+
+            # Add map line only if it changed from previous segment
+            # Note: MAP must come before KEY according to RFC 8216
+            if segment.map_line and segment.map_line != prev_map_line:
+                lines.append(segment.map_line)
+                prev_map_line = segment.map_line
+
+            # Add key line only if it changed from previous segment
+            if segment.key_line and segment.key_line != prev_key_line:
+                lines.append(segment.key_line)
+                prev_key_line = segment.key_line
+
+            # Add segment info and URL
             lines.append(segment.extinf_line)
+
+            # Add byte range if present
+            if segment.byterange_line:
+                lines.append(segment.byterange_line)
+
             lines.append(segment.segment_url)
 
         # Add end tag

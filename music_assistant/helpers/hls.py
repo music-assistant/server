@@ -122,14 +122,10 @@ class HLSMediaPlaylistParser:
     def _on_key_line(self, line: str) -> None:
         """Handle #EXT-X-KEY tag."""
         self.working_segment.key_line = line
-        if not self.segments_started:
-            self.result.header_lines.append(line)
 
     def _on_map_line(self, line: str) -> None:
         """Handle #EXT-X-MAP tag."""
         self.working_segment.map_line = line
-        if not self.segments_started:
-            self.result.header_lines.append(line)
 
     def _on_program_date_time(self, line: str) -> None:
         """Handle #EXT-X-PROGRAM-DATE-TIME tag."""
