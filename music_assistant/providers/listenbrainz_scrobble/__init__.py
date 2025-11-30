@@ -17,7 +17,7 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.helpers.scrobbler import ScrobblerHelper
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -63,7 +63,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = ListenBrainzEventHandler(self._client, self.logger)
+        handler = ListenBrainzEventHandler(self._client, self.logger, self.config)
 
         # subscribe to media_item_played event
         self._on_unload.append(
@@ -83,9 +83,11 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 class ListenBrainzEventHandler(ScrobblerHelper):
     """Handles the event handling."""
 
-    def __init__(self, client: ListenBrainz, logger: logging.Logger) -> None:
+    def __init__(
+        self, client: ListenBrainz, logger: logging.Logger, config: ProviderConfig
+    ) -> None:
         """Initialize."""
-        super().__init__(logger)
+        super().__init__(logger, ScrobblerConfig.create_from_config(config))
         self._client = client
 
     def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
@@ -94,7 +96,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
 
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
         return Listen(
-            track_name=report.name,
+            track_name=self.get_name(report),
             artist_name=report.artist,
             artist_mbids=report.artist_mbids,
             release_name=report.album,
@@ -140,6 +142,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
+        *ScrobblerConfig.get_shared_config_entries(values),
         ConfigEntry(
             key=CONF_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,

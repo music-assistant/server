@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
@@ -192,7 +193,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers")
+    @api_command("config/providers", required_role="admin")
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -213,7 +214,7 @@ class ConfigController:
             and prov_conf["domain"] in prov_entries
         ]
 
-    @api_command("config/providers/get")
+    @api_command("config/providers/get", required_role="admin")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -1326,7 +1327,7 @@ class ConfigController:
         filename_backup = f"{self.filename}.backup"
         # make backup before we write a new file
         if await isfile(self.filename):
-            if await isfile(filename_backup):
+            with contextlib.suppress(FileNotFoundError):
                 await remove(filename_backup)
             await rename(self.filename, filename_backup)
 

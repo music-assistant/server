@@ -15,7 +15,8 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
     InsufficientPermissions,
@@ -29,6 +30,8 @@ from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
 
 if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
+
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
@@ -48,7 +51,9 @@ class WebsocketClientHandler:
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
-        self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
+        self._authenticated_user: User | None = (
+            None  # Will be set after auth command or from Ingress
+        )
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._is_ingress = is_request_from_ingress(request)
@@ -389,8 +394,26 @@ class WebsocketClientHandler:
             # Already subscribed
             return
 
-        def handle_event(event: Any) -> None:
-            # event is MassEvent but we use Any to avoid runtime import
+        def handle_event(event: MassEvent) -> None:
+            # filter events for objects the user has no access to
+            if (
+                self._authenticated_user
+                and self._authenticated_user.player_filter
+                and event.event
+                in (
+                    EventType.PLAYER_ADDED,
+                    EventType.PLAYER_REMOVED,
+                    EventType.PLAYER_UPDATED,
+                    EventType.QUEUE_ADDED,
+                    EventType.QUEUE_ITEMS_UPDATED,
+                    EventType.QUEUE_TIME_UPDATED,
+                    EventType.QUEUE_UPDATED,
+                )
+                and event.object_id
+                and event.object_id not in self._authenticated_user.player_filter
+            ):
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)

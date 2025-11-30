@@ -34,7 +34,6 @@ from .constants import (
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
@@ -211,21 +210,6 @@ class AirPlayPlayer(Player):
                 label="Device password",
                 description="Some devices require a password to connect/play.",
                 category="airplay",
-            ),
-            ConfigEntry(
-                key=CONF_READ_AHEAD_BUFFER,
-                type=ConfigEntryType.INTEGER,
-                default_value=1000,
-                required=False,
-                label="Audio buffer (ms)",
-                description="Amount of buffer (in milliseconds), "
-                "the player should keep to absorb network throughput jitter. "
-                "Lower values reduce latency but may cause dropouts. "
-                "Recommended: 1000ms for stable playback.",
-                category="airplay",
-                range=(500, 2000),
-                depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(

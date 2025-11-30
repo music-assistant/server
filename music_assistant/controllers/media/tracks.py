@@ -164,11 +164,21 @@ class TracksController(MediaControllerBase[Track]):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-        provider: str | None = None,
+        provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[Track]:
-        """Get in-database tracks."""
+        """Get in-database tracks.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param extra_query: Additional SQL query string.
+        :param extra_query_params: Additional query parameters.
+        """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
         extra_join_parts: list[str] = []

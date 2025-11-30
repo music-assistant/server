@@ -164,7 +164,7 @@ def parse_track(
     """Parse tidal track object to generic layout."""
     version = track_obj.get("version", "") or ""
     track_id = str(track_obj.get("id", 0))
-    media_metadata = track_obj.get("mediaMetadata", {})
+    media_metadata = track_obj.get("mediaMetadata") or {}
     tags = media_metadata.get("tags", [])
     hi_res_lossless = any(tag in tags for tag in ["HIRES_LOSSLESS", "HI_RES_LOSSLESS"])
     track = Track(

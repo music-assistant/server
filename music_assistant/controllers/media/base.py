@@ -14,6 +14,7 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request
@@ -230,7 +231,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-        provider: str | None = None,
+        provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
@@ -251,7 +252,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None = None,
         search: str | None = None,
         order_by: str = "sort_name",
-        provider: str | None = None,
+        provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> AsyncGenerator[ItemCls, None]:
@@ -704,7 +705,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
-        provider: str | None = None,
+        provider: str | list[str] | None = None,
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
@@ -753,7 +754,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         join_parts: list[str],
         favorite: bool | None,
         search: str | None,
-        provider: str | None,
+        provider: str | list[str] | None,
         limit: int,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -789,9 +790,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         join_parts: list[str],
         favorite: bool | None,
         search: str | None,
-        provider: str | None,
+        provider: str | list[str] | None,
     ) -> None:
-        """Apply search, favorite, and provider filters."""
+        """Apply search, favorite, and provider filters.
+
+        If the current user has a provider_filter set, it will be applied automatically.
+        If an explicit provider filter is provided, it will be validated against the user's
+        allowed providers.
+        """
         # handle search
         if search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
@@ -801,14 +807,47 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
 
-        # handle provider filter
-        if provider:
+        # Apply user provider filter
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+
+        # Determine final provider filter
+        final_provider_filter: list[str] | None = None
+
+        if user_provider_filter:
+            # User has a provider filter set
+            if provider:
+                # Explicit provider filter provided - validate against user's allowed providers
+                requested_providers = [provider] if isinstance(provider, str) else provider
+                # Only include providers that are in both the user's filter and the requested list
+                final_provider_filter = [
+                    p for p in requested_providers if p in user_provider_filter
+                ]
+                if not final_provider_filter:
+                    # No overlap - user requested providers they don't have access to
+                    # Return empty results by adding impossible condition
+                    query_parts.append("1 = 0")
+                    return
+            else:
+                # No explicit filter - use user's provider filter
+                final_provider_filter = user_provider_filter
+        elif provider:
+            # No user filter, but explicit provider filter provided
+            final_provider_filter = [provider] if isinstance(provider, str) else provider
+
+        # Apply the final provider filter
+        if final_provider_filter:
+            provider_conditions = []
+            for prov in final_provider_filter:
+                provider_conditions.append(
+                    f"provider_mappings.provider_instance = '{prov}' "
+                    f"OR provider_mappings.provider_domain = '{prov}'"
+                )
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
                 "AND provider_mappings.in_library = 1 "
-                f"AND (provider_mappings.provider_instance = '{provider}' "
-                f"OR provider_mappings.provider_domain = '{provider}')"
+                f"AND ({' OR '.join(provider_conditions)})"
             )
 
     def _build_final_query(

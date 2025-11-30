@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import (
@@ -16,7 +18,6 @@ from music_assistant_models.auth import (
     UserRole,
 )
 from music_assistant_models.errors import (
-    AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
     InvalidDataError,
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -72,6 +73,8 @@ class AuthenticationManager:
         self.database: DatabaseConnection = None  # type: ignore[assignment]
         self.login_providers: dict[str, LoginProvider] = {}
         self.logger = LOGGER
+        # Pending OAuth sessions for remote clients (session_id -> token)
+        self._pending_oauth_sessions: dict[str, str | None] = {}
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -163,11 +166,13 @@ class AuthenticationManager:
                 user_id TEXT PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
                 role TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 display_name TEXT,
                 avatar_url TEXT,
-                preferences TEXT DEFAULT '{}'
+                preferences json NOT NULL DEFAULT '{}',
+                player_filter json NOT NULL DEFAULT '[]',
+                provider_filter json NOT NULL DEFAULT '[]'
             )
             """
         )
@@ -198,7 +203,7 @@ class AuthenticationManager:
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 last_used_at TEXT,
-                is_long_lived INTEGER DEFAULT 0,
+                is_long_lived INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
             """
@@ -241,6 +246,18 @@ class AuthenticationManager:
 
             # Recreate tables with current schema
             await self._create_database_tables()
+
+        # Migration to version 3: Add player_filter and provider_filter columns
+        if from_version < 3:
+            with contextlib.suppress(OperationalError):
+                # Column(s) may already exist
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN player_filter json NOT NULL DEFAULT '[]'"
+                )
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN provider_filter json NOT NULL DEFAULT '[]'"
+                )
+            await self.database.commit()
 
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
         """
@@ -407,27 +424,31 @@ class AuthenticationManager:
         if not user_row or not user_row["enabled"]:
             return None
 
-        # Convert Row to dict for easier handling of optional fields
-        user_dict = dict(user_row)
-
-        # Parse preferences from JSON
-        preferences = {}
-        if prefs_json := user_dict.get("preferences"):
-            try:
-                preferences = json_loads(prefs_json)
-            except Exception:
-                self.logger.warning("Failed to parse preferences for user %s", user_id)
-
         return User(
-            user_id=user_dict["user_id"],
-            username=user_dict["username"],
-            role=UserRole(user_dict["role"]),
-            enabled=bool(user_dict["enabled"]),
-            created_at=datetime.fromisoformat(user_dict["created_at"]),
-            display_name=user_dict.get("display_name"),
-            avatar_url=user_dict.get("avatar_url"),
-            preferences=preferences,
+            user_id=user_row["user_id"],
+            username=user_row["username"],
+            role=UserRole(user_row["role"]),
+            enabled=bool(user_row["enabled"]),
+            created_at=datetime.fromisoformat(user_row["created_at"]),
+            display_name=user_row["display_name"],
+            avatar_url=user_row["avatar_url"],
+            preferences=json_loads(user_row["preferences"]),
+            player_filter=json_loads(user_row["player_filter"]),
+            provider_filter=json_loads(user_row["provider_filter"]),
         )
+
+    async def get_user_by_username(self, username: str) -> User | None:
+        """
+        Get user by username.
+
+        :param username: The username.
+        :return: User object or None if not found.
+        """
+        user_row = await self.database.get_row("users", {"username": username})
+        if not user_row:
+            return None
+
+        return await self.get_user(user_row["user_id"])
 
     async def get_user_by_provider_link(
         self, provider_type: AuthProviderType, provider_user_id: str
@@ -457,6 +478,8 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user.
@@ -466,11 +489,17 @@ class AuthenticationManager:
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
+        :param player_filter: Optional list of player IDs user has access to.
+        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
         if preferences is None:
             preferences = {}
+        if player_filter is None:
+            player_filter = []
+        if provider_filter is None:
+            provider_filter = []
 
         user_data = {
             "user_id": user_id,
@@ -481,6 +510,8 @@ class AuthenticationManager:
             "display_name": display_name,
             "avatar_url": avatar_url,
             "preferences": json_dumps(preferences),
+            "player_filter": json_dumps(player_filter),
+            "provider_filter": json_dumps(provider_filter),
         }
 
         await self.database.insert("users", user_data)
@@ -494,6 +525,8 @@ class AuthenticationManager:
             display_name=display_name,
             avatar_url=avatar_url,
             preferences=preferences,
+            player_filter=player_filter,
+            provider_filter=provider_filter,
         )
 
     async def get_homeassistant_system_user(self) -> User:
@@ -782,32 +815,21 @@ class AuthenticationManager:
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
-            row_dict = dict(row)
-
             # Skip system users
-            if row_dict["username"] == HOMEASSISTANT_SYSTEM_USER:
+            if row["username"] == HOMEASSISTANT_SYSTEM_USER:
                 continue
-
-            # Parse preferences
-            preferences = {}
-            if prefs_json := row_dict.get("preferences"):
-                try:
-                    preferences = json_loads(prefs_json)
-                except Exception:
-                    self.logger.warning(
-                        "Failed to parse preferences for user %s", row_dict["user_id"]
-                    )
-
             users.append(
                 User(
-                    user_id=row_dict["user_id"],
-                    username=row_dict["username"],
-                    role=UserRole(row_dict["role"]),
-                    enabled=bool(row_dict["enabled"]),
-                    created_at=datetime.fromisoformat(row_dict["created_at"]),
-                    display_name=row_dict.get("display_name"),
-                    avatar_url=row_dict.get("avatar_url"),
-                    preferences=preferences,
+                    user_id=row["user_id"],
+                    username=row["username"],
+                    role=UserRole(row["role"]),
+                    enabled=bool(row["enabled"]),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    display_name=row["display_name"],
+                    avatar_url=row["avatar_url"],
+                    preferences=json_loads(row["preferences"]),
+                    player_filter=json_loads(row["player_filter"]),
+                    provider_filter=json_loads(row["provider_filter"]),
                 )
             )
         return users
@@ -887,6 +909,139 @@ class AuthenticationManager:
             )
         return providers
 
+    @api_command("auth/login", authenticated=False)
+    async def login(
+        self,
+        username: str | None = None,
+        password: str | None = None,
+        provider_id: str = "builtin",
+        **extra_credentials: Any,
+    ) -> dict[str, Any]:
+        """Authenticate user with credentials via WebSocket.
+
+        This command allows clients to authenticate over the WebSocket connection
+        using username/password or other provider-specific credentials.
+
+        :param username: Username for authentication (for builtin provider).
+        :param password: Password for authentication (for builtin provider).
+        :param provider_id: The login provider ID (defaults to "builtin").
+        :param extra_credentials: Additional provider-specific credentials.
+        :return: Authentication result with access token if successful.
+        """
+        # Build credentials dict from parameters
+        credentials: dict[str, Any] = {}
+        if username is not None:
+            credentials["username"] = username
+        if password is not None:
+            credentials["password"] = password
+        credentials.update(extra_credentials)
+
+        auth_result = await self.authenticate_with_credentials(provider_id, credentials)
+
+        if not auth_result.success:
+            return {
+                "success": False,
+                "error": auth_result.error or "Authentication failed",
+            }
+
+        if not auth_result.user:
+            return {
+                "success": False,
+                "error": "Authentication failed: no user returned",
+            }
+
+        # Create short-lived access token
+        token = await self.create_token(
+            auth_result.user,
+            is_long_lived=False,
+            name=f"WebSocket Session - {auth_result.user.username}",
+        )
+
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": auth_result.user.user_id,
+                "username": auth_result.user.username,
+                "display_name": auth_result.user.display_name,
+                "role": auth_result.user.role.value,
+            },
+        }
+
+    @api_command("auth/providers", authenticated=False)
+    async def get_providers(self) -> list[dict[str, Any]]:
+        """Get list of available authentication providers.
+
+        Returns information about all available login providers including
+        whether they require OAuth redirect flow.
+        """
+        return await self.get_login_providers()
+
+    @api_command("auth/authorization_url", authenticated=False)
+    async def get_auth_url(
+        self, provider_id: str, for_remote_client: bool = False
+    ) -> dict[str, str | None]:
+        """Get OAuth authorization URL for remote authentication.
+
+        For OAuth providers (like Home Assistant), this returns the URL that
+        the user should visit in their browser to authorize the application.
+
+        :param provider_id: The provider ID (e.g., "hass").
+        :param for_remote_client: If True, creates a pending session for remote OAuth flow.
+        :return: Dictionary with authorization_url and session_id (if remote).
+        """
+        # Generate session ID for remote clients
+        session_id = None
+        return_url = None
+
+        if for_remote_client:
+            session_id = secrets.token_urlsafe(32)
+            # Mark session as pending
+            self._pending_oauth_sessions[session_id] = None
+            # Use special return URL that will capture the token
+            return_url = f"urn:ietf:wg:oauth:2.0:oob:auto:{session_id}"
+
+        auth_url = await self.get_authorization_url(provider_id, return_url)
+        if not auth_url:
+            return {
+                "authorization_url": None,
+                "error": "Provider does not support OAuth or does not exist",
+            }
+
+        return {
+            "authorization_url": auth_url,
+            "session_id": session_id,  # Only set for remote clients
+        }
+
+    @api_command("auth/oauth_status", authenticated=False)
+    async def check_oauth_status(self, session_id: str) -> dict[str, Any]:
+        """Check status of pending OAuth authentication.
+
+        Remote clients use this to poll for completion of the OAuth flow.
+
+        :param session_id: The session ID from get_auth_url.
+        :return: Status and token if authentication completed.
+        """
+        if session_id not in self._pending_oauth_sessions:
+            return {
+                "status": "invalid",
+                "error": "Invalid or expired session ID",
+            }
+
+        token = self._pending_oauth_sessions.get(session_id)
+        if token is None:
+            return {
+                "status": "pending",
+                "message": "Waiting for user to complete authentication",
+            }
+
+        # Authentication completed, return token and clean up
+        del self._pending_oauth_sessions[session_id]
+        return {
+            "status": "completed",
+            "access_token": token,
+        }
+
     async def get_authorization_url(
         self, provider_id: str, return_url: str | None = None
     ) -> str | None:
@@ -965,6 +1120,8 @@ class AuthenticationManager:
         role: str = "user",
         display_name: str | None = None,
         avatar_url: str | None = None,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user with built-in authentication (admin only).
@@ -974,6 +1131,8 @@ class AuthenticationManager:
         :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
+        :param player_filter: Optional list of player IDs user has access to.
+        :param provider_filter: Optional list of provider instance IDs user has access to.
         :return: Created user object.
         """
         # Validation
@@ -995,7 +1154,13 @@ class AuthenticationManager:
             raise InvalidDataError("Built-in auth provider not available")
 
         # Create user with password
-        user = await builtin_provider.create_user_with_password(username, password, role=user_role)
+        user = await builtin_provider.create_user_with_password(
+            username,
+            password,
+            role=user_role,
+            player_filter=player_filter,
+            provider_filter=provider_filter,
+        )
 
         # Update optional fields if provided
         if display_name or avatar_url:
@@ -1042,7 +1207,6 @@ class AuthenticationManager:
         self,
         target_user: User,
         password: str,
-        old_password: str | None,
         is_admin_update: bool,
         current_user: User,
     ) -> None:
@@ -1054,25 +1218,39 @@ class AuthenticationManager:
         if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
             raise InvalidDataError("Built-in auth not available")
 
+        # Update password (used for both admin resets and user password changes)
+        await builtin_provider.reset_password(target_user, password)
+
         if is_admin_update:
-            # Admin can reset password without old password
-            await builtin_provider.reset_password(target_user, password)
             self.logger.info(
                 "Password reset for user %s by admin %s",
                 target_user.username,
                 current_user.username,
             )
         else:
-            # User updating own password - requires old password verification
-            if not old_password:
-                raise InvalidDataError("old_password is required to change your own password")
-
-            # Verify old password and change to new one
-            success = await builtin_provider.change_password(target_user, old_password, password)
-            if not success:
-                raise AuthenticationFailed("Invalid current password")
-
             self.logger.info("Password changed for user %s", target_user.username)
+
+    async def update_user_filters(
+        self,
+        target_user: User,
+        player_filter: list[str] | None,
+        provider_filter: list[str] | None,
+    ) -> User:
+        """Update user player and provider filters (helper method)."""
+        updates = {}
+        if player_filter is not None:
+            updates["player_filter"] = json_dumps(player_filter)
+        if provider_filter is not None:
+            updates["provider_filter"] = json_dumps(provider_filter)
+
+        if updates:
+            await self.database.update("users", {"user_id": target_user.user_id}, updates)
+            # Refresh target user to get updated filters
+            refreshed_user = await self.get_user(target_user.user_id)
+            if not refreshed_user:
+                raise InvalidDataError("Failed to refresh user after filter update")
+            return refreshed_user
+        return target_user
 
     @api_command("auth/user/update")
     async def update_user_profile(
@@ -1082,9 +1260,10 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         password: str | None = None,
-        old_password: str | None = None,
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Update user profile information.
@@ -1096,11 +1275,12 @@ class AuthenticationManager:
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param old_password: Current password (required when user updates own password).
-        :param role: New role - "admin" or "user" (optional, admin only).
+        :param role: New role - "admin" or "user" (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
+        :param player_filter: List of player IDs user has access to (set by admin only, optional).
+        :param provider_filter: List of provider instance IDs user has access to (set by admin only, optional).
         :return: Updated user object.
-        """
+        """  # noqa: E501
         current_user_obj = get_current_user()
         if not current_user_obj:
             raise AuthenticationRequired("Not authenticated")
@@ -1155,10 +1335,18 @@ class AuthenticationManager:
         if preferences is not None:
             target_user = await self.update_user_preferences(target_user, preferences)
 
+        # Update player_filter and provider_filter (admin only)
+        if player_filter is not None or provider_filter is not None:
+            if not is_admin_update:
+                raise InsufficientPermissions("Only admins can update player/provider filters")
+            target_user = await self.update_user_filters(
+                target_user, player_filter, provider_filter
+            )
+
         # Update password if provided
         if password:
             await self._update_profile_password(
-                target_user, password, old_password, is_admin_update, current_user_obj
+                target_user, password, is_admin_update, current_user_obj
             )
 
         return target_user

@@ -599,9 +599,8 @@
 
                 window.location.href = finalUrl;
             } else {
-                // No return URL - redirect to root with onboard flag
-                // Frontend will handle navigation to onboarding flow
-                window.location.href = '/?code=' + encodeURIComponent(authToken) + '&onboard=true';
+                // No return URL - use relative path to current directory
+                window.location.href = `./?code=${encodeURIComponent(authToken)}&onboard=true`;
             }
         }
 

@@ -362,7 +362,16 @@ class LocalFileSystemProvider(MusicProvider):
                     if ext not in SUPPORTED_EXTENSIONS:
                         # skip unsupported file extension
                         continue
-                    yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    try:
+                        yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    except OSError as err:
+                        # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
+                        # This typically happens with emoji or special unicode characters
+                        self.logger.debug(
+                            "Skipping file %s due to stat error: %s",
+                            item.path,
+                            str(err),
+                        )
 
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""
