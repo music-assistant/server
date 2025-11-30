@@ -47,7 +47,8 @@ class HLSMediaSegment:
 
 @dataclass
 class HLSMediaPlaylist:
-    """HLS media playlist structure with headers, segments, and footers preserved.
+    """
+    HLS media playlist structure with headers, segments, and footers preserved.
 
     Note: header_lines excludes EXT-X-KEY and EXT-X-MAP tags. Per RFC 8216, these
     tags apply to subsequent segments until overridden, so they're stored per-segment
