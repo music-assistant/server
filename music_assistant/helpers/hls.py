@@ -1,4 +1,5 @@
-"""RFC 8216-based HLS utilities.
+"""
+RFC 8216-based HLS utilities.
 
 For simple variant stream selection from master playlists, use helpers.playlists.parse_m3u.
 """
