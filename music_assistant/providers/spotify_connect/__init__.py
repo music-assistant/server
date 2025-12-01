@@ -169,7 +169,6 @@ class SpotifyConnectProvider(PluginProvider):
         self._runner_error_count = 0
         self._spotify_device_id: str | None = None
         self._last_session_connected_time: float = 0
-        self._syncing_volume_to_ma: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -181,7 +180,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._on_unload_callbacks.append(
             self.mass.subscribe(
                 self._on_mass_player_event,
-                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED, EventType.PLAYER_UPDATED),
+                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
                 id_filter=self.mass_player_id,
             )
         )
@@ -334,32 +333,6 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.warning("Failed to send seek command via Spotify Web API: %s", err)
             raise
 
-    async def _on_volume(self, volume: int) -> None:
-        """
-        Handle volume change from MA to sync to Spotify app.
-
-        :param volume: Volume level (0-100) from MA player.
-        """
-        # Don't sync if we're currently syncing from Spotify to MA (prevent feedback loop)
-        if self._syncing_volume_to_ma:
-            return
-
-        self.logger.debug("Syncing volume from MA to Spotify: %d%%", volume)
-
-        # Only sync via Web API if we have a Spotify provider
-        if not self._spotify_provider:
-            self.logger.debug("Cannot sync volume to Spotify - no matching Spotify music provider")
-            return
-
-        try:
-            # Spotify Web API expects volume as percentage (0-100)
-            # Use throttler bypass to avoid delays when setting the volume
-            async with self._spotify_provider.throttler.bypass():
-                await self._spotify_provider._put_data(f"me/player/volume?volume_percent={volume}")
-        except Exception as err:
-            self.logger.debug("Failed to sync volume to Spotify via Web API: %s", err)
-            # Don't raise - volume sync is best-effort
-
     async def _get_spotify_device_id(self) -> str | None:
         """Get the Spotify Connect device ID for this instance.
 
@@ -490,7 +463,7 @@ class SpotifyConnectProvider(PluginProvider):
         await check_output("mkfifo", self.named_pipe)
         await asyncio.sleep(0.1)
         try:
-            # Get initial volume from player, or use 20 as fallback to prevent heart attacks
+            # Get initial volume from player, or use 20 as fallback
             initial_volume = 20
             _player = self.mass.players.get(self.mass_player_id)
             if _player and _player.volume_level:
@@ -511,11 +484,11 @@ class SpotifyConnectProvider(PluginProvider):
                 self.named_pipe,
                 "--dither",
                 "none",
-                # Enable volume control with linear scale for intuitive volume feel
+                # disable volume control
                 "--mixer",
                 "softvol",
                 "--volume-ctrl",
-                "linear",
+                "fixed",
                 "--initial-volume",
                 str(initial_volume),
                 "--enable-volume-normalisation",
@@ -561,12 +534,6 @@ class SpotifyConnectProvider(PluginProvider):
         if event.event == EventType.PLAYER_ADDED:
             self._setup_player_daemon()
             return
-        if event.event == EventType.PLAYER_UPDATED:
-            # Check for volume changes and sync to Spotify
-            _player = self.mass.players.get(self.mass_player_id)
-            if _player and _player.volume_level is not None:
-                self.mass.create_task(self._on_volume(_player.volume_level))
-            return
 
     async def _handle_custom_webservice(self, request: Request) -> Response:  # noqa: PLR0915
         """Handle incoming requests on the custom webservice."""
@@ -592,11 +559,6 @@ class SpotifyConnectProvider(PluginProvider):
                 await self._check_spotify_provider_match()
             elif not username:
                 self.logger.warning("Session connected event received but no username in payload")
-
-            # Sync MA's current volume to Spotify to ensure MA is in control
-            player = self.mass.players.get(self.mass_player_id)
-            if player and player.volume_level is not None:
-                self.mass.create_task(self._on_volume(player.volume_level))
 
         # handle session disconnected event
         if event_name == "session_disconnected":
@@ -659,7 +621,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._source_details.metadata.elapsed_time = int(json_data["position_ms"]) // 1000
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
-        if event_name == "volume_changed" and (volume := json_data.get("volume")):
+        if event_name == "volume_changed" and json_data.get("volume"):
             # Ignore volume_changed events that fire immediately after session_connect
             # We want to use the volume from MA in that case
             time_since_connect = time.time() - self._last_session_connected_time
@@ -668,21 +630,6 @@ class SpotifyConnectProvider(PluginProvider):
                     "Ignoring initial volume_changed event (%.2fs after session_connect)",
                     time_since_connect,
                 )
-            else:
-                # Spotify Connect volume is 0-65535
-                volume_percent = int(int(volume) / 65535 * 100)
-                self.logger.debug("Syncing volume from Spotify app to MA: %d%%", volume_percent)
-                try:
-                    # Set flag to prevent feedback loop
-                    self._syncing_volume_to_ma = True
-                    await self.mass.players.cmd_volume_set(self.mass_player_id, volume_percent)
-                except UnsupportedFeaturedException:
-                    self.logger.debug(
-                        "Player %s does not support volume control", self.mass_player_id
-                    )
-                finally:
-                    # Clear flag after syncing
-                    self._syncing_volume_to_ma = False
 
         # signal update to connected player
         if self._source_details.in_use_by:
