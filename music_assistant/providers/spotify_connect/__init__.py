@@ -621,7 +621,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._source_details.metadata.elapsed_time = int(json_data["position_ms"]) // 1000
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
-        if event_name == "volume_changed" and json_data.get("volume"):
+        if event_name == "volume_changed" and (volume := json_data.get("volume")):
             # Ignore volume_changed events that fire immediately after session_connect
             # We want to use the volume from MA in that case
             time_since_connect = time.time() - self._last_session_connected_time
@@ -630,6 +630,15 @@ class SpotifyConnectProvider(PluginProvider):
                     "Ignoring initial volume_changed event (%.2fs after session_connect)",
                     time_since_connect,
                 )
+            else:
+                # Spotify Connect volume is 0-65535
+                volume = int(int(volume) / 65535 * 100)
+                try:
+                    await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
+                except UnsupportedFeaturedException:
+                    self.logger.debug(
+                        "Player %s does not support volume control", self.mass_player_id
+                    )
 
         # signal update to connected player
         if self._source_details.in_use_by:
