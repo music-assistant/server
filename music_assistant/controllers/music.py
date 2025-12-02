@@ -247,6 +247,9 @@ class MusicController(CoreController):
         """
         if not media_types:
             media_types = MediaType.ALL
+        # TODO: Remove when we have implemented the GenreController
+        if MediaType.GENRE in media_types:
+            media_types.remove(MediaType.GENRE)
         # Check if the search query is a streaming provider public shareable URL
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
