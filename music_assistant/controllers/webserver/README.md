@@ -83,21 +83,32 @@ Manages WebRTC-based remote access for external connectivity:
 - **Remote ID**: Unique identifier (format: `MA-XXXX-XXXX`) for connecting to specific instances
 
 **How it works:**
-1. Remote access is automatically enabled when Home Assistant Cloud subscription is detected
+1. Remote access can be enabled regardless of Home Assistant Cloud subscription
 2. A unique Remote ID is generated and stored in config
 3. The gateway connects to the signaling server and registers with the Remote ID
 4. Remote clients (PWA or mobile apps) connect via WebRTC using the Remote ID
 5. Data channel messages are bridged to/from the local WebSocket API
-6. ICE servers (STUN/TURN) are provided by Home Assistant Cloud
+
+**Connection Modes:**
+
+- **Basic Mode** (default, no HA Cloud required):
+  - Uses public STUN servers (Home Assistant, Google, Cloudflare)
+  - Works in most network configurations
+  - May not work behind complex NAT setups or corporate firewalls
+  - Free for all users
+
+- **Optimized Mode** (with HA Cloud subscription):
+  - Uses Home Assistant Cloud STUN/TURN servers
+  - Reliable connections in all network configurations
+  - TURN relay servers ensure connectivity even in restrictive networks
+  - Requires active Home Assistant Cloud subscription
 
 **Key features:**
 - Automatic reconnection on signaling server disconnect
 - Multiple concurrent WebRTC sessions supported
 - No port forwarding required
-- End-to-end encryption via WebRTC
-
-**Availability:**
-Currently, remote access is only offered to users with an active Home Assistant Cloud subscription due to reliance on cloud-based STUN/TURN servers.
+- End-to-end encryption via WebRTC (DTLS-SRTP)
+- Automatic mode switching when HA Cloud status changes
 
 ### 4. WebSocket Client Handler ([websocket_client.py](websocket_client.py))
 
@@ -220,9 +231,10 @@ Remote access enables users to connect to their Music Assistant instance from an
 ### Connection Flow
 
 1. **Initialization**:
-   - HA Cloud subscription detected
+   - Remote access is enabled by user in settings
    - Remote ID generated/retrieved from config
-   - Gateway connects to signaling server
+   - HA Cloud status checked (determines mode)
+   - Gateway connects to signaling server with appropriate ICE servers
    - Remote ID registered with signaling server
 
 2. **Remote Client Connection**:
@@ -244,25 +256,30 @@ Remote access enables users to connect to their Music Assistant instance from an
 
 NAT traversal is critical for WebRTC connections. Music Assistant uses:
 
-- **STUN servers**: Public servers for discovering public IP (Google, Cloudflare)
-- **TURN servers**: Relay servers for cases where direct connection fails (provided by HA Cloud)
+- **STUN servers**: Servers for discovering public IP addresses and port mappings
+- **TURN servers**: Relay servers for cases where direct peer-to-peer connection fails
 
-**Current Implementation:**
-- Default STUN servers are used (Google, Cloudflare)
-- HA Cloud STUN servers are planned but not yet implemented
-- HA Cloud TURN servers are planned but not yet implemented
-- Most connections succeed with STUN alone, but TURN improves reliability
+**Basic Mode (Public STUN):**
+- `stun:stun.home-assistant.io:3478` (Home Assistant public STUN)
+- `stun:stun.l.google.com:19302` (Google public STUN)
+- `stun:stun1.l.google.com:19302` (Google public STUN backup)
+- `stun:stun.cloudflare.com:3478` (Cloudflare public STUN)
 
-### Availability Requirements
+Most connections succeed with public STUN servers alone, but they may fail in:
+- Symmetric NAT configurations
+- Corporate firewalls that block UDP
+- Networks with restrictive firewall policies
 
-Remote access is currently **only available** to users with:
-1. Home Assistant integration configured
-2. Active Home Assistant Cloud subscription
+**Optimized Mode (HA Cloud):**
+- STUN/TURN servers provided by Home Assistant Cloud
+- Includes TURN relay servers for guaranteed connectivity
+- Currently in development (uses Basic Mode fallback until implemented)
 
-This limitation exists because:
-- TURN servers are expensive to host
-- HA Cloud provides TURN infrastructure
-- Ensures reliable connections for paying subscribers
+### Availability
+
+Remote access is available to all users:
+- **Basic Mode**: Always available, no subscription required
+- **Optimized Mode**: Requires active Home Assistant Cloud subscription
 
 ### API Endpoints
 
@@ -271,9 +288,19 @@ Returns remote access status:
 ```json
 {
   "enabled": true,
+  "running": true,
   "connected": true,
   "remote_id": "MA-K7G3-P2M4",
+  "using_ha_cloud": false,
   "signaling_url": "wss://signaling.music-assistant.io/ws"
+}
+```
+
+**`remote_access/configure`** (WebSocket command, admin only):
+Enable or disable remote access:
+```json
+{
+  "enabled": true
 }
 ```
 
@@ -406,11 +433,12 @@ When modifying the auth database schema:
 
 ### Testing Remote Access
 
-1. **Enable HA Cloud**: Configure Home Assistant provider with Cloud subscription
+1. **Enable Remote Access**: Toggle remote access in settings UI or via API
 2. **Verify Remote ID**: Check webserver config for generated Remote ID
-3. **Test Gateway**: Check logs for "WebRTC Remote Access enabled" message
+3. **Test Gateway**: Check logs for "Starting remote access in basic/optimized mode" message
 4. **Test Connection**: Use PWA with Remote ID to connect externally
-5. **Monitor Sessions**: Check `remote_access/info` command for status
+5. **Monitor Sessions**: Check `remote_access/info` command for status and mode
+6. **Test Mode Switching**: Enable/disable HA Cloud and verify automatic mode switching
 
 ## File Structure
 
