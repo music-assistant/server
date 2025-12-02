@@ -806,15 +806,6 @@ class SonosPlayer(Player):
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
         player_id = self.player_id
-        # if (
-        #     airplay_player.playback_state == PlaybackState.PLAYING
-        #     and airplay_player.active_source == media.source_id
-        # ):
-        #     # if the airplay player is already playing,
-        #     # the stream will be reused so no need to do the whole grouping thing below
-        #     await self.mass.players.play_media(airplay_player.player_id, media)
-        #     return
-
         # Sonos has an annoying bug (for years already, and they dont seem to care),
         # where it looses its sync childs when airplay playback is (re)started.
         # Try to handle it here with this workaround.
