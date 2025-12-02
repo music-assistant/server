@@ -273,7 +273,6 @@ Most connections succeed with public STUN servers alone, but they may fail in:
 **Optimized Mode (HA Cloud):**
 - STUN/TURN servers provided by Home Assistant Cloud
 - Includes TURN relay servers for guaranteed connectivity
-- Currently in development (uses Basic Mode fallback until implemented)
 
 ### Availability
 

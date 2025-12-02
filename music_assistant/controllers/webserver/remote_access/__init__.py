@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from hass_client.exceptions import FailedCommand
 from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import EventType
 
@@ -150,7 +151,17 @@ class RemoteAccessManager:
             if not (logged_in and active_subscription):
                 return False, None
 
-            return True, None
+            try:
+                ice_servers = await hass_client.send_command("cloud/webrtc/ice_servers")
+                if ice_servers:
+                    return True, ice_servers
+                self.logger.debug("HA Cloud available but no ICE servers returned")
+                return True, None
+
+            except FailedCommand:
+                # will return "Unknown command" if the HA version doesn't support this command (yet)
+                self.logger.debug("Failed to fetch ICE servers from HA Cloud, using fallback")
+                return True, None
 
         except Exception:
             self.logger.exception("Error getting HA Cloud status")
