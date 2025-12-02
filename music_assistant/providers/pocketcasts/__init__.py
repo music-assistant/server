@@ -65,8 +65,10 @@ POCKETCASTS_STARRED_URL = f"{POCKETCASTS_API_BASE}/user/starred"
 POCKETCASTS_NEW_RELEASES_URL = f"{POCKETCASTS_API_BASE}/user/new_releases"
 POCKETCASTS_HISTORY_URL = f"{POCKETCASTS_API_BASE}/user/history"
 POCKETCASTS_BOOKMARKS_URL = f"{POCKETCASTS_API_BASE}/user/bookmark/list"
+POCKETCASTS_UP_NEXT_URL = f"{POCKETCASTS_API_BASE}/up_next/list"
 
 # Browse path constants
+BROWSE_UP_NEXT = "up_next"
 BROWSE_IN_PROGRESS = "in_progress"
 BROWSE_STARRED = "starred"
 BROWSE_NEW_RELEASES = "new_releases"
@@ -172,17 +174,17 @@ class PocketCastsProvider(MusicProvider):
             data={"email": email, "password": password},
         ) as response:
             if response.status != 200:
-                self.logger.warning("Pocket Casts login failed with status %s", response.status)
+                self.logger.error("Pocket Casts login failed with status %s", response.status)
                 return None
 
             try:
                 data = await response.json()
             except Exception as err:
-                self.logger.warning("Failed to parse login response: %s", err)
+                self.logger.error("Failed to parse login response: %s", err)
                 return None
 
             if "token" not in data:
-                self.logger.warning("Login response missing token")
+                self.logger.error("Login response missing token")
                 return None
 
             # Store auth info: token, uuid, email
@@ -278,18 +280,13 @@ class PocketCastsProvider(MusicProvider):
                         "isDeleted": episode.get("isDeleted"),
                     }
 
-            self.logger.debug(
-                "Fetched progress for %d episodes of podcast %s",
-                len(progress_map),
-                podcast_uuid,
-            )
             return progress_map
 
     async def _sync_episode_progress(
         self,
         episode_uuid: str,
         podcast_uuid: str,
-        position: int,
+        position: int | None,
         duration: int,
         status: int,
     ) -> bool:
@@ -297,17 +294,25 @@ class PocketCastsProvider(MusicProvider):
 
         :param episode_uuid: The UUID of the episode.
         :param podcast_uuid: The UUID of the podcast.
-        :param position: Playback position in seconds.
+        :param position: Playback position in seconds (None for manual mark as played).
         :param duration: Episode duration in seconds.
         :param status: Playing status (1=not played, 2=in progress, 3=completed).
         :return: True if sync was successful.
         """
         headers = await self._get_headers()
 
+        # For completed episodes without a position, use duration as position
+        if position is not None:
+            sync_position = position
+        elif status == STATUS_COMPLETED:
+            sync_position = duration
+        else:
+            sync_position = 0
+
         payload = {
             "uuid": episode_uuid,
             "podcast": podcast_uuid,
-            "position": position,
+            "position": sync_position,
             "duration": duration,
             "status": status,
         }
@@ -319,12 +324,6 @@ class PocketCastsProvider(MusicProvider):
                 json=payload,
             ) as response:
                 if response.status == 200:
-                    self.logger.debug(
-                        "Synced progress for episode %s: position=%d, status=%d",
-                        episode_uuid,
-                        position,
-                        status,
-                    )
                     return True
                 self.logger.warning("Failed to sync episode progress, status: %s", response.status)
                 return False
@@ -435,6 +434,12 @@ class PocketCastsProvider(MusicProvider):
         if path == base or not path.startswith(base):
             # Return root browse folders - add custom folders before default folders
             default_folders = await super().browse(path)
+            up_next_folder = BrowseFolder(
+                item_id=BROWSE_UP_NEXT,
+                provider=self.domain,
+                path=f"{base}{BROWSE_UP_NEXT}",
+                name="Up Next",
+            )
             in_progress_folder = BrowseFolder(
                 item_id=BROWSE_IN_PROGRESS,
                 provider=self.domain,
@@ -466,6 +471,7 @@ class PocketCastsProvider(MusicProvider):
                 name="Bookmarks",
             )
             return [
+                up_next_folder,
                 in_progress_folder,
                 new_releases_folder,
                 starred_folder,
@@ -476,6 +482,9 @@ class PocketCastsProvider(MusicProvider):
 
         # Parse subpath
         subpath = path[len(base) :]
+
+        if subpath == BROWSE_UP_NEXT:
+            return list(await self._get_up_next_episodes())
 
         if subpath == BROWSE_IN_PROGRESS:
             return list(await self._get_in_progress_episodes())
@@ -494,6 +503,64 @@ class PocketCastsProvider(MusicProvider):
 
         # Fall back to default browse handling
         return list(await super().browse(path))
+
+    async def _get_up_next_episodes(self) -> list[PodcastEpisode]:
+        """Fetch Up Next queue from Pocket Casts.
+
+        :return: List of PodcastEpisode items in the Up Next queue.
+        """
+        headers = await self._get_headers()
+
+        # The Up Next API requires specific payload format
+        # For initial fetch, we don't include serverModified
+        payload: dict[str, Any] = {
+            "version": 2,
+            "model": "webplayer",
+            "showPlayStatus": True,
+        }
+
+        async with self.mass.http_session.post(
+            POCKETCASTS_UP_NEXT_URL,
+            headers=headers,
+            json=payload,
+        ) as response:
+            if response.status != 200:
+                response_text = await response.text()
+                self.logger.warning(
+                    "Failed to fetch Up Next queue: status=%s, body=%s",
+                    response.status,
+                    response_text[:500] if response_text else "(empty)",
+                )
+                return []
+
+            data = await response.json()
+
+        # Build a map of episode sync data (playedUpTo, duration) by uuid
+        episode_sync: dict[str, dict[str, Any]] = {}
+        for sync_data in data.get("episodeSync", []):
+            episode_uuid = sync_data.get("uuid")
+            if episode_uuid:
+                episode_sync[episode_uuid] = sync_data
+
+        episodes: list[PodcastEpisode] = []
+        for ep_data in data.get("episodes", []):
+            try:
+                episode_uuid = ep_data.get("uuid", "")
+                # Merge sync data into episode data for parsing
+                if episode_uuid in episode_sync:
+                    ep_data["playedUpTo"] = episode_sync[episode_uuid].get("playedUpTo", 0)
+                    if "duration" not in ep_data:
+                        ep_data["duration"] = episode_sync[episode_uuid].get("duration", 0)
+                episode = self._parse_browse_episode(ep_data)
+                episodes.append(episode)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse Up Next episode %s: %s",
+                    ep_data.get("uuid", "unknown"),
+                    err,
+                )
+
+        return episodes
 
     async def _get_history_episodes(self) -> list[PodcastEpisode]:
         """Fetch recently played episodes from Pocket Casts.
@@ -745,7 +812,8 @@ class PocketCastsProvider(MusicProvider):
         :return: Parsed PodcastEpisode.
         """
         episode_uuid = ep_data["uuid"]
-        podcast_uuid = ep_data.get("podcastUuid", "")
+        # Different APIs use different keys for podcast UUID
+        podcast_uuid = ep_data.get("podcastUuid") or ep_data.get("podcast", "")
         title = ep_data.get("title", "Unknown Episode")
         podcast_title = ep_data.get("podcastTitle", "Unknown Podcast")
 
@@ -1143,29 +1211,17 @@ class PocketCastsProvider(MusicProvider):
 
         if not progress_info:
             # No progress info available, fall back to internal state
-            self.logger.debug(
-                "No progress info found for episode %s, falling back to internal state",
-                episode_uuid,
-            )
             raise NotImplementedError
 
         playing_status = progress_info.get("playingStatus")
         played_up_to = progress_info.get("playedUpTo", 0)
 
         if playing_status == STATUS_COMPLETED:
-            self.logger.debug("Episode %s is fully played, resume_position=0", episode_uuid)
             return True, 0
         elif playing_status == STATUS_IN_PROGRESS:
             resume_ms = played_up_to * 1000  # Convert to ms
-            self.logger.debug(
-                "Episode %s in progress, resume_position=%d ms (playedUpTo=%d s)",
-                episode_uuid,
-                resume_ms,
-                played_up_to,
-            )
             return False, resume_ms
         else:  # STATUS_NOT_PLAYED or unknown
-            self.logger.debug("Episode %s not played, resume_position=0", episode_uuid)
             return False, 0
 
     async def on_played(
@@ -1207,16 +1263,21 @@ class PocketCastsProvider(MusicProvider):
 
         podcast_uuid, episode_uuid = parts
 
+        # Get episode duration
+        duration = media_item.duration or 0
+
         # Determine status based on playback state
+        # For podcasts, consider it fully played if within 60 seconds of the end
+        # This matches MA's internal logic for podcast episodes
         if fully_played:
             status = STATUS_COMPLETED
-        elif position > 0:
+        elif position is not None and duration > 0 and position >= duration - 60:
+            # Episode is near the end (within 60 seconds), mark as completed
+            status = STATUS_COMPLETED
+        elif position is not None and position > 0:
             status = STATUS_IN_PROGRESS
         else:
             status = STATUS_NOT_PLAYED
-
-        # Get episode duration
-        duration = media_item.duration or 0
 
         # Sync progress to Pocket Casts
         await self._sync_episode_progress(
