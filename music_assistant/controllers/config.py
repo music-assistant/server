@@ -426,9 +426,6 @@ class ConfigController:
             config = await self._update_provider_config(instance_id, values)
         else:
             config = await self._add_provider_config(provider_domain, values)
-        # mark onboard done whenever the (first) provider is added
-        # this will be replaced later by a more sophisticated onboarding process
-        self.set(CONF_ONBOARD_DONE, True)
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
@@ -1308,6 +1305,8 @@ class ConfigController:
         # migrate player configs: always use lookup key for provider
         prov_configs = self._data.get(CONF_PROVIDERS, {})
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if "provider" not in player_config:
+                continue
             player_provider = player_config["provider"]
             if prov_conf := prov_configs.get(player_provider):
                 if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):

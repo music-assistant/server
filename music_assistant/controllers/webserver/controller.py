@@ -199,15 +199,6 @@ class WebserverController(CoreController):
                     category="advanced",
                     hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
                 ),
-                ConfigEntry(
-                    key="remote_id",
-                    type=ConfigEntryType.STRING,
-                    label="Remote ID",
-                    description="Unique identifier for WebRTC remote access. "
-                    "Generated automatically and should not be changed.",
-                    required=False,
-                    hidden=True,
-                ),
             ]
         )
 
@@ -242,6 +233,7 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add logging
         routes.append(("GET", "/music-assistant.log", self._handle_application_log))
+        routes.append(("OPTIONS", "/music-assistant.log", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
         # also host the image proxy on the webserver
@@ -275,10 +267,7 @@ class WebserverController(CoreController):
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
-        # Initialize authentication manager
         await self.auth.setup()
-        # Initialize remote access manager
-        await self.remote_access.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -385,13 +374,16 @@ class WebserverController(CoreController):
             # announce to HA supervisor
             await self._announce_to_homeassistant()
 
+        # Setup remote access after webserver is running
+        await self.remote_access.setup()
+
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.remote_access.close()
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
         await self.auth.close()
-        await self.remote_access.close()
 
     def register_websocket_client(self, client: WebsocketClientHandler) -> None:
         """Register a WebSocket client for tracking."""
@@ -561,7 +553,15 @@ class WebserverController(CoreController):
     async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
-        return web.Response(text=log_data, content_type="text/text")
+        return web.Response(
+            text=log_data,
+            content_type="text/text",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
 
     async def _handle_api_intro(self, request: web.Request) -> web.Response:
         """Handle request for API introduction/documentation page."""

@@ -101,7 +101,7 @@ CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
 CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
-
+CONF_ENABLED: Final[str] = "enabled"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

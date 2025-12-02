@@ -915,6 +915,7 @@ class AuthenticationManager:
         username: str | None = None,
         password: str | None = None,
         provider_id: str = "builtin",
+        device_name: str | None = None,
         **extra_credentials: Any,
     ) -> dict[str, Any]:
         """Authenticate user with credentials via WebSocket.
@@ -925,6 +926,7 @@ class AuthenticationManager:
         :param username: Username for authentication (for builtin provider).
         :param password: Password for authentication (for builtin provider).
         :param provider_id: The login provider ID (defaults to "builtin").
+        :param device_name: Optional device name for the token (e.g., "iPhone 15", "Desktop PC").
         :param extra_credentials: Additional provider-specific credentials.
         :return: Authentication result with access token if successful.
         """
@@ -950,11 +952,12 @@ class AuthenticationManager:
                 "error": "Authentication failed: no user returned",
             }
 
-        # Create short-lived access token
+        # Create short-lived access token with device name if provided
+        token_name = device_name or f"WebSocket Session - {auth_result.user.username}"
         token = await self.create_token(
             auth_result.user,
             is_long_lived=False,
-            name=f"WebSocket Session - {auth_result.user.username}",
+            name=token_name,
         )
 
         return {

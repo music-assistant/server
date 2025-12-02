@@ -14,7 +14,7 @@ import logging
 import secrets
 import string
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from aiortc import (
@@ -26,9 +26,6 @@ from aiortc import (
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
@@ -54,6 +51,8 @@ class WebRTCSession:
     data_channel: Any = None
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    forward_to_local_task: asyncio.Task[None] | None = None
+    forward_from_local_task: asyncio.Task[None] | None = None
 
 
 class WebRTCGateway:
@@ -68,24 +67,24 @@ class WebRTCGateway:
 
     def __init__(
         self,
+        http_session: aiohttp.ClientSession,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
         remote_id: str | None = None,
-        on_remote_id_ready: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the WebRTC Gateway.
 
+        :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations.
         :param remote_id: Optional Remote ID to use (generated if not provided).
-        :param on_remote_id_ready: Callback when Remote ID is registered.
         """
+        self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
         self.remote_id = remote_id or generate_remote_id()
-        self.on_remote_id_ready = on_remote_id_ready
         self.logger = LOGGER
 
         self.ice_servers = ice_servers or [
@@ -96,7 +95,6 @@ class WebRTCGateway:
 
         self.sessions: dict[str, WebRTCSession] = {}
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
-        self._signaling_session: aiohttp.ClientSession | None = None
         self._running = False
         self._reconnect_delay = 5
         self._max_reconnect_delay = 60
@@ -132,17 +130,20 @@ class WebRTCGateway:
         for session_id in list(self.sessions.keys()):
             await self._close_session(session_id)
 
-        # Close signaling connection
-        if self._signaling_ws:
-            await self._signaling_ws.close()
-        if self._signaling_session:
-            await self._signaling_session.close()
+        # Close signaling connection gracefully
+        if self._signaling_ws and not self._signaling_ws.closed:
+            try:
+                await self._signaling_ws.close()
+            except Exception:
+                self.logger.debug("Error closing signaling WebSocket", exc_info=True)
 
         # Cancel run task
         if self._run_task and not self._run_task.done():
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._run_task
+
+        self._signaling_ws = None
 
     async def _run(self) -> None:
         """Run the main loop with reconnection logic."""
@@ -176,50 +177,66 @@ class WebRTCGateway:
     async def _connect_to_signaling(self) -> None:
         """Connect to the signaling server."""
         self.logger.info("Connecting to signaling server: %s", self.signaling_url)
-        # Create session with increased timeout for WebSocket connection
-        timeout = aiohttp.ClientTimeout(
-            total=None,  # No total timeout for WebSocket connections
-            connect=30,  # 30 seconds to establish connection
-            sock_connect=30,  # 30 seconds for socket connection
-            sock_read=None,  # No timeout for reading (we handle ping/pong)
-        )
-        self._signaling_session = aiohttp.ClientSession(timeout=timeout)
         try:
-            self._signaling_ws = await self._signaling_session.ws_connect(
+            self._signaling_ws = await self.http_session.ws_connect(
                 self.signaling_url,
-                heartbeat=45,  # Send WebSocket ping every 45 seconds
+                heartbeat=30,  # Send WebSocket ping every 30 seconds
                 autoping=True,  # Automatically respond to pings
             )
+            self.logger.debug("WebSocket connection established")
+            # Small delay to let any previous connection fully close on the server side
+            # This helps prevent race conditions during reconnection
+            await asyncio.sleep(0.5)
+            self.logger.debug("Sending registration")
             await self._register()
             self._is_connected = True
             # Reset reconnect delay on successful connection
             self._current_reconnect_delay = self._reconnect_delay
-            self.logger.info("Connected to signaling server")
+            self.logger.info("Connected and registered with signaling server")
 
             # Message loop
+            self.logger.debug("Entering message loop")
             async for msg in self._signaling_ws:
+                self.logger.debug("Received WebSocket message type: %s", msg.type)
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         await self._handle_signaling_message(json.loads(msg.data))
                     except Exception:
                         self.logger.exception("Error handling signaling message")
+                elif msg.type == aiohttp.WSMsgType.PING:
+                    # WebSocket ping - autoping should handle this, just log
+                    self.logger.debug("Received WebSocket PING")
+                elif msg.type == aiohttp.WSMsgType.PONG:
+                    # WebSocket pong response - just log
+                    self.logger.debug("Received WebSocket PONG")
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    # Close frame received
+                    self.logger.warning(
+                        "Signaling server sent close frame: code=%s, reason=%s",
+                        msg.data,
+                        msg.extra,
+                    )
+                    break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    self.logger.warning("Signaling server closed connection: %s", msg.extra)
+                    self.logger.warning("Signaling server closed connection")
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self.logger.error("WebSocket error: %s", msg.extra)
+                    self.logger.error("WebSocket error: %s", self._signaling_ws.exception())
                     break
+                else:
+                    self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
 
-            self.logger.info("Message loop exited normally")
+            self.logger.info(
+                "Message loop exited - WebSocket closed: %s", self._signaling_ws.closed
+            )
         except TimeoutError:
             self.logger.error("Timeout connecting to signaling server")
         except aiohttp.ClientError as err:
             self.logger.error("Failed to connect to signaling server: %s", err)
+        except Exception:
+            self.logger.exception("Unexpected error in signaling connection")
         finally:
             self._is_connected = False
-            if self._signaling_session:
-                await self._signaling_session.close()
-                self._signaling_session = None
             self._signaling_ws = None
 
     async def _register(self) -> None:
@@ -256,8 +273,6 @@ class WebRTCGateway:
             pass
         elif msg_type == "registered":
             self.logger.info("Registered with signaling server as: %s", message.get("remoteId"))
-            if self.on_remote_id_ready:
-                self.on_remote_id_ready(self.remote_id)
         elif msg_type == "error":
             self.logger.error(
                 "Signaling server error: %s",
@@ -329,30 +344,73 @@ class WebRTCGateway:
         if not session:
             return
         pc = session.peer_connection
+
+        # Check if peer connection is already closed or closing
+        if pc.connectionState in ("closed", "failed"):
+            self.logger.debug(
+                "Ignoring offer for session %s - connection state: %s",
+                session_id,
+                pc.connectionState,
+            )
+            return
+
         sdp = offer.get("sdp")
         sdp_type = offer.get("type")
         if not sdp or not sdp_type:
             self.logger.error("Invalid offer data: missing sdp or type")
             return
-        await pc.setRemoteDescription(
-            RTCSessionDescription(
-                sdp=str(sdp),
-                type=str(sdp_type),
+
+        try:
+            await pc.setRemoteDescription(
+                RTCSessionDescription(
+                    sdp=str(sdp),
+                    type=str(sdp_type),
+                )
             )
-        )
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        if self._signaling_ws:
-            await self._signaling_ws.send_json(
-                {
-                    "type": "answer",
-                    "sessionId": session_id,
-                    "data": {
-                        "sdp": pc.localDescription.sdp,
-                        "type": pc.localDescription.type,
-                    },
-                }
-            )
+
+            # Check again if session was closed during setRemoteDescription
+            if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
+                self.logger.debug(
+                    "Session %s closed during setRemoteDescription, aborting offer handling",
+                    session_id,
+                )
+                return
+
+            answer = await pc.createAnswer()
+
+            # Check again before setLocalDescription
+            if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
+                self.logger.debug(
+                    "Session %s closed during createAnswer, aborting offer handling",
+                    session_id,
+                )
+                return
+
+            await pc.setLocalDescription(answer)
+
+            # Final check before sending answer
+            if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
+                self.logger.debug(
+                    "Session %s closed during setLocalDescription, skipping answer transmission",
+                    session_id,
+                )
+                return
+
+            if self._signaling_ws:
+                await self._signaling_ws.send_json(
+                    {
+                        "type": "answer",
+                        "sessionId": session_id,
+                        "data": {
+                            "sdp": pc.localDescription.sdp,
+                            "type": pc.localDescription.type,
+                        },
+                    }
+                )
+        except Exception:
+            self.logger.exception("Error handling offer for session %s", session_id)
+            # Clean up the session on error
+            await self._close_session(session_id)
 
     async def _handle_ice_candidate(self, session_id: str, candidate: dict[str, Any]) -> None:
         """Handle incoming ICE candidate.
@@ -362,6 +420,16 @@ class WebRTCGateway:
         """
         session = self.sessions.get(session_id)
         if not session or not candidate:
+            return
+
+        # Check if peer connection is already closed or closing
+        pc = session.peer_connection
+        if pc.connectionState in ("closed", "failed"):
+            self.logger.debug(
+                "Ignoring ICE candidate for session %s - connection state: %s",
+                session_id,
+                pc.connectionState,
+            )
             return
 
         candidate_str = candidate.get("candidate")
@@ -386,9 +454,20 @@ class WebRTCGateway:
             )
             # Parse the candidate string to populate the fields
             ice_candidate.candidate = str(candidate_str)  # type: ignore[attr-defined]
+
+            # Check if session was closed before adding candidate
+            if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
+                self.logger.debug(
+                    "Session %s closed before adding ICE candidate, skipping",
+                    session_id,
+                )
+                return
+
             await session.peer_connection.addIceCandidate(ice_candidate)
         except Exception:
-            self.logger.exception("Failed to add ICE candidate: %s", candidate)
+            self.logger.exception(
+                "Failed to add ICE candidate for session %s: %s", session_id, candidate
+            )
 
     async def _setup_data_channel(self, session: WebRTCSession) -> None:
         """Set up data channel and bridge to local WebSocket.
@@ -398,17 +477,20 @@ class WebRTCGateway:
         channel = session.data_channel
         if not channel:
             return
-        local_session = aiohttp.ClientSession()
         try:
-            session.local_ws = await local_session.ws_connect(self.local_ws_url)
+            session.local_ws = await self.http_session.ws_connect(self.local_ws_url)
             loop = asyncio.get_event_loop()
-            asyncio.create_task(self._forward_to_local(session))
-            asyncio.create_task(self._forward_from_local(session, local_session))
+
+            # Store task references for proper cleanup
+            session.forward_to_local_task = asyncio.create_task(self._forward_to_local(session))
+            session.forward_from_local_task = asyncio.create_task(self._forward_from_local(session))
 
             @channel.on("message")  # type: ignore[misc]
             def on_message(message: str) -> None:
                 # Called from aiortc thread, use call_soon_threadsafe
-                loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
+                # Only queue message if session is still active
+                if session.forward_to_local_task and not session.forward_to_local_task.done():
+                    loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
 
             @channel.on("close")  # type: ignore[misc]
             def on_close() -> None:
@@ -417,7 +499,6 @@ class WebRTCGateway:
 
         except Exception:
             self.logger.exception("Failed to connect to local WebSocket")
-            await local_session.close()
 
     async def _forward_to_local(self, session: WebRTCSession) -> None:
         """Forward messages from WebRTC DataChannel to local WebSocket.
@@ -441,16 +522,17 @@ class WebRTCGateway:
                 # Regular WebSocket message
                 if session.local_ws and not session.local_ws.closed:
                     await session.local_ws.send_str(message)
+        except asyncio.CancelledError:
+            # Task was cancelled during cleanup, this is expected
+            self.logger.debug("Forward to local task cancelled for session %s", session.session_id)
+            raise
         except Exception:
             self.logger.exception("Error forwarding to local WebSocket")
 
-    async def _forward_from_local(
-        self, session: WebRTCSession, local_session: aiohttp.ClientSession
-    ) -> None:
+    async def _forward_from_local(self, session: WebRTCSession) -> None:
         """Forward messages from local WebSocket to WebRTC DataChannel.
 
         :param session: The WebRTC session.
-        :param local_session: The aiohttp client session.
         """
         try:
             async for msg in session.local_ws:
@@ -459,10 +541,14 @@ class WebRTCGateway:
                         session.data_channel.send(msg.data)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                     break
+        except asyncio.CancelledError:
+            # Task was cancelled during cleanup, this is expected
+            self.logger.debug(
+                "Forward from local task cancelled for session %s", session.session_id
+            )
+            raise
         except Exception:
             self.logger.exception("Error forwarding from local WebSocket")
-        finally:
-            await local_session.close()
 
     async def _handle_http_proxy_request(
         self, session: WebRTCSession, request_data: dict[str, Any]
@@ -486,11 +572,10 @@ class WebRTCGateway:
         self.logger.debug("HTTP proxy request: %s %s", method, local_http_url)
 
         try:
-            # Create a new HTTP client session for this request
-            async with (
-                aiohttp.ClientSession() as http_session,
-                http_session.request(method, local_http_url, headers=headers) as response,
-            ):
+            # Use shared HTTP session for this request
+            async with self.http_session.request(
+                method, local_http_url, headers=headers
+            ) as response:
                 # Read response body
                 body = await response.read()
 
@@ -528,6 +613,19 @@ class WebRTCGateway:
         session = self.sessions.pop(session_id, None)
         if not session:
             return
+
+        # Cancel forwarding tasks first to prevent race conditions
+        if session.forward_to_local_task and not session.forward_to_local_task.done():
+            session.forward_to_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.forward_to_local_task
+
+        if session.forward_from_local_task and not session.forward_from_local_task.done():
+            session.forward_from_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.forward_from_local_task
+
+        # Close connections
         if session.local_ws and not session.local_ws.closed:
             await session.local_ws.close()
         if session.data_channel:
