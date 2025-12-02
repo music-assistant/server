@@ -301,11 +301,13 @@ class PocketCastsProvider(MusicProvider):
         """
         headers = await self._get_headers()
 
-        # For completed episodes without a position, use duration as position
-        if position is not None:
-            sync_position = position
-        elif status == STATUS_COMPLETED:
+        # Determine sync position based on status
+        # For completed episodes, always use duration as position (even if position is 0)
+        # This ensures proper sync when manually marking as played
+        if status == STATUS_COMPLETED:
             sync_position = duration
+        elif position is not None and position > 0:
+            sync_position = position
         else:
             sync_position = 0
 
