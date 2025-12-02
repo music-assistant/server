@@ -146,6 +146,9 @@ def parse_podcast_episode(
     if published:
         try:
             # Handle ISO 8601 format (e.g., "2025-01-15T06:00:00Z")
+            # Replace "Z" suffix with "+00:00" for broader compatibility
+            if published.endswith("Z"):
+                published = published.replace("Z", "+00:00")
             release_date = datetime.fromisoformat(published)
             episode.metadata.release_date = release_date
         except ValueError:
@@ -181,14 +184,19 @@ def parse_podcast_episode(
     return episode
 
 
-def parse_browse_episode(provider: PocketCastsProvider, ep_data: dict[str, Any]) -> PodcastEpisode:
+def parse_browse_episode(
+    provider: PocketCastsProvider, ep_data: dict[str, Any]
+) -> PodcastEpisode | None:
     """Parse an episode from browse API response.
 
     :param provider: The PocketCastsProvider instance.
     :param ep_data: Episode data from browse APIs (in_progress, starred, etc.).
-    :return: Parsed PodcastEpisode.
+    :return: Parsed PodcastEpisode or None if essential data is missing.
     """
-    episode_uuid = ep_data["uuid"]
+    episode_uuid = ep_data.get("uuid")
+    if not episode_uuid:
+        return None
+
     # Different APIs use different keys for podcast UUID
     podcast_uuid = ep_data.get("podcastUuid") or ep_data.get("podcast", "")
     title = ep_data.get("title", "Unknown Episode")
@@ -207,7 +215,7 @@ def parse_browse_episode(provider: PocketCastsProvider, ep_data: dict[str, Any])
     if playing_status == STATUS_COMPLETED:
         fully_played = True
         resume_position_ms = 0
-    elif playing_status == STATUS_IN_PROGRESS and played_up_to:
+    elif playing_status == STATUS_IN_PROGRESS and played_up_to is not None:
         fully_played = False
         resume_position_ms = int(played_up_to * 1000)
     else:

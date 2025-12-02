@@ -492,7 +492,8 @@ class PocketCastsProvider(MusicProvider):
                     if "duration" not in ep_data:
                         ep_data["duration"] = episode_sync[episode_uuid].get("duration", 0)
                 episode = parse_browse_episode(self, ep_data)
-                episodes.append(episode)
+                if episode:
+                    episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
                     "Failed to parse Up Next episode %s: %s",
@@ -524,7 +525,8 @@ class PocketCastsProvider(MusicProvider):
         for ep_data in data.get("episodes", []):
             try:
                 episode = parse_browse_episode(self, ep_data)
-                episodes.append(episode)
+                if episode:
+                    episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
                     "Failed to parse history episode %s: %s",
@@ -592,7 +594,8 @@ class PocketCastsProvider(MusicProvider):
         for ep_data in data.get("episodes", []):
             try:
                 episode = parse_browse_episode(self, ep_data)
-                episodes.append(episode)
+                if episode:
+                    episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
                     "Failed to parse new release episode %s: %s",
@@ -624,7 +627,8 @@ class PocketCastsProvider(MusicProvider):
         for ep_data in data.get("episodes", []):
             try:
                 episode = parse_browse_episode(self, ep_data)
-                episodes.append(episode)
+                if episode:
+                    episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
                     "Failed to parse starred episode %s: %s",
@@ -656,7 +660,8 @@ class PocketCastsProvider(MusicProvider):
         for ep_data in data.get("episodes", []):
             try:
                 episode = parse_browse_episode(self, ep_data)
-                episodes.append(episode)
+                if episode:
+                    episodes.append(episode)
             except Exception as err:
                 self.logger.warning(
                     "Failed to parse in-progress episode %s: %s",
@@ -784,7 +789,11 @@ class PocketCastsProvider(MusicProvider):
 
         podcast_uuid, _episode_uuid = parts
 
-        # Fetch all episodes for the podcast and find the matching one
+        # Note: The Pocket Casts API does not provide a direct single-episode fetch endpoint.
+        # We must fetch all episodes for the podcast and find the matching one.
+        # This is acceptable as Music Assistant caches episode data, and most podcasts
+        # have a manageable number of episodes. Future optimization could cache the
+        # episode list or discover an undocumented single-episode API endpoint.
         async for episode in self.get_podcast_episodes(podcast_uuid):
             if episode.item_id == base_episode_id:
                 # If this is a bookmark request, modify the episode to use bookmark ID
