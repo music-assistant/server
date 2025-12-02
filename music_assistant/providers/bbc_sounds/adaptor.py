@@ -229,10 +229,7 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Station | LiveStation) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        from music_assistant.providers.bbc_sounds import (  # noqa: PLC0415
-            FEATURES,
-            _Constants,
-        )
+        from music_assistant.providers.bbc_sounds import FEATURES, _Constants  # noqa: PLC0415
 
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
@@ -288,14 +285,14 @@ class StationConverter(BaseConverter):
         image_url = self._get_attr(station, "image_url")
 
         radio = Radio(
-            item_id=station.item_id,
+            item_id=station.id,
             # Add BBC prefix back to station to help identify station within MA
             name=f"BBC {self._get_attr(station, 'title', 'Unknown')}",
             provider=self.context.provider_domain,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider_domain
             ),
-            provider_mappings={self._create_provider_mapping(station.item_id)},
+            provider_mappings={self._create_provider_mapping(station.id)},
         )
         if station.stream:
             radio.uri = station.stream.uri
@@ -303,18 +300,17 @@ class StationConverter(BaseConverter):
 
     def _convert_live_station(self, station: LiveStation) -> Radio:
         """Convert LiveStation object."""
-        network_id = self._get_attr(station, "network.id")
         name = self._get_attr(station, "network.short_title", "Unknown")
         image_url = self._get_attr(station, "network.logo_url")
 
         return Radio(
-            item_id=network_id,
+            item_id=station.id,
             name=f"BBC {name}",
             provider=self.context.provider_domain,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider_domain
             ),
-            provider_mappings={self._create_provider_mapping(network_id)},
+            provider_mappings={self._create_provider_mapping(station.id)},
         )
 
     def _convert_station_search_result(self, station: StationSearchResult) -> Radio:
@@ -428,9 +424,21 @@ class PodcastConverter(BaseConverter):
                 seconds_streamed=(int(episode.position) if episode.position else 0),
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
-            metadata = StreamMetadata(
-                title=f"BBC {episode.metadata.description}", uri=source_obj.stream
-            )
+            # Try to work out the best network/series name to display
+            if source_obj.network and source_obj.network.id == "bbc_webonly":
+                title = "BBC News"
+            elif source_obj.network:
+                title = f"BBC {source_obj.network.short_title}"
+            elif source_obj.container:
+                title = source_obj.container.title
+            elif episode.metadata and episode.metadata.description:
+                title = episode.metadata.description
+            elif source_obj.titles:
+                title = source_obj.titles["primary"]
+            else:
+                title = ""
+
+            metadata = StreamMetadata(title=title, uri=source_obj.stream)
             if episode.metadata.images:
                 metadata.image_url = episode.metadata.images[0].path
 

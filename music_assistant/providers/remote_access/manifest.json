@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "remote_access",
+  "stage": "alpha",
+  "name": "Remote Access",
+  "description": "WebRTC-based encrypted, secure remote access for connecting to Music Assistant from outside your local network (requires Home Assistant Cloud subscription for the best experience).",
+  "codeowners": ["@music-assistant"],
+  "icon": "cloud-lock",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": true,
+  "requirements": ["aiortc>=1.6.0"]
+}

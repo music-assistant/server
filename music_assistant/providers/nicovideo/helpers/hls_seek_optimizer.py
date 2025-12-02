@@ -1,12 +1,19 @@
-"""HLS seek optimizer for nicovideo provider."""
+"""HLS seek optimizer for nicovideo provider.
+
+This module implements a workaround for FFmpeg's seeking limitations with fragmented MP4
+HLS playlists (see https://trac.ffmpeg.org/ticket/7359).
+
+NOTE: This entire module can be removed once Music Assistant requires FFmpeg 8.0+,
+      which fixes the input-side -ss seeking issue (commit 380a518c, 2024-11-10).
+"""
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from music_assistant.helpers.hls import HLSMediaPlaylist
 from music_assistant.providers.nicovideo.constants import (
     DOMAND_BID_COOKIE_NAME,
     NICOVIDEO_USER_AGENT,
@@ -15,7 +22,6 @@ from music_assistant.providers.nicovideo.helpers.utils import log_verbose
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamData
-    from music_assistant.providers.nicovideo.helpers.hls_models import ParsedHLSPlaylist
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +58,7 @@ class HLSSeekOptimizer:
         Args:
             hls_data: HLS streaming data containing parsed playlist and authentication info
         """
-        self.parsed_playlist: ParsedHLSPlaylist = hls_data.parsed_hls_playlist
+        self.parsed_playlist: HLSMediaPlaylist = hls_data.parsed_hls_playlist
         self.domand_bid = hls_data.domand_bid
 
     def _calculate_start_segment(self, seek_position: int) -> tuple[int, float]:
@@ -71,10 +77,8 @@ class HLSSeekOptimizer:
 
         accumulated_time = 0.0
         for idx, segment in enumerate(self.parsed_playlist.segments):
-            # Extract duration from #EXTINF:5.967528,
-            match = re.search(r"#EXTINF:([0-9.]+)", segment.duration_line)
-            if match:
-                segment_duration = float(match.group(1))
+            segment_duration = segment.duration
+            if segment_duration > 0:
                 if accumulated_time + segment_duration > seek_position:
                     # Found the segment containing seek_position
                     offset = seek_position - accumulated_time
@@ -98,38 +102,42 @@ class HLSSeekOptimizer:
         # Add header lines
         lines.extend(self.parsed_playlist.header_lines)
 
-        # Calculate target duration from segments (rounded up)
-        max_duration = 6  # Default fallback
-        for segment in self.parsed_playlist.segments:
-            match = re.search(r"#EXTINF:([0-9.]+)", segment.duration_line)
-            if match:
-                duration = float(match.group(1))
-                max_duration = max(max_duration, int(duration) + 1)
-
-        # Add required HLS tags
-        lines.extend(
-            [
-                f"#EXT-X-TARGETDURATION:{max_duration}",
-                "#EXT-X-MEDIA-SEQUENCE:1",
-                "#EXT-X-PLAYLIST-TYPE:VOD",
-            ]
-        )
-
-        # Add init segment
-        if self.parsed_playlist.init_segment_url:
-            lines.append(f'#EXT-X-MAP:URI="{self.parsed_playlist.init_segment_url}"')
-
-        # Add encryption key if present
-        if self.parsed_playlist.encryption_key_line:
-            lines.append(self.parsed_playlist.encryption_key_line)
-
         # Add segments from start_segment_idx onward
+        # Track previous segment's key_line and map_line to emit only when changed
+        prev_key_line: str | None = None
+        prev_map_line: str | None = None
+
         for segment in self.parsed_playlist.segments[start_segment_idx:]:
-            lines.append(segment.duration_line)
+            # Add discontinuity marker if present
+            if segment.discontinuity:
+                lines.append("#EXT-X-DISCONTINUITY")
+
+            # Add program date/time if present
+            if segment.program_date_time:
+                lines.append(segment.program_date_time)
+
+            # Add map line only if it changed from previous segment
+            # Note: MAP must come before KEY according to RFC 8216
+            if segment.map_line and segment.map_line != prev_map_line:
+                lines.append(segment.map_line)
+                prev_map_line = segment.map_line
+
+            # Add key line only if it changed from previous segment
+            if segment.key_line and segment.key_line != prev_key_line:
+                lines.append(segment.key_line)
+                prev_key_line = segment.key_line
+
+            # Add segment info and URL
+            lines.append(segment.extinf_line)
+
+            # Add byte range if present
+            if segment.byterange_line:
+                lines.append(segment.byterange_line)
+
             lines.append(segment.segment_url)
 
         # Add end tag
-        lines.append("#EXT-X-ENDLIST")
+        lines.extend(self.parsed_playlist.footer_lines)
 
         return "\n".join(lines)
 

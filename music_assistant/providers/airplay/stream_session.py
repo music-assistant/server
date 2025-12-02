@@ -16,7 +16,15 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import TaskManager
 from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_time_to_ntp
 
-from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
+from .constants import (
+    AIRPLAY2_CONNECT_TIME_MS,
+    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
+    AIRPLAY_PRELOAD_SECONDS,
+    AIRPLAY_PROCESS_SPAWN_TIME_MS,
+    CONF_ENABLE_LATE_JOIN,
+    ENABLE_LATE_JOIN_DEFAULT,
+    StreamingProtocol,
+)
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -88,7 +96,18 @@ class AirPlayStreamSession:
         # Start all clients
         # Get current NTP timestamp and calculate wait time
         cur_time = time.time()
-        wait_start = 1500 + (250 * len(self.sync_clients))  # in milliseconds
+        # AirPlay2 clients need around 2500ms to establish connection and start playback
+        # The also have a fixed 2000ms output buffer. We will not be able to respect the
+        # ntpstart time unless we cater for all these time delays.
+        # RAOP clients need less due to less RTSP exchanges and different packet buffer
+        # handling
+        # Plus we need to cater for process spawn and initialisation time
+        wait_start = (
+            AIRPLAY2_CONNECT_TIME_MS
+            + AIRPLAY_OUTPUT_BUFFER_DURATION_MS
+            + AIRPLAY_PROCESS_SPAWN_TIME_MS
+            + (250 * len(self.sync_clients))
+        )  # in milliseconds
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds  # in seconds
         self.start_time = cur_time + wait_start_seconds
@@ -414,7 +433,13 @@ class AirPlayStreamSession:
             output_format=airplay_player.stream.pcm_format,
             filter_params=filter_params,
             audio_output=airplay_player.stream.audio_pipe.path,
-            extra_input_args=["-y", "-re"],
+            extra_input_args=[
+                "-y",
+                "-readrate",
+                "1",
+                "-readrate_initial_burst",
+                f"{AIRPLAY_PRELOAD_SECONDS}",
+            ],
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg

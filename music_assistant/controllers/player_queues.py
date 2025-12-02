@@ -21,11 +21,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import shortuuid
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -62,9 +58,7 @@ from music_assistant_models.media_items import (
     UniqueList,
     media_from_dict,
 )
-from music_assistant_models.playback_progress_report import (
-    MediaItemPlaybackProgressReport,
-)
+from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -74,6 +68,7 @@ from music_assistant.constants import (
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
@@ -84,6 +79,7 @@ from music_assistant.models.player import Player, PlayerMedia
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant_models.auth import User
     from music_assistant_models.media_items.metadata import MediaItemImage
 
     from music_assistant import MusicAssistant
@@ -374,6 +370,7 @@ class PlayerQueuesController(CoreController):
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
+        username: str | None = None,
     ) -> None:
         """Play media item(s) on the given queue.
 
@@ -382,6 +379,10 @@ class PlayerQueuesController(CoreController):
         :param option: Which enqueue mode to use.
         :param radio_mode: Enable radio mode for the given item(s).
         :param start_item: Optional item to start the playlist or album from.
+        :param username: The username of the user requesting the playback.
+            Setting the username allows for overriding the logged-in user
+            to account for playback history per user when the play_media is
+            called from a shared context (like a web hook or automation).
         """
         # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
@@ -396,6 +397,14 @@ class PlayerQueuesController(CoreController):
         if queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
+
+        # save the user requesting the playback
+        playback_user: User | None
+        if username and (user := await self.mass.webserver.auth.get_user_by_username(username)):
+            playback_user = user
+        else:
+            playback_user = get_current_user()
+        queue.userid = playback_user.user_id if playback_user else None
 
         # a single item or list of items may be provided
         media_list = media if isinstance(media, list) else [media]
@@ -1505,7 +1514,7 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_audiobook_resume_point(
-        self, audio_book: Audiobook, chapter: str | int | None = None
+        self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
     ) -> int:
         """Return resume point (in milliseconds) for given audio book."""
         self.logger.debug(
@@ -1521,11 +1530,16 @@ class PlayerQueuesController(CoreController):
             raise InvalidDataError(
                 f"Unable to resolve chapter to play for Audiobook {audio_book.name}"
             )
-        full_played, resume_position_ms = await self.mass.music.get_resume_position(audio_book)
+        full_played, resume_position_ms = await self.mass.music.get_resume_position(
+            audio_book, userid=userid
+        )
         return 0 if full_played else resume_position_ms
 
     async def get_next_podcast_episodes(
-        self, podcast: Podcast | None, episode: PodcastEpisode | str | None
+        self,
+        podcast: Podcast | None,
+        episode: PodcastEpisode | str | None,
+        userid: str | None = None,
     ) -> UniqueList[PodcastEpisode]:
         """Return (next) episode(s) and resume point for given podcast."""
         if podcast is None and isinstance(episode, str | NoneType):
@@ -1540,7 +1554,7 @@ class PlayerQueuesController(CoreController):
             (
                 fully_played,
                 resume_position_ms,
-            ) = await self.mass.music.get_resume_position(episode)
+            ) = await self.mass.music.get_resume_position(episode, userid=userid)
             episode.fully_played = fully_played
             episode.resume_position_ms = 0 if fully_played else resume_position_ms
             return UniqueList([episode])
@@ -1563,7 +1577,7 @@ class PlayerQueuesController(CoreController):
                 (
                     fully_played,
                     resume_position_ms,
-                ) = await self.mass.music.get_resume_position(resolved_episode)
+                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         elif isinstance(episode, str):
             resolved_episode = next(
@@ -1574,7 +1588,7 @@ class PlayerQueuesController(CoreController):
                 (
                     fully_played,
                     resume_position_ms,
-                ) = await self.mass.music.get_resume_position(resolved_episode)
+                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         else:
             # get first episode that is not fully played
@@ -1585,7 +1599,7 @@ class PlayerQueuesController(CoreController):
                 (
                     fully_played,
                     resume_position_ms,
-                ) = await self.mass.music.get_resume_position(ep)
+                ) = await self.mass.music.get_resume_position(ep, userid=userid)
                 if fully_played:
                     continue
                 ep.resume_position_ms = resume_position_ms
@@ -1745,7 +1759,10 @@ class PlayerQueuesController(CoreController):
         )
 
     async def _resolve_media_items(
-        self, media_item: MediaItemType | ItemMapping | BrowseFolder, start_item: str | None = None
+        self,
+        media_item: MediaItemType | ItemMapping | BrowseFolder,
+        start_item: str | None = None,
+        userid: str | None = None,
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
@@ -1755,7 +1772,7 @@ class PlayerQueuesController(CoreController):
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
         if media_item.media_type == MediaType.PLAYLIST:
             media_item = cast("Playlist", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item))
+            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
             return list(await self.get_playlist_tracks(media_item, start_item))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
@@ -1763,22 +1780,22 @@ class PlayerQueuesController(CoreController):
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item))
+            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
             return list(await self.get_album_tracks(media_item, start_item))
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
-                media_item, start_item
+                media_item, start_item, userid=userid
             )
             return [media_item]
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item))
-            return list(await self.get_next_podcast_episodes(media_item, start_item))
+            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
+            return list(await self.get_next_podcast_episodes(media_item, start_item, userid=userid))
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
-            return list(await self.get_next_podcast_episodes(None, media_item))
+            return list(await self.get_next_podcast_episodes(None, media_item, userid=userid))
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return list(await self._get_folder_tracks(media_item))
@@ -2052,6 +2069,25 @@ class PlayerQueuesController(CoreController):
             if queue.next_item and queue.next_item.streamdetails:
                 queue.next_item.streamdetails.dsp = dsp
 
+        # handle updating stream_metadata if needed
+        if (
+            queue.current_item
+            and (streamdetails := queue.current_item.streamdetails)
+            and streamdetails.stream_metadata_update_callback
+            and (
+                streamdetails.stream_metadata_last_updated is None
+                or (
+                    time.time() - streamdetails.stream_metadata_last_updated
+                    >= streamdetails.stream_metadata_update_interval
+                )
+            )
+        ):
+            self.mass.create_task(
+                streamdetails.stream_metadata_update_callback(
+                    streamdetails, int(queue.corrected_elapsed_time)
+                )
+            )
+
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
         if (
@@ -2240,10 +2276,10 @@ class PlayerQueuesController(CoreController):
         if not item_to_report:
             return  # guard against invalid items
 
-        if not item_to_report.media_item:
+        if not (media_item := item_to_report.media_item):
             # only report on media items
             return
-        assert item_to_report.media_item.uri is not None  # uri is set in __post_init__
+        assert media_item.uri is not None  # uri is set in __post_init__
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
@@ -2286,40 +2322,52 @@ class PlayerQueuesController(CoreController):
         # add entry to playlog - this also handles resume of podcasts/audiobooks
         self.mass.create_task(
             self.mass.music.mark_item_played(
-                item_to_report.media_item,
+                media_item,
                 fully_played=fully_played,
                 seconds_played=seconds_played,
                 is_playing=is_playing,
+                userid=queue.userid,
             )
         )
 
-        album = getattr(item_to_report.media_item, "album", None)
+        album: Album | ItemMapping | None = getattr(media_item, "album", None)
         # signal 'media item played' event,
         # which is useful for plugins that want to do scrobbling
+        artists: list[Artist | ItemMapping] = getattr(media_item, "artists", [])
+        artists_names = [a.name for a in artists]
         self.mass.signal_event(
             EventType.MEDIA_ITEM_PLAYED,
-            object_id=item_to_report.media_item.uri,
+            object_id=media_item.uri,
             data=MediaItemPlaybackProgressReport(
-                uri=item_to_report.media_item.uri,
-                media_type=item_to_report.media_item.media_type,
-                name=item_to_report.media_item.name,
-                artist=getattr(item_to_report.media_item, "artist_str", None),
-                artist_mbids=(
-                    [a.mbid for a in artists if a.mbid]
-                    if (artists := getattr(item_to_report.media_item, "artists", None))
+                uri=media_item.uri,
+                media_type=media_item.media_type,
+                name=media_item.name,
+                version=getattr(media_item, "version", None),
+                artist=(
+                    getattr(media_item, "artist_str", None) or artists_names[0]
+                    if artists_names
                     else None
                 ),
-                album=(album.name if album else None),
-                album_mbid=(album.mbid if album else None),
+                artists=artists_names,
+                artist_mbids=[a.mbid for a in artists if a.mbid] if artists else None,
+                album=album.name if album else None,
+                album_mbid=album.mbid if album else None,
+                album_artist=(album.artist_str if isinstance(album, Album) else None),
+                album_artist_mbids=(
+                    [a.mbid for a in album.artists if a.mbid] if isinstance(album, Album) else None
+                ),
                 image_url=(
-                    self.mass.metadata.get_image_url(item_to_report.media_item.image, size=512)
+                    self.mass.metadata.get_image_url(
+                        item_to_report.media_item.image, prefer_proxy=False
+                    )
                     if item_to_report.media_item.image
                     else None
                 ),
                 duration=duration,
-                mbid=(getattr(item_to_report.media_item, "mbid", None)),
+                mbid=(getattr(media_item, "mbid", None)),
                 seconds_played=seconds_played,
                 fully_played=fully_played,
                 is_playing=is_playing,
+                userid=queue.userid,
             ),
         )

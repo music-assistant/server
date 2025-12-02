@@ -12,11 +12,11 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
     CONF_ALAC_ENCODE,
     CONF_AP_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -63,9 +63,6 @@ class RaopStream(AirPlayProtocol):
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
-        read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER, return_type=int
-        )
 
         # cliraop is the binary that handles the actual raop streaming to the player
         # this is a slightly modified version of philippe44's libraop
@@ -80,7 +77,7 @@ class RaopStream(AirPlayProtocol):
             "-port",
             str(self.player.raop_discovery_info.port),
             "-latency",
-            str(read_ahead),
+            str(AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
             "-volume",
             str(self.player.volume_level),
             *extra_args,

@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import MediaType
 
 from .constants import CACHE_CATEGORY_RECOMMENDATIONS
+from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
-    from music_assistant.providers.tidal import TidalProvider
+    from .provider import TidalProvider
 
 
 class TidalPageParser:
@@ -128,7 +129,7 @@ class TidalPageParser:
                 is_mix = "mixId" in item or "mixType" in item
 
                 try:
-                    playlist = self.provider._parse_playlist(item, is_mix=is_mix)
+                    playlist = parse_playlist(self.provider, item, is_mix=is_mix)
                     result.append(playlist)
                     type_counts[MediaType.PLAYLIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
@@ -147,7 +148,7 @@ class TidalPageParser:
         for item in items:
             if isinstance(item, dict):
                 try:
-                    track = self.provider._parse_track(item)
+                    track = parse_track(self.provider, item)
                     result.append(track)
                     type_counts[MediaType.TRACK] += 1
                 except (KeyError, ValueError, TypeError) as err:
@@ -166,7 +167,7 @@ class TidalPageParser:
         for item in items:
             if isinstance(item, dict):
                 try:
-                    album = self.provider._parse_album(item)
+                    album = parse_album(self.provider, item)
                     result.append(album)
                     type_counts[MediaType.ALBUM] += 1
                 except (KeyError, ValueError, TypeError) as err:
@@ -185,7 +186,7 @@ class TidalPageParser:
         for item in items:
             if isinstance(item, dict):
                 try:
-                    artist = self.provider._parse_artist(item)
+                    artist = parse_artist(self.provider, item)
                     result.append(artist)
                     type_counts[MediaType.ARTIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
@@ -204,7 +205,7 @@ class TidalPageParser:
         for item in items:
             if isinstance(item, dict):
                 try:
-                    mix = self.provider._parse_playlist(item, is_mix=True)
+                    mix = parse_playlist(self.provider, item, is_mix=True)
                     result.append(mix)
                     type_counts[MediaType.PLAYLIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
@@ -339,39 +340,39 @@ class TidalPageParser:
         # Parse based on detected type
         try:
             if item_type == "MIX":
-                media_item: Playlist | Album | Track | Artist = self.provider._parse_playlist(
-                    item, is_mix=True
+                media_item: Playlist | Album | Track | Artist = parse_playlist(
+                    self.provider, item, is_mix=True
                 )
                 type_counts[MediaType.PLAYLIST] += 1
                 return media_item
             elif item_type == "PLAYLIST":
-                media_item = self.provider._parse_playlist(item)
+                media_item = parse_playlist(self.provider, item)
                 type_counts[MediaType.PLAYLIST] += 1
                 return media_item
             elif item_type == "ALBUM":
-                media_item = self.provider._parse_album(item)
+                media_item = parse_album(self.provider, item)
                 type_counts[MediaType.ALBUM] += 1
                 return media_item
             elif item_type == "TRACK":
-                media_item = self.provider._parse_track(item)
+                media_item = parse_track(self.provider, item)
                 type_counts[MediaType.TRACK] += 1
                 return media_item
             elif item_type == "ARTIST":
-                media_item = self.provider._parse_artist(item)
+                media_item = parse_artist(self.provider, item)
                 type_counts[MediaType.ARTIST] += 1
                 return media_item
             else:
                 # Last resort - try to infer from structure for unlabeled items
                 if "uuid" in item:
-                    media_item = self.provider._parse_playlist(item)
+                    media_item = parse_playlist(self.provider, item)
                     type_counts[MediaType.PLAYLIST] += 1
                     return media_item
                 elif "id" in item and "title" in item and "duration" in item:
-                    media_item = self.provider._parse_track(item)
+                    media_item = parse_track(self.provider, item)
                     type_counts[MediaType.TRACK] += 1
                     return media_item
                 elif "id" in item and "title" in item and "numberOfTracks" in item:
-                    media_item = self.provider._parse_album(item)
+                    media_item = parse_album(self.provider, item)
                     type_counts[MediaType.ALBUM] += 1
                     return media_item
 

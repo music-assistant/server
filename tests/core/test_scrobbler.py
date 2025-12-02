@@ -6,7 +6,7 @@ from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.event import MassEvent
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
-from music_assistant.helpers.scrobbler import ScrobblerHelper
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 
 
 class DummyHandler(ScrobblerHelper):
@@ -15,9 +15,9 @@ class DummyHandler(ScrobblerHelper):
     _tracked = 0
     _now_playing = 0
 
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger: logging.Logger, config: ScrobblerConfig | None = None) -> None:
         """Initialize."""
-        super().__init__(logger)
+        super().__init__(logger, config)
 
     def _is_configured(self) -> bool:
         return True
@@ -87,8 +87,26 @@ async def test_it_does_not_update_now_playing_on_pause() -> None:
     assert handler._now_playing == 0
 
 
+async def test_it_suffixes_the_version_if_enabled_and_available() -> None:
+    """Test that the track version is suffixed to the track name when enabled."""
+    report_with_version = create_report(version="Deluxe Edition").data
+    report_without_version = create_report(version=None).data
+
+    handler = DummyHandler(logging.getLogger(), ScrobblerConfig(suffix_version=True))
+    assert handler.get_name(report_with_version) == "track (Deluxe Edition)"
+    assert handler.get_name(report_without_version) == "track"
+
+    handler = DummyHandler(logging.getLogger(), ScrobblerConfig(suffix_version=False))
+    assert handler.get_name(report_with_version) == "track"
+    assert handler.get_name(report_without_version) == "track"
+
+
 def create_report(
-    duration: int, seconds_played: int, is_playing: bool = True, uri: str = "filesystem://track/1"
+    duration: int = 148,
+    seconds_played: int = 59,
+    is_playing: bool = True,
+    uri: str = "filesystem://track/1",
+    version: str | None = None,
 ) -> MassEvent:
     """Create the MediaItemPlaybackProgressReport and wrap it in a MassEvent."""
     return wrap_event(
@@ -106,6 +124,7 @@ def create_report(
             seconds_played=seconds_played,
             fully_played=duration - seconds_played < 5,
             is_playing=is_playing,
+            version=version,
         )
     )
 

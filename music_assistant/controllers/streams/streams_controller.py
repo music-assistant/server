@@ -62,9 +62,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
-from music_assistant.controllers.streams.smart_fades import (
-    SmartFadesMixer,
-)
+from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
@@ -190,25 +188,6 @@ class StreamsController(CoreController):
         default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
-                key=CONF_PUBLISH_IP,
-                type=ConfigEntryType.STRING,
-                default_value=ip_addresses[0],
-                label="Published IP address",
-                description="This IP address is communicated to players where to find this server."
-                "\nMake sure that this IP can be reached by players on the local network, "
-                "otherwise audio streaming will not work.",
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=default_port,
-                label="TCP Port",
-                description="The TCP port to run the server. "
-                "Make sure that this server can be reached "
-                "on the given IP and TCP port by players on the local network.",
-            ),
-            ConfigEntry(
                 key=CONF_ALLOW_BUFFER,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=CONF_ALLOW_BUFFER_DEFAULT,
@@ -271,6 +250,27 @@ class StreamsController(CoreController):
                 description="Enabling this option allows for crossfading between tracks "
                 "that are part of the same album.",
                 category="audio",
+            ),
+            ConfigEntry(
+                key=CONF_PUBLISH_IP,
+                type=ConfigEntryType.STRING,
+                default_value=ip_addresses[0],
+                label="Published IP address",
+                description="This IP address is communicated to players where to find this server."
+                "\nMake sure that this IP can be reached by players on the local network, "
+                "otherwise audio streaming will not work.",
+                required=False,
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=default_port,
+                label="TCP Port",
+                description="The TCP port to run the server. "
+                "Make sure that this server can be reached "
+                "on the given IP and TCP port by players on the local network.",
+                category="advanced",
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,

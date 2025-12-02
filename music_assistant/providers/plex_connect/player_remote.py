@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout, web
-from music_assistant_models.enums import EventType, QueueOption, RepeatMode
+from music_assistant_models.enums import EventType, PlayerType, QueueOption, RepeatMode
 from plexapi.playqueue import PlayQueue
 
 from .gdm import PlexGDMAdvertiser
@@ -1353,8 +1353,14 @@ class PlexRemoteControlServer:
             else:
                 state = "stopped"
 
-        # Get volume (0-100)
-        volume = int(player.volume_level) if player and player.volume_level else 100
+        # Get volume (0-100) - use group_volume for groups, volume_level for others
+        volume = 0
+        if player:
+            volume = (
+                int(player.group_volume)
+                if (player.type == PlayerType.GROUP or player.group_members)
+                else (int(player.volume_level) if player.volume_level else 0)
+            )
 
         # Get shuffle (0/1) and repeat (0=off, 1=one, 2=all)
         shuffle = 0

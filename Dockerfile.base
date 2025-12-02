@@ -101,6 +101,32 @@ RUN set -x \
 
 ##################################################################################################
 
+# PyAV wheel builder - builds PyAV against the custom FFmpeg
+FROM python:3.13-slim-bookworm AS pyav-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ python3-dev pkg-config && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/include/ /usr/local/include/
+COPY --from=ffmpeg-builder /usr/local/lib/pkgconfig/ /usr/local/lib/pkgconfig/
+
+RUN ldconfig
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+# Resolve PyAV version from aioresonate's dependencies and build wheel
+RUN PYAV_VERSION=$(pip install --dry-run aioresonate 2>&1 | grep -oP 'av-\K[0-9.]+' | head -1) && \
+    if [ -z "$PYAV_VERSION" ]; then \
+        echo "ERROR: Failed to detect PyAV version from aioresonate dependencies" >&2; \
+        exit 1; \
+    fi && \
+    echo "Building PyAV version: ${PYAV_VERSION}" && \
+    pip wheel --no-binary av av==${PYAV_VERSION} -w /wheels/
+
+##################################################################################################
+
 FROM python:3.13-slim-bookworm
 
 # Enable non-free and contrib repositories for codec libraries
@@ -169,8 +195,6 @@ RUN set -x \
         # AirPlay receiver dependencies (shairport-sync)
         libconfig9 \
         libpopt0 \
-        # pkg-config needed for PyAV (for aioresonate) to find system FFmpeg
-        pkg-config \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -195,12 +219,8 @@ COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
 
-# Copy FFmpeg headers and pkg-config files needed for PyAV compilation (adds around 2 MB)
-COPY --from=ffmpeg-builder /usr/local/include/ /usr/local/include/
-COPY --from=ffmpeg-builder /usr/local/lib/pkgconfig/ /usr/local/lib/pkgconfig/
-
-# Set PKG_CONFIG_PATH so pkg-config can find FFmpeg
-ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+# Copy pre-built PyAV wheel for use by downstream images
+COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version

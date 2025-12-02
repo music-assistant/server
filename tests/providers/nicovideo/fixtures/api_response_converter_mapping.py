@@ -166,7 +166,20 @@ API_RESPONSE_CONVERTER_MAPPINGS = (
                 selected_audio=data.selected_audio,
                 hls_url="https://example.com/stub.m3u8",
                 domand_bid="stub_bid",
-                hls_playlist_text="#EXTM3U\n#EXT-X-VERSION:3\n",
+                hls_playlist_text=(
+                    "#EXTM3U\n"
+                    "#EXT-X-VERSION:6\n"
+                    "#EXT-X-TARGETDURATION:6\n"
+                    "#EXT-X-MEDIA-SEQUENCE:1\n"
+                    "#EXT-X-PLAYLIST-TYPE:VOD\n"
+                    '#EXT-X-MAP:URI="https://example.com/init.mp4"\n'
+                    '#EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key"\n'
+                    "#EXTINF:6.0,\n"
+                    "segment1.m4s\n"
+                    "#EXTINF:6.0,\n"
+                    "segment2.m4s\n"
+                    "#EXT-X-ENDLIST\n"
+                ),
             )
         ),
     ),

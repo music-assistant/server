@@ -17,6 +17,10 @@ inputs:
   github-token:
     description: 'GitHub token for API access'
     required: true
+  important-notes:
+    description: 'Important notes to display at the top (breaking changes, critical info, etc.)'
+    required: false
+    default: ''
 outputs:
   release-notes:
     description: 'The complete generated release notes including frontend changes'
@@ -45,6 +49,7 @@ runs:
         CHANNEL: ${{ inputs.channel }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SERVER_URL: ${{ github.server_url }}
+        IMPORTANT_NOTES: ${{ inputs.important-notes }}
       run: |
         chmod +x ${{ github.action_path }}/generate_notes.py
         python3 ${{ github.action_path }}/generate_notes.py

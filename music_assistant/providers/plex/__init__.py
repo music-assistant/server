@@ -126,7 +126,7 @@ async def setup(
 
 async def get_config_entries(  # noqa: PLR0915
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -276,6 +276,7 @@ async def get_config_entries(  # noqa: PLR0915
                     server_http_ip,
                     server_http_port,
                     server_http_verify_cert,
+                    instance_id,
                 )
             ):
                 msg = "Unable to retrieve Servers and/or Music Libraries"

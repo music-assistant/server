@@ -156,14 +156,11 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                     cli_path,
                     "--testrun",
                 ]
+                passing_output = "cliap2 check"
 
             returncode, output = await check_output(*args)
             _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
-            if (
-                protocol == StreamingProtocol.RAOP
-                and returncode == 0
-                and output.strip().decode() == passing_output
-            ) or (protocol == StreamingProtocol.AIRPLAY2 and returncode == 0):
+            if returncode == 0 and output.strip().decode() == passing_output:
                 return cli_path
         except OSError:
             pass
