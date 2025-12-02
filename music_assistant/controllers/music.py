@@ -77,6 +77,7 @@ from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAna
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
 from .media.audiobooks import AudiobooksController
+from .media.genres import GenreController
 from .media.playlists import PlaylistController
 from .media.podcasts import PodcastsController
 from .media.radio import RadioController
@@ -115,6 +116,7 @@ class MusicController(CoreController):
         self.playlists = PlaylistController(self.mass)
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
+        self.genres = GenreController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
@@ -247,9 +249,6 @@ class MusicController(CoreController):
         """
         if not media_types:
             media_types = MediaType.ALL
-        # TODO: Remove when we have implemented the GenreController
-        if MediaType.GENRE in media_types:
-            media_types.remove(MediaType.GENRE)
         # Check if the search query is a streaming provider public shareable URL
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -1251,6 +1250,7 @@ class MusicController(CoreController):
         | PlaylistController
         | AudiobooksController
         | PodcastsController
+        | GenreController
     ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
@@ -1269,6 +1269,8 @@ class MusicController(CoreController):
             return self.podcasts
         if media_type == MediaType.PODCAST_EPISODE:
             return self.podcasts
+        if media_type == MediaType.GENRE:
+            return self.genres
         raise NotImplementedError
 
     def get_unique_providers(self) -> set[str]:
