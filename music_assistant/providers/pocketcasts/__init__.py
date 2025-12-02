@@ -1,5 +1,5 @@
 """
-Pocketcasts Music Provider for Music Assistant.
+Pocket Casts Music Provider for Music Assistant.
 
 Provides access to podcasts from a Pocket Casts account.
 """
