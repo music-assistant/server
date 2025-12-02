@@ -88,6 +88,7 @@ class SonosPlayer(Player):
         self.discovery_info = discovery_info
         self.connected: bool = False
         self._listen_task: asyncio.Task | None = None
+        self._connecting: bool = False
         # Sonos speakers can optionally have airplay (most S2 speakers do)
         # and this airplay player can also be a player within MA.
         # We can do some smart stuff if we link them together where possible.
@@ -719,39 +720,46 @@ class SonosPlayer(Player):
         if self._listen_task and not self._listen_task.done():
             self.logger.debug("Already connected to Sonos player: %s", self.player_id)
             return
-        try:
-            await self.client.connect()
-        except (ConnectionFailed, ClientConnectorError) as err:
-            self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass.players.get(self.player_id):
-                raise
-            self._attr_available = False
-            self.update_state()
-            self.reconnect(min(retry_on_fail + 30, 3600))
+        if self._connecting:
+            self.logger.debug("Connection already in progress for: %s", self.player_id)
             return
-        self.connected = True
-        self.logger.debug("Connected to player API")
-        init_ready = asyncio.Event()
-
-        async def _listener() -> None:
+        self._connecting = True
+        try:
             try:
-                await self.client.start_listening(init_ready)
-            except Exception as err:
-                if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                    self.logger.exception("Error in Sonos player listener: %s", err)
-            finally:
-                self.logger.info("Disconnected from player API")
-                if self.connected:
-                    # we didn't explicitly disconnect, try to reconnect
-                    # this should simply try to reconnect once and if that fails
-                    # we rely on mdns to pick it up again later
-                    await self._disconnect()
-                    self._attr_available = False
-                    self.update_state()
-                    self.reconnect(5)
+                await self.client.connect()
+            except (ConnectionFailed, ClientConnectorError) as err:
+                self.logger.warning("Failed to connect to Sonos player: %s", err)
+                if not retry_on_fail or not self.mass.players.get(self.player_id):
+                    raise
+                self._attr_available = False
+                self.update_state()
+                self.reconnect(min(retry_on_fail + 30, 3600))
+                return
+            self.connected = True
+            self.logger.debug("Connected to player API")
+            init_ready = asyncio.Event()
 
-        self._listen_task = self.mass.create_task(_listener())
-        await init_ready.wait()
+            async def _listener() -> None:
+                try:
+                    await self.client.start_listening(init_ready)
+                except Exception as err:
+                    if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
+                        self.logger.exception("Error in Sonos player listener: %s", err)
+                finally:
+                    self.logger.info("Disconnected from player API")
+                    if self.connected:
+                        # we didn't explicitly disconnect, try to reconnect
+                        # this should simply try to reconnect once and if that fails
+                        # we rely on mdns to pick it up again later
+                        await self._disconnect()
+                        self._attr_available = False
+                        self.update_state()
+                        self.reconnect(5)
+
+            self._listen_task = self.mass.create_task(_listener())
+            await init_ready.wait()
+        finally:
+            self._connecting = False
 
     def reconnect(self, delay: float = 1) -> None:
         """Reconnect the player."""
@@ -806,14 +814,14 @@ class SonosPlayer(Player):
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
         player_id = self.player_id
-        if (
-            airplay_player.playback_state == PlaybackState.PLAYING
-            and airplay_player.active_source == media.source_id
-        ):
-            # if the airplay player is already playing,
-            # the stream will be reused so no need to do the whole grouping thing below
-            await self.mass.players.play_media(airplay_player.player_id, media)
-            return
+        # if (
+        #     airplay_player.playback_state == PlaybackState.PLAYING
+        #     and airplay_player.active_source == media.source_id
+        # ):
+        #     # if the airplay player is already playing,
+        #     # the stream will be reused so no need to do the whole grouping thing below
+        #     await self.mass.players.play_media(airplay_player.player_id, media)
+        #     return
 
         # Sonos has an annoying bug (for years already, and they dont seem to care),
         # where it looses its sync childs when airplay playback is (re)started.
