@@ -46,11 +46,10 @@ from .constants import (
     BUILTIN_PLAYLISTS,
     BUILTIN_PLAYLISTS_ENTRIES,
     COLLAGE_IMAGE_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
-    CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
-    CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
+    CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
+    CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
@@ -62,6 +61,7 @@ from .constants import (
     RANDOM_ALBUM,
     RANDOM_ARTIST,
     RANDOM_TRACKS,
+    RECENTLY_ADDED_TRACKS,
     RECENTLY_PLAYED,
     StoredItem,
 )
@@ -110,14 +110,13 @@ async def get_config_entries(
     return (
         *BUILTIN_PLAYLISTS_ENTRIES,
         # hide some of the default (dynamic) entries for library management
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
-        CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+        CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
+        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
+        CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
         CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
         CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
         CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
-        CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
-        CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
+        CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     )
 
 
@@ -563,7 +562,7 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
-    async def _get_builtin_playlist_random_album(self) -> UniqueList[Track]:
+    async def _get_builtin_playlist_random_album(self) -> list[Track]:
         for in_library_only in (True, False):
             for min_tracks_required in (10, 5, 1):
                 for random_album in await self.mass.music.albums.library_items(
@@ -577,9 +576,9 @@ class BuiltinProvider(MusicProvider):
                     for idx, track in enumerate(tracks, 1):
                         track.position = idx
                     return tracks
-        return UniqueList()
+        return []
 
-    async def _get_builtin_playlist_random_artist(self) -> UniqueList[Track]:
+    async def _get_builtin_playlist_random_artist(self) -> list[Track]:
         for in_library_only in (True, False):
             for min_tracks_required in (25, 10, 5, 1):
                 for random_artist in await self.mass.music.artists.library_items(
@@ -595,7 +594,7 @@ class BuiltinProvider(MusicProvider):
                     for idx, track in enumerate(tracks, 1):
                         track.position = idx
                     return tracks
-        return UniqueList()
+        return []
 
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
@@ -621,6 +620,14 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    async def _get_builtin_playlist_recently_added_tracks(self) -> list[Track]:
+        result: list[Track] = []
+        recent_tracks = await self.mass.music.recently_added_tracks(100)
+        for idx, track in enumerate(recent_tracks, 1):
+            track.position = idx
+            result.append(track)
+        return result
+
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str
     ) -> list[Track] | UniqueList[Track]:
@@ -632,6 +639,7 @@ class BuiltinProvider(MusicProvider):
                 RANDOM_ALBUM: self._get_builtin_playlist_random_album,
                 RANDOM_ARTIST: self._get_builtin_playlist_random_artist,
                 RECENTLY_PLAYED: self._get_builtin_playlist_recently_played,
+                RECENTLY_ADDED_TRACKS: self._get_builtin_playlist_recently_added_tracks,
             }[builtin_playlist_id]()
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")

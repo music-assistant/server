@@ -18,7 +18,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 if TYPE_CHECKING:
     from fullykiosk import FullyKiosk
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
     from .provider import FullyKioskProvider
 
@@ -51,9 +51,13 @@ class FullyKioskPlayer(Player):
         self._attr_needs_poll = True
         self._attr_poll_interval = 10
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -84,7 +88,6 @@ class FullyKioskPlayer(Player):
         """Send STOP command to given player."""
         await self.fully_kiosk.stopSound()
         self._attr_playback_state = PlaybackState.IDLE
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 

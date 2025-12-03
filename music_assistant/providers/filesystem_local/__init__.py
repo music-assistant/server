@@ -82,10 +82,10 @@ from .constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     IMAGE_EXTENSIONS,
@@ -151,10 +151,10 @@ async def get_config_entries(
         CONF_ENTRY_PATH,
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-        CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     ]
     if instance_id is None or values is None:
         return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
@@ -317,7 +317,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
         return items
 
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
         assert self.mass.music.database
         start_time = time.time()
@@ -361,7 +361,16 @@ class LocalFileSystemProvider(MusicProvider):
                     if ext not in SUPPORTED_EXTENSIONS:
                         # skip unsupported file extension
                         continue
-                    yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    try:
+                        yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    except OSError as err:
+                        # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
+                        # This typically happens with emoji or special unicode characters
+                        self.logger.debug(
+                            "Skipping file %s due to stat error: %s",
+                            item.path,
+                            str(err),
+                        )
 
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""
@@ -369,7 +378,7 @@ class LocalFileSystemProvider(MusicProvider):
             try:
                 for item in listdir(self.base_path):
                     prev_checksum = file_checksums.get(item.relative_path)
-                    if self._process_item(item, prev_checksum, import_as_favorite):
+                    if self._process_item(item, prev_checksum):
                         cur_filenames.add(item.relative_path)
             finally:
                 self.sync_running = False
@@ -389,9 +398,7 @@ class LocalFileSystemProvider(MusicProvider):
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
 
-    def _process_item(
-        self, item: FileSystemItem, prev_checksum: str | None, import_as_favorite: bool
-    ) -> bool:
+    def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item. NOT async friendly."""
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -421,7 +428,7 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update track to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
-                    track.favorite = import_as_favorite
+                    track.favorite = False  # TODO: implement favorite status based on rating ?
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
@@ -441,7 +448,6 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update audiobook to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
-                    audiobook.favorite = import_as_favorite
                     await self.mass.music.audiobooks.add_item_to_library(
                         audiobook, overwrite_existing=prev_checksum is not None
                     )
@@ -459,7 +465,6 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update episode to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
-                    episode.favorite = import_as_favorite
                     await self.mass.music.podcasts.add_item_to_library(
                         episode.podcast, overwrite_existing=prev_checksum is not None
                     )
@@ -472,8 +477,7 @@ class LocalFileSystemProvider(MusicProvider):
 
                 async def process_playlist() -> None:
                     playlist = await self.get_playlist(item.relative_path)
-                    # add/update] playlist to db
-                    playlist.favorite = import_as_favorite
+                    # add/update playlist to db
                     await self.mass.music.playlists.add_item_to_library(
                         playlist,
                         overwrite_existing=prev_checksum is not None,
@@ -999,8 +1003,15 @@ class LocalFileSystemProvider(MusicProvider):
         assert file_item.ext is not None  # for type checking
         lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
         if await self.exists(lrc_path):
-            async with aiofiles.open(lrc_path) as lrc_file:
-                track.metadata.lrc_lyrics = await lrc_file.read()
+            try:
+                async with aiofiles.open(lrc_path, encoding="utf-8") as lrc_file:
+                    track.metadata.lrc_lyrics = await lrc_file.read()
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to read lyrics file %s: %s",
+                    lrc_path,
+                    str(err),
+                )
 
         return track
 

@@ -288,7 +288,6 @@ class AlexaPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         await self.api.stop()
-        self._attr_active_source = None
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
@@ -368,9 +367,13 @@ class AlexaPlayer(Player):
                 self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,

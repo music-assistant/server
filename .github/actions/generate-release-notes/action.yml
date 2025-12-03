@@ -1,0 +1,55 @@
+name: 'Generate Release Notes'
+description: 'Generate complete release notes with PR categorization, frontend changes, and merged contributors'
+inputs:
+  version:
+    description: 'The version being released'
+    required: true
+  previous-tag:
+    description: 'The previous release tag to compare against'
+    required: false
+    default: ''
+  branch:
+    description: 'The branch being released from'
+    required: true
+  channel:
+    description: 'The release channel (stable, beta, nightly)'
+    required: true
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  important-notes:
+    description: 'Important notes to display at the top (breaking changes, critical info, etc.)'
+    required: false
+    default: ''
+outputs:
+  release-notes:
+    description: 'The complete generated release notes including frontend changes'
+    value: ${{ steps.generate.outputs.release-notes }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v6.0.0
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install PyGithub PyYAML
+
+    - name: Generate complete release notes
+      id: generate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        VERSION: ${{ inputs.version }}
+        PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        BRANCH: ${{ inputs.branch }}
+        CHANNEL: ${{ inputs.channel }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_SERVER_URL: ${{ github.server_url }}
+        IMPORTANT_NOTES: ${{ inputs.important-notes }}
+      run: |
+        chmod +x ${{ github.action_path }}/generate_notes.py
+        python3 ${{ github.action_path }}/generate_notes.py

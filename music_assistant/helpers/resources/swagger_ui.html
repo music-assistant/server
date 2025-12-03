@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant API - Swagger UI</title>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="swagger-ui"></div>
+
+    <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {
+            const openapiUrl = window.location.origin + '/api-docs/openapi.json';
+
+            const ui = SwaggerUIBundle({
+                url: openapiUrl,
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout",
+                defaultModelsExpandDepth: 3,
+                defaultModelExpandDepth: 3,
+                docExpansion: "list",
+                filter: true,
+                showRequestHeaders: true,
+                tryItOutEnabled: true,
+                persistAuthorization: true,
+                displayRequestDuration: true,
+                operationsSorter: "alpha",
+                tagsSorter: "alpha"
+            });
+
+            window.ui = ui;
+
+            // Handle deep linking to schemas after UI is loaded
+            // Swagger UI doesn't natively support schema deep linking, so we implement it manually
+            function scrollToSchema() {
+                const hash = window.location.hash;
+
+                // Check if we have a schema link (format: #/components/schemas/SchemaName or #model-SchemaName)
+                let schemaName = null;
+                if (hash.includes('/schemas/')) {
+                    schemaName = hash.split('/schemas/')[1];
+                } else if (hash.startsWith('#model-')) {
+                    schemaName = hash.substring(7); // Remove '#model-' prefix
+                }
+
+                if (!schemaName) {
+                    return;
+                }
+
+                // Wait for models section to be rendered
+                const modelsSection = document.querySelector('.models, section.models, [class*="models"]');
+                if (!modelsSection) {
+                    // Models section not rendered yet, try again
+                    setTimeout(scrollToSchema, 200);
+                    return;
+                }
+
+                // Look for the specific model by ID
+                const modelId = `model-${schemaName}`;
+                let modelElement = document.getElementById(modelId);
+
+                if (!modelElement) {
+                    // Try alternative selectors
+                    const allHeadings = document.querySelectorAll('.model-title, [class*="model"] .title');
+                    for (const heading of allHeadings) {
+                        if (heading.textContent.trim() === schemaName) {
+                            modelElement = heading.closest('[id*="model"]') || heading.parentElement;
+                            break;
+                        }
+                    }
+                }
+
+                if (modelElement) {
+                    // Scroll to the model
+                    modelElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                    // Expand if collapsed
+                    const toggleButton = modelElement.querySelector('button[aria-expanded="false"]');
+                    if (toggleButton) {
+                        toggleButton.click();
+                    }
+
+                    // Highlight temporarily
+                    modelElement.style.transition = 'background-color 0.3s';
+                    modelElement.style.backgroundColor = '#fff3cd';
+                    setTimeout(() => {
+                        modelElement.style.backgroundColor = '';
+                    }, 2000);
+                }
+            }
+
+            // Use MutationObserver to detect when Swagger UI finishes rendering
+            const observer = new MutationObserver((mutations, obs) => {
+                const modelsSection = document.querySelector('.models, section.models, [class*="models"]');
+                if (modelsSection && window.location.hash) {
+                    scrollToSchema();
+                    obs.disconnect(); // Stop observing once we've found and scrolled
+                }
+            });
+
+            // Start observing
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+
+            // Also try after a delay as fallback
+            setTimeout(() => {
+                if (window.location.hash) {
+                    scrollToSchema();
+                }
+                observer.disconnect();
+            }, 3000);
+
+            // Listen for hash changes (when user clicks a schema link)
+            window.addEventListener('hashchange', () => {
+                if (window.location.hash.includes('schema') || window.location.hash.includes('model')) {
+                    setTimeout(scrollToSchema, 100);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

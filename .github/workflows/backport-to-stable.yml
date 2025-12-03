@@ -15,7 +15,7 @@ jobs:
     if: github.event.commits[0].distinct == true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Needed for full git history
 

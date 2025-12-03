@@ -6,6 +6,7 @@ import functools
 import itertools
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -39,6 +40,7 @@ from aioaudiobookshelf.schema.shelf import (
 )
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -200,6 +202,8 @@ P = ParamSpec("P")
 class Audiobookshelf(MusicProvider):
     """Audiobookshelf MusicProvider."""
 
+    _on_unload_callbacks: list[Callable[[], None]]
+
     @staticmethod
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
@@ -220,6 +224,7 @@ class Audiobookshelf(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
+        self._on_unload_callbacks: list[Callable[[], None]] = []
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
@@ -325,6 +330,13 @@ for more details.
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
 
+        # register dynamic stream route for audiobook parts
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"/{self.instance_id}_part_stream", self._handle_audiobook_part_request
+            )
+        )
+
     @handle_refresh_token
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -335,6 +347,8 @@ for more details.
         """
         await self._client.logout()
         await self._client_socket.logout()
+        for callback in self._on_unload_callbacks:
+            callback()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -343,7 +357,7 @@ for more details.
         return False
 
     @handle_refresh_token
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
         if len(libraries) == 0:
@@ -356,7 +370,7 @@ for more details.
                 and media_type == MediaType.PODCAST
             ):
                 self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
-        await super().sync_library(media_type, import_as_favorite)
+        await super().sync_library(media_type)
         await self._cache_set_helper_libraries()
 
         # update playlog
@@ -541,8 +555,6 @@ for more details.
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream of item."""
-        # ensure we have a valid token
-        await self.reauthenticate()
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._get_stream_details_episode(item_id)
         elif media_type == MediaType.AUDIOBOOK:
@@ -567,9 +579,15 @@ for more details.
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
         file_parts: list[MultiPartPath] = []
-        base_url = str(self.config.get_value(CONF_URL))
-        for track in tracks:
-            stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+        for idx, track in enumerate(tracks):
+            # to ensure token is always valid, we create a dynamic url
+            # this ensures that we always get a fresh token on each part
+            # without having to deal with a custom stream etc.
+            # we also use this for the first part, otherwise we can't seek
+            stream_url = (
+                f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
+            )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
@@ -579,7 +597,7 @@ for more details.
             media_type=MediaType.AUDIOBOOK,
             stream_type=StreamType.HTTP,
             duration=int(abs_audiobook.media.duration),
-            data=tracks,
+            path=file_parts,
             can_seek=True,
             allow_seek=True,
         )
@@ -617,6 +635,30 @@ for more details.
             allow_seek=True,
             path=stream_url,
         )
+
+    async def _handle_audiobook_part_request(self, request: web.Request) -> web.Response:
+        """
+        Handle dynamic audiobook part stream request.
+
+        We redirect to the actual stream url with token.
+        This is done because the token might expire, so we need to
+        generate a fresh url on each part.
+        """
+        if not (audiobook_id := request.query.get("audiobook_id")):
+            return web.Response(status=400, text="Missing audiobook_id")
+        if not (part_id := request.query.get("part_id")):
+            return web.Response(status=400, text="Missing part_id")
+        abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=audiobook_id)
+        part_id = int(part_id)  # type: ignore[assignment]
+        try:
+            part_track = abs_audiobook.media.tracks[part_id]
+        except IndexError:
+            return web.Response(status=404, text="Part not found")
+
+        base_url = str(self.config.get_value(CONF_URL))
+        stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
+        # redirect to the actual stream url
+        raise web.HTTPFound(location=stream_url)
 
     @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
@@ -1389,17 +1431,27 @@ for more details.
         __updated_items = 0
 
         known_ids = self._get_all_known_item_ids()
+        abs_ids_with_progress = set()
 
         for progress in progresses:
+            # save progress ids for later
+            ma_item_id = (
+                progress.library_item_id
+                if progress.episode_id is None
+                else f"{progress.library_item_id} {progress.episode_id}"
+            )
+            abs_ids_with_progress.add(ma_item_id)
+
             # Guard. Also makes sure, that we don't write to db again if no state change happened.
             # This is achieved by adding a Helper Progress in the update playlog functions, which
             # then has the most recent timestamp. If a subsequent progress sent by abs has an older
             # timestamp, we do not update again.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
-            if progress.current_time is not None and not progress.current_time >= 30:
-                # same as mass default, only > 30s
-                continue
+            if progress.current_time is not None:
+                if int(progress.current_time) != 0 and not progress.current_time >= 30:
+                    # same as mass default, only > 30s
+                    continue
             if progress.library_item_id not in known_ids:
                 continue
             __updated_items += 1
@@ -1408,6 +1460,32 @@ for more details.
             else:
                 await self._update_playlog_episode(progress)
         self.logger.debug(f"Updated {__updated_items} from full playlog.")
+
+        # Get MA's known progresses of ABS.
+        # In ABS the user may discard a progress, which removes the progress completely.
+        # There is no socket notification for this event.
+        ma_playlog_state = await self.mass.music.get_playlog_provider_item_ids(
+            provider_instance_id=self.instance_id
+        )
+        ma_ids_with_progress = {x for _, x in ma_playlog_state}
+        discarded_progress_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
+        for discarded_progress_id in discarded_progress_ids:
+            if len(discarded_progress_id.split(" ")) == 1:
+                if discarded_item := await self.mass.music.get_library_item_by_prov_id(
+                    media_type=MediaType.AUDIOBOOK,
+                    item_id=discarded_progress_id,
+                    provider_instance_id_or_domain=self.lookup_key,
+                ):
+                    self.progress_guard.add_progress(discarded_progress_id)
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            else:
+                with suppress(MediaNotFoundError):
+                    discarded_item = await self.get_podcast_episode(
+                        prov_episode_id=discarded_progress_id, add_progress=False
+                    )
+                    self.progress_guard.add_progress(*discarded_progress_id.split(" "))
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1422,11 +1500,14 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        await self.mass.music.mark_item_played(
-            mass_audiobook,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_audiobook)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_audiobook,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1440,11 +1521,14 @@ for more details.
             mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
         except MediaNotFoundError:
             return
-        await self.mass.music.mark_item_played(
-            mass_episode,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_episode)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_episode,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(

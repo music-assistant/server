@@ -8,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -30,7 +30,6 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
 )
 from music_assistant.helpers.audio import get_player_filter_params
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
@@ -58,7 +57,6 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_name = self.config.name or f"Universal Group {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
-        self._attr_active_source = player_id
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
         self._attr_supported_features = {*BASE_FEATURES}
         self._attr_needs_poll = True
@@ -98,11 +96,15 @@ class UniversalGroupPlayer(GroupPlayer):
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             # default entries for player groups
-            *await super().get_config_entries(),
+            *await super().get_config_entries(action=action, values=values),
             # add universal group specific entries
             CONFIG_ENTRY_UGP_NOTE,
             ConfigEntry(
@@ -220,41 +222,7 @@ class UniversalGroupPlayer(GroupPlayer):
             await self.stream.stop()
 
         # select audio source
-        if media.media_type == MediaType.ANNOUNCEMENT and media.custom_data:
-            # special case: stream announcement
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["announcement_url"],
-                output_format=UGP_FORMAT,
-                pre_announce=media.custom_data["pre_announce"],
-                pre_announce_url=media.custom_data["pre_announce_url"],
-            )
-        elif media.media_type == MediaType.PLUGIN_SOURCE and media.custom_data:
-            # special case: plugin source stream
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=UGP_FORMAT,
-                player_id=media.custom_data["player_id"],
-            )
-        elif media.source_id and media.queue_item_id:
-            # regular queue stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if not queue or not queue_item:
-                # this should not happen, but guard just in case
-                raise RuntimeError(f"Invalid queue(item): {media.source_id}, {media.queue_item_id}")
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=queue_item,
-                pcm_format=UGP_FORMAT,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=UGP_FORMAT,
-            )
+        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT)
 
         # start the stream task
         self.stream = UGPStream(
@@ -267,7 +235,6 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.source_id
         self.update_state()
 
         # forward to downstream play_media commands
@@ -385,9 +352,8 @@ class UniversalGroupPlayer(GroupPlayer):
                 content_sample_rate=UGP_FORMAT.sample_rate,
                 content_bit_depth=UGP_FORMAT.bit_depth,
             )
-            http_profile = cast(
-                "str",
-                await self.mass.config.get_player_config_value(child_player_id, CONF_HTTP_PROFILE),
+            http_profile = await self.mass.config.get_player_config_value(
+                child_player_id, CONF_HTTP_PROFILE, return_type=str
             )
         elif output_format_str == "flac":
             output_format = AudioFormat(content_type=ContentType.FLAC)

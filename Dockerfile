@@ -19,14 +19,23 @@ RUN uv venv $VIRTUAL_ENV
 # comes at a cost of a slightly larger image size but is faster to start
 # because we do not have to install dependencies at runtime
 RUN uv pip install \
-    --find-links "https://wheels.home-assistant.io/musllinux/" \
     -r requirements_all.txt
+
+# Install PyAV from pre-built wheel (built against system FFmpeg in base image)
+# First verify the wheel version matches what pip resolved to avoid version mismatch
+RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('av'))") && \
+    WHEEL_VERSION=$(ls /usr/local/share/pyav-wheels/av*.whl | grep -oP 'av-\K[0-9.]+') && \
+    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
+      echo "ERROR: PyAV version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
+      echo "Please rebuild the base image with the correct PyAV version." && \
+      exit 1; \
+    fi && \
+    uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
 
 # Install Music Assistant from prebuilt wheel
 ARG MASS_VERSION
 RUN uv pip install \
     --no-cache \
-    --find-links "https://wheels.home-assistant.io/musllinux/" \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
 # we need to set (very permissive) permissions to the workdir
@@ -44,7 +53,7 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# copy the already build /app dir
+# copy the already built /app dir
 COPY --from=builder /app /app
 
 # the /app contents have correct permissions but for some reason /app itself does not.

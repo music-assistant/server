@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant API Documentation</title>
+    <link rel="stylesheet" href="../resources/common.css">
+    <style>
+        body {
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            overflow: hidden;
+        }
+
+        .header {
+            text-align: center;
+            padding: 48px 40px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header h1 {
+            color: var(--fg);
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+
+        .header .version {
+            color: var(--text-tertiary);
+            font-size: 14px;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .section {
+            margin-bottom: 48px;
+        }
+
+        .section:last-child {
+            margin-bottom: 0;
+        }
+
+        .section h2 {
+            color: var(--primary);
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--primary);
+        }
+
+        .section h3 {
+            color: var(--fg);
+            font-size: 18px;
+            font-weight: 600;
+            margin: 32px 0 16px 0;
+        }
+
+        .section p {
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            font-size: 15px;
+        }
+
+        .api-boxes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 24px 0;
+        }
+
+        .api-box {
+            background: var(--input-bg);
+            padding: 28px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+        }
+
+        .api-box:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            border-color: var(--primary);
+        }
+
+        .api-box h4 {
+            color: var(--fg);
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .api-box p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .api-box .btn {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .api-box .btn:hover {
+            filter: brightness(1.1);
+            box-shadow: 0 4px 12px var(--primary-glow);
+            transform: translateY(-1px);
+        }
+
+        .code-block {
+            white-space: pre-wrap;
+        }
+
+        .code-block .comment {
+            color: var(--code-comment);
+        }
+
+        .code-block .string {
+            color: var(--code-string);
+        }
+
+        .code-block .keyword {
+            color: var(--code-keyword);
+        }
+
+        .highlight {
+            background: var(--input-focus-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            color: var(--primary);
+        }
+
+        code {
+            background: var(--input-bg);
+            color: var(--primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .info-box {
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        .info-box strong {
+            color: var(--primary);
+        }
+
+        .events-list {
+            background: var(--input-bg);
+            padding: 24px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .events-list h4 {
+            color: var(--fg);
+            font-weight: 600;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .events-list ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .events-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .events-list li:last-child {
+            border-bottom: none;
+        }
+
+        .events-list code {
+            background: var(--primary);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .client-links {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .client-link {
+            background: var(--input-bg);
+            color: var(--fg);
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .client-link:hover {
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        .footer {
+            background: var(--input-bg);
+            padding: 24px 40px;
+            text-align: center;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        ul {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        ul li {
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .code-block .keyword {
+            color: var(--code-keyword);
+        }
+
+        .highlight {
+            background: var(--input-focus-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            color: var(--primary);
+        }
+
+        code {
+            background: var(--input-bg);
+            color: var(--primary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+
+        .info-box {
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        .info-box strong {
+            color: var(--primary);
+        }
+
+        .events-list {
+            background: var(--input-bg);
+            padding: 24px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin: 20px 0;
+        }
+
+        .events-list h4 {
+            color: var(--fg);
+            font-weight: 600;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .events-list ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .events-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .events-list li:last-child {
+            border-bottom: none;
+        }
+
+        .events-list code {
+            background: var(--primary);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .client-links {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .client-link {
+            background: var(--input-bg);
+            color: var(--fg);
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .client-link:hover {
+            background: var(--input-focus-bg);
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        .footer {
+            background: var(--input-bg);
+            padding: 24px 40px;
+            text-align: center;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        ul {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        ul li {
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <img src="/logo.png" alt="Music Assistant">
+            </div>
+            <h1>Music Assistant API</h1>
+            <div class="version">Version {VERSION}</div>
+        </div>
+
+        <div class="content">
+            <div class="section">
+                <h2>Welcome</h2>
+                <p>
+                    Music Assistant provides a powerful API to control your music library,
+                    manage players, and stream audio. Whether you're building a custom interface,
+                    integrating with home automation, or creating a music app, our API gives you
+                    complete control.
+                </p>
+                <p>
+                    This documentation will help you get started quickly with examples and best practices.
+                </p>
+            </div>
+
+            <div class="section">
+                <h2>API Documentation</h2>
+                <p>
+                    Explore the Music Assistant API with our documentation tools:
+                </p>
+                <div class="api-boxes">
+                    <div class="api-box">
+                        <h4>📚 Commands Reference</h4>
+                        <p>Complete list of all available commands with parameters, descriptions, working curl examples, and interactive testing</p>
+                        <a href="{BASE_URL}/api-docs/commands" class="btn">View Commands</a>
+                    </div>
+                    <div class="api-box">
+                        <h4>📊 Schemas Reference</h4>
+                        <p>All data models and types with their properties, descriptions, and relationships</p>
+                        <a href="{BASE_URL}/api-docs/schemas" class="btn">View Schemas</a>
+                    </div>
+                    <div class="api-box">
+                        <h4>📘 Swagger UI</h4>
+                        <p>Interactive API explorer with OpenAPI specification and "Try it out" functionality</p>
+                        <a href="{BASE_URL}/api-docs/swagger" class="btn">Open Swagger UI</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Quick Start</h2>
+
+                <h3>WebSocket API (Recommended)</h3>
+                <p>
+                    The WebSocket API provides <span class="highlight">real-time bidirectional communication</span>
+                    and automatic event notifications. Perfect for applications that need live updates.
+                </p>
+                <div class="info-box">
+                    <strong>Note:</strong> WebSocket messages require a <code>message_id</code> field to match requests with responses.
+                    This allows multiple concurrent requests over the same connection.
+                </div>
+                <div class="code-block">
+<span class="comment"># Connect to WebSocket</span>
+ws://{SERVER_HOST}/ws
+
+<span class="comment"># Step 1: Authenticate (REQUIRED as first command)</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"auth"</span>,
+  <span class="string">"args"</span>: {
+    <span class="string">"token"</span>: <span class="string">"your_access_token"</span>
+  }
+}
+
+<span class="comment"># Auth response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"authenticated"</span>: <span class="keyword">true</span>,
+    <span class="string">"user"</span>: {<span class="comment">...user info...</span>}
+  }
+}
+
+<span class="comment"># Step 2: Send commands (message_id is REQUIRED)</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"unique-id-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"players/all"</span>,
+  <span class="string">"args"</span>: {}
+}
+
+<span class="comment"># Receive response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"unique-id-123"</span>,
+  <span class="string">"result"</span>: [<span class="comment">...player data...</span>]
+}
+
+<span class="comment"># Receive automatic events</span>
+{
+  <span class="string">"event"</span>: <span class="string">"player_updated"</span>,
+  <span class="string">"data"</span>: {<span class="comment">...updated player...</span>}
+}
+                </div>
+
+                <h3>HTTP API (RPC)</h3>
+                <p>
+                    The HTTP API provides a simple RPC-like interface for executing commands.
+                    This allows you to call the same commands available via WebSocket over a simple HTTP POST endpoint.
+                    Perfect for one-off commands without needing real-time updates.
+                </p>
+                <div class="info-box">
+                    <strong>Note:</strong> The <code>message_id</code> field is <strong>optional</strong> for HTTP requests
+                    since each HTTP request is isolated. The response returns the command result directly.
+                </div>
+                <div class="code-block">
+<span class="comment"># Get all players (requires authentication)</span>
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "players/all",
+    "args": {}
+  }'</span>
+
+<span class="comment"># Play media on a player (requires authentication)</span>
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "player_queues/play_media",
+    "args": {
+      "queue_id": "player_123",
+      "media": ["library://track/456"]
+    }
+  }'</span>
+
+<span class="comment"># Get server info (no authentication required)</span>
+curl {BASE_URL}/info
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>WebSocket Events</h2>
+                <p>
+                    When connected via WebSocket, you automatically receive real-time event notifications
+                    for all state changes. No polling required!
+                </p>
+
+                <div class="events-list">
+                    <h4>🔊 Player Events</h4>
+                    <ul>
+                        <li><code>player_added</code> - New player discovered</li>
+                        <li><code>player_updated</code> - Player state changed</li>
+                        <li><code>player_removed</code> - Player disconnected</li>
+                        <li><code>player_config_updated</code> - Settings changed</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>🎵 Queue Events</h4>
+                    <ul>
+                        <li><code>queue_added</code> - New queue created</li>
+                        <li><code>queue_updated</code> - Queue state changed</li>
+                        <li><code>queue_items_updated</code> - Content changed</li>
+                        <li><code>queue_time_updated</code> - Playback position updated</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>📚 Library Events</h4>
+                    <ul>
+                        <li><code>media_item_added</code> - New media added</li>
+                        <li><code>media_item_updated</code> - Metadata updated</li>
+                        <li><code>media_item_deleted</code> - Media removed</li>
+                        <li><code>media_item_played</code> - Playback started</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>⚙️ System Events</h4>
+                    <ul>
+                        <li><code>providers_updated</code> - Provider status changed</li>
+                        <li><code>sync_tasks_updated</code> - Sync progress updated</li>
+                        <li><code>application_shutdown</code> - Server shutting down</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Client Libraries</h2>
+                <p>
+                    Don't want to implement the API from scratch? Use our official client libraries:
+                </p>
+
+                <h3>Python Client</h3>
+                <p>
+                    Official Python client library with full type hints and async support:
+                </p>
+                <div class="code-block">
+<span class="comment"># Install</span>
+pip install music-assistant-client
+
+<span class="comment"># Usage</span>
+<span class="keyword">from</span> music_assistant_client <span class="keyword">import</span> MusicAssistantClient
+
+<span class="keyword">async with</span> MusicAssistantClient(<span class="string">"{SERVER_HOST}"</span>) <span class="keyword">as</span> client:
+    <span class="comment"># Get all players</span>
+    players = <span class="keyword">await</span> client.get_players()
+
+    <span class="comment"># Play media</span>
+    <span class="keyword">await</span> client.play_media(
+        queue_id=<span class="string">"player_123"</span>,
+        media=[<span class="string">"library://track/456"</span>]
+    )
+                </div>
+                <div class="client-links">
+                    <a href="https://github.com/music-assistant/client" class="client-link">
+                        📦 GitHub Repository
+                    </a>
+                    <a href="https://pypi.org/project/music-assistant-client/" class="client-link">
+                        🐍 PyPI Package
+                    </a>
+                </div>
+
+                <h3>TypeScript/JavaScript</h3>
+                <p>
+                    Reference implementation in the Music Assistant frontend:
+                </p>
+                <div class="code-block">
+<span class="comment">// Example from frontend code</span>
+<span class="keyword">import</span> { MusicAssistantApi } <span class="keyword">from</span> <span class="string">'./api'</span>;
+
+<span class="keyword">const</span> api = <span class="keyword">new</span> MusicAssistantApi(<span class="string">'{SERVER_HOST}'</span>);
+
+<span class="comment">// Connect</span>
+<span class="keyword">await</span> api.connect();
+
+<span class="comment">// Subscribe to events</span>
+api.subscribe(<span class="string">'player_updated'</span>, (event) => {
+  console.log(<span class="string">'Player updated:'</span>, event.data);
+});
+
+<span class="comment">// Call commands</span>
+<span class="keyword">const</span> players = <span class="keyword">await</span> api.getPlayers();
+                </div>
+                <div class="client-links">
+                    <a href="https://github.com/music-assistant/frontend/tree/main/src/plugins/api" class="client-link">
+                        📦 Frontend API Code
+                    </a>
+                </div>
+                <div class="info-box">
+                    <strong>Coming Soon:</strong> A dedicated TypeScript client library is in development!
+                    For now, you can use the frontend's API implementation as a reference.
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Best Practices</h2>
+                <p><strong>✓ Do:</strong></p>
+                <ul>
+                    <li>Use WebSocket API for real-time applications</li>
+                    <li>Handle connection drops and reconnect automatically</li>
+                    <li>Subscribe to relevant events instead of polling</li>
+                    <li>Use unique message IDs for WebSocket commands</li>
+                    <li>Implement proper error handling</li>
+                </ul>
+                <p><strong>✗ Don't:</strong></p>
+                <ul>
+                    <li>Poll the REST API frequently for updates (use WebSocket events instead)</li>
+                    <li>Send commands without waiting for previous responses</li>
+                    <li>Ignore error responses</li>
+                    <li>Hardcode server URLs (make them configurable)</li>
+                </ul>
+            </div>
+
+            <div class="section">
+                <h2>Authentication</h2>
+                <p>
+                    As of API Schema Version 28, <span class="highlight">authentication is now mandatory</span> for all API access
+                    (except when accessed through Home Assistant Ingress).
+                </p>
+
+                <h3>Authentication Overview</h3>
+                <p>Music Assistant supports the following authentication methods:</p>
+                <ul>
+                    <li><strong>Username/Password</strong> - Built-in authentication provider</li>
+                    <li><strong>Home Assistant OAuth</strong> - OAuth flow for HA users (optional)</li>
+                    <li><strong>Bearer Tokens</strong> - Token-based authentication for HTTP and WebSocket</li>
+                </ul>
+
+                <h3>HTTP Authentication Endpoints</h3>
+                <p>The following HTTP endpoints are available for authentication (no auth required):</p>
+                <div class="code-block">
+<span class="comment"># Get server info (includes onboard_done status)</span>
+GET {BASE_URL}/info
+
+<span class="comment"># Get available login providers</span>
+GET {BASE_URL}/auth/providers
+
+<span class="comment"># Login with credentials (built-in provider is default)</span>
+POST {BASE_URL}/auth/login
+{
+  <span class="string">"credentials"</span>: {
+    <span class="string">"username"</span>: <span class="string">"your_username"</span>,
+    <span class="string">"password"</span>: <span class="string">"your_password"</span>
+  }
+}
+
+<span class="comment"># Or specify a different provider (e.g., Home Assistant OAuth)</span>
+POST {BASE_URL}/auth/login
+{
+  <span class="string">"provider_id"</span>: <span class="string">"homeassistant"</span>,
+  <span class="string">"credentials"</span>: {<span class="comment">...provider-specific...</span>}
+}
+
+<span class="comment"># Response includes access token</span>
+{
+  <span class="string">"success"</span>: <span class="keyword">true</span>,
+  <span class="string">"token"</span>: <span class="string">"your_access_token"</span>,
+  <span class="string">"user"</span>: { <span class="comment">...user info...</span> }
+}
+
+<span class="comment"># First-time setup (only if no users exist)</span>
+POST {BASE_URL}/setup
+{
+  <span class="string">"username"</span>: <span class="string">"admin"</span>,
+  <span class="string">"password"</span>: <span class="string">"secure_password"</span>
+}
+                </div>
+
+                <h3>Using Bearer Tokens</h3>
+                <p>Once you have an access token, include it in all HTTP requests:</p>
+                <div class="code-block">
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Authorization: Bearer your_access_token"</span> \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "players/all",
+    "args": {}
+  }'</span>
+                </div>
+
+                <h3>WebSocket Authentication</h3>
+                <p>
+                    After establishing a WebSocket connection, you <strong>must</strong> send an
+                    <code>auth</code> command as the first message:
+                </p>
+                <div class="code-block">
+<span class="comment"># Send auth command immediately after connection</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"auth"</span>,
+  <span class="string">"args"</span>: {
+    <span class="string">"token"</span>: <span class="string">"your_access_token"</span>
+  }
+}
+
+<span class="comment"># Response on success</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"authenticated"</span>: <span class="keyword">true</span>,
+    <span class="string">"user"</span>: {
+      <span class="string">"user_id"</span>: <span class="string">"..."</span>,
+      <span class="string">"username"</span>: <span class="string">"your_username"</span>,
+      <span class="string">"role"</span>: <span class="string">"admin"</span>
+    }
+  }
+}
+                </div>
+
+                <div class="info-box">
+                    <strong>Token Types:</strong>
+                    <ul style="margin-top: 12px;">
+                        <li><strong>Short-lived tokens:</strong> Created automatically during login. Expire after 30 days of inactivity but auto-renew on each use (sliding expiration window). Perfect for user sessions.</li>
+                        <li><strong>Long-lived tokens:</strong> Created via <code>auth/token/create</code> command. Expire after 10 years with no auto-renewal. Intended for external integrations (Home Assistant, mobile apps, API access).</li>
+                    </ul>
+                    Use the <code>auth/tokens</code> and <code>auth/token/create</code> WebSocket commands to manage your tokens.
+                </div>
+
+                <h3>User Management Commands</h3>
+                <p>The following WebSocket commands are available for authentication management:</p>
+                <ul>
+                    <li><code>auth/users</code> - List all users (admin only)</li>
+                    <li><code>auth/user</code> - Get user by ID (admin only)</li>
+                    <li><code>auth/user/create</code> - Create a new user (admin only)</li>
+                    <li><code>auth/user/update</code> - Update user profile, password, or role (admin for other users)</li>
+                    <li><code>auth/user/enable</code> - Enable user (admin only)</li>
+                    <li><code>auth/user/disable</code> - Disable user (admin only)</li>
+                    <li><code>auth/user/delete</code> - Delete user (admin only)</li>
+                    <li><code>auth/tokens</code> - List your tokens</li>
+                    <li><code>auth/token/create</code> - Create a new long-lived token</li>
+                    <li><code>auth/token/revoke</code> - Revoke a token</li>
+                </ul>
+                <p>See the <a href="{BASE_URL}/api-docs/commands#auth" style="color: var(--primary); text-decoration: none; font-weight: 500;">Commands Reference</a> for detailed documentation of all auth commands.</p>
+            </div>
+
+            <div class="section">
+                <h2>Remote Access (WebRTC)</h2>
+                <p>
+                    Music Assistant supports <span class="highlight">remote access via WebRTC</span>, enabling you to connect to your
+                    Music Assistant instance from anywhere without port forwarding or VPN configuration.
+                </p>
+
+                <h3>How It Works</h3>
+                <p>
+                    Remote access uses WebRTC technology to establish a secure, peer-to-peer connection between
+                    your remote client (PWA) and your local Music Assistant server:
+                </p>
+                <ul>
+                    <li><strong>WebRTC Data Channel:</strong> Establishes encrypted connection through NAT/firewalls</li>
+                    <li><strong>Signaling Server:</strong> Cloud-based server coordinates connection setup</li>
+                    <li><strong>Remote ID:</strong> Unique identifier (format: MA-XXXX-XXXX) to connect to your instance</li>
+                    <li><strong>API Bridge:</strong> Remote commands work identically to local WebSocket API</li>
+                </ul>
+
+                <h3>Getting Your Remote ID</h3>
+                <p>Use the <code>remote_access/info</code> WebSocket command to get your Remote ID and connection status:</p>
+                <div class="code-block">
+<span class="comment"># Get remote access information</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"remote-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"remote_access/info"</span>,
+  <span class="string">"args"</span>: {}
+}
+
+<span class="comment"># Response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"remote-123"</span>,
+  <span class="string">"result"</span>: {
+    <span class="string">"enabled"</span>: <span class="keyword">true</span>,
+    <span class="string">"connected"</span>: <span class="keyword">true</span>,
+    <span class="string">"remote_id"</span>: <span class="string">"MA-K7G3-P2M4"</span>,
+    <span class="string">"signaling_url"</span>: <span class="string">"wss://signaling.music-assistant.io/ws"</span>
+  }
+}
+                </div>
+
+                <h3>Connecting Remotely</h3>
+                <p>To connect from outside your local network:</p>
+                <ol style="margin-left: 24px; color: var(--text-secondary);">
+                    <li>Get your Remote ID from the <code>remote_access/info</code> command</li>
+                    <li>Open the Music Assistant PWA from any device (https://app.music-assistant.io)</li>
+                    <li>Enter your Remote ID when prompted</li>
+                    <li>Authenticate with your username and password (or OAuth)</li>
+                    <li>Full API access over encrypted WebRTC connection</li>
+                </ol>
+
+                <div class="info-box">
+                    <strong>Availability Notice:</strong> Remote access is currently only available to users who:
+                    <ul style="margin-top: 12px;">
+                        <li>Have the Home Assistant integration configured</li>
+                        <li>Possess an active <a href="https://www.nabucasa.com/" style="color: var(--primary); text-decoration: none; font-weight: 500;">Home Assistant Cloud</a> subscription</li>
+                    </ul>
+                    This limitation exists because remote access relies on cloud-based STUN/TURN servers provided by Home Assistant Cloud
+                    to establish WebRTC connections through NAT/firewalls. These servers are expensive to host and are made available
+                    as part of the Home Assistant Cloud service.
+                </div>
+
+                <h3>Security</h3>
+                <p>Remote access maintains the same security standards as local access:</p>
+                <ul>
+                    <li><strong>End-to-end encryption:</strong> All data encrypted via WebRTC (DTLS/SRTP)</li>
+                    <li><strong>Authentication required:</strong> Same login and token system as local access</li>
+                    <li><strong>No data inspection:</strong> Signaling server cannot decrypt your commands or data</li>
+                    <li><strong>Role-based access:</strong> Admin and user permissions work identically</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>
+                Music Assistant {VERSION} •
+                <a href="https://music-assistant.io">music-assistant.io</a> •
+                <a href="https://github.com/music-assistant">GitHub</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>

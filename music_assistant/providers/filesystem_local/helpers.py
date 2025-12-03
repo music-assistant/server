@@ -62,7 +62,10 @@ class FileSystemItem:
 
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
-        """Create FileSystemItem from os.DirEntry. NOT Async friendly."""
+        """Create FileSystemItem from os.DirEntry. NOT Async friendly.
+
+        :raises OSError: If the file cannot be stat'd (e.g., invalid filename encoding).
+        """
         if entry.is_dir(follow_symlinks=False):
             return cls(
                 filename=entry.name,
@@ -72,6 +75,8 @@ class FileSystemItem:
                 checksum=None,
                 file_size=None,
             )
+        # This can raise OSError for files with invalid encoding (e.g., emojis on SMB mounts)
+        # Let the caller handle the exception
         stat = entry.stat(follow_symlinks=False)
         return cls(
             filename=entry.name,
@@ -219,14 +224,20 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
 
     if base_path not in sub_path:
         sub_path = os.path.join(base_path, sub_path)
-    items = [
-        FileSystemItem.from_dir_entry(x, base_path)
-        for x in os.scandir(sub_path)
+    items = []
+    for entry in os.scandir(sub_path):
         # filter out invalid dirs and hidden files
-        if (x.is_dir(follow_symlinks=False) or x.is_file(follow_symlinks=False))
-        and x.name not in IGNORE_DIRS
-        and not x.name.startswith(".")
-    ]
+        if not (entry.is_dir(follow_symlinks=False) or entry.is_file(follow_symlinks=False)):
+            continue
+        if entry.name in IGNORE_DIRS or entry.name.startswith("."):
+            continue
+        try:
+            items.append(FileSystemItem.from_dir_entry(entry, base_path))
+        except OSError:
+            # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
+            # This typically happens with emoji or special unicode characters
+            continue
+
     if sort:
         return sorted(
             items,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
@@ -171,7 +171,7 @@ class SiriusXMProvider(MusicProvider):
             bind_port=bind_port,
             base_url=self._base_url,
             static_routes=[
-                ("*", "/{tail:.*}", cast("Awaitable", http_handler)),
+                ("*", "/{tail:.*}", http_handler),
             ],
         )
 

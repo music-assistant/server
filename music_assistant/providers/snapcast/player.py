@@ -7,9 +7,8 @@ import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ContentType, MediaType, PlaybackState, PlayerFeature
-from music_assistant_models.media_items.audio_format import AudioFormat
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
@@ -19,23 +18,18 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    DEFAULT_PCM_FORMAT,
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
-    CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
-    DEFAULT_SNAPCAST_PCM_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SnapCastStreamType,
 )
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
-from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
     from music_assistant.providers.snapcast.provider import SnapCastProvider
@@ -52,11 +46,11 @@ class SnapCastPlayer(Player):
         snap_client_id: str,
     ) -> None:
         """Init."""
-        self.provider: SnapCastProvider
+        self.provider: SnapCastProvider  # type: ignore[misc]
         self.snap_client = snap_client
         self.snap_client_id = snap_client_id
         super().__init__(provider, player_id)
-        self._stream_task: asyncio.Task | None = None
+        self._stream_task: asyncio.Task[None] | None = None
 
     @property
     def synced_to(self) -> str | None:
@@ -101,7 +95,6 @@ class SnapCastPlayer(Player):
         # finishes the player.state should be IDLE.
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
-        self._attr_active_source = None
         self._set_childs_state()
 
         self.update_state()
@@ -160,7 +153,6 @@ class SnapCastPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        # ruff: noqa: PLR0915
         if self.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
@@ -185,58 +177,19 @@ class SnapCastPlayer(Player):
             await snap_group.set_stream(stream.identifier)
 
         self._attr_current_media = media
-        self._attr_active_source = media.source_id
 
         # select audio source
-        if media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            assert media.custom_data is not None  # for type checking
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["provider"],
-                output_format=DEFAULT_SNAPCAST_FORMAT,
-                player_id=self.player_id,
-            )
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-            # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            ugp_stream = ugp_player.stream
-            assert ugp_stream is not None  # for type checker
-            input_format = ugp_stream.base_pcm_format
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.source_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            input_format = DEFAULT_SNAPCAST_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.source_id)
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
-            )
-            assert queue is not None  # for type checking
-            assert start_queue_item is not None  # for type checking
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=DEFAULT_PCM_FORMAT,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=DEFAULT_SNAPCAST_FORMAT,
-            )
+        audio_source = self.mass.streams.get_stream(media, DEFAULT_SNAPCAST_FORMAT)
 
         async def _streamer() -> None:
             stream_path = self._get_stream_path(stream)
             self.logger.debug("Start streaming to %s", stream_path)
             async with FFMpeg(
                 audio_input=audio_source,
-                input_format=input_format,
+                input_format=DEFAULT_SNAPCAST_FORMAT,
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 filter_params=get_player_filter_params(
-                    self.mass, self.player_id, input_format, DEFAULT_SNAPCAST_FORMAT
+                    self.mass, self.player_id, DEFAULT_SNAPCAST_FORMAT, DEFAULT_SNAPCAST_FORMAT
                 ),
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
@@ -333,9 +286,13 @@ class SnapCastPlayer(Player):
         assert group is not None  # for type checking
         await group.set_stream(new_stream_name)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Player config."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -390,18 +347,20 @@ class SnapCastPlayer(Player):
         # prefer to reuse existing stream if possible
         if stream := self._get_snapstream(stream_name):
             return stream
-
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
-        if self.provider._use_builtin_server and queue_id:
+        if (
+            self.provider._use_builtin_server
+            and queue_id
+            and self.provider._controlscript_available
+        ):
             extra_args = (
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
                 f"--api-port={self.mass.webserver.publish_port}%20"
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
-            extra_args = ""
         else:
             extra_args = ""
 
@@ -467,10 +426,10 @@ class SnapCastPlayer(Player):
         if self.synced_to is not None:
             return
         self._attr_group_members.append(self.player_id)
-        {
-            self._attr_group_members.append(self.provider._get_ma_id(snap_client_id))
-            for snap_client_id in snap_group.clients
-            if self.provider._get_ma_id(snap_client_id) != self.player_id
-            and self.provider._snapserver.client(snap_client_id).connected
-        }
+        for snap_client_id in snap_group.clients:
+            if (
+                self.provider._get_ma_id(snap_client_id) != self.player_id
+                and self.provider._snapserver.client(snap_client_id).connected
+            ):
+                self._attr_group_members.append(self.provider._get_ma_id(snap_client_id))
         self.update_state()

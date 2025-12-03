@@ -18,6 +18,7 @@ from PIL import Image, UnidentifiedImageError
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemImage
@@ -30,7 +31,7 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     """Create thumbnail from image url."""
     # TODO: add local cache here !
     if prov := mass.get_provider(provider):
-        assert isinstance(prov, MusicProvider | MetadataProvider)
+        assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
         if resolved_image := await prov.resolve_image(path_or_url):
             if isinstance(resolved_image, bytes):
                 return resolved_image
@@ -80,10 +81,18 @@ async def get_image_thumb(
         except UnidentifiedImageError:
             raise FileNotFoundError(f"Invalid image: {path_or_url}")
         if size:
+            # Use LANCZOS for high quality downsampling
             img.thumbnail((size, size), Image.Resampling.LANCZOS)
 
         mode = "RGBA" if image_format == "PNG" else "RGB"
-        img.convert(mode).save(data, image_format, optimize=True)
+
+        # Save with high quality settings
+        if image_format == "JPEG":
+            # For JPEG, use quality=95 for better quality
+            img.convert(mode).save(data, image_format, quality=95, optimize=False)
+        else:
+            # For PNG, disable optimize to preserve quality
+            img.convert(mode).save(data, image_format, optimize=False)
         return data.getvalue()
 
     image_format = image_format.upper()

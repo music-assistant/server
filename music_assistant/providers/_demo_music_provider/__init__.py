@@ -584,7 +584,7 @@ class MyDemoMusicprovider(MusicProvider):
         # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
         return []
 
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
         # Run a full sync of the library for the given media type.
         # This is called by the music controller to sync items from your provider to the library.
