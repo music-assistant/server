@@ -64,7 +64,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
-        :param genres: Optional list of genre library item IDs to filter by.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
