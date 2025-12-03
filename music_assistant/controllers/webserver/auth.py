@@ -40,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantProviderConfig,
     LoginProvider,
     LoginProviderConfig,
+    normalize_username,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -259,6 +260,12 @@ class AuthenticationManager:
                 )
             await self.database.commit()
 
+        # Migration to version 4: Make usernames case-insensitive by converting to lowercase
+        if from_version < 4:
+            self.logger.info("Converting all usernames to lowercase for case-insensitive auth")
+            await self.database.execute("UPDATE users SET username = LOWER(username)")
+            await self.database.commit()
+
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
         """
         Set up available login providers based on configuration.
@@ -444,6 +451,9 @@ class AuthenticationManager:
         :param username: The username.
         :return: User object or None if not found.
         """
+        # Normalize username for case-insensitive lookup
+        username = normalize_username(username)
+
         user_row = await self.database.get_row("users", {"username": username})
         if not user_row:
             return None
@@ -492,6 +502,9 @@ class AuthenticationManager:
         :param player_filter: Optional list of player IDs user has access to.
         :param provider_filter: Optional list of provider instance IDs user has access to.
         """
+        # Normalize username to lowercase for case-insensitive authentication
+        username = normalize_username(username)
+
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
         if preferences is None:
@@ -542,15 +555,18 @@ class AuthenticationManager:
         display_name = "Home Assistant Integration"
         role = UserRole.USER
 
+        # Normalize username for case-insensitive lookup
+        normalized_username = normalize_username(username)
+
         # Try to find existing user by username
-        user_row = await self.database.get_row("users", {"username": username})
+        user_row = await self.database.get_row("users", {"username": normalized_username})
         if user_row:
             # Use get_user to ensure preferences are parsed correctly
             user = await self.get_user(user_row["user_id"])
             assert user is not None  # User exists in DB, so get_user must return it
             return user
 
-        # Create new system user
+        # Create new system user (create_user will normalize the username)
         user = await self.create_user(
             username=username,
             role=role,
@@ -640,7 +656,8 @@ class AuthenticationManager:
         """
         updates = {}
         if username is not None:
-            updates["username"] = username
+            # Normalize username for case-insensitive authentication
+            updates["username"] = normalize_username(username)
         if display_name is not None:
             updates["display_name"] = display_name
         if avatar_url is not None:
