@@ -612,10 +612,32 @@ class AuthenticationManager:
         """
         Link a user to an authentication provider.
 
+        If a link already exists for this provider/provider_user_id, returns the existing link.
+
         :param user: The user to link.
         :param provider_type: The provider type.
         :param provider_user_id: The user ID from the provider (e.g., password hash, OAuth ID).
         """
+        # Check if a link already exists for this provider/provider_user_id
+        existing_link = await self.database.get_row(
+            "user_auth_providers",
+            {
+                "provider_type": provider_type.value,
+                "provider_user_id": provider_user_id,
+            },
+        )
+
+        if existing_link:
+            # Link already exists - return it
+            return UserAuthProvider(
+                link_id=existing_link["link_id"],
+                user_id=existing_link["user_id"],
+                provider_type=AuthProviderType(existing_link["provider_type"]),
+                provider_user_id=existing_link["provider_user_id"],
+                created_at=datetime.fromisoformat(existing_link["created_at"]),
+            )
+
+        # Create new link
         link_id = secrets.token_urlsafe(32)
         created_at = utc()
         link_data = {

@@ -368,14 +368,19 @@ class WebsocketClientHandler:
                     self._logger.warning("Ingress connection attempted before setup completed")
                     return
 
-                # Auto-create user for Ingress (they're already authenticated by HA)
-                # Always create with USER role (admin is created during setup)
-                user = await self.webserver.auth.create_user(
-                    username=ingress_username,
-                    role=UserRole.USER,
-                    display_name=ingress_display_name,
-                )
-                # Link to Home Assistant provider
+                # Check if a user with this username already exists
+                user = await self.webserver.auth.get_user_by_username(ingress_username)
+
+                if not user:
+                    # Auto-create user for Ingress (they're already authenticated by HA)
+                    # Always create with USER role (admin is created during setup)
+                    user = await self.webserver.auth.create_user(
+                        username=ingress_username,
+                        role=UserRole.USER,
+                        display_name=ingress_display_name,
+                    )
+
+                # Link to Home Assistant provider (or create the link if user already existed)
                 await self.webserver.auth.link_user_to_provider(
                     user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
                 )

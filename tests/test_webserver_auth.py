@@ -822,3 +822,81 @@ async def test_username_update_normalizes(auth_manager: AuthenticationManager) -
     # Username should be normalized to lowercase
     assert updated_user is not None
     assert updated_user.username == "updateduser"
+
+
+async def test_link_user_to_provider_idempotent(auth_manager: AuthenticationManager) -> None:
+    """Test that linking user to provider is idempotent.
+
+    This tests the fix for the bug where re-linking a user would cause
+    IntegrityError due to UNIQUE constraint on (provider_type, provider_user_id).
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="hauser", role=UserRole.USER)
+
+    # Link user to Home Assistant provider for the first time
+    link1 = await auth_manager.link_user_to_provider(
+        user,
+        AuthProviderType.HOME_ASSISTANT,
+        "ha_user_456",
+    )
+
+    assert link1 is not None
+    assert link1.user_id == user.user_id
+    assert link1.provider_type == AuthProviderType.HOME_ASSISTANT
+    assert link1.provider_user_id == "ha_user_456"
+
+    # Linking the same user again should return existing link without error
+    link2 = await auth_manager.link_user_to_provider(
+        user,
+        AuthProviderType.HOME_ASSISTANT,
+        "ha_user_456",
+    )
+
+    assert link2 is not None
+    assert link2.link_id == link1.link_id  # Should be same link
+    assert link2.user_id == user.user_id
+    assert link2.provider_type == AuthProviderType.HOME_ASSISTANT
+    assert link2.provider_user_id == "ha_user_456"
+
+
+async def test_ingress_auth_existing_username(auth_manager: AuthenticationManager) -> None:
+    """Test HA ingress auth when username exists but isn't linked to HA provider.
+
+    This tests the scenario where a user is created during setup, and then
+    tries to login via HA ingress with the same username.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    # Simulate user created during initial setup
+    existing_user = await auth_manager.create_user(
+        username="admin",
+        role=UserRole.ADMIN,
+        display_name="Admin User",
+    )
+
+    # Now simulate HA ingress trying to auto-create a user with same username
+    # This should find the existing user and link it instead of creating new one
+    user = await auth_manager.get_user_by_username("admin")
+    assert user is not None
+    assert user.user_id == existing_user.user_id
+
+    # Link the existing user to HA provider (what ingress flow would do)
+    link = await auth_manager.link_user_to_provider(
+        user,
+        AuthProviderType.HOME_ASSISTANT,
+        "ha_admin_123",
+    )
+
+    assert link is not None
+    assert link.user_id == existing_user.user_id
+
+    # Verify we can retrieve user by provider link
+    retrieved_user = await auth_manager.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT,
+        "ha_admin_123",
+    )
+
+    assert retrieved_user is not None
+    assert retrieved_user.user_id == existing_user.user_id
+    assert retrieved_user.username == "admin"
