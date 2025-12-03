@@ -7,6 +7,7 @@ bridging them to the local WebSocket API.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -58,6 +59,7 @@ class RemoteAccessManager:
         self._remote_id: str | None = None
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
+        self._on_unload_callbacks: list[Callable[[], None]] = []
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
@@ -79,6 +81,8 @@ class RemoteAccessManager:
     async def close(self) -> None:
         """Cleanup on exit."""
         await self.stop()
+        for unload_cb in self._on_unload_callbacks:
+            unload_cb()
 
     async def start(self) -> None:
         """Start the remote access gateway."""
@@ -211,7 +215,11 @@ class RemoteAccessManager:
                 await self.stop()
             return await get_remote_access_info()
 
-        self.mass.register_api_command("remote_access/info", get_remote_access_info)
-        self.mass.register_api_command(
-            "remote_access/configure", configure_remote_access, required_role="admin"
+        self._on_unload_callbacks.append(
+            self.mass.register_api_command("remote_access/info", get_remote_access_info)
+        )
+        self._on_unload_callbacks.append(
+            self.mass.register_api_command(
+                "remote_access/configure", configure_remote_access, required_role="admin"
+            )
         )
