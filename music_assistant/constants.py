@@ -14,11 +14,14 @@ from music_assistant_models.media_items import AudioFormat
 APPLICATION_NAME: Final = "Music Assistant"
 
 
-API_SCHEMA_VERSION: Final[int] = 27
-MIN_SCHEMA_VERSION: Final[int] = 24
+API_SCHEMA_VERSION: Final[int] = 28
+MIN_SCHEMA_VERSION: Final[int] = 28
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
+
+# Home Assistant system user
+HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -94,7 +97,11 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
-
+CONF_USE_SSL: Final[str] = "use_ssl"
+CONF_VERIFY_SSL: Final[str] = "verify_ssl"
+CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
+CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
+CONF_ENABLED: Final[str] = "enabled"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -310,12 +317,12 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     label="Enable Smart Fades",
     options=[
         ConfigValueOption("Disabled", "disabled"),
-        ConfigValueOption("Smart Fades", "smart_fades"),
+        ConfigValueOption("Smart Crossfade", "smart_crossfade"),
         ConfigValueOption("Standard Crossfade", "standard_crossfade"),
     ],
     default_value="disabled",
     description="Select the crossfade mode to use when transitioning between tracks.\n\n"
-    "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions"
+    "- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions"
     " between tracks.\n"
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",

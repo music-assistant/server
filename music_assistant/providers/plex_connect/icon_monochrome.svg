@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   version="1.1"
+   x="0px"
+   y="0px"
+   viewBox="0 0 85.333333 85.333333"
+   xml:space="preserve"
+   id="svg7"
+   sodipodi:docname="icon (1).svg"
+   width="512"
+   height="512"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/"><defs
+   id="defs7" /><sodipodi:namedview
+   id="namedview7"
+   pagecolor="#8effff"
+   bordercolor="#000000"
+   borderopacity="0.25"
+   inkscape:showpageshadow="2"
+   inkscape:pageopacity="0.0"
+   inkscape:pagecheckerboard="0"
+   inkscape:deskcolor="#d1d1d1"
+   showborder="true"
+   inkscape:zoom="0.90230308"
+   inkscape:cx="441.64761"
+   inkscape:cy="69.267191"
+   inkscape:window-width="1920"
+   inkscape:window-height="1129"
+   inkscape:window-x="-8"
+   inkscape:window-y="-8"
+   inkscape:window-maximized="1"
+   inkscape:current-layer="svg7" />
+  <title
+   id="title1">Plex × Music Assistant</title>
+
+  <style
+   type="text/css"
+   id="style1"><![CDATA[
+    .bg{fill:#282A2D;}
+    .bar{fill:#18B6D2;}
+    .bar-alt{fill:#E5A00D;}
+  ]]></style>
+
+  <!-- Background -->
+
+
+  <!-- Left vertical bars (MA style) -->
+  <rect
+   x="0.28412789"
+   y="12.511412"
+   width="3.4773159"
+   height="61.26115"
+   class="bar"
+   id="rect1"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+  <rect
+   x="8.2322788"
+   y="12.511412"
+   width="3.4773159"
+   height="61.26115"
+   class="bar"
+   id="rect2"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+  <rect
+   x="16.180429"
+   y="12.511412"
+   width="3.4773159"
+   height="61.26115"
+   class="bar"
+   id="rect3"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+  <rect
+   x="24.12858"
+   y="12.511412"
+   width="3.4773159"
+   height="61.26115"
+   class="bar"
+   id="rect4"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+
+  <!-- Center: Plex chevron as a diagonal bar (matching Plex angle) -->
+  <path
+   class="bar-alt"
+   d="m 35.057288,12.511412 h 5.961113 L 56.21924,43.576744 41.018401,73.772562 H 35.057288 L 50.258127,43.576744 Z"
+   id="path4"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+
+  <!-- Right diagonal slashes (MA style) -->
+  <path
+   class="bar"
+   d="m 51.947109,12.511412 13.909264,61.26115 h 3.477316 L 55.424425,12.511412 Z"
+   id="path5"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+  <path
+   class="bar"
+   d="m 59.89526,12.511412 13.909264,61.26115 H 77.28184 L 63.372576,12.511412 Z"
+   id="path6"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+  <path
+   class="bar"
+   d="m 67.84341,12.511412 13.909264,61.26115 H 85.22999 L 71.320726,12.511412 Z"
+   id="path7"
+   style="fill:#ffffff;fill-opacity:1;stroke-width:0.990797" />
+<metadata
+   id="metadata7"><rdf:RDF><cc:Work
+       rdf:about=""><dc:title>Plex × Music Assistant</dc:title></cc:Work></rdf:RDF></metadata></svg>

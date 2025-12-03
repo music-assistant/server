@@ -3,7 +3,9 @@
 import asyncio
 import logging
 import re
+import shutil
 import socket
+from pathlib import Path
 from typing import cast
 
 from bidict import bidict
@@ -29,6 +31,7 @@ from music_assistant.providers.snapcast.constants import (
     CONF_SERVER_TRANSPORT_CODEC,
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
+    CONTROL_SCRIPT,
     DEFAULT_SNAPSERVER_PORT,
     SNAPWEB_DIR,
 )
@@ -39,13 +42,14 @@ class SnapCastProvider(PlayerProvider):
     """SnapCastProvider."""
 
     _snapserver: Snapserver
-    _snapserver_runner: asyncio.Task | None
+    _snapserver_runner: asyncio.Task[None] | None
     _snapserver_started: asyncio.Event | None
     _snapcast_server_host: str
     _snapcast_server_control_port: int
     _ids_map: bidict[str, str]  # ma_id / snapclient_id
     _use_builtin_server: bool
     _stop_called: bool
+    _controlscript_available: bool
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -53,6 +57,7 @@ class SnapCastProvider(PlayerProvider):
         logging.getLogger("snapcast").setLevel(self.logger.level)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
+        self._controlscript_available = False
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
@@ -131,6 +136,34 @@ class SnapCastProvider(PlayerProvider):
             if self._snapserver_started is not None:
                 self._snapserver_started.clear()
 
+    def _setup_controlscript(self) -> bool:
+        """Copy control script to plugin directory (blocking I/O).
+
+        :return: True if successful, False otherwise.
+        """
+        plugin_dir = Path("/usr/share/snapserver/plug-ins")
+        control_dest = plugin_dir / "control.py"
+        logger = self.logger.getChild("snapserver")
+        try:
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            # Clean up existing file
+            control_dest.unlink(missing_ok=True)
+            if not CONTROL_SCRIPT.exists():
+                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
+                return False
+            # Copy the control script to the plugin directory
+            shutil.copy2(CONTROL_SCRIPT, control_dest)
+            # Ensure it's executable
+            control_dest.chmod(0o755)
+            logger.debug("Copied controlscript to: %s", control_dest)
+            return True
+        except (OSError, PermissionError) as err:
+            logger.warning(
+                "Could not copy controlscript (metadata/control disabled): %s",
+                err,
+            )
+            return False
+
     async def _builtin_server_runner(self) -> None:
         """Start running the builtin snapserver."""
         assert self._snapserver_started is not None  # for type checking
@@ -191,14 +224,20 @@ class SnapCastProvider(PlayerProvider):
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
-            async for data in snapserver_proc.iter_any():
-                data = data.decode().strip()  # noqa: PLW2901
-                for line in data.split("\n"):
+            async for raw_data in snapserver_proc.iter_any():
+                text = raw_data.decode().strip()
+                for line in text.split("\n"):
                     logger.debug(line)
                     if "(Snapserver) Version 0." in line:
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
+                        # Copy control script after snapserver starts
+                        # (run in executor to avoid blocking)
+                        loop = asyncio.get_running_loop()
+                        self._controlscript_available = await loop.run_in_executor(
+                            None, self._setup_controlscript
+                        )
 
     def _get_ma_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
@@ -212,7 +251,7 @@ class SnapCastProvider(PlayerProvider):
         assert snap_id is not None  # for type checking
         return snap_id
 
-    def _generate_and_register_id(self, snap_client_id) -> str:
+    def _generate_and_register_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
         if snap_client_id not in search_dict:
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
@@ -254,8 +293,8 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                assert isinstance(ma_player, SnapCastPlayer)  # for type checking
+            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
+                ma_player = cast("SnapCastPlayer", player)
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)

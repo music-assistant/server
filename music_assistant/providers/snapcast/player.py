@@ -25,7 +25,6 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
-    CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
@@ -47,11 +46,11 @@ class SnapCastPlayer(Player):
         snap_client_id: str,
     ) -> None:
         """Init."""
-        self.provider: SnapCastProvider
+        self.provider: SnapCastProvider  # type: ignore[misc]
         self.snap_client = snap_client
         self.snap_client_id = snap_client_id
         super().__init__(provider, player_id)
-        self._stream_task: asyncio.Task | None = None
+        self._stream_task: asyncio.Task[None] | None = None
 
     @property
     def synced_to(self) -> str | None:
@@ -348,18 +347,20 @@ class SnapCastPlayer(Player):
         # prefer to reuse existing stream if possible
         if stream := self._get_snapstream(stream_name):
             return stream
-
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
-        if self.provider._use_builtin_server and queue_id:
+        if (
+            self.provider._use_builtin_server
+            and queue_id
+            and self.provider._controlscript_available
+        ):
             extra_args = (
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
                 f"--api-port={self.mass.webserver.publish_port}%20"
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
-            extra_args = ""
         else:
             extra_args = ""
 
@@ -425,10 +426,10 @@ class SnapCastPlayer(Player):
         if self.synced_to is not None:
             return
         self._attr_group_members.append(self.player_id)
-        {
-            self._attr_group_members.append(self.provider._get_ma_id(snap_client_id))
-            for snap_client_id in snap_group.clients
-            if self.provider._get_ma_id(snap_client_id) != self.player_id
-            and self.provider._snapserver.client(snap_client_id).connected
-        }
+        for snap_client_id in snap_group.clients:
+            if (
+                self.provider._get_ma_id(snap_client_id) != self.player_id
+                and self.provider._snapserver.client(snap_client_id).connected
+            ):
+                self._attr_group_members.append(self.provider._get_ma_id(snap_client_id))
         self.update_state()

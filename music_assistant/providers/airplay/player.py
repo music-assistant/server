@@ -34,12 +34,15 @@ from .constants import (
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
-from .helpers import get_primary_ip_address_from_zeroconf, is_broken_raop_model
+from .helpers import (
+    get_primary_ip_address_from_zeroconf,
+    is_airplay2_preferred_model,
+    is_broken_airplay_model,
+)
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
@@ -50,13 +53,16 @@ if TYPE_CHECKING:
     from .provider import AirPlayProvider
 
 
-BROKEN_RAOP_WARN = ConfigEntry(
-    key="broken_raop",
+BROKEN_AIRPLAY_WARN = ConfigEntry(
+    key="BROKEN_AIRPLAY",
     type=ConfigEntryType.ALERT,
     default_value=None,
     required=False,
-    label="This player is known to have broken AirPlay 1 (RAOP) support. "
-    "Playback may fail or simply be silent. There is no workaround for this issue at the moment.",
+    label="This player is known to have broken AirPlay support. "
+    "Playback may fail or simply be silent. "
+    "There is no workaround for this issue at the moment. \n"
+    "If you already enforced AirPlay 2 on the player and it remains silent, "
+    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
 )
 
 
@@ -100,7 +106,7 @@ class AirPlayPlayer(Player):
         }
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.lookup_key}
-        self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
+        self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
     @cached_property
     def protocol(self) -> StreamingProtocol:
@@ -156,7 +162,6 @@ class AirPlayPlayer(Player):
             ConfigEntry(
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
-                default_value=StreamingProtocol.RAOP.value,
                 required=False,
                 label="AirPlay version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
@@ -168,16 +173,22 @@ class AirPlayPlayer(Player):
                     ConfigValueOption("AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
                     ConfigValueOption("AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
-                hidden=True,
+                default_value=StreamingProtocol.AIRPLAY2.value
+                if is_airplay2_preferred_model(
+                    self.device_info.manufacturer, self.device_info.model
+                )
+                else StreamingProtocol.RAOP.value,
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=False,
+                default_value=True,
                 label="Enable encryption",
                 description="Enable encrypted communication with the player, "
-                "some (3rd party) players require this.",
+                "some (3rd party) players require this to be disabled.",
                 category="airplay",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
             ),
             ConfigEntry(
                 key=CONF_ALAC_ENCODE,
@@ -185,8 +196,10 @@ class AirPlayPlayer(Player):
                 default_value=True,
                 label="Enable compression",
                 description="Save some network bandwidth by sending the audio as "
-                "(lossless) ALAC at the cost of a bit CPU.",
+                "(lossless) ALAC at the cost of a bit of CPU.",
                 category="airplay",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
             ),
             CONF_ENTRY_SYNC_ADJUST,
             ConfigEntry(
@@ -197,19 +210,6 @@ class AirPlayPlayer(Player):
                 label="Device password",
                 description="Some devices require a password to connect/play.",
                 category="airplay",
-            ),
-            ConfigEntry(
-                key=CONF_READ_AHEAD_BUFFER,
-                type=ConfigEntryType.INTEGER,
-                default_value=1000,
-                required=False,
-                label="Audio buffer (ms)",
-                description="Amount of buffer (in milliseconds), "
-                "the player should keep to absorb network throughput jitter. "
-                "Lower values reduce latency but may cause dropouts. "
-                "Recommended: 1000ms for stable playback.",
-                category="airplay",
-                range=(500, 2000),
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(
@@ -228,11 +228,13 @@ class AirPlayPlayer(Player):
                     "Enable this option to ignore these reports."
                 ),
                 category="airplay",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
             ),
         ]
 
-        if is_broken_raop_model(self.device_info.manufacturer, self.device_info.model):
-            base_entries.insert(-1, BROKEN_RAOP_WARN)
+        if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
+            base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
 
         return base_entries
 
@@ -407,7 +409,7 @@ class AirPlayPlayer(Player):
         """Send PLAY (unpause) command to player."""
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY")
+                await self.stream.send_cli_command("ACTION=PLAY\n")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -420,7 +422,7 @@ class AirPlayPlayer(Player):
         async with self._lock:
             if not self.stream or not self.stream.running:
                 return
-            await self.stream.send_cli_command("ACTION=PAUSE")
+            await self.stream.send_cli_command("ACTION=PAUSE\n")
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -515,6 +517,12 @@ class AirPlayPlayer(Player):
             if child_player_to_add := cast(
                 "AirPlayPlayer | None", self.mass.players.get(player_id)
             ):
+                if (
+                    child_player_to_add.playback_state == PlaybackState.PAUSED
+                    and child_player_to_add.stream
+                ):
+                    # Stop the paused stream to avoid a deadlock situation
+                    await child_player_to_add.stream.stop()
                 if (
                     child_player_to_add.stream
                     and child_player_to_add.stream.running

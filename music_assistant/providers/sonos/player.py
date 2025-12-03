@@ -63,7 +63,6 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 
@@ -453,10 +452,6 @@ class SonosPlayer(Player):
             await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
-            # repeat the command after a while because sonos seems to miss it sometimes ?!
-            self.mass.call_later(
-                30, self.client.api.playback_session.refresh_cloud_queue(session_id)
-            )
 
     async def set_members(
         self,

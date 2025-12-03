@@ -26,7 +26,6 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
-CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
@@ -35,7 +34,17 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+AIRPLAY_PRELOAD_SECONDS: Final[int] = (
+    5  # Number of seconds (in PCM) to preload before throttling back
+)
+AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
+    200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
+)
+AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
+    2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
+)
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"
@@ -61,9 +70,9 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
 
-BROKEN_RAOP_MODELS = (
-    # A recent fw update of newer gen Sonos speakers block RAOP (airplay 1) support,
-    # basically rendering our airplay implementation useless on these devices.
+BROKEN_AIRPLAY_MODELS = (
+    # A recent fw update of newer gen Sonos speakers have AirPlay issues,
+    # basically rendering our (both AP2 and RAOP) implementation useless on these devices.
     # This list contains the models that are known to have this issue.
     # Hopefully the issue won't spread to other models.
     ("Sonos", "Era 100"),
@@ -73,6 +82,10 @@ BROKEN_RAOP_MODELS = (
     ("Sonos", "Arc Ultra"),
     # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
     ("Samsung", "*"),
+)
+
+AIRPLAY_2_DEFAULT_MODELS = (
+    # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     ("Ubiquiti Inc.", "*"),
     ("Juke Audio", "*"),
 )

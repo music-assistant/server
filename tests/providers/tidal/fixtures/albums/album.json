@@ -1,0 +1,41 @@
+{
+    "id": 67890,
+    "title": "Test Album",
+    "version": "Deluxe Edition",
+    "artists": [
+        {
+            "id": 12345,
+            "name": "Test Artist",
+            "picture": "1234-5678-90ab-cdef",
+            "type": "MAIN"
+        }
+    ],
+    "type": "ALBUM",
+    "releaseDate": "2023-01-01",
+    "availabilityDate": "2023-01-01",
+    "duration": 2400,
+    "numberOfTracks": 12,
+    "numberOfVolumes": 1,
+    "upc": "123456789012",
+    "copyright": "℗ 2023 Test Label",
+    "explicit": false,
+    "popularity": 50,
+    "cover": "abcd-ef01-2345-6789",
+    "videoCover": null,
+    "streamReady": true,
+    "streamStartDate": "2023-01-01T00:00:00.000+0000",
+    "allowStreaming": true,
+    "premiumStreamingOnly": false,
+    "numberOfVideos": 0,
+    "audioQuality": "LOSSLESS",
+    "audioModes": [
+        "STEREO"
+    ],
+    "mediaMetadata": {
+        "tags": [
+            "LOSSLESS",
+            "HIRES_LOSSLESS"
+        ]
+    },
+    "url": "http://www.tidal.com/album/67890"
+}

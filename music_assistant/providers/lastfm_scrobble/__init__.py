@@ -21,7 +21,7 @@ from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.auth import AuthenticationHelper
-from music_assistant.helpers.scrobbler import ScrobblerHelper
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -72,14 +72,13 @@ class LastFMScrobbleProvider(PluginProvider):
         await super().loaded_in_mass()
 
         # subscribe to media_item_played event
-        handler = LastFMEventHandler(self.network, self.logger)
+        handler = LastFMEventHandler(self.network, self.logger, self.config)
         self._on_unload.append(
             self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
+        """Handle unload/close of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -101,9 +100,11 @@ class LastFMEventHandler(ScrobblerHelper):
 
     network: pylast._Network
 
-    def __init__(self, network: pylast._Network, logger: logging.Logger) -> None:
+    def __init__(
+        self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
+    ) -> None:
         """Initialize."""
-        super().__init__(logger)
+        super().__init__(logger, ScrobblerConfig.create_from_config(config))
         self.network = network
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
@@ -112,7 +113,7 @@ class LastFMEventHandler(ScrobblerHelper):
         await asyncio.to_thread(
             self.network.update_now_playing,
             report.artist,
-            report.name,
+            self.get_name(report),
             report.album,
             duration=report.duration,
             mbid=report.mbid,
@@ -126,7 +127,7 @@ class LastFMEventHandler(ScrobblerHelper):
         await asyncio.to_thread(
             self.network.scrobble,
             report.artist or "unknown artist",
-            report.name,
+            self.get_name(report),
             int(time.time()),
             report.album,
             duration=report.duration,
@@ -169,7 +170,8 @@ async def get_config_entries(
         provider = str(values.get(CONF_PROVIDER))
 
     # collect all config entries to show
-    entries: list[ConfigEntry] = [
+    entries: list[ConfigEntry] = ScrobblerConfig.get_shared_config_entries(values)
+    entries += [
         ConfigEntry(
             key=CONF_PROVIDER,
             type=ConfigEntryType.STRING,

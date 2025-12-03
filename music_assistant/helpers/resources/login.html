@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Music Assistant</title>
+    <link rel="stylesheet" href="resources/common.css">
+    <style>
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-container {
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
+                        0 0 0 1px var(--border);
+            width: 100%;
+            max-width: 400px;
+            padding: 48px 40px;
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--fg);
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-tertiary);
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+
+        .oauth-providers {
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <img src="logo.png" alt="Music Assistant">
+        </div>
+
+        <h1>Music Assistant</h1>
+        <p class="subtitle">External Client Authentication</p>
+
+        <div id="error" class="error"></div>
+
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autofocus placeholder="Enter your username">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required placeholder="Enter your password">
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="loginBtn">
+                <span id="loginText">Sign In</span>
+                <span id="loginLoading" class="loading" style="display: none;"></span>
+            </button>
+        </form>
+
+        <div id="oauthProviders" class="oauth-providers">
+            <!-- OAuth providers will be inserted here -->
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        // Get return_url and device_name from query string
+        const urlParams = new URLSearchParams(window.location.search);
+        const returnUrl = urlParams.get('return_url');
+        const deviceName = urlParams.get('device_name');
+
+        // Show error message
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+        }
+
+        // Hide error message
+        function hideError() {
+            document.getElementById('error').classList.remove('show');
+        }
+
+        // Set loading state
+        function setLoading(loading) {
+            const btn = document.getElementById('loginBtn');
+            const text = document.getElementById('loginText');
+            const loadingEl = document.getElementById('loginLoading');
+
+            btn.disabled = loading;
+            text.style.display = loading ? 'none' : 'inline';
+            loadingEl.style.display = loading ? 'inline-block' : 'none';
+        }
+
+        // Load OAuth providers
+        async function loadProviders() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/providers`);
+                const providers = await response.json();
+
+                const oauthProviders = providers.filter(p => p.requires_redirect && p.provider_type !== 'builtin');
+
+                if (oauthProviders.length > 0) {
+                    const container = document.getElementById('oauthProviders');
+
+                    // Add divider
+                    const divider = document.createElement('div');
+                    divider.className = 'divider';
+                    divider.innerHTML = '<span>Or continue with</span>';
+                    container.appendChild(divider);
+
+                    // Add OAuth buttons
+                    oauthProviders.forEach(provider => {
+                        const btn = document.createElement('button');
+                        btn.className = 'btn btn-secondary';
+                        btn.type = 'button';
+
+                        let providerName = provider.provider_type;
+                        if (provider.provider_type === 'homeassistant') {
+                            providerName = 'Home Assistant';
+                        } else if (provider.provider_type === 'google') {
+                            providerName = 'Google';
+                        }
+
+                        btn.innerHTML = `<span>Sign in with ${providerName}</span>`;
+                        btn.onclick = () => initiateOAuth(provider.provider_id);
+
+                        container.appendChild(btn);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load providers:', error);
+            }
+        }
+
+        // Handle form submission
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            setLoading(true);
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const requestBody = {
+                    provider_id: 'builtin',
+                    credentials: { username, password }
+                };
+
+                // Include device_name if provided via query parameter
+                if (deviceName) {
+                    requestBody.device_name = deviceName;
+                }
+
+                // Include return_url if present
+                if (returnUrl) {
+                    requestBody.return_url = returnUrl;
+                }
+
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.redirect_to) {
+                        window.location.href = data.redirect_to;
+                    } else {
+                        window.location.href = `/?code=${encodeURIComponent(data.token)}`;
+                    }
+                } else {
+                    showError(data.error || 'Login failed');
+                }
+            } catch (error) {
+                showError('Network error. Please try again.');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        // Initiate OAuth flow
+        async function initiateOAuth(providerId) {
+            try {
+                let authorizeUrl = `${API_BASE}/auth/authorize?provider_id=${providerId}`;
+
+                // Pass return_url to authorize endpoint if present
+                if (returnUrl) {
+                    authorizeUrl += `&return_url=${encodeURIComponent(returnUrl)}`;
+                }
+
+                const response = await fetch(authorizeUrl);
+                const data = await response.json();
+
+                if (data.authorization_url) {
+                    // Redirect directly to OAuth provider
+                    window.location.href = data.authorization_url;
+                } else {
+                    showError('Failed to initiate OAuth flow');
+                }
+            } catch (error) {
+                showError('Network error. Please try again.');
+            }
+        }
+
+        // Clear error on input
+        document.querySelectorAll('input').forEach(input => {
+            input.addEventListener('input', hideError);
+        });
+
+        // Load providers on page load
+        loadProviders();
+    </script>
+</body>
+</html>

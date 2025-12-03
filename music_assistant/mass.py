@@ -7,7 +7,7 @@ import logging
 import os
 import pathlib
 import threading
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
 from uuid import uuid4
 
@@ -45,6 +45,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players.player_controller import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
@@ -276,8 +277,19 @@ class MusicAssistant:
         self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
         """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+
         return [
-            x for x in self._providers.values() if provider_type is None or provider_type == x.type
+            x
+            for x in self._providers.values()
+            if (provider_type is None or provider_type == x.type)
+            # handle optional user (music) provider filter
+            and (
+                not user_provider_filter
+                or x.instance_id in user_provider_filter
+                or x.type != ProviderType.MUSIC
+            )
         ]
 
     @api_command("logging/get")
@@ -482,17 +494,29 @@ class MusicAssistant:
     def register_api_command(
         self,
         command: str,
-        handler: Callable[..., Coroutine[Any, Any, Any]],
+        handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
+        authenticated: bool = True,
+        required_role: str | None = None,
+        alias: bool = False,
     ) -> Callable[[], None]:
-        """
-        Dynamically register a command on the API.
+        """Dynamically register a command on the API.
+
+        :param command: The command name/path.
+        :param handler: The function to handle the command.
+        :param authenticated: Whether authentication is required (default: True).
+        :param required_role: Required user role ("admin" or "user")
+            None means any authenticated user.
+        :param alias: Whether this is an alias for backward compatibility (default: False).
+            Aliases are not shown in API documentation but remain functional.
 
         Returns handle to unregister.
         """
         if command in self.command_handlers:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
-        self.command_handlers[command] = APICommandHandler.parse(command, handler)
+        self.command_handlers[command] = APICommandHandler.parse(
+            command, handler, authenticated, required_role, alias
+        )
 
         def unregister() -> None:
             self.command_handlers.pop(command)
@@ -630,14 +654,22 @@ class MusicAssistant:
             self.music,
             self.players,
             self.player_queues,
+            self.webserver,
+            self.webserver.auth,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
                     continue
-                obj = getattr(cls, attr_name)
+                try:
+                    obj = getattr(cls, attr_name)
+                except (AttributeError, RuntimeError):
+                    # Skip properties that fail during initialization
+                    continue
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
-                    self.register_api_command(obj.api_cmd, obj)
+                    authenticated = getattr(obj, "api_authenticated", True)
+                    required_role = getattr(obj, "api_required_role", None)
+                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role)
 
     async def _load_providers(self) -> None:
         """Load providers from config."""

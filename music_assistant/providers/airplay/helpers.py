@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import time
@@ -10,10 +11,16 @@ from typing import TYPE_CHECKING
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.airplay.constants import BROKEN_RAOP_MODELS, StreamingProtocol
+from music_assistant.providers.airplay.constants import (
+    AIRPLAY_2_DEFAULT_MODELS,
+    BROKEN_AIRPLAY_MODELS,
+    StreamingProtocol,
+)
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+_LOGGER = logging.getLogger(__name__)
 
 # NTP epoch delta: difference between Unix epoch (1970) and NTP epoch (1900)
 NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
@@ -107,10 +114,18 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
     return None
 
 
-def is_broken_raop_model(manufacturer: str, model: str) -> bool:
+def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
     """Check if a model is known to have broken RAOP support."""
-    for broken_manufacturer, broken_model in BROKEN_RAOP_MODELS:
+    for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
         if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
+            return True
+    return False
+
+
+def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
+    """Check if a model is known to work better with AirPlay 2 protocol."""
+    for ap2_manufacturer, ap2_model in AIRPLAY_2_DEFAULT_MODELS:
+        if ap2_manufacturer in (manufacturer, "*") and ap2_model in (model, "*"):
             return True
     return False
 
@@ -137,20 +152,15 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                 ]
                 passing_output = "cliraop check"
             else:
-                config_file = os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf")
                 args = [
                     cli_path,
                     "--testrun",
-                    "--config",
-                    config_file,
                 ]
+                passing_output = "cliap2 check"
 
             returncode, output = await check_output(*args)
-            if (
-                protocol == StreamingProtocol.RAOP
-                and returncode == 0
-                and output.strip().decode() == passing_output
-            ) or (protocol == StreamingProtocol.AIRPLAY2 and returncode == 0):
+            _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
+            if returncode == 0 and output.strip().decode() == passing_output:
                 return cli_path
         except OSError:
             pass

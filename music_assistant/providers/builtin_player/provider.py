@@ -9,6 +9,7 @@ import shortuuid
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
 from music_assistant_models.enums import BuiltinPlayerEventType, EventType, PlayerFeature
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -69,6 +70,19 @@ class BuiltinPlayerProvider(PlayerProvider):
             PlayerFeature.PAUSE,
             PlayerFeature.POWER,
         }
+
+        # special case: user has player filter enabled but wants
+        # to use the builtin player on their device, so add it to their filter
+        current_user = get_current_user()
+        if (
+            current_user
+            and current_user.player_filter
+            and player_id not in current_user.player_filter
+        ):
+            current_user.player_filter.append(player_id)
+            await self.mass.webserver.auth.update_user_filters(
+                current_user, player_filter=current_user.player_filter, provider_filter=None
+            )
 
         player = self.mass.players.get(player_id)
 

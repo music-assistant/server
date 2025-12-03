@@ -13,20 +13,20 @@ dependencies = [
   "aiodns>=3.2.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.1",
+  "aiohttp==3.13.2",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
-  "certifi==2025.10.5",
+  "certifi==2025.11.12",
   "colorlog==6.10.1",
   "cryptography==46.0.3",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "get-mac==0.9.2",
-  "mashumaro==3.16",
-  "music-assistant-frontend==2.17.7",
-  "music-assistant-models==1.1.68",
+  "mashumaro==3.17",
+  "music-assistant-frontend==2.17.23",
+  "music-assistant-models==1.1.75",
   "mutagen==1.47.0",
   "orjson==3.11.4",
   "pillow==11.3.0",
@@ -39,9 +39,9 @@ dependencies = [
   "zeroconf==0.148.0",
   "uv>=0.8.0",
   "librosa==0.11.0",
-  "llvmlite==0.44.0",
-  "numpy==2.2.6",
   "gql[all]==4.0.0",
+  "aiovban>=0.6.3",
+  "aiortc>=1.6.0",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -52,7 +52,6 @@ version = "0.0.0"
 [project.optional-dependencies]
 test = [
   "codespell==2.4.1",
-  "isort==6.0.1",
   "mypy==1.18.2",
   "pre-commit==4.3.0",
   "pre-commit-hooks==6.0.0",
@@ -61,7 +60,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
   "tomli==2.3.0",
-  "ruff==0.13.2",
+  "ruff==0.14.6",
 ]
 
 [project.scripts]
@@ -69,7 +68,8 @@ mass = "music_assistant.__main__:main"
 
 [tool.codespell]
 # explicit is misspelled in the iTunes API
-ignore-words-list = "provid,hass,followings,childs,explict,commitish,"
+# "additionals" is a fixed field name from the Nicovideo API fixtures
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 """
@@ -131,30 +131,13 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/cache.py$',
-  '^music_assistant/controllers/config.py$',
-  '^music_assistant/controllers/media/albums.py*$',
-  '^music_assistant/controllers/media/artists.py*$',
-  '^music_assistant/controllers/media/audiobooks.py*$',
-  '^music_assistant/controllers/media/base.py*$',
-  '^music_assistant/controllers/media/playlists.py*$',
-  '^music_assistant/controllers/media/podcasts.py*$',
-  '^music_assistant/controllers/media/tracks.py*$',
   '^music_assistant/controllers/music.py$',
-  '^music_assistant/controllers/player_queues.py$',
-  '^music_assistant/controllers/streams.py$',
-  '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
-  '^music_assistant/providers/qobuz/.*$',
-  '^music_assistant/providers/siriusxm/.*$',
-  '^music_assistant/providers/squeezelite/.*$',
   '^music_assistant/providers/sonos/.*$',
-  '^music_assistant/providers/snapcast/.*$',
   '^music_assistant/providers/ytmusic/.*$',
-  '^music_assistant/providers/airplay/protocols/airplay2.py',
 ]
 extra_checks = false
 local_partial_types = true
@@ -182,6 +165,10 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+filterwarnings = [
+  # Suppress Python 3.13 AsyncMock internal warnings about unawaited coroutines
+  "ignore:coroutine.*was never awaited:RuntimeWarning",
+]
 
 [tool.ruff.lint]
 ignore = [
@@ -251,10 +238,8 @@ ignore = [
   "C901",
   "PTH119",
   "PTH116",
-  "DTZ003",
   "RUF012",
   "S304",
-  "DTZ003",
   "RET507",
   "RUF006",
   "TRY300",
@@ -263,12 +248,10 @@ ignore = [
   "N818",
   "S307",
   "B007",
-  "RUF009",
   "ANN204",
   "PTH202",
   "ASYNC109",
   "ASYNC110",
-  "A005",
 ]
 
 select = ["ALL"]

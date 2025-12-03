@@ -22,7 +22,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
-    PlaybackState,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -143,7 +142,7 @@ class SpotifyConnectProvider(PluginProvider):
             name=self.name,
             # we set passive to true because we
             # dont allow this source to be selected directly
-            passive=False,
+            passive=True,
             # Playback control capabilities will be enabled when Spotify Web API is available
             can_play_pause=False,
             can_seek=False,
@@ -168,12 +167,12 @@ class SpotifyConnectProvider(PluginProvider):
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._spotify_device_id: str | None = None
+        self._last_session_connected_time: float = 0
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._librespot_bin = await get_librespot_binary()
-        self.player = self.mass.players.get(self.mass_player_id)
-        if self.player:
+        if self.mass.players.get(self.mass_player_id):
             self._setup_player_daemon()
 
         # Subscribe to events
@@ -246,7 +245,6 @@ class SpotifyConnectProvider(PluginProvider):
         self._source_details.can_play_pause = has_web_api
         self._source_details.can_seek = has_web_api
         self._source_details.can_next_previous = has_web_api
-        self._source_details.passive = not has_web_api
 
         # Register or unregister callbacks based on availability
         if has_web_api:
@@ -255,36 +253,19 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.on_next = self._on_next
             self._source_details.on_previous = self._on_previous
             self._source_details.on_seek = self._on_seek
-            self._source_details.on_select = self._on_select
         else:
             self._source_details.on_play = None
             self._source_details.on_pause = None
             self._source_details.on_next = None
             self._source_details.on_previous = None
             self._source_details.on_seek = None
-            self._source_details.on_select = None
 
         # Trigger player update to reflect capability changes
         if self._source_details.in_use_by:
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
-    async def _on_select(self) -> None:
-        """Handle source selection - transfer Spotify playback to this device."""
-        if not self._spotify_provider:
-            return
-        try:
-            # Transfer playback to this device when it's selected
-            await self._ensure_active_device()
-            await self._spotify_provider._put_data("me/player/play")
-        except Exception as err:
-            self.logger.debug("Failed to transfer playback on source selection: %s", err)
-
     async def _on_play(self) -> None:
         """Handle play command via Spotify Web API."""
-        attached_player = self.mass.players.get(self.mass_player_id)
-        if attached_player and attached_player.playback_state == PlaybackState.IDLE:
-            # edge case: player is not paused, so we need to select this source first
-            await self.mass.players.select_source(self.mass_player_id, self.instance_id)
         if not self._spotify_provider:
             raise UnsupportedFeaturedException(
                 "Playback control requires a matching Spotify music provider"
@@ -428,6 +409,45 @@ class SpotifyConnectProvider(PluginProvider):
         if self._connected_spotify_username:
             self.mass.create_task(self._check_spotify_provider_match())
 
+    def _process_librespot_stderr_line(self, line: str) -> None:
+        """
+        Process a single line from librespot stderr output.
+
+        :param line: A line from librespot's stderr output.
+        """
+        if (
+            not self._librespot_started.is_set()
+            and "Using StdoutSink (pipe) with format: S16" in line
+        ):
+            self._librespot_started.set()
+        if "error sending packet Os" in line:
+            return
+        if "dropping truncated packet" in line:
+            return
+        if "couldn't parse packet from " in line:
+            return
+        if "Authenticated as '" in line:
+            # Extract username from librespot authentication message
+            # Format: "Authenticated as 'username'"
+            try:
+                parts = line.split("Authenticated as '")
+                if len(parts) > 1:
+                    username_part = parts[1].split("'")
+                    if len(username_part) > 0 and username_part[0]:
+                        username = username_part[0]
+                        self._connected_spotify_username = username
+                        self.logger.debug("Authenticated to Spotify as: %s", username)
+                        # Check for provider match now that we have the username
+                        self.mass.create_task(self._check_spotify_provider_match())
+                    else:
+                        self.logger.warning("Could not parse Spotify username from line: %s", line)
+                else:
+                    self.logger.warning("Could not parse Spotify username from line: %s", line)
+            except Exception as err:
+                self.logger.warning("Error parsing Spotify username from line: %s - %s", line, err)
+            return
+        self.logger.debug(line)
+
     async def _librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
@@ -459,7 +479,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "--volume-ctrl",
                 "fixed",
                 "--initial-volume",
-                f"{self.player.volume_level if self.player and self.player.volume_level else 100}",
+                "100",
                 "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
@@ -473,44 +493,7 @@ class SpotifyConnectProvider(PluginProvider):
 
             # keep reading logging from stderr until exit
             async for line in librespot.iter_stderr():
-                if (
-                    not self._librespot_started.is_set()
-                    and "Using StdoutSink (pipe) with format: S16" in line
-                ):
-                    self._librespot_started.set()
-                if "error sending packet Os" in line:
-                    continue
-                if "dropping truncated packet" in line:
-                    continue
-                if "couldn't parse packet from " in line:
-                    continue
-                if "Authenticated as '" in line:
-                    # Extract username from librespot authentication message
-                    # Format: "Authenticated as 'username'"
-                    try:
-                        parts = line.split("Authenticated as '")
-                        if len(parts) > 1:
-                            username_part = parts[1].split("'")
-                            if len(username_part) > 0 and username_part[0]:
-                                username = username_part[0]
-                                self._connected_spotify_username = username
-                                self.logger.debug("Authenticated to Spotify as: %s", username)
-                                # Check for provider match now that we have the username
-                                self.mass.create_task(self._check_spotify_provider_match())
-                            else:
-                                self.logger.warning(
-                                    "Could not parse Spotify username from line: %s", line
-                                )
-                        else:
-                            self.logger.warning(
-                                "Could not parse Spotify username from line: %s", line
-                            )
-                    except Exception as err:
-                        self.logger.warning(
-                            "Error parsing Spotify username from line: %s - %s", line, err
-                        )
-                    continue
-                self.logger.debug(line)
+                self._process_librespot_stderr_line(line)
         finally:
             await librespot.close()
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
@@ -530,7 +513,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._runner_task = self.mass.create_task(self._librespot_runner())
 
     def _on_mass_player_event(self, event: MassEvent) -> None:
-        """Handle incoming event from linked airplay player."""
+        """Handle incoming event from linked player."""
         if event.object_id != self.mass_player_id:
             return
         if event.event == EventType.PLAYER_REMOVED:
@@ -551,6 +534,8 @@ class SpotifyConnectProvider(PluginProvider):
         # handle session connected event
         # extract the connected username and check for matching Spotify provider
         if event_name == "session_connected":
+            # Track when session connected for volume event filtering
+            self._last_session_connected_time = time.time()
             username = json_data.get("user_name")
             self.logger.debug(
                 "Session connected event - username from event: %s, current username: %s",
@@ -571,6 +556,13 @@ class SpotifyConnectProvider(PluginProvider):
             if self._spotify_provider is not None:
                 self._spotify_provider = None
                 self._update_source_capabilities()
+
+        # handle paused event - clear in_use_by so UI shows correct active source
+        # this happens when MA starts playing while Spotify Connect was active
+        if event_name == "paused" and self._source_details.in_use_by:
+            self.logger.debug("Spotify Connect paused, releasing player %s", self.mass_player_id)
+            self._source_details.in_use_by = None
+            self.mass.players.trigger_player_update(self.mass_player_id)
 
         # handle session connected event
         # this player has become the active spotify connect player
@@ -608,6 +600,10 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.metadata.duration = (
                 int(duration_ms) // 1000 if duration_ms is not None else None
             )
+            # Reset elapsed time when track changes to prevent showing stale elapsed time
+            # from previous track
+            self._source_details.metadata.elapsed_time = 0
+            self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if track_meta := json_data.get("track_metadata_fields", {}):
             if artists := track_meta.get("artists"):
@@ -626,12 +622,23 @@ class SpotifyConnectProvider(PluginProvider):
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
-            # Spotify Connect volume is 0-65535
-            volume = int(int(volume) / 65535 * 100)
-            try:
-                await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
-            except UnsupportedFeaturedException:
-                self.logger.debug(f"Player {self.mass_player_id} does not support volume control")
+            # Ignore volume_changed events that fire immediately after session_connect
+            # We want to use the volume from MA in that case
+            time_since_connect = time.time() - self._last_session_connected_time
+            if time_since_connect < 3.0:
+                self.logger.debug(
+                    "Ignoring initial volume_changed event (%.2fs after session_connect)",
+                    time_since_connect,
+                )
+            else:
+                # Spotify Connect volume is 0-65535
+                volume = int(int(volume) / 65535 * 100)
+                try:
+                    await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
+                except UnsupportedFeaturedException:
+                    self.logger.debug(
+                        "Player %s does not support volume control", self.mass_player_id
+                    )
 
         # signal update to connected player
         if self._source_details.in_use_by:

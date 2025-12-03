@@ -20,6 +20,9 @@ on:
           - beta
           - stable
         default: nightly
+      important_notes:
+        description: "Important notes (breaking changes, critical info, etc.)"
+        required: false
 
 permissions:
   actions: write
@@ -46,7 +49,7 @@ jobs:
           echo "Release channel: $CHANNEL"
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0 # Fetch all history for proper comparison
 
@@ -250,6 +253,7 @@ jobs:
     with:
       version: ${{ needs.check-and-release.outputs.version }}
       channel: ${{ needs.check-and-release.outputs.channel }}
+      important_notes: ${{ inputs.important_notes }}
     secrets:
       PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
       PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}

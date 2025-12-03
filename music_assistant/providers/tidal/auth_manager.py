@@ -24,6 +24,8 @@ TOKEN_TYPE = "Bearer"
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
 REDIRECT_URI = "https://tidal.com/android/login/auth"
 
+TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
+
 
 @dataclass
 class TidalUser:
@@ -80,7 +82,7 @@ class TidalAuthManager:
         self.http_session = http_session
         self.update_config = config_updater
         self.logger = logger
-        self._auth_info = None
+        self._auth_info: dict[str, Any] | None = None
         self.user = TidalUser()
 
     async def initialize(self, auth_data: str) -> bool:
@@ -124,8 +126,8 @@ class TidalAuthManager:
             return False
 
         # Check if token is expired
-        expires_at = self._auth_info.get("expires_at", 0)  # type: ignore[unreachable]
-        if expires_at > time.time() - 60:
+        expires_at = self._auth_info.get("expires_at", 0)
+        if expires_at > time.time() + TOKEN_REFRESH_BUFFER:
             return True
 
         # Need to refresh token
@@ -136,7 +138,7 @@ class TidalAuthManager:
         if not self._auth_info:
             return False
 
-        refresh_token = self._auth_info.get("refresh_token")  # type: ignore[unreachable]
+        refresh_token = self._auth_info.get("refresh_token")
         if not refresh_token:
             return False
 
