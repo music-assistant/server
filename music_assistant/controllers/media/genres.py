@@ -99,11 +99,19 @@ class GenresController(MediaControllerBase[Genre]):
         self.mass.register_api_command("music/genres/genre_playlists", self.genre_playlists)
         self.mass.register_api_command("music/genres/genre_podcasts", self.genre_podcasts)
         self.mass.register_api_command("music/genres/genre_audiobooks", self.genre_audiobooks)
-        self.mass.register_api_command("music/genres/add_alias", self.add_alias)
-        self.mass.register_api_command("music/genres/remove_alias", self.remove_alias)
-        self.mass.register_api_command("music/genres/create", self.create)
-        self.mass.register_api_command("music/genres/merge", self.merge_genres)
-        self.mass.register_api_command("music/genres/split", self.split_genre)
+        self.mass.register_api_command(
+            "music/genres/add_alias", self.add_alias, required_role="admin"
+        )
+        self.mass.register_api_command(
+            "music/genres/remove_alias", self.remove_alias, required_role="admin"
+        )
+        self.mass.register_api_command("music/genres/create", self.create, required_role="admin")
+        self.mass.register_api_command(
+            "music/genres/merge", self.merge_genres, required_role="admin"
+        )
+        self.mass.register_api_command(
+            "music/genres/split", self.split_genre, required_role="admin"
+        )
         # register event listeners
         self.mass.subscribe(self._on_item_added, EventType.MEDIA_ITEM_ADDED)
         self.mass.subscribe(self._on_item_added, EventType.MEDIA_ITEM_UPDATED)
