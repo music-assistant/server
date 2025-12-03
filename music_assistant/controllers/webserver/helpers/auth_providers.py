@@ -291,7 +291,6 @@ class BuiltinLoginProvider(LoginProvider):
         if not username or not password:
             return AuthResult(success=False, error="Username and password required")
 
-        # Normalize username for case-insensitive authentication
         username = normalize_username(username)
 
         # Check rate limit before attempting authentication
