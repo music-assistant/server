@@ -69,7 +69,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        genre_filter: list[int] | None = None,
+        genres: list[int] | None = None,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -81,6 +81,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
+        :param genres: Optional list of genre library item IDs to filter by.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -93,7 +94,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            genre_filter=genre_filter,
+            genres=genres,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -109,7 +110,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
-                genre_filter=genre_filter,
+                genres=genres,
             )
         return result
 

@@ -246,9 +246,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        genre_filter: list[int] | None = None,
+        genres: list[int] | None = None,
     ) -> list[ItemCls]:
-        """Get in-database items."""
+        """Get in-database items.
+
+        :param genres: Optional list of genre library item IDs to filter by.
+                      Only items associated with these genres will be returned.
+        """
         return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -258,7 +262,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
-            genre_filter=genre_filter,
+            genres=genres,
         )
 
     async def iter_library_items(
@@ -321,15 +325,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search_query: str,
         provider_instance_id_or_domain: str,
         limit: int = 25,
-        genre_filter: list[int] | None = None,
+        genres: list[int] | None = None,
     ) -> list[ItemCls]:
         """Search database or provider with given query."""
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return await self.library_items(
-                search=search_query, limit=limit, genre_filter=genre_filter
-            )
+            return await self.library_items(search=search_query, limit=limit, genres=genres)
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
@@ -767,6 +769,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
+        genres: list[int] | None = None,
         genre_filter: list[int] | None = None,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
