@@ -7,11 +7,10 @@ bridging them to the local WebSocket API.
 
 from __future__ import annotations
 
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from hass_client.exceptions import FailedCommand
+from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import EventType
 
@@ -150,10 +149,16 @@ class RemoteAccessManager:
             if not (logged_in and active_subscription):
                 return False, None
             # HA Cloud is available, get ICE servers
-            # note that this command has been added in HA 2025.12
-            with suppress(FailedCommand):
+            # The cloud/webrtc/ice_servers command was added in HA 2025.12.0b6
+            if AwesomeVersion(hass_client.version) >= AwesomeVersion("2025.12.0b6"):
                 if ice_servers := await hass_client.send_command("cloud/webrtc/ice_servers"):
                     return True, ice_servers
+            else:
+                self.logger.debug(
+                    "HA version %s not supported for optimized WebRTC mode "
+                    "(requires 2025.12.0b6 or later)",
+                    hass_client.version,
+                )
             self.logger.debug("HA Cloud available but no ICE servers returned")
         except Exception as err:
             self.logger.exception("Error getting HA Cloud status: %s", err)

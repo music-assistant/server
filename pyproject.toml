@@ -18,6 +18,7 @@ dependencies = [
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
+  "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "cryptography==46.0.3",
