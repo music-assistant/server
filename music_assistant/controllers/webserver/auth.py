@@ -501,7 +501,6 @@ class AuthenticationManager:
         :param player_filter: Optional list of player IDs user has access to.
         :param provider_filter: Optional list of provider instance IDs user has access to.
         """
-        # Normalize username to lowercase for case-insensitive authentication
         username = normalize_username(username)
 
         user_id = secrets.token_urlsafe(32)
