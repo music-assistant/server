@@ -553,7 +553,6 @@ class AuthenticationManager:
         display_name = "Home Assistant Integration"
         role = UserRole.USER
 
-        # Normalize username for case-insensitive lookup
         normalized_username = normalize_username(username)
 
         # Try to find existing user by username
