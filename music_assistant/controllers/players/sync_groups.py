@@ -423,12 +423,7 @@ class SyncGroupPlayer(GroupPlayer):
             if member.player_id == self.sync_leader.player_id:
                 # skip sync leader
                 continue
-            if (
-                member.synced_to == self.sync_leader.player_id
-                and member.player_id in self.sync_leader.group_members
-            ):
-                # already synced
-                continue
+            # Always add to members_to_sync to prevent them from being removed below
             members_to_sync.append(member.player_id)
         for former_members in self.sync_leader.group_members:
             if (

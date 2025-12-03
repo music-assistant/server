@@ -56,6 +56,7 @@ from .helpers.auth_middleware import (
     set_current_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider
+from .remote_access import RemoteAccessManager
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
@@ -91,6 +92,7 @@ class WebserverController(CoreController):
         )
         self.manifest.icon = "web-box"
         self.auth = AuthenticationManager(self)
+        self.remote_access = RemoteAccessManager(self)
 
     @property
     def base_url(self) -> str:
@@ -372,8 +374,12 @@ class WebserverController(CoreController):
             # announce to HA supervisor
             await self._announce_to_homeassistant()
 
+        # Setup remote access after webserver is running
+        await self.remote_access.setup()
+
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.remote_access.close()
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()

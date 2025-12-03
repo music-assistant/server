@@ -18,6 +18,7 @@ dependencies = [
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
+  "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "cryptography==46.0.3",
@@ -25,7 +26,7 @@ dependencies = [
   "ifaddr==0.2.0",
   "get-mac==0.9.2",
   "mashumaro==3.17",
-  "music-assistant-frontend==2.17.21",
+  "music-assistant-frontend==2.17.24",
   "music-assistant-models==1.1.75",
   "mutagen==1.47.0",
   "orjson==3.11.4",
@@ -41,6 +42,7 @@ dependencies = [
   "librosa==0.11.0",
   "gql[all]==4.0.0",
   "aiovban>=0.6.3",
+  "aiortc>=1.6.0",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -52,7 +54,7 @@ version = "0.0.0"
 test = [
   "codespell==2.4.1",
   "mypy==1.18.2",
-  "pre-commit==4.3.0",
+  "pre-commit==4.5.0",
   "pre-commit-hooks==6.0.0",
   "pytest==8.4.2",
   "pytest-aiohttp==1.1.0",
