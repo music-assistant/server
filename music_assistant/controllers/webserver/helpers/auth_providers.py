@@ -658,7 +658,6 @@ class HomeAssistantOAuthProvider(LoginProvider):
         if user:
             return user
 
-        # Normalize username for case-insensitive lookup
         username = normalize_username(username)
 
         # Check if a user with this username already exists (from built-in provider)
