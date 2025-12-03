@@ -91,6 +91,12 @@ class WebsocketClientHandler:
         server_info = self.mass.get_server_info()
         await self._send_message(server_info)
 
+        # Block until onboarding is complete
+        if not self.mass.config.onboard_done:
+            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await wsock.close()
+            return wsock
+
         # For Ingress connections, auto-create/link user and subscribe to events immediately
         # For regular connections, events will be subscribed after successful authentication
         if self._is_ingress:
@@ -361,11 +367,9 @@ class WebsocketClientHandler:
             )
 
             if not user:
-                # Security: Ensure at least one user exists (setup should have been completed)
-                if not await self.webserver.auth.has_users():
-                    # No users exist - setup has not been completed
-                    # This should not happen as the server redirects to /setup
-                    self._logger.warning("Ingress connection attempted before setup completed")
+                # Only auto-create users after onboarding is complete
+                if not self.mass.config.onboard_done:
+                    self._logger.warning("Ingress connection attempted before setup")
                     return
 
                 # Check if a user with this username already exists

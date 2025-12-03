@@ -467,6 +467,10 @@ class WebserverController(CoreController):
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
+        # Block until onboarding is complete
+        if not self.mass.config.onboard_done:
+            return web.Response(status=503, text="Setup required")
+
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
@@ -647,6 +651,18 @@ class WebserverController(CoreController):
 
     async def _handle_auth_login(self, request: web.Request) -> web.Response:
         """Handle login request."""
+        # Block until onboarding is complete
+        if not self.mass.config.onboard_done:
+            return web.json_response(
+                {"success": False, "error": "Setup required"},
+                status=403,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+            )
+
         try:
             if not request.can_read_body:
                 return web.Response(status=400, text="Body required")
