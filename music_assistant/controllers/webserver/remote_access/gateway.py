@@ -88,6 +88,7 @@ class WebRTCGateway:
         self.logger = LOGGER
 
         self.ice_servers = ice_servers or [
+            {"urls": "stun:stun.home-assistant.io:3478"},
             {"urls": "stun:stun.l.google.com:19302"},
             {"urls": "stun:stun1.l.google.com:19302"},
             {"urls": "stun:stun.cloudflare.com:3478"},
@@ -246,7 +247,7 @@ class WebRTCGateway:
                 "type": "register-server",
                 "remoteId": self.remote_id,
             }
-            self.logger.info(
+            self.logger.debug(
                 "Sending registration to signaling server with Remote ID: %s",
                 self.remote_id,
             )
