@@ -27,6 +27,17 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
 
+
+def normalize_username(username: str) -> str:
+    """
+    Normalize username to lowercase for case-insensitive comparison.
+
+    :param username: The username to normalize.
+    :return: Normalized username (lowercase, stripped).
+    """
+    return username.strip().lower()
+
+
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 
@@ -279,6 +290,8 @@ class BuiltinLoginProvider(LoginProvider):
 
         if not username or not password:
             return AuthResult(success=False, error="Username and password required")
+
+        username = normalize_username(username)
 
         # Check rate limit before attempting authentication
         allowed, remaining_delay = await self._rate_limiter.check_rate_limit(username)
@@ -643,6 +656,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         )
         if user:
             return user
+
+        username = normalize_username(username)
 
         # Check if a user with this username already exists (from built-in provider)
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
