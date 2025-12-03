@@ -261,7 +261,7 @@ class ChromecastPlayer(Player):
             "Positive values delay playback, negative values advance it. "
             "Use this to compensate for device-specific audio latency.",
             required=False,
-            default_value=-350,
+            default_value=-300,
             range=(-1000, 1000),
             hidden=not resonate_available or self.type == PlayerType.GROUP,
         )
