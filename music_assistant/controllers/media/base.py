@@ -246,6 +246,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        genre_filter: list[int] | None = None,
     ) -> list[ItemCls]:
         """Get in-database items."""
         return await self._get_library_items_by_query(
@@ -257,6 +258,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
+            genre_filter=genre_filter,
         )
 
     async def iter_library_items(
@@ -319,12 +321,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search_query: str,
         provider_instance_id_or_domain: str,
         limit: int = 25,
+        genre_filter: list[int] | None = None,
     ) -> list[ItemCls]:
         """Search database or provider with given query."""
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return await self.library_items(search=search_query, limit=limit)
+            return await self.library_items(
+                search=search_query, limit=limit, genre_filter=genre_filter
+            )
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
@@ -762,6 +767,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
+        genre_filter: list[int] | None = None,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
         query_params = extra_query_params or {}
@@ -772,12 +778,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if order_by and order_by.startswith("random"):
             self._apply_random_subquery(
                 query_parts=query_parts,
+
                 query_params=query_params,
+
                 join_parts=join_parts,
+
                 favorite=favorite,
+
                 search=search,
+
                 provider_filter=provider_filter,
+
                 limit=limit,
+                genre_filter=genre_filter,
             )
         else:
             # apply filters
@@ -788,6 +801,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 favorite=favorite,
                 search=search,
                 provider_filter=provider_filter,
+                genre_filter=genre_filter,
             )
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
@@ -823,6 +837,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         provider_filter: list[str] | None,
         limit: int,
+        genre_filter: list[int] | None = None,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
         sub_query_parts = query_parts.copy()
@@ -836,6 +851,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             favorite=favorite,
             search=search,
             provider_filter=provider_filter,
+            genre_filter=genre_filter
         )
 
         # Build the subquery
@@ -864,11 +880,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None,
         search: str | None,
         provider_filter: list[str] | None,
+        genre_filter: list[int] | None,
     ) -> None:
         """Apply search, favorite, and provider filters."""
         # handle search
-        if search:
+        if search and genre_filter:
+            ids_str = ",".join(str(x) for x in genre_filter)
+            query_parts.append(
+                f"({self.db_table}.search_name LIKE :search OR "
+                f"{self.db_table}.item_id IN ({ids_str}))"
+            )
+        elif search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
+        elif genre_filter:
+            ids_str = ",".join(str(x) for x in genre_filter)
+            query_parts.append(f"{self.db_table}.item_id IN ({ids_str})")
+
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")

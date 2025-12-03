@@ -50,6 +50,8 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_GENRE_ALIASES,
+    DB_TABLE_GENRES,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
@@ -79,7 +81,7 @@ from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAna
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
 from .media.audiobooks import AudiobooksController
-from .media.genres import GenreController
+from .media.genres import GenresController
 from .media.playlists import PlaylistController
 from .media.podcasts import PodcastsController
 from .media.radio import RadioController
@@ -122,7 +124,7 @@ class MusicController(CoreController):
         self.playlists = PlaylistController(self.mass)
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
-        self.genres = GenreController(self.mass)
+        self.genres = GenresController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
@@ -175,6 +177,8 @@ class MusicController(CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
+        # setup genres
+        await self.genres.setup()
         # make sure to finish any removal jobs
         for removed_provider in self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
@@ -313,6 +317,8 @@ class MusicController(CoreController):
                         return SearchResults(audiobooks=[item])
                     elif media_type == MediaType.PODCAST:
                         return SearchResults(podcasts=[item])
+                    elif media_type == MediaType.GENRE:
+                        return SearchResults(genres=[item])
                     else:
                         return SearchResults()
         # handle normal global search by querying all providers
@@ -394,7 +400,13 @@ class MusicController(CoreController):
                     for item in sublist
                     if item is not None
                 ][:limit],
-            )
+                genres=[
+                item
+                for sublist in zip_longest(*[x.genres for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+        )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
@@ -406,6 +418,7 @@ class MusicController(CoreController):
         result.radio = self._sort_search_result(search_query, result.radio)
         result.audiobooks = self._sort_search_result(search_query, result.audiobooks)
         result.podcasts = self._sort_search_result(search_query, result.podcasts)
+        result.genres = self._sort_search_result(search_query, result.genres)
         await self.mass.cache.set(
             key=cache_key,
             data=result,
@@ -491,9 +504,49 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         """
         result = SearchResults()
+        # Try to resolve genre from search query
+        genre_filter: dict[MediaType, list[int]] = {}
+        # we search for a genre match
+        # we use a limit of 5 to get a few candidates
+        if genres := await self.genres.search(search_query, "library", limit=5):
+            match = None
+            for genre in genres:
+                if compare_strings(genre.name, search_query, strict=True):
+                    match = genre
+                    break
+                # check aliases
+                if genre.aliases:
+                    for alias in genre.aliases:
+                        if compare_strings(alias, search_query, strict=True):
+                            match = genre
+                            break
+                    if match:
+                        break
+            if match:
+                # Get the IDs from the database directly
+                if db_row := await self.database.get_row(
+                    DB_TABLE_GENRES, {"item_id": int(match.item_id)}
+                ):
+                    genre_mappings = json_loads(db_row["genre_mappings"])
+                    if raw_ids := genre_mappings.get("track_ids"):
+                        genre_filter[MediaType.TRACK] = raw_ids
+                    if raw_ids := genre_mappings.get("album_ids"):
+                        genre_filter[MediaType.ALBUM] = raw_ids
+                    if raw_ids := genre_mappings.get("artist_ids"):
+                        genre_filter[MediaType.ARTIST] = raw_ids
+                    if raw_ids := genre_mappings.get("playlist_ids"):
+                        genre_filter[MediaType.PLAYLIST] = raw_ids
+                    if raw_ids := genre_mappings.get("podcast_ids"):
+                        genre_filter[MediaType.PODCAST] = raw_ids
+                    if raw_ids := genre_mappings.get("audiobook_ids"):
+                        genre_filter[MediaType.AUDIOBOOK] = raw_ids
+
         for media_type in media_types:
             ctrl = self.get_controller(media_type)
-            search_results = await ctrl.search(search_query, "library", limit=limit)
+            ids = genre_filter.get(media_type)
+            search_results = await ctrl.search(
+                search_query, "library", limit=limit, genre_filter=ids
+            )
             if search_results:
                 if media_type == MediaType.ARTIST:
                     result.artists = search_results
@@ -509,6 +562,8 @@ class MusicController(CoreController):
                     result.audiobooks = search_results
                 elif media_type == MediaType.PODCAST:
                     result.podcasts = search_results
+                elif media_type == MediaType.GENRE:
+                    result.genres = search_results
         return result
 
     @api_command("music/browse")
@@ -1428,7 +1483,7 @@ class MusicController(CoreController):
         | PlaylistController
         | AudiobooksController
         | PodcastsController
-        | GenreController
+        | GenresController
     ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
@@ -1447,6 +1502,8 @@ class MusicController(CoreController):
             return self.podcasts
         if media_type == MediaType.PODCAST_EPISODE:
             return self.podcasts
+        if media_type == MediaType.GENRE:
+            return self.genres
         if media_type == MediaType.GENRE:
             return self.genres
         raise NotImplementedError
@@ -1946,6 +2003,8 @@ class MusicController(CoreController):
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
         self.logger.debug("Database cleanup done")
+        # rebuild genre index
+        await self.genres.rebuild_index()
 
     async def _setup_database(self) -> None:
         """Initialize database."""
@@ -2118,26 +2177,32 @@ class MusicController(CoreController):
             await self.__create_database_tables()
 
         if prev_version <= 22:
-            # add userid column to playlog table
+            # add media_type id columns to genres table and migrate to genre_mappings structure
             try:
                 await self._database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT"
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN track_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN album_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN artist_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN playlist_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN podcast_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN audiobook_ids json DEFAULT '[]'"
+                )
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN genre_mappings json DEFAULT '{{}}'"
                 )
             except Exception as err:
                 if "duplicate column" not in str(err):
                     raise
-            # Note: SQLite doesn't support modifying constraints directly
-            # The UNIQUE constraint will be updated when the table is recreated
-            # For now, we'll keep the old constraint and add a new one via unique index
-            try:
-                await self._database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_PLAYLOG}_unique_idx")
-                await self._database.execute(
-                    f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
-                    f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
-                )
-            except Exception as err:
-                # If we can't create the index due to duplicate entries, log and continue
-                self.logger.warning("Could not create unique index on playlog: %s", err)
 
         if prev_version <= 23:
             # add is_unique column to provider_mappings table
@@ -2424,6 +2489,38 @@ class MusicController(CoreController):
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,fragment));"""
+        )
+
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRES}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+            [search_name] TEXT NOT NULL,
+            [search_sort_name] TEXT NOT NULL,
+            [track_ids] json DEFAULT '[]',
+            [album_ids] json DEFAULT '[]',
+            [artist_ids] json DEFAULT '[]',
+            [playlist_ids] json DEFAULT '[]',
+            [podcast_ids] json DEFAULT '[]',
+            [audiobook_ids] json DEFAULT '[]'
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_ALIASES}(
+            [genre_id] INTEGER NOT NULL,
+            [alias] TEXT NOT NULL,
+            UNIQUE(genre_id, alias)
+            );"""
         )
 
         await self.database.commit()

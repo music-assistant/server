@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
@@ -97,6 +98,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+CONF_DEFAULT_ENQUEUE_OPTION_GENRE = "default_enqueue_option_genre"
 CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
@@ -234,6 +236,14 @@ class PlayerQueuesController(CoreController):
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Playlist item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE.value,
+                label="Default enqueue option for Genre item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),
@@ -446,6 +456,7 @@ class PlayerQueuesController(CoreController):
                     MediaType.ALBUM,
                     MediaType.PLAYLIST,
                     MediaType.ARTIST,
+                    MediaType.GENRE,
                 ):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
@@ -1482,6 +1493,19 @@ class PlayerQueuesController(CoreController):
             return all_tracks
         return []
 
+    async def get_genre_tracks(self, genre: Genre) -> list[Track]:
+        """Return tracks for given genre."""
+        self.logger.info(
+            "Fetching tracks to play for genre %s",
+            genre.name,
+        )
+        # fetch all tracks for the genre
+        tracks = await self.mass.music.genres.genre_tracks(
+            genre.item_id, genre.provider, limit=10000
+        )
+        random.shuffle(tracks)
+        return tracks
+
     async def get_album_tracks(self, album: Album, start_item: str | None) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
@@ -1802,6 +1826,10 @@ class PlayerQueuesController(CoreController):
                 self.mass.music.mark_item_played(media_item, queue_id=queue_id, user_initiated=True)
             )
             return list(await self.get_artist_tracks(media_item))
+        if media_item.media_type == MediaType.GENRE:
+            media_item = cast("Genre", media_item)
+            self.mass.create_task(self.mass.music.mark_item_played(media_item))
+            return list(await self.get_genre_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             self.mass.create_task(

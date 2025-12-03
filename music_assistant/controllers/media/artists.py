@@ -73,6 +73,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        genre_filter: list[int] | None = None,
         album_artists_only: bool = False,
     ) -> list[Artist]:
         """Get in-database (album) artists.
@@ -103,6 +104,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            genre_filter=genre_filter,
         )
 
     async def tracks(

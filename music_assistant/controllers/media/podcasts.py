@@ -52,6 +52,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        genre_filter: list[int] | None = None,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -75,6 +76,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            genre_filter=genre_filter,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -90,6 +92,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                genre_filter=genre_filter,
             )
         return result
 
