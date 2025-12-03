@@ -17,7 +17,7 @@ aiosonos==0.1.9
 aiosqlite==0.21.0
 aiovban>=0.6.3
 alexapy==1.29.10
-async-upnp-client==0.45.0
+async-upnp-client==0.46.0
 audible==0.10.0
 auntie-sounds==1.1.4
 awesomeversion>=24.6.0
