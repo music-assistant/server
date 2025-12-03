@@ -566,7 +566,7 @@ class AuthenticationManager:
             assert user is not None  # User exists in DB, so get_user must return it
             return user
 
-        # Create new system user (create_user will normalize the username)
+        # Create new system user
         user = await self.create_user(
             username=username,
             role=role,

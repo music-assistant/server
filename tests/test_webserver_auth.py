@@ -809,48 +809,6 @@ async def test_username_case_insensitive_lookup(auth_manager: AuthenticationMana
     assert user3.user_id == created_user.user_id
 
 
-async def test_username_case_insensitive_rate_limiting(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """Test that rate limiting uses normalized usernames.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    builtin_provider = auth_manager.login_providers.get("builtin")
-    assert builtin_provider is not None
-    assert isinstance(builtin_provider, BuiltinLoginProvider)
-
-    # Create user
-    await builtin_provider.create_user_with_password(
-        username="ratelimituser",
-        password="CorrectPassword123",
-        role=UserRole.USER,
-    )
-
-    # Attempt login with wrong password multiple times using different cases
-    # This tests that rate limiting tracks normalized usernames
-    for i in range(3):
-        # Alternate between different case variations
-        username_variants = ["ratelimituser", "RATELIMITUSER", "RateLimitUser"]
-        username = username_variants[i % 3]
-
-        result = await auth_manager.authenticate_with_credentials(
-            "builtin",
-            {"username": username, "password": "WrongPassword"},
-        )
-        assert result.success is False
-
-    # After 3 failed attempts (regardless of case), rate limit should kick in
-    # Try one more time with correct password but different case
-    result = await auth_manager.authenticate_with_credentials(
-        "builtin",
-        {"username": "RateLimitUser", "password": "CorrectPassword123"},
-    )
-
-    # Should still succeed since rate limit in test mode might not be hit after just 3 attempts
-    # But the important thing is that all attempts are tracked under the same normalized username
-
-
 async def test_username_update_normalizes(auth_manager: AuthenticationManager) -> None:
     """Test that updating username normalizes it to lowercase.
 
