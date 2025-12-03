@@ -999,8 +999,8 @@ class PlexRemoteControlServer:
                             self._load_remaining_queue_tracks(
                                 player_id,
                                 playqueue,
-                                0,
-                                shuffle,  # Start from offset 0
+                                0,  # Selected offset is 0 since we started from the first track
+                                shuffle,
                             )
                         )
 
