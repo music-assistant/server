@@ -451,7 +451,6 @@ class AuthenticationManager:
         :param username: The username.
         :return: User object or None if not found.
         """
-        # Normalize username for case-insensitive lookup
         username = normalize_username(username)
 
         user_row = await self.database.get_row("users", {"username": username})
