@@ -291,13 +291,23 @@ class WebserverController(CoreController):
         if not self.mass.config.onboard_done:
             self.logger.warning(
                 "\n\n################################################################################\n"
-                "Starting webserver on  %s:%s - base url: %s\n"
-                "If this is incorrect, see the documentation how to configure the Webserver\n"
-                "in Settings --> Core modules --> Webserver\n"
+                "###                           SETUP REQUIRED                                 ###\n"
+                "################################################################################\n"
+                "\n"
+                "Music Assistant is running in setup mode.\n"
+                "Please complete the setup by visiting:\n"
+                "\n"
+                "    %s/setup\n"
+                "\n"
+                "Webserver running on: %s:%s\n"
+                "\n"
+                "If this address is incorrect, see the documentation on how to configure\n"
+                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "\n"
                 "################################################################################\n",
+                base_url,
                 bind_ip,
                 self.publish_port,
-                base_url,
             )
         else:
             self.logger.info(
