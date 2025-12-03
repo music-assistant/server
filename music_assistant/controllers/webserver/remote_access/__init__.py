@@ -7,6 +7,7 @@ bridging them to the local WebSocket API.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -138,7 +139,6 @@ class RemoteAccessManager:
         ha_provider = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
         if not ha_provider:
             return False, None
-
         try:
             hass_client = ha_provider.hass
             if not hass_client or not hass_client.connected:
@@ -147,25 +147,17 @@ class RemoteAccessManager:
             result = await hass_client.send_command("cloud/status")
             logged_in = result.get("logged_in", False)
             active_subscription = result.get("active_subscription", False)
-
             if not (logged_in and active_subscription):
                 return False, None
-
-            try:
-                ice_servers = await hass_client.send_command("cloud/webrtc/ice_servers")
-                if ice_servers:
+            # HA Cloud is available, get ICE servers
+            # note that this command has been added in HA 2025.12
+            with suppress(FailedCommand):
+                if ice_servers := await hass_client.send_command("cloud/webrtc/ice_servers"):
                     return True, ice_servers
-                self.logger.debug("HA Cloud available but no ICE servers returned")
-                return True, None
-
-            except FailedCommand:
-                # will return "Unknown command" if the HA version doesn't support this command (yet)
-                self.logger.debug("Failed to fetch ICE servers from HA Cloud, using fallback")
-                return True, None
-
-        except Exception:
-            self.logger.exception("Error getting HA Cloud status")
-            return False, None
+            self.logger.debug("HA Cloud available but no ICE servers returned")
+        except Exception as err:
+            self.logger.exception("Error getting HA Cloud status: %s", err)
+        return False, None
 
     @property
     def is_enabled(self) -> bool:
