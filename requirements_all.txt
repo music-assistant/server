@@ -9,9 +9,9 @@ aiohttp_asyncmdnsresolver==0.1.1
 aiohttp-fast-zlib==0.3.0
 aiojellyfin==0.14.1
 aiomusiccast==0.15.0
-aioresonate @ git+https://github.com/maximmaxim345/aioresonate.git@feat/update-spec
 aiortc>=1.6.0
 aiorun==2025.1.1
+aiosendspin @ git+https://github.com/maximmaxim345/aioresonate.git@feat/update-spec
 aioslimproto==3.1.1
 aiosonos==0.1.9
 aiosqlite==0.21.0
