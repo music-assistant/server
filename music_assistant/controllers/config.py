@@ -1282,9 +1282,12 @@ class ConfigController:
             self._data[CONF_PROVIDERS]["universal_group"] = provider_config
 
         # Migrate resonate provider to sendspin (renamed in 2.7 beta 19)
-        for provider_config in list(self._data.get(CONF_PROVIDERS, {}).values()):
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
             if provider_config.get("domain") == "resonate":
+                self._data[CONF_PROVIDERS].pop(instance_id, None)
                 provider_config["domain"] = "sendspin"
+                provider_config["instance_id"] = "sendspin"
+                self._data[CONF_PROVIDERS]["sendspin"] = provider_config
                 changed = True
 
         # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
