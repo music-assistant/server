@@ -623,6 +623,13 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
             password="password123",
         )
 
+    # Test 2-character username is accepted (minimum allowed)
+    user_2char = await auth_manager.create_user_with_api(
+        username="ab",
+        password="password123",
+    )
+    assert user_2char.username == "ab"
+
     # Test password too short
     with pytest.raises(InvalidDataError, match="Password must be at least 8 characters"):
         await auth_manager.create_user_with_api(

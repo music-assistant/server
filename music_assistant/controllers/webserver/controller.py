@@ -1011,9 +1011,9 @@ class WebserverController(CoreController):
         display_name = body.get("display_name")
 
         # Validation
-        if not username or len(username) < 3:
+        if not username or len(username) < 2:
             return web.json_response(
-                {"success": False, "error": "Username must be at least 3 characters"}, status=400
+                {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
         if not password or len(password) < 8:
