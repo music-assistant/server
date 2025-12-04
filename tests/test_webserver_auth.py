@@ -617,9 +617,9 @@ async def test_create_user_api_validation(auth_manager: AuthenticationManager) -
     set_current_user(admin)
 
     # Test username too short
-    with pytest.raises(InvalidDataError, match="Username must be at least 3 characters"):
+    with pytest.raises(InvalidDataError, match="Username must be at least 2 characters"):
         await auth_manager.create_user_with_api(
-            username="ab",
+            username="a",
             password="password123",
         )
 

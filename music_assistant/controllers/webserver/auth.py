@@ -1165,7 +1165,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 3 characters).
+        :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
         :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
@@ -1175,8 +1175,8 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 3:
-            raise InvalidDataError("Username must be at least 3 characters")
+        if not username or len(username) < 2:
+            raise InvalidDataError("Username must be at least 2 characters")
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
