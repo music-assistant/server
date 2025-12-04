@@ -10,7 +10,7 @@ from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.resonate.player import ResonatePlayer
+from music_assistant.providers.sendspin.player import ResonatePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
