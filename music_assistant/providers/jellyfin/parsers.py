@@ -178,10 +178,10 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     streams = track.get(ITEM_KEY_MEDIA_STREAMS, [])
     if not streams:
         return AudioFormat(content_type=ContentType.UNKNOWN)
-    
+
     stream = streams[0]
     codec = stream.get(ITEM_KEY_MEDIA_CODEC)
-    
+
     return AudioFormat(
         content_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
         channels=stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),

@@ -76,3 +76,47 @@ async def test_parse_tracks(
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"]
     assert snapshot == parsed
+
+
+def test_audio_format_empty_mediastreams() -> None:
+    """Test audio_format handles empty MediaStreams array."""
+    from music_assistant.common.models.enums import ContentType
+    from music_assistant.providers.jellyfin.parsers import audio_format
+    from music_assistant.providers.jellyfin.const import ITEM_KEY_MEDIA_STREAMS
+
+    # Track with empty MediaStreams
+    track = {ITEM_KEY_MEDIA_STREAMS: []}
+    result = audio_format(track)
+
+    assert result.content_type == ContentType.UNKNOWN
+
+
+def test_audio_format_missing_channels() -> None:
+    """Test audio_format applies default when Channels field is missing."""
+    from music_assistant.common.models.enums import ContentType
+    from music_assistant.providers.jellyfin.parsers import audio_format
+    from music_assistant.providers.jellyfin.const import (
+        ITEM_KEY_MEDIA_CHANNELS,
+        ITEM_KEY_MEDIA_CODEC,
+        ITEM_KEY_MEDIA_STREAMS,
+    )
+
+    # Track with MediaStreams but missing Channels
+    track = {
+        ITEM_KEY_MEDIA_STREAMS: [
+            {
+                ITEM_KEY_MEDIA_CODEC: "mp3",
+                "SampleRate": 48000,
+                "BitDepth": 16,
+                "BitRate": 320000,
+            }
+        ]
+    }
+    result = audio_format(track)
+
+    # Verify defaults are applied correctly
+    assert result.content_type == ContentType.try_parse("mp3")
+    assert result.channels == 2  # Default stereo
+    assert result.sample_rate == 48000
+    assert result.bit_depth == 16
+    assert result.bit_rate == 320000
