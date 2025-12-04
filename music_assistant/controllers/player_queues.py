@@ -1427,7 +1427,12 @@ class PlayerQueuesController(CoreController):
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
             if queue_item.image:
-                media.image_url = self.mass.metadata.get_image_url(queue_item.image, size=512)
+                # the image format needs to be 500x500 jpeg for maximum compatibility with players
+                # we prefer the imageproxy on the streamserver here because this request is sent
+                # to the player itself which may not be able to reach the regular webserver
+                media.image_url = self.mass.metadata.get_image_url(
+                    queue_item.image, size=500, prefer_stream_server=True
+                )
         return media
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:

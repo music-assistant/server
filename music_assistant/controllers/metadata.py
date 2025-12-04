@@ -226,7 +226,7 @@ class MetaDataController(CoreController):
     @api_command("metadata/set_default_preferred_language")
     def set_default_preferred_language(self, lang: str) -> None:
         """
-        Set the (default) preferred language.
+        Set the default preferred language.
 
         Reasoning behind this is that the backend can not make a wise choice for the default,
         so relies on some external source that knows better to set this info, like the frontend
@@ -235,6 +235,16 @@ class MetaDataController(CoreController):
         """
         if self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE):
             return  # already set
+        self.set_preferred_language(lang)
+
+    @api_command("metadata/set_preferred_language")
+    def set_preferred_language(self, lang: str) -> None:
+        """
+        Set the preferred language.
+
+        Note that this will not modify any existing metadata,
+        but will be used for future lookups.
+        """
         # prefer exact match
         if lang in LOCALES:
             self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
@@ -385,14 +395,18 @@ class MetaDataController(CoreController):
         size: int = 0,
         prefer_proxy: bool = False,
         image_format: str = "png",
+        prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+            base_url = (
+                self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
+            )
             return (
-                f"{self.mass.streams.base_url}/imageproxy?provider={image.provider}"
+                f"{base_url}/imageproxy?provider={image.provider}"
                 f"&size={size}&fmt={image_format}&path={encoded_url}"
             )
         return image.path

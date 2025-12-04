@@ -519,7 +519,7 @@ class MusicAssistant:
         )
 
         def unregister() -> None:
-            self.command_handlers.pop(command)
+            self.command_handlers.pop(command, None)
 
         return unregister
 

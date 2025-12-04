@@ -14,7 +14,7 @@ import logging
 import secrets
 import string
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from aiortc import (
@@ -26,9 +26,6 @@ from aiortc import (
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
@@ -75,7 +72,6 @@ class WebRTCGateway:
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
         remote_id: str | None = None,
-        on_remote_id_ready: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the WebRTC Gateway.
 
@@ -84,16 +80,15 @@ class WebRTCGateway:
         :param local_ws_url: Local WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations.
         :param remote_id: Optional Remote ID to use (generated if not provided).
-        :param on_remote_id_ready: Callback when Remote ID is registered.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
         self.remote_id = remote_id or generate_remote_id()
-        self.on_remote_id_ready = on_remote_id_ready
         self.logger = LOGGER
 
         self.ice_servers = ice_servers or [
+            {"urls": "stun:stun.home-assistant.io:3478"},
             {"urls": "stun:stun.l.google.com:19302"},
             {"urls": "stun:stun1.l.google.com:19302"},
             {"urls": "stun:stun.cloudflare.com:3478"},
@@ -252,7 +247,7 @@ class WebRTCGateway:
                 "type": "register-server",
                 "remoteId": self.remote_id,
             }
-            self.logger.info(
+            self.logger.debug(
                 "Sending registration to signaling server with Remote ID: %s",
                 self.remote_id,
             )
@@ -279,8 +274,6 @@ class WebRTCGateway:
             pass
         elif msg_type == "registered":
             self.logger.info("Registered with signaling server as: %s", message.get("remoteId"))
-            if self.on_remote_id_ready:
-                self.on_remote_id_ready(self.remote_id)
         elif msg_type == "error":
             self.logger.error(
                 "Signaling server error: %s",
