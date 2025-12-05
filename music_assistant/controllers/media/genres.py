@@ -6,20 +6,17 @@ import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import EventType, ImageType, MediaType
+from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
     Genre,
-    MediaItemImage,
-    MediaItemMetadata,
     Playlist,
     Podcast,
     Track,
 )
-from music_assistant_models.unique_list import UniqueList
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -370,38 +367,13 @@ class GenresController(MediaControllerBase[Genre]):
         genre_id = await self.mass.music.database.insert(self.db_table, genre_dict)
         return await self.get_library_item(genre_id)
 
-    async def create(self, name: str, image: str | None = None) -> Genre:
-        """Create a new Genre."""
-        genre = await self.resolve_genre(name)
-        # handle optional image upload
-        if image:
-            self.logger.info(f"Adding image to genre {genre.name} (id: {genre.item_id}): {image}")
-            if not genre.metadata:
-                genre.metadata = MediaItemMetadata()
-            images = genre.metadata.images or UniqueList()
-            # add the image (will be processed by metadata controller)
-            images.append(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image,
-                    provider="builtin",
-                    remotely_accessible=False,
-                )
-            )
-            genre.metadata.images = images
-            self.logger.info(f"Genre metadata now has {len(genre.metadata.images)} images")
-            # update the genre with the image
-            await self._update_library_item(genre.item_id, genre)
-            # Verify it was saved
-            updated_genre = await self.get_library_item(genre.item_id)
-            img_count = (
-                len(updated_genre.metadata.images)
-                if updated_genre.metadata and updated_genre.metadata.images
-                else 0
-            )
-            self.logger.info(f"After update, genre has {img_count} images")
-            return updated_genre
-        return genre
+    async def create(self, name: str) -> Genre:
+        """Create a new Genre.
+
+        Note: To add an image to the genre, use the metadata/update_metadata endpoint
+        after creation with the returned Genre object.
+        """
+        return await self.resolve_genre(name)
 
     async def add_alias(self, genre_id: int, alias: str) -> None:
         """User action: Map a specific string to a specific Genre."""
