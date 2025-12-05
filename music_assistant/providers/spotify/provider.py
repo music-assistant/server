@@ -695,7 +695,7 @@ class SpotifyProvider(MusicProvider):
         # For all other media types (tracks, podcast episodes)
         return StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             media_type=media_type,
             audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
             stream_type=StreamType.CUSTOM,
@@ -845,7 +845,7 @@ class SpotifyProvider(MusicProvider):
 
         liked_songs = Playlist(
             item_id=self._get_liked_songs_playlist_id(),
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Liked Songs {self._sp_user['display_name']}",  # TODO to be translated
             owner=self._sp_user["display_name"],
             provider_mappings={
@@ -864,7 +864,7 @@ class SpotifyProvider(MusicProvider):
         image = MediaItemImage(
             type=ImageType.THUMB,
             path="https://misc.scdn.co/liked-songs/liked-songs-64.png",
-            provider=self.lookup_key,
+            provider=self.instance_id,
             remotely_accessible=True,
         )
         if liked_songs.metadata.images is None:

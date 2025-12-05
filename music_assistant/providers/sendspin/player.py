@@ -205,7 +205,7 @@ class SendspinPlayer(Player):
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
         }
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
         if player_client := sendspin_client.player:

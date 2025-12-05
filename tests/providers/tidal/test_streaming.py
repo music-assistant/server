@@ -14,7 +14,7 @@ from music_assistant.providers.tidal.streaming import TidalStreamingManager
 def provider_mock() -> Mock:
     """Return a mock provider."""
     provider = Mock()
-    provider.lookup_key = "tidal"
+    provider.domain = "tidal"
     provider.instance_id = "tidal_instance"
     provider.config.get_value.return_value = "HIGH"
     provider.api = AsyncMock()

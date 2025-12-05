@@ -496,7 +496,7 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
-                raw_conf["provider"] = player.provider.lookup_key
+                raw_conf["provider"] = player.provider.instance_id
                 # pass action and values to get_config_entries
                 if values is None:
                     values = raw_conf.get("values", {})

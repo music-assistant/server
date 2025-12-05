@@ -467,7 +467,7 @@ class QobuzProvider(MusicProvider):
         self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=content_type,
                 sample_rate=int(streamdata["sampling_rate"] * 1000),
@@ -551,7 +551,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -614,7 +614,7 @@ class QobuzProvider(MusicProvider):
         if img := self.__get_image(album_obj):
             album.metadata.add_image(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
                     path=img,
                     remotely_accessible=True,
@@ -710,7 +710,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -728,7 +728,7 @@ class QobuzProvider(MusicProvider):
         )
         playlist = Playlist(
             item_id=str(playlist_obj["id"]),
-            provider=self.instance_id if is_editable else self.lookup_key,
+            provider=self.instance_id,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
             provider_mappings={
@@ -746,7 +746,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )

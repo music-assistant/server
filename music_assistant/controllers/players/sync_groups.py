@@ -179,7 +179,7 @@ class SyncGroupPlayer(GroupPlayer):
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
         elif self.is_dynamic:
-            return {self.provider.lookup_key}
+            return {self.provider.instance_id}
         else:
             return set()
 
@@ -565,7 +565,7 @@ class SyncGroupController:
         player_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
         self.mass.config.create_default_player_config(
             player_id=player_id,
-            provider=provider.lookup_key,
+            provider=provider.instance_id,
             name=name,
             enabled=True,
             values={
@@ -593,7 +593,7 @@ class SyncGroupController:
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
         # register existing syncgroup players for this provider
-        for player_conf in await self.mass.config.get_player_configs(provider.lookup_key):
+        for player_conf in await self.mass.config.get_player_configs(provider.instance_id):
             if player_conf.player_id.startswith(SYNCGROUP_PREFIX):
                 await self._register_syncgroup_player(player_conf.player_id, provider)
 
@@ -601,7 +601,7 @@ class SyncGroupController:
         """Handle logic when a provider is (about to get) unloaded."""
         # unregister existing syncgroup players for this provider
         for player in self.mass.players.all(
-            provider_filter=provider.lookup_key, return_sync_groups=True
+            provider_filter=provider.instance_id, return_sync_groups=True
         ):
             if player.player_id.startswith(SYNCGROUP_PREFIX):
                 await self.mass.players.unregister(player.player_id, False)

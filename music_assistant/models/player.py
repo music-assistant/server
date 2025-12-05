@@ -726,8 +726,8 @@ class Player(ABC):
     @property
     @final
     def provider_id(self) -> str:
-        """Return the provider id of the player."""
-        return self._provider.lookup_key
+        """Return the provider (instance) id of the player."""
+        return self._provider.instance_id
 
     @property
     @final

@@ -277,14 +277,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # cleanup provider specific entries for this item
         # we always prefer the library playlog entry
         for prov_mapping in media_item.provider_mappings:
-            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
-                continue
             await self.mass.music.database.delete(
                 DB_TABLE_PLAYLOG,
                 {
                     "media_type": self.media_type.value,
                     "item_id": prov_mapping.item_id,
-                    "provider": provider.lookup_key,
+                    "provider": prov_mapping.provider_instance,
                 },
             )
         if media_item.fully_played is None and media_item.resume_position_ms is None:

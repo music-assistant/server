@@ -110,7 +110,7 @@ class TidalRecommendationManager:
                     RecommendationFolder(
                         item_id=item_id,
                         name=folder_name,
-                        provider=self.provider.lookup_key,
+                        provider=self.provider.instance_id,
                         items=UniqueList[MediaItemType | ItemMapping | BrowseFolder](unique_items),
                         subtitle=f"From {page_name} • {len(unique_items)} items",
                         translation_key=item_id,

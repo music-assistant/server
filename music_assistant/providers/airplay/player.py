@@ -105,7 +105,7 @@ class AirPlayPlayer(Player):
             PlayerFeature.VOLUME_SET,
         }
         self._attr_volume_level = initial_volume
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
     @cached_property
@@ -460,7 +460,7 @@ class AirPlayPlayer(Player):
         await self.mass.cache.set(
             key=self.player_id,
             data=volume_level,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_VOLUME,
         )
 

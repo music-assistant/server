@@ -226,7 +226,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 DB_TABLE_PLAYLOG,
                 {
                     "item_id": episode.item_id,
-                    "provider": prov.lookup_key,
+                    "provider": prov.instance_id,
                     "media_type": MediaType.PODCAST_EPISODE,
                 },
             )

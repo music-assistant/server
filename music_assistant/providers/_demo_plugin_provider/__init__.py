@@ -153,7 +153,7 @@ class MyDemoPluginprovider(PluginProvider):
         # the audio_format field should be the native audio format of the stream
         # that is returned by the get_audio_stream method.
         return PluginSource(
-            id=self.lookup_key,
+            id=self.instance_id,
             name=self.name,
             passive=False,
             can_play_pause=False,

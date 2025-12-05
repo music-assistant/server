@@ -211,7 +211,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider.lookup_key == provider_filter)
+            and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (not user_filter or player.player_id in user_filter)
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
@@ -978,7 +978,7 @@ class PlayerController(CoreController):
             # check if player can be synced/grouped with the target player
             if not (
                 child_player_id in parent_player.can_group_with
-                or child_player.provider.lookup_key in parent_player.can_group_with
+                or child_player.provider.instance_id in parent_player.can_group_with
                 or "*" in parent_player.can_group_with
             ):
                 raise UnsupportedFeaturedException(

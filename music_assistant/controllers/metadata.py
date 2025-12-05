@@ -55,6 +55,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.images import create_collage, get_image_thumb
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -524,12 +525,16 @@ class MetaDataController(CoreController):
         for prov_mapping in sorted(
             artist.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.artists.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -577,16 +582,17 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(album.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.albums.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -632,15 +638,17 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.tracks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -762,18 +770,19 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.audiobooks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -810,18 +819,19 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             podcast.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.podcasts.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance

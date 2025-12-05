@@ -162,8 +162,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # search by (exact) name match
         query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
-        async for db_item in self.iter_library_items(
-            extra_query=query, extra_query_params=query_params
+        for db_item in await self._get_library_items_by_query(
+            extra_query_parts=[query], extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
                 return int(db_item.item_id)
@@ -263,15 +263,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Iterate all in-database items."""
         limit: int = 500
         offset: int = 0
+        if provider is not None:
+            provider_filter = provider if isinstance(provider, list) else [provider]
+        else:
+            provider_filter = None
         while True:
-            next_items = await self.library_items(
+            next_items = await self._get_library_items_by_query(
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-                provider=provider,
-                extra_query=extra_query,
+                provider_filter=provider_filter,
+                extra_query_parts=[extra_query] if extra_query else None,
                 extra_query_params=extra_query_params,
             )
             for item in next_items:
@@ -348,7 +352,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
         extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
-        async for db_item in self.iter_library_items(extra_query=extra_query):
+        for db_item in await self._get_library_items_by_query(
+            extra_query_parts=[extra_query],
+        ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
         raise MediaNotFoundError(msg)

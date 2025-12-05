@@ -154,7 +154,7 @@ class SonosPlayer(Player):
         )
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
-        self._attr_can_group_with = {self._provider.lookup_key}
+        self._attr_can_group_with = {self._provider.instance_id}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
@@ -572,7 +572,7 @@ class SonosPlayer(Player):
                     if x.player_id != airplay_player.player_id
                 )
             else:
-                self._attr_can_group_with = {self._provider.lookup_key}
+                self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
             group_parent: SonosPlayer = self.mass.players.get(
