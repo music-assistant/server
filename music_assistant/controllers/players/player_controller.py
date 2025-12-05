@@ -2250,6 +2250,11 @@ class PlayerController(CoreController):
             )
             await self.cmd_volume_mute(player_id, False)
 
+        # Check if a plugin source is active with a volume callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.on_volume:
+                await plugin_source.on_volume(volume_level)
+
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
             async with self._player_throttlers[player_id]:
