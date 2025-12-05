@@ -12,7 +12,18 @@ from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from syrupy.assertion import SnapshotAssertion
 
-from music_assistant.providers.jellyfin.parsers import parse_album, parse_artist, parse_track
+from music_assistant.common.models.enums import ContentType
+from music_assistant.providers.jellyfin.const import (
+    ITEM_KEY_MEDIA_CHANNELS,
+    ITEM_KEY_MEDIA_CODEC,
+    ITEM_KEY_MEDIA_STREAMS,
+)
+from music_assistant.providers.jellyfin.parsers import (
+    audio_format,
+    parse_album,
+    parse_artist,
+    parse_track,
+)
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))
@@ -80,10 +91,6 @@ async def test_parse_tracks(
 
 def test_audio_format_empty_mediastreams() -> None:
     """Test audio_format handles empty MediaStreams array."""
-    from music_assistant.common.models.enums import ContentType
-    from music_assistant.providers.jellyfin.parsers import audio_format
-    from music_assistant.providers.jellyfin.const import ITEM_KEY_MEDIA_STREAMS
-
     # Track with empty MediaStreams
     track = {ITEM_KEY_MEDIA_STREAMS: []}
     result = audio_format(track)
@@ -93,14 +100,6 @@ def test_audio_format_empty_mediastreams() -> None:
 
 def test_audio_format_missing_channels() -> None:
     """Test audio_format applies default when Channels field is missing."""
-    from music_assistant.common.models.enums import ContentType
-    from music_assistant.providers.jellyfin.parsers import audio_format
-    from music_assistant.providers.jellyfin.const import (
-        ITEM_KEY_MEDIA_CHANNELS,
-        ITEM_KEY_MEDIA_CODEC,
-        ITEM_KEY_MEDIA_STREAMS,
-    )
-
     # Track with MediaStreams but missing Channels
     track = {
         ITEM_KEY_MEDIA_STREAMS: [
