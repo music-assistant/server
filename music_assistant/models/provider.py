@@ -54,12 +54,6 @@ class Provider:
         # should not be overridden in normal circumstances
         return self._supported_features
 
-    @property
-    def lookup_key(self) -> str:
-        """Return instance_id if multi_instance capable or domain otherwise."""
-        # should not be overridden in normal circumstances
-        return self.instance_id if self.manifest.multi_instance else self.domain
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
 
@@ -152,7 +146,6 @@ class Provider:
             "default_name": self.default_name,
             "instance_name_postfix": self.instance_name_postfix,
             "instance_id": self.instance_id,
-            "lookup_key": self.lookup_key,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),

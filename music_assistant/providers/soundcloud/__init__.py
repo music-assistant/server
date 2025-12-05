@@ -233,7 +233,7 @@ class SoundcloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 name=collection["title"],
                 item_id=f"{self.instance_id}_{collection['id']}",
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 icon="mdi-playlist-music",
             )
             for playlist in collection.get("items").get("collection", []):
@@ -252,7 +252,7 @@ class SoundcloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 icon="mdi-rss",
             )
             for item in feed["collection"]:
@@ -372,7 +372,7 @@ class SoundcloudMusicProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
             # let ffmpeg work out the details itself as
             # soundcloud uses a mix of different content types and streaming methods
@@ -419,7 +419,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=img_url,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -453,7 +453,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=self._transform_artwork_url(playlist_obj["artwork_url"]),
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -499,7 +499,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=self._transform_artwork_url(track_obj["artwork_url"]),
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]

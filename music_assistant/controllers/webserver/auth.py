@@ -40,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantProviderConfig,
     LoginProvider,
     LoginProviderConfig,
+    normalize_username,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -259,6 +260,12 @@ class AuthenticationManager:
                 )
             await self.database.commit()
 
+        # Migration to version 4: Make usernames case-insensitive by converting to lowercase
+        if from_version < 4:
+            self.logger.info("Converting all usernames to lowercase for case-insensitive auth")
+            await self.database.execute("UPDATE users SET username = LOWER(username)")
+            await self.database.commit()
+
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
         """
         Set up available login providers based on configuration.
@@ -444,6 +451,8 @@ class AuthenticationManager:
         :param username: The username.
         :return: User object or None if not found.
         """
+        username = normalize_username(username)
+
         user_row = await self.database.get_row("users", {"username": username})
         if not user_row:
             return None
@@ -492,6 +501,8 @@ class AuthenticationManager:
         :param player_filter: Optional list of player IDs user has access to.
         :param provider_filter: Optional list of provider instance IDs user has access to.
         """
+        username = normalize_username(username)
+
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
         if preferences is None:
@@ -542,8 +553,10 @@ class AuthenticationManager:
         display_name = "Home Assistant Integration"
         role = UserRole.USER
 
+        normalized_username = normalize_username(username)
+
         # Try to find existing user by username
-        user_row = await self.database.get_row("users", {"username": username})
+        user_row = await self.database.get_row("users", {"username": normalized_username})
         if user_row:
             # Use get_user to ensure preferences are parsed correctly
             user = await self.get_user(user_row["user_id"])
@@ -599,10 +612,32 @@ class AuthenticationManager:
         """
         Link a user to an authentication provider.
 
+        If a link already exists for this provider/provider_user_id, returns the existing link.
+
         :param user: The user to link.
         :param provider_type: The provider type.
         :param provider_user_id: The user ID from the provider (e.g., password hash, OAuth ID).
         """
+        # Check if a link already exists for this provider/provider_user_id
+        existing_link = await self.database.get_row(
+            "user_auth_providers",
+            {
+                "provider_type": provider_type.value,
+                "provider_user_id": provider_user_id,
+            },
+        )
+
+        if existing_link:
+            # Link already exists - return it
+            return UserAuthProvider(
+                link_id=existing_link["link_id"],
+                user_id=existing_link["user_id"],
+                provider_type=AuthProviderType(existing_link["provider_type"]),
+                provider_user_id=existing_link["provider_user_id"],
+                created_at=datetime.fromisoformat(existing_link["created_at"]),
+            )
+
+        # Create new link
         link_id = secrets.token_urlsafe(32)
         created_at = utc()
         link_data = {
@@ -640,7 +675,8 @@ class AuthenticationManager:
         """
         updates = {}
         if username is not None:
-            updates["username"] = username
+            # Normalize username for case-insensitive authentication
+            updates["username"] = normalize_username(username)
         if display_name is not None:
             updates["display_name"] = display_name
         if avatar_url is not None:
@@ -1129,7 +1165,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 3 characters).
+        :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
         :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
@@ -1139,8 +1175,8 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 3:
-            raise InvalidDataError("Username must be at least 3 characters")
+        if not username or len(username) < 2:
+            raise InvalidDataError("Username must be at least 2 characters")
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")

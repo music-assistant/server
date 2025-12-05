@@ -93,7 +93,7 @@ class SqueezelitePlayer(Player):
             PlayerFeature.GAPLESS_PLAYBACK,
             PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
         }
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0

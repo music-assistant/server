@@ -393,9 +393,8 @@ for more details.
                     assert isinstance(podcast_minified, LibraryItemMinifiedPodcast)
                     mass_podcast = parse_podcast(
                         abs_podcast=podcast_minified,
-                        lookup_key=self.lookup_key,
-                        domain=self.domain,
                         instance_id=self.instance_id,
+                        domain=self.domain,
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     )
@@ -424,9 +423,8 @@ for more details.
         abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=prov_podcast_id)
         return parse_podcast(
             abs_podcast=abs_podcast,
-            lookup_key=self.lookup_key,
-            domain=self.domain,
             instance_id=self.instance_id,
+            domain=self.domain,
             token=self._client.token,
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
@@ -455,9 +453,8 @@ for more details.
                 episode=abs_episode,
                 prov_podcast_id=prov_podcast_id,
                 fallback_episode_cnt=episode_cnt,
-                lookup_key=self.lookup_key,
-                domain=self.domain,
                 instance_id=self.instance_id,
+                domain=self.domain,
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
@@ -484,9 +481,8 @@ for more details.
                     episode=abs_episode,
                     prov_podcast_id=prov_podcast_id,
                     fallback_episode_cnt=episode_cnt,
-                    lookup_key=self.lookup_key,
-                    domain=self.domain,
                     instance_id=self.instance_id,
+                    domain=self.domain,
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
@@ -515,9 +511,8 @@ for more details.
                         continue
                     mass_audiobook = parse_audiobook(
                         abs_audiobook=book_expanded,
-                        lookup_key=self.lookup_key,
-                        domain=self.domain,
                         instance_id=self.instance_id,
+                        domain=self.domain,
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     )
@@ -545,9 +540,8 @@ for more details.
         abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=prov_audiobook_id)
         return parse_audiobook(
             abs_audiobook=abs_audiobook,
-            lookup_key=self.lookup_key,
-            domain=self.domain,
             instance_id=self.instance_id,
+            domain=self.domain,
             token=self._client.token,
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
             media_progress=progress,
@@ -591,7 +585,7 @@ for more details.
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=abs_audiobook.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.AUDIOBOOK,
@@ -624,7 +618,7 @@ for more details.
         base_url = str(self.config.get_value(CONF_URL))
         stream_url = f"{base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=podcast_id,
             audio_format=AudioFormat(
                 content_type=content_type,
@@ -727,7 +721,7 @@ for more details.
                     icon=ABS_SHELF_ID_ICONS.get(shelf_id),
                     # translation_key=shelf.id_,
                     items=UniqueList(recommendation_items),
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                 )
             )
 
@@ -770,7 +764,7 @@ for more details.
                 icon="mdi-bookshelf",
                 # translation_key=shelf.id_,
                 items=UniqueList(browse_items),
-                provider=self.lookup_key,
+                provider=self.instance_id,
             )
         )
 
@@ -826,9 +820,8 @@ for more details.
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
                                 prov_podcast_id=podcast_id,
-                                lookup_key=self.lookup_key,
-                                domain=self.domain,
                                 instance_id=self.instance_id,
+                                domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                             )
@@ -851,7 +844,7 @@ for more details.
                                 BrowseFolder(
                                     item_id=entity.id_,
                                     name=entity.name,
-                                    provider=self.lookup_key,
+                                    provider=self.instance_id,
                                     path=path,
                                 )
                             )
@@ -880,7 +873,7 @@ for more details.
                             BrowseFolder(
                                 item_id=entity.id_,
                                 name=entity.name,
-                                provider=self.lookup_key,
+                                provider=self.instance_id,
                                 path=path,
                             )
                         )
@@ -1056,7 +1049,7 @@ for more details.
             return BrowseFolder(
                 item_id=lib_id,
                 name=lib_name,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 path=f"{self.instance_id}://{path}",
             )
 
@@ -1103,7 +1096,7 @@ for more details.
                 BrowseFolder(
                     item_id=item_name.lower(),
                     name=item_name,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     path=path,
                 )
             )
@@ -1118,7 +1111,7 @@ for more details.
                 BrowseFolder(
                     item_id=author.id_,
                     name=author.name,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     path=path,
                 )
             )
@@ -1134,7 +1127,7 @@ for more details.
                 BrowseFolder(
                     item_id=narrator.id_,
                     name=narrator.name,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     path=path,
                 )
             )
@@ -1152,7 +1145,7 @@ for more details.
                     BrowseFolder(
                         item_id=abs_series.id_,
                         name=abs_series.name,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         path=path,
                     )
                 )
@@ -1172,7 +1165,7 @@ for more details.
                     BrowseFolder(
                         item_id=abs_collection.id_,
                         name=abs_collection.name,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         path=path,
                     )
                 )
@@ -1213,7 +1206,7 @@ for more details.
                 BrowseFolder(
                     item_id=series.id_,
                     name=f"{series.name} ({AbsBrowseItemsBook.SERIES})",
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     path=path,
                 )
             )
@@ -1297,9 +1290,8 @@ for more details.
                 await self.mass.music.audiobooks.add_item_to_library(
                     parse_audiobook(
                         abs_audiobook=abs_item,
-                        lookup_key=self.lookup_key,
-                        domain=self.domain,
                         instance_id=self.instance_id,
+                        domain=self.domain,
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     ),
@@ -1314,9 +1306,8 @@ for more details.
                 )
                 mass_podcast = parse_podcast(
                     abs_podcast=abs_item,
-                    lookup_key=self.lookup_key,
-                    domain=self.domain,
                     instance_id=self.instance_id,
+                    domain=self.domain,
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 )
@@ -1474,7 +1465,7 @@ for more details.
                 if discarded_item := await self.mass.music.get_library_item_by_prov_id(
                     media_type=MediaType.AUDIOBOOK,
                     item_id=discarded_progress_id,
-                    provider_instance_id_or_domain=self.lookup_key,
+                    provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
                     await self.mass.music.mark_item_unplayed(discarded_item)

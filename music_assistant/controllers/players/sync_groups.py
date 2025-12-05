@@ -179,7 +179,7 @@ class SyncGroupPlayer(GroupPlayer):
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
         elif self.is_dynamic:
-            return {self.provider.lookup_key}
+            return {self.provider.instance_id}
         else:
             return set()
 
@@ -286,7 +286,7 @@ class SyncGroupPlayer(GroupPlayer):
             ):
                 await self._handle_member_collisions(member)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, True)
+                    await self.mass.players._handle_cmd_power(member.player_id, True)
             # Set up the sync group with the new leader
             await self._handle_leader_transition(new_leader)
         elif prev_power and not powered:
@@ -297,7 +297,7 @@ class SyncGroupPlayer(GroupPlayer):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
             # Reset to unfiltered static members list when powered off
@@ -423,12 +423,7 @@ class SyncGroupPlayer(GroupPlayer):
             if member.player_id == self.sync_leader.player_id:
                 # skip sync leader
                 continue
-            if (
-                member.synced_to == self.sync_leader.player_id
-                and member.player_id in self.sync_leader.group_members
-            ):
-                # already synced
-                continue
+            # Always add to members_to_sync to prevent them from being removed below
             members_to_sync.append(member.player_id)
         for former_members in self.sync_leader.group_members:
             if (
@@ -485,7 +480,7 @@ class SyncGroupPlayer(GroupPlayer):
 
             # Restart playback if requested and we have media to play
             if was_playing:
-                await self.mass.players.cmd_resume(self.player_id)
+                await self.mass.players._handle_cmd_resume(self.player_id)
         else:
             # We have no leader anymore, send update since we stopped playback
             self.update_state()
@@ -570,7 +565,7 @@ class SyncGroupController:
         player_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
         self.mass.config.create_default_player_config(
             player_id=player_id,
-            provider=provider.lookup_key,
+            provider=provider.instance_id,
             name=name,
             enabled=True,
             values={
@@ -598,7 +593,7 @@ class SyncGroupController:
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
         # register existing syncgroup players for this provider
-        for player_conf in await self.mass.config.get_player_configs(provider.lookup_key):
+        for player_conf in await self.mass.config.get_player_configs(provider.instance_id):
             if player_conf.player_id.startswith(SYNCGROUP_PREFIX):
                 await self._register_syncgroup_player(player_conf.player_id, provider)
 
@@ -606,7 +601,7 @@ class SyncGroupController:
         """Handle logic when a provider is (about to get) unloaded."""
         # unregister existing syncgroup players for this provider
         for player in self.mass.players.all(
-            provider_filter=provider.lookup_key, return_sync_groups=True
+            provider_filter=provider.instance_id, return_sync_groups=True
         ):
             if player.player_id.startswith(SYNCGROUP_PREFIX):
                 await self.mass.players.unregister(player.player_id, False)

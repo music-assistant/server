@@ -22,7 +22,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
-    PlaybackState,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -267,10 +266,6 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def _on_play(self) -> None:
         """Handle play command via Spotify Web API."""
-        attached_player = self.mass.players.get(self.mass_player_id)
-        if attached_player and attached_player.playback_state == PlaybackState.IDLE:
-            # edge case: player is not paused, so we need to select this source first
-            await self.mass.players.select_source(self.mass_player_id, self.instance_id)
         if not self._spotify_provider:
             raise UnsupportedFeaturedException(
                 "Playback control requires a matching Spotify music provider"
@@ -463,12 +458,6 @@ class SpotifyConnectProvider(PluginProvider):
         await check_output("mkfifo", self.named_pipe)
         await asyncio.sleep(0.1)
         try:
-            # Get initial volume from player, or use 20 as fallback
-            initial_volume = 20
-            _player = self.mass.players.get(self.mass_player_id)
-            if _player and _player.volume_level:
-                initial_volume = _player.volume_level
-
             args: list[str] = [
                 self._librespot_bin,
                 "--name",
@@ -490,7 +479,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "--volume-ctrl",
                 "fixed",
                 "--initial-volume",
-                str(initial_volume),
+                "100",
                 "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
@@ -611,6 +600,10 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.metadata.duration = (
                 int(duration_ms) // 1000 if duration_ms is not None else None
             )
+            # Reset elapsed time when track changes to prevent showing stale elapsed time
+            # from previous track
+            self._source_details.metadata.elapsed_time = 0
+            self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if track_meta := json_data.get("track_metadata_fields", {}):
             if artists := track_meta.get("artists"):
@@ -632,7 +625,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Ignore volume_changed events that fire immediately after session_connect
             # We want to use the volume from MA in that case
             time_since_connect = time.time() - self._last_session_connected_time
-            if time_since_connect < 2.0:
+            if time_since_connect < 3.0:
                 self.logger.debug(
                     "Ignoring initial volume_changed event (%.2fs after session_connect)",
                     time_since_connect,

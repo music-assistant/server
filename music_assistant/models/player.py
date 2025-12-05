@@ -726,8 +726,8 @@ class Player(ABC):
     @property
     @final
     def provider_id(self) -> str:
-        """Return the provider id of the player."""
-        return self._provider.lookup_key
+        """Return the provider (instance) id of the player."""
+        return self._provider.instance_id
 
     @property
     @final
@@ -1332,7 +1332,7 @@ class Player(ABC):
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
-                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="png")
+                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="jpeg")
                 if current_item.image
                 else None
             )

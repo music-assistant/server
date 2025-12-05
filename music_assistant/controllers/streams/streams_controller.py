@@ -1821,9 +1821,6 @@ class StreamsController(CoreController):
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
-        if content_type == ContentType.WAV and output_bit_depth > 16:
-            # WAV 24bit is not widely supported, fallback to 16bit
-            output_bit_depth = 16
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
         return AudioFormat(

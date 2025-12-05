@@ -18,7 +18,10 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
 
 @pytest.fixture
 async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
-    """Start a Music Assistant in test mode."""
+    """Start a Music Assistant in test mode.
+
+    :param tmp_path: Temporary directory for test data.
+    """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
     storage_path.mkdir(parents=True)
@@ -26,11 +29,16 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
-    mass = MusicAssistant(str(storage_path), str(cache_path))
+    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
 
-    await mass.start()
+    # TODO: Configure a random port to avoid conflicts when MA is already running
+    # The conftest was modified in PR #2738 to add port configuration but it doesn't
+    # work correctly - the settings.json file is created but the config isn't respected.
+    # For now, tests that use the `mass` fixture will fail if MA is running on port 8095.
+
+    await mass_instance.start()
 
     try:
-        yield mass
+        yield mass_instance
     finally:
-        await mass.stop()
+        await mass_instance.stop()

@@ -1,0 +1,10 @@
+{
+  "type": "player",
+  "domain": "sendspin",
+  "stage": "alpha",
+  "name": "Sendspin",
+  "description": "Sendspin is an audio playback, control and synchronization protocol developed by the Open Home Foundation and is the native playback protocol built into Music Assistant, used for playback to supported clients like the Music Assistant Web interface, supported (mobile) clients and supported hardware",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["aiosendspin==1.0.0"],
+  "builtin": true
+}

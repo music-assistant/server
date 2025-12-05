@@ -308,7 +308,7 @@ class BuiltinProvider(MusicProvider):
                 self.logger.warning("Radio station %s not found: %s", item, err)
                 yield Radio(
                     item_id=item["item_id"],
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     name=item["name"],
                     provider_mappings={
                         ProviderMapping(

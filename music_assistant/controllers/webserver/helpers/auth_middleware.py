@@ -48,20 +48,23 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         )
 
         if not user:
-            # Security: Ensure at least one user exists (setup should have been completed)
-            if not await mass.webserver.auth.has_users():
-                # No users exist - setup has not been completed
-                # This should not happen as the server redirects to /setup
+            # Only auto-create users after onboarding is complete
+            if not mass.config.onboard_done:
                 return None
 
-            # Auto-create user for Ingress (they're already authenticated by HA)
-            # Always create with USER role (admin is created during setup)
-            user = await mass.webserver.auth.create_user(
-                username=ingress_username,
-                role=UserRole.USER,
-                display_name=ingress_display_name,
-            )
-            # Link to Home Assistant provider
+            # Check if a user with this username already exists
+            user = await mass.webserver.auth.get_user_by_username(ingress_username)
+
+            if not user:
+                # Auto-create user for Ingress (they're already authenticated by HA)
+                # Always create with USER role (admin is created during setup)
+                user = await mass.webserver.auth.create_user(
+                    username=ingress_username,
+                    role=UserRole.USER,
+                    display_name=ingress_display_name,
+                )
+
+            # Link to Home Assistant provider (or create the link if user already existed)
             await mass.webserver.auth.link_user_to_provider(
                 user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
             )

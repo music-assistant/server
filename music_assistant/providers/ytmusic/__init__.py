@@ -621,7 +621,7 @@ class YoutubeMusicProvider(MusicProvider):
         stream_format = await self._get_stream_format(item_id=item_id)
         self.logger.debug("Found stream_format: %s for song %s", stream_format["format"], item_id)
         stream_details = StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["audio_ext"]),
@@ -649,7 +649,7 @@ class YoutubeMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 name=section["title"],
                 item_id=f"{self.instance_id}_{section['title']}",
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 icon=determine_recommendation_icon(section["title"]),
             )
             for recommended_item in section.get("contents", []):
@@ -746,7 +746,7 @@ class YoutubeMusicProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             name=name,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(album_id),
@@ -808,7 +808,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_id),
@@ -837,7 +837,7 @@ class YoutubeMusicProvider(MusicProvider):
             playlist_name = f"{playlist_name} ({self.name})"
         playlist = Playlist(
             item_id=playlist_id,
-            provider=self.instance_id if is_editable else self.lookup_key,
+            provider=self.instance_id,
             name=playlist_name,
             provider_mappings={
                 ProviderMapping(
@@ -874,7 +874,7 @@ class YoutubeMusicProvider(MusicProvider):
         track_id = str(track_obj["videoId"])
         track = Track(
             item_id=track_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=track_obj["title"],
             provider_mappings={
                 ProviderMapping(
@@ -930,7 +930,7 @@ class YoutubeMusicProvider(MusicProvider):
         podcast = Podcast(
             item_id=podcast_obj["podcastId"],
             name=podcast_obj["title"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=podcast_obj["podcastId"],
@@ -956,7 +956,7 @@ class YoutubeMusicProvider(MusicProvider):
         item_id = f"{podcast.item_id}{PODCAST_EPISODE_SPLITTER}{episode_id}"
         episode = PodcastEpisode(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=episode_obj.get("title"),
             podcast=podcast,
             provider_mappings={
@@ -1024,7 +1024,7 @@ class YoutubeMusicProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
         )
 
@@ -1079,7 +1079,7 @@ class YoutubeMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=image_type,
                     path=url,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )

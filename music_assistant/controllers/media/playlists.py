@@ -123,6 +123,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
+        for prov_mapping in playlist.provider_mappings:
+            # when manually creating a playlist, it's always in the library
+            prov_mapping.in_library = True
         # add the new playlist to the library
         return await self.add_item_to_library(playlist, False)
 
@@ -246,7 +249,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         provider_instance_id_or_domain,
                     )
                     continue
-                if item_prov.lookup_key == playlist_prov.lookup_key:
+                if item_prov.instance_id == playlist_prov.instance_id:
                     if item_id not in ids_to_add:
                         ids_to_add.append(item_id)
                     continue
@@ -282,7 +285,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 track_version_uri = create_uri(
                     MediaType.TRACK,
-                    item_prov.lookup_key,
+                    item_prov.instance_id,
                     track_version.item_id,
                 )
                 if track_version_uri in cur_playlist_track_uris:
@@ -302,7 +305,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         playlist.name,
                     )
                     break
-                if item_prov.lookup_key == playlist_prov.lookup_key:
+                if item_prov.instance_id == playlist_prov.instance_id:
                     if track_version.item_id not in ids_to_add:
                         ids_to_add.append(track_version.item_id)
                     self.logger.info(

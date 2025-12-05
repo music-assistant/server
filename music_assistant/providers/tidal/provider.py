@@ -192,7 +192,7 @@ class TidalProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
         )
 

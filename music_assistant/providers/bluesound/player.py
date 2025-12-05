@@ -74,7 +74,7 @@ class BluesoundPlayer(Player):
         self._attr_source_list = []
         self._attr_needs_poll = True
         self._attr_poll_interval = IDLE_POLL_INTERVAL
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
 
     async def setup(self) -> None:
         """Set up the player."""
