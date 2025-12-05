@@ -3,11 +3,13 @@
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import cast
 
 import aiofiles
 import aiohttp
 import pytest
 from aiojellyfin import Artist, Connection
+from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from syrupy.assertion import SnapshotAssertion
@@ -91,7 +93,12 @@ async def test_parse_tracks(
 def test_audio_format_empty_mediastreams() -> None:
     """Test audio_format handles empty MediaStreams array."""
     # Track with empty MediaStreams
-    track = {ITEM_KEY_MEDIA_STREAMS: []}
+    track = cast(
+        "JellyTrack",
+        {
+            ITEM_KEY_MEDIA_STREAMS: [],
+        },
+    )
     result = audio_format(track)
 
     assert result.content_type == ContentType.UNKNOWN
@@ -100,16 +107,19 @@ def test_audio_format_empty_mediastreams() -> None:
 def test_audio_format_missing_channels() -> None:
     """Test audio_format applies default when Channels field is missing."""
     # Track with MediaStreams but missing Channels
-    track = {
-        ITEM_KEY_MEDIA_STREAMS: [
-            {
-                ITEM_KEY_MEDIA_CODEC: "mp3",
-                "SampleRate": 48000,
-                "BitDepth": 16,
-                "BitRate": 320000,
-            }
-        ]
-    }
+    track = cast(
+        "JellyTrack",
+        {
+            ITEM_KEY_MEDIA_STREAMS: [
+                {
+                    ITEM_KEY_MEDIA_CODEC: "mp3",
+                    "SampleRate": 48000,
+                    "BitDepth": 16,
+                    "BitRate": 320000,
+                }
+            ],
+        },
+    )
     result = audio_format(track)
 
     # Verify defaults are applied correctly
