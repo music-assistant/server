@@ -73,7 +73,7 @@ async def test_get_stream_details_lossless(
     stream_details = await streaming_manager.get_stream_details("123")
 
     assert stream_details.item_id == "123"
-    assert stream_details.provider == "tidal"
+    assert stream_details.provider == "tidal_instance"
     assert stream_details.audio_format.content_type == ContentType.FLAC
     assert stream_details.audio_format.sample_rate == 44100
     assert stream_details.audio_format.bit_depth == 16
