@@ -314,6 +314,7 @@ class MetaDataController(CoreController):
                     )
                 if item.media_type == MediaType.GENRE:
                     # For genres, process any uploaded images and update the item in library
+                    # We do not do background lookups for genres yet, so no force refresh.
                     await self._update_genre_metadata(cast("Genre", item))
             return item
 
