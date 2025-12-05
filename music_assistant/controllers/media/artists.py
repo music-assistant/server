@@ -71,6 +71,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre_filter: list[int] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
         album_artists_only: bool = False,
@@ -83,6 +84,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param genre_filter: Filter by genre library item IDs (list of integers).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         :param album_artists_only: Only return artists that have albums.
@@ -101,6 +103,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            genre_filter=genre_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )

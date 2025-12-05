@@ -165,9 +165,9 @@ class TracksController(MediaControllerBase[Track]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre_filter: list[int] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        genre_filter: list[int] | None = None,
     ) -> list[Track]:
         """Get in-database tracks.
 
@@ -177,6 +177,7 @@ class TracksController(MediaControllerBase[Track]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param genre_filter: Filter by genre library item IDs (list of integers).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -205,10 +206,10 @@ class TracksController(MediaControllerBase[Track]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            genre_filter=genre_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
-            genre_filter=genre_filter,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -226,10 +227,10 @@ class TracksController(MediaControllerBase[Track]):
                 limit=limit,
                 order_by=order_by,
                 provider_filter=self._ensure_provider_filter(provider),
+                genre_filter=genre_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
-                genre_filter=genre_filter,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:

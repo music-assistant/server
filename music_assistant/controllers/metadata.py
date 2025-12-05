@@ -32,6 +32,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -311,6 +312,9 @@ class MetaDataController(CoreController):
                     await self._update_podcast_metadata(
                         cast("Podcast", item), force_refresh=force_refresh
                     )
+                if item.media_type == MediaType.GENRE:
+                    # For genres, process any uploaded images and update the item in library
+                    await self._update_genre_metadata(cast("Genre", item))
             return item
 
     def schedule_update_metadata(self, uri: str) -> None:
@@ -841,6 +845,12 @@ class MetaDataController(CoreController):
         # set timestamp, used to determine when this function was last called
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
+
+    async def _update_genre_metadata(self, genre: Genre) -> None:
+        """Update genre metadata in library."""
+        # Just update the genre - images with data URLs will be decoded on-the-fly
+        # by get_image_data when they're accessed through the imageproxy
+        await self.mass.music.genres.update_item_in_library(genre.item_id, genre)
 
     async def _get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""

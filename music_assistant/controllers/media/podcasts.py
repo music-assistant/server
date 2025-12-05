@@ -50,9 +50,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre_filter: list[int] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        genre_filter: list[int] | None = None,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -62,6 +62,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param genre_filter: Filter by genre library item IDs (list of integers).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -74,9 +75,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            genre_filter=genre_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            genre_filter=genre_filter,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -90,9 +91,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 limit=limit,
                 order_by=order_by,
                 provider_filter=self._ensure_provider_filter(provider),
+                genre_filter=genre_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
-                genre_filter=genre_filter,
             )
         return result
 
