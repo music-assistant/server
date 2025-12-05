@@ -580,7 +580,7 @@ class PlexRemoteControlServer:
                     await self._broadcast_timeline()
 
                     # Now load the remaining tracks in the background
-                    asyncio.create_task(
+                    self.provider.mass.create_task(
                         self._load_remaining_queue_tracks(
                             player_id, playqueue, selected_offset, shuffle
                         )
@@ -995,7 +995,7 @@ class PlexRemoteControlServer:
 
                     # Now load the remaining tracks in the background
                     if len(playqueue.items) > 1:
-                        asyncio.create_task(
+                        self.provider.mass.create_task(
                             self._load_remaining_queue_tracks(
                                 player_id,
                                 playqueue,
