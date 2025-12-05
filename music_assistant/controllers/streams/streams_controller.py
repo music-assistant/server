@@ -877,7 +877,7 @@ class StreamsController(CoreController):
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     def get_stream(
-        self, media: PlayerMedia, pcm_format: AudioFormat
+        self, media: PlayerMedia, pcm_format: AudioFormat, force_flow_mode: bool = False
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -922,7 +922,11 @@ class StreamsController(CoreController):
                 audio_source = ugp_stream.subscribe_raw()
             else:
                 audio_source = ugp_stream.get_stream(output_format=pcm_format)
-        elif media.source_id and media.queue_item_id and media.media_type == MediaType.FLOW_STREAM:
+        elif (
+            media.source_id
+            and media.queue_item_id
+            and (media.media_type == MediaType.FLOW_STREAM or force_flow_mode)
+        ):
             # regular queue (flow) stream request
             queue = self.mass.player_queues.get(media.source_id)
             assert queue

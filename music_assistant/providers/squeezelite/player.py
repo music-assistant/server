@@ -244,8 +244,12 @@ class SqueezelitePlayer(Player):
             channels=2,
         )
 
-        # select audio source
-        audio_source = self.mass.streams.get_stream(media, master_audio_format)
+        # select audio source, we force flow mode because multi-client streaming does not support
+        # enqueueing
+        audio_source = self.mass.streams.get_stream(
+            media, master_audio_format, force_flow_mode=True
+        )
+
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
