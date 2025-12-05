@@ -14,7 +14,6 @@ from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.common.models.enums import ContentType
 from music_assistant.providers.jellyfin.const import (
-    ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_MEDIA_STREAMS,
 )
