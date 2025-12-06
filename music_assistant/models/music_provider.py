@@ -65,13 +65,6 @@ class MusicProvider(Provider):
         """
         return True
 
-    @property
-    def lookup_key(self) -> str:
-        """Return domain if (multi-instance) streaming_provider or instance_id otherwise."""
-        if self.is_streaming_provider or not self.manifest.multi_instance:
-            return self.domain
-        return self.instance_id
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 

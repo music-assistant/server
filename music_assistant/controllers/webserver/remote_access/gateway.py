@@ -13,17 +13,18 @@ import json
 import logging
 import secrets
 import string
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 from aiortc import (
     RTCConfiguration,
-    RTCIceCandidate,
     RTCIceServer,
     RTCPeerConnection,
     RTCSessionDescription,
 )
+from aiortc.sdp import candidate_from_sdp
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -48,7 +49,7 @@ class WebRTCSession:
 
     session_id: str
     peer_connection: RTCPeerConnection
-    data_channel: Any = None
+    data_channel: Any = None  # Main API channel (ma-api)
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     forward_to_local_task: asyncio.Task[None] | None = None
@@ -65,6 +66,14 @@ class WebRTCGateway:
     4. Bridges WebRTC DataChannel messages to the local WebSocket API
     """
 
+    # Default ICE servers (public STUN only - used as fallback)
+    DEFAULT_ICE_SERVERS: list[dict[str, Any]] = [
+        {"urls": "stun:stun.home-assistant.io:3478"},
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun.cloudflare.com:3478"},
+    ]
+
     def __init__(
         self,
         http_session: aiohttp.ClientSession,
@@ -72,27 +81,28 @@ class WebRTCGateway:
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
         remote_id: str | None = None,
+        ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
         """Initialize the WebRTC Gateway.
 
         :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
-        :param ice_servers: List of ICE server configurations.
+        :param ice_servers: List of ICE server configurations (used at registration time).
         :param remote_id: Optional Remote ID to use (generated if not provided).
+        :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
+            If provided, this will be called for each client connection to get fresh TURN
+            credentials. If not provided, the static ice_servers will be used.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
         self.remote_id = remote_id or generate_remote_id()
         self.logger = LOGGER
+        self._ice_servers_callback = ice_servers_callback
 
-        self.ice_servers = ice_servers or [
-            {"urls": "stun:stun.home-assistant.io:3478"},
-            {"urls": "stun:stun.l.google.com:19302"},
-            {"urls": "stun:stun1.l.google.com:19302"},
-            {"urls": "stun:stun.cloudflare.com:3478"},
-        ]
+        # Static ICE servers used at registration time (relayed to clients via signaling server)
+        self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
 
         self.sessions: dict[str, WebRTCSession] = {}
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
@@ -112,6 +122,23 @@ class WebRTCGateway:
     def is_connected(self) -> bool:
         """Return whether the gateway is connected to the signaling server."""
         return self._is_connected
+
+    async def _get_fresh_ice_servers(self) -> list[dict[str, Any]]:
+        """Get fresh ICE servers for a new WebRTC session.
+
+        If an ice_servers_callback was provided, it will be called to get fresh
+        TURN credentials. Otherwise, returns the static ice_servers.
+
+        :return: List of ICE server configurations with fresh credentials.
+        """
+        if self._ice_servers_callback:
+            try:
+                fresh_servers = await self._ice_servers_callback()
+                if fresh_servers:
+                    return fresh_servers
+            except Exception:
+                self.logger.exception("Failed to fetch fresh ICE servers, using cached servers")
+        return self.ice_servers
 
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
@@ -190,10 +217,10 @@ class WebRTCGateway:
             await asyncio.sleep(0.5)
             self.logger.debug("Sending registration")
             await self._register()
-            self._is_connected = True
+            # Note: _is_connected is set to True when we receive "registered" confirmation
             # Reset reconnect delay on successful connection
             self._current_reconnect_delay = self._reconnect_delay
-            self.logger.info("Connected and registered with signaling server")
+            self.logger.info("Registration sent, waiting for confirmation...")
 
             # Message loop
             self.logger.debug("Entering message loop")
@@ -243,19 +270,13 @@ class WebRTCGateway:
     async def _register(self) -> None:
         """Register with the signaling server."""
         if self._signaling_ws:
-            registration_msg = {
-                "type": "register-server",
-                "remoteId": self.remote_id,
-            }
-            self.logger.debug(
-                "Sending registration to signaling server with Remote ID: %s",
-                self.remote_id,
+            await self._signaling_ws.send_json(
+                {
+                    "type": "register-server",
+                    "remoteId": self.remote_id,
+                    "iceServers": self.ice_servers,
+                }
             )
-            self.logger.debug("Registration message: %s", registration_msg)
-            await self._signaling_ws.send_json(registration_msg)
-            self.logger.debug("Registration message sent successfully")
-        else:
-            self.logger.warning("Cannot register: signaling websocket is not connected")
 
     async def _handle_signaling_message(self, message: dict[str, Any]) -> None:
         """Handle incoming signaling messages.
@@ -263,26 +284,32 @@ class WebRTCGateway:
         :param message: The signaling message.
         """
         msg_type = message.get("type")
-        self.logger.debug("Received signaling message: %s - Full message: %s", msg_type, message)
 
         if msg_type == "ping":
-            # Respond to ping with pong
             if self._signaling_ws:
                 await self._signaling_ws.send_json({"type": "pong"})
         elif msg_type == "pong":
-            # Server responded to our ping, connection is alive
             pass
         elif msg_type == "registered":
+            self._is_connected = True
             self.logger.info("Registered with signaling server as: %s", message.get("remoteId"))
         elif msg_type == "error":
-            self.logger.error(
-                "Signaling server error: %s",
-                message.get("message", "Unknown error"),
-            )
+            error_msg = message.get("error") or message.get("message", "Unknown error")
+            self.logger.error("Signaling server error: %s", error_msg)
         elif msg_type == "client-connected":
             session_id = message.get("sessionId")
             if session_id:
                 await self._create_session(session_id)
+                # Send session-ready with fresh ICE servers for the client
+                fresh_ice_servers = await self._get_fresh_ice_servers()
+                if self._signaling_ws:
+                    await self._signaling_ws.send_json(
+                        {
+                            "type": "session-ready",
+                            "sessionId": session_id,
+                            "iceServers": fresh_ice_servers,
+                        }
+                    )
         elif msg_type == "client-disconnected":
             session_id = message.get("sessionId")
             if session_id:
@@ -303,8 +330,9 @@ class WebRTCGateway:
 
         :param session_id: The session ID.
         """
+        session_ice_servers = await self._get_fresh_ice_servers()
         config = RTCConfiguration(
-            iceServers=[RTCIceServer(**server) for server in self.ice_servers]
+            iceServers=[RTCIceServer(**server) for server in session_ice_servers]
         )
         pc = RTCPeerConnection(configuration=config)
         session = WebRTCSession(session_id=session_id, peer_connection=pc)
@@ -346,13 +374,7 @@ class WebRTCGateway:
             return
         pc = session.peer_connection
 
-        # Check if peer connection is already closed or closing
         if pc.connectionState in ("closed", "failed"):
-            self.logger.debug(
-                "Ignoring offer for session %s - connection state: %s",
-                session_id,
-                pc.connectionState,
-            )
             return
 
         sdp = offer.get("sdp")
@@ -369,32 +391,29 @@ class WebRTCGateway:
                 )
             )
 
-            # Check again if session was closed during setRemoteDescription
             if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
-                self.logger.debug(
-                    "Session %s closed during setRemoteDescription, aborting offer handling",
-                    session_id,
-                )
                 return
 
             answer = await pc.createAnswer()
 
-            # Check again before setLocalDescription
             if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
-                self.logger.debug(
-                    "Session %s closed during createAnswer, aborting offer handling",
-                    session_id,
-                )
                 return
 
             await pc.setLocalDescription(answer)
 
-            # Final check before sending answer
+            # Wait for ICE gathering to complete before sending the answer
+            # aiortc doesn't support trickle ICE, candidates are embedded in SDP after gathering
+            gather_timeout = 30
+            gather_start = asyncio.get_event_loop().time()
+            while pc.iceGatheringState != "complete":
+                if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
+                    return
+                if asyncio.get_event_loop().time() - gather_start > gather_timeout:
+                    self.logger.warning("Session %s ICE gathering timeout", session_id)
+                    break
+                await asyncio.sleep(0.1)
+
             if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
-                self.logger.debug(
-                    "Session %s closed during setLocalDescription, skipping answer transmission",
-                    session_id,
-                )
                 return
 
             if self._signaling_ws:
@@ -423,14 +442,8 @@ class WebRTCGateway:
         if not session or not candidate:
             return
 
-        # Check if peer connection is already closed or closing
         pc = session.peer_connection
         if pc.connectionState in ("closed", "failed"):
-            self.logger.debug(
-                "Ignoring ICE candidate for session %s - connection state: %s",
-                session_id,
-                pc.connectionState,
-            )
             return
 
         candidate_str = candidate.get("candidate")
@@ -440,35 +453,25 @@ class WebRTCGateway:
         if not candidate_str:
             return
 
-        # Create RTCIceCandidate from the SDP string
         try:
-            ice_candidate = RTCIceCandidate(
-                component=1,
-                foundation="",
-                ip="",
-                port=0,
-                priority=0,
-                protocol="udp",
-                type="host",
-                sdpMid=str(sdp_mid) if sdp_mid else None,
-                sdpMLineIndex=int(sdp_mline_index) if sdp_mline_index is not None else None,
-            )
-            # Parse the candidate string to populate the fields
-            ice_candidate.candidate = str(candidate_str)  # type: ignore[attr-defined]
+            # Parse ICE candidate - browser sends "candidate:..." format
+            if candidate_str.startswith("candidate:"):
+                sdp_candidate_str = candidate_str[len("candidate:") :]
+            else:
+                sdp_candidate_str = candidate_str
 
-            # Check if session was closed before adding candidate
+            ice_candidate = candidate_from_sdp(sdp_candidate_str)
+            ice_candidate.sdpMid = str(sdp_mid) if sdp_mid else None
+            ice_candidate.sdpMLineIndex = (
+                int(sdp_mline_index) if sdp_mline_index is not None else None
+            )
+
             if session_id not in self.sessions or pc.connectionState in ("closed", "failed"):
-                self.logger.debug(
-                    "Session %s closed before adding ICE candidate, skipping",
-                    session_id,
-                )
                 return
 
             await session.peer_connection.addIceCandidate(ice_candidate)
         except Exception:
-            self.logger.exception(
-                "Failed to add ICE candidate for session %s: %s", session_id, candidate
-            )
+            self.logger.exception("Failed to add ICE candidate for session %s", session_id)
 
     async def _setup_data_channel(self, session: WebRTCSession) -> None:
         """Set up data channel and bridge to local WebSocket.

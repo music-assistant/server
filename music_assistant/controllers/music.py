@@ -474,7 +474,7 @@ class MusicController(CoreController):
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
-        available_providers = ("library", *get_global_cache_value("unique_providers", []))
+        available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -521,7 +521,7 @@ class MusicController(CoreController):
         self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        available_providers = ("library", *get_global_cache_value("unique_providers", []))
+        available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -885,10 +885,12 @@ class MusicController(CoreController):
         if loudness in (None, inf, -inf):
             # skip invalid values
             return
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         values = {
             "item_id": item_id,
             "media_type": media_type.value,
-            "provider": provider.lookup_key,
+            "provider": prov_key,
             "loudness": loudness,
         }
         if album_loudness not in (None, inf, -inf):
@@ -914,10 +916,12 @@ class MusicController(CoreController):
             return
         beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
         downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         values = {
             "fragment": analysis.fragment.value,
             "item_id": item_id,
-            "provider": provider.lookup_key,
+            "provider": prov_key,
             "bpm": analysis.bpm,
             "beats": beats_json,
             "downbeats": downbeats_json,
@@ -935,11 +939,13 @@ class MusicController(CoreController):
         """Get Smart Fades BPM analysis for a track from db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         db_row = await self.database.get_row(
             DB_TABLE_SMART_FADES_ANALYSIS,
             {
                 "item_id": item_id,
-                "provider": provider.lookup_key,
+                "provider": prov_key,
                 "fragment": fragment.value,
             },
         )
@@ -965,12 +971,14 @@ class MusicController(CoreController):
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         db_row = await self.database.get_row(
             DB_TABLE_LOUDNESS_MEASUREMENTS,
             {
                 "item_id": item_id,
                 "media_type": media_type.value,
-                "provider": provider.lookup_key,
+                "provider": prov_key,
             },
         )
         if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
@@ -1207,18 +1215,18 @@ class MusicController(CoreController):
 
         # Try to get position from providers
         for prov_mapping in media_item.provider_mappings:
-            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
+            if not (
+                provider := self.mass.get_provider(
+                    prov_mapping.provider_instance, provider_type=MusicProvider
+                )
+            ):
                 continue
-            # Type guard: ensure this is a MusicProvider with get_resume_position method
-            if isinstance(provider, MusicProvider):
-                with suppress(NotImplementedError):
-                    (
-                        provider_fully_played,
-                        provider_position_ms,
-                    ) = await provider.get_resume_position(
-                        prov_mapping.item_id, media_item.media_type
-                    )
-                    break  # Use first provider that returns data
+            with suppress(NotImplementedError):
+                (
+                    provider_fully_played,
+                    provider_position_ms,
+                ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
         ma_fully_played = False
@@ -1275,18 +1283,18 @@ class MusicController(CoreController):
 
     def get_unique_providers(self) -> set[str]:
         """
-        Return all unique MusicProvider instance ids.
+        Return all unique MusicProvider (instance or domain) ids.
 
-        This will return all filebased instances but only one instance
-        for streaming providers.
+        This will return instance_ids for non-streaming providers
+        and domain names for streaming providers to avoid duplicates.
         """
-        instances = set()
-        domains = set()
+        result: set[str] = set()
         for provider in self.providers:
-            if provider.domain not in domains or not provider.is_streaming_provider:
-                instances.add(provider.instance_id)
-                domains.add(provider.domain)
-        return instances
+            if provider.is_streaming_provider:
+                result.add(provider.domain)
+            else:
+                result.add(provider.instance_id)
+        return result
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""

@@ -496,7 +496,7 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
-                raw_conf["provider"] = player.provider.lookup_key
+                raw_conf["provider"] = player.provider.instance_id
                 # pass action and values to get_config_entries
                 if values is None:
                     values = raw_conf.get("values", {})
@@ -1281,6 +1281,15 @@ class ConfigController:
             provider_config["instance_id"] = "universal_group"
             self._data[CONF_PROVIDERS]["universal_group"] = provider_config
 
+        # Migrate resonate provider to sendspin (renamed in 2.7 beta 19)
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if provider_config.get("domain") == "resonate":
+                self._data[CONF_PROVIDERS].pop(instance_id, None)
+                provider_config["domain"] = "sendspin"
+                provider_config["instance_id"] = "sendspin"
+                self._data[CONF_PROVIDERS]["sendspin"] = provider_config
+                changed = True
+
         # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
@@ -1309,7 +1318,11 @@ class ConfigController:
                 continue
             player_provider = player_config["provider"]
             if prov_conf := prov_configs.get(player_provider):
-                if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
+                try:
+                    if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
+                        continue
+                except KeyError:
+                    # removed provider
                     continue
                 if prov_manifest.multi_instance:
                     # multi instance providers use instance_id as lookup key

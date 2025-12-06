@@ -140,9 +140,11 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
 
         def filter(self, record: logging.LogRecord) -> bool:
             """Return False to suppress the log record."""
-            return not (
-                record.levelno == logging.WARNING and "buffered.<locals>.producer()" in record.msg
-            )
+            if record.levelno != logging.WARNING:
+                return True
+            # Check the formatted message, not the format string
+            msg = record.getMessage()
+            return "buffered.<locals>.producer()" not in msg
 
     logging.getLogger("asyncio").addFilter(BufferedGeneratorFilter())
 

@@ -37,7 +37,7 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
     artist_id = str(artist_obj["id"])
     artist = Artist(
         item_id=artist_id,
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=artist_obj["name"],
         provider_mappings={
             ProviderMapping(
@@ -59,7 +59,7 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=provider.lookup_key,
+                    provider=provider.instance_id,
                     remotely_accessible=True,
                 )
             ]
@@ -76,7 +76,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
 
     album = Album(
         item_id=album_id,
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=name,
         version=version,
         provider_mappings={
@@ -147,7 +147,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=provider.lookup_key,
+                    provider=provider.instance_id,
                     remotely_accessible=True,
                 )
             ]
@@ -169,7 +169,7 @@ def parse_track(
     hi_res_lossless = any(tag in tags for tag in ["HIRES_LOSSLESS", "HI_RES_LOSSLESS"])
     track = Track(
         item_id=track_id,
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=track_obj.get("title", "Unknown"),
         version=version,
         duration=track_obj.get("duration", 0),
@@ -220,7 +220,7 @@ def parse_track(
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
-                        provider=provider.lookup_key,
+                        provider=provider.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -263,7 +263,7 @@ def parse_playlist(
 
     playlist = Playlist(
         item_id=playlist_id,
-        provider=provider.instance_id if is_editable else provider.lookup_key,
+        provider=provider.instance_id,
         name=playlist_obj.get("title", "Unknown"),
         owner=owner_name,
         provider_mappings={
@@ -295,7 +295,7 @@ def parse_playlist(
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=image_url,
-                            provider=provider.lookup_key,
+                            provider=provider.instance_id,
                             remotely_accessible=True,
                         )
                     ]
@@ -308,7 +308,7 @@ def parse_playlist(
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=provider.lookup_key,
+                    provider=provider.instance_id,
                     remotely_accessible=True,
                 )
             ]

@@ -100,7 +100,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
@@ -231,7 +231,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             query = f"tracks.item_id in ({subquery})"
             return await self.mass.music.tracks._get_library_items_by_query(
-                extra_query_parts=[query], provider=provider_instance_id_or_domain
+                extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []
 
@@ -267,7 +267,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             query = f"albums.item_id in ({subquery})"
             return await self.mass.music.albums._get_library_items_by_query(
-                extra_query_parts=[query], provider=provider_instance_id_or_domain
+                extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []
 

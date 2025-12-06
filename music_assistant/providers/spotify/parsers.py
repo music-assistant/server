@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def parse_images(
-    images_list: list[dict[str, Any]], lookup_key: str, exclude_generic: bool = False
+    images_list: list[dict[str, Any]], instance_id: str, exclude_generic: bool = False
 ) -> UniqueList[MediaItemImage]:
     """Parse images list into MediaItemImage objects."""
     if not images_list:
@@ -54,7 +54,7 @@ def parse_images(
             MediaItemImage(
                 type=ImageType.THUMB,
                 path=best_image["url"],
-                provider=lookup_key,
+                provider=instance_id,
                 remotely_accessible=True,
             )
         ]
@@ -65,7 +65,7 @@ def parse_artist(artist_obj: dict[str, Any], provider: SpotifyProvider) -> Artis
     """Parse spotify artist object to generic layout."""
     artist = Artist(
         item_id=artist_obj["id"],
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=artist_obj["name"] or artist_obj["id"],
         provider_mappings={
             ProviderMapping(
@@ -81,7 +81,7 @@ def parse_artist(artist_obj: dict[str, Any], provider: SpotifyProvider) -> Artis
 
     # Use unified image parsing with generic exclusion
     artist.metadata.images = parse_images(
-        artist_obj.get("images", []), provider.lookup_key, exclude_generic=True
+        artist_obj.get("images", []), provider.instance_id, exclude_generic=True
     )
     return artist
 
@@ -91,7 +91,7 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
     name, version = parse_title_and_version(album_obj["name"])
     album = Album(
         item_id=album_obj["id"],
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=name,
         version=version,
         provider_mappings={
@@ -125,7 +125,7 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
     if "genres" in album_obj:
         album.metadata.genres = set(album_obj["genres"])
 
-    album.metadata.images = parse_images(album_obj.get("images", []), provider.lookup_key)
+    album.metadata.images = parse_images(album_obj.get("images", []), provider.instance_id)
 
     if "label" in album_obj:
         album.metadata.label = album_obj["label"]
@@ -147,7 +147,7 @@ def parse_track(
     name, version = parse_title_and_version(track_obj["name"])
     track = Track(
         item_id=track_obj["id"],
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=name,
         version=version,
         duration=track_obj["duration_ms"] / 1000,
@@ -182,7 +182,7 @@ def parse_track(
     if "album" in track_obj:
         track.album = parse_album(track_obj["album"], provider)
         track.metadata.images = parse_images(
-            track_obj["album"].get("images", []), provider.lookup_key
+            track_obj["album"].get("images", []), provider.instance_id
         )
     if track_obj.get("copyright"):
         track.metadata.copyright = track_obj["copyright"]
@@ -206,7 +206,7 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
 
     playlist = Playlist(
         item_id=playlist_obj["id"],
-        provider=provider.instance_id if is_editable else provider.lookup_key,
+        provider=provider.instance_id,
         name=playlist_obj["name"],
         owner=owner_name,
         provider_mappings={
@@ -220,7 +220,7 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
         is_editable=is_editable,
     )
 
-    playlist.metadata.images = parse_images(playlist_obj.get("images", []), provider.lookup_key)
+    playlist.metadata.images = parse_images(playlist_obj.get("images", []), provider.instance_id)
     return playlist
 
 
@@ -228,7 +228,7 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     """Parse spotify podcast (show) object to generic layout."""
     podcast = Podcast(
         item_id=podcast_obj["id"],
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=podcast_obj["name"],
         provider_mappings={
             ProviderMapping(
@@ -246,7 +246,7 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if podcast_obj.get("description"):
         podcast.metadata.description = podcast_obj["description"]
 
-    podcast.metadata.images = parse_images(podcast_obj.get("images", []), provider.lookup_key)
+    podcast.metadata.images = parse_images(podcast_obj.get("images", []), provider.instance_id)
 
     if "explicit" in podcast_obj:
         podcast.metadata.explicit = podcast_obj["explicit"]
@@ -266,7 +266,7 @@ def parse_podcast_episode(
     if podcast is None and "show" in episode_obj:
         podcast = Podcast(
             item_id=episode_obj["show"]["id"],
-            provider=provider.lookup_key,
+            provider=provider.instance_id,
             name=episode_obj["show"]["name"],
             provider_mappings={
                 ProviderMapping(
@@ -281,14 +281,14 @@ def parse_podcast_episode(
         # Create a minimal podcast reference if none available
         podcast = Podcast(
             item_id="unknown",
-            provider=provider.lookup_key,
+            provider=provider.instance_id,
             name="Unknown Podcast",
             provider_mappings=set(),
         )
 
     episode = PodcastEpisode(
         item_id=episode_obj["id"],
-        provider=provider.lookup_key,
+        provider=provider.instance_id,
         name=episode_obj["name"],
         duration=episode_obj["duration_ms"] // 1000 if episode_obj.get("duration_ms") else 0,
         podcast=podcast,
@@ -322,7 +322,7 @@ def parse_podcast_episode(
 
             episode.metadata.release_date = datetime.fromisoformat(date_str)
 
-    episode.metadata.images = parse_images(episode_obj.get("images", []), provider.lookup_key)
+    episode.metadata.images = parse_images(episode_obj.get("images", []), provider.instance_id)
 
     # Use podcast artwork if episode has none
     if not episode.metadata.images and isinstance(podcast, Podcast) and podcast.metadata.images:
@@ -385,7 +385,7 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
     if audiobook_obj.get("publisher"):
         audiobook.publisher = audiobook_obj["publisher"]
 
-    audiobook.metadata.images = parse_images(audiobook_obj.get("images", []), provider.lookup_key)
+    audiobook.metadata.images = parse_images(audiobook_obj.get("images", []), provider.instance_id)
 
     if audiobook_obj.get("explicit"):
         audiobook.metadata.explicit = audiobook_obj["explicit"]

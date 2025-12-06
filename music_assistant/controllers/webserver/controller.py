@@ -112,97 +112,87 @@ class WebserverController(CoreController):
         ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
         protocol = "https" if ssl_enabled else "http"
         default_base_url = f"{protocol}://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
-
-        # Show warning only if SSL is not enabled
-        entries = []
-        if not ssl_enabled:
-            entries.append(
-                ConfigEntry(
-                    key="webserver_warn",
-                    type=ConfigEntryType.ALERT,
-                    label="Please note that the webserver is unencrypted. "
-                    "Never ever expose the webserver directly to the internet! \n\n"
-                    "Use a reverse proxy or VPN to secure access, or enable SSL below.",
-                    required=False,
-                )
-            )
-
-        entries.extend(
-            [
-                ConfigEntry(
-                    key=CONF_BASE_URL,
-                    type=ConfigEntryType.STRING,
-                    default_value=default_base_url,
-                    label="Base URL",
-                    description="The (base) URL to reach this webserver in the network. \n"
-                    "Override this in advanced scenarios where for example you're running "
-                    "the webserver behind a reverse proxy.",
-                ),
-                ConfigEntry(
-                    key=CONF_BIND_PORT,
-                    type=ConfigEntryType.INTEGER,
-                    default_value=DEFAULT_SERVER_PORT,
-                    label="TCP Port",
-                    description="The TCP port to run the webserver.",
-                ),
-                ConfigEntry(
-                    key=CONF_BIND_IP,
-                    type=ConfigEntryType.STRING,
-                    default_value="0.0.0.0",
-                    options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
-                    label="Bind to IP/interface",
-                    description="Bind the (web)server to this specific interface. \n"
-                    "Use 0.0.0.0 to bind to all interfaces. \n"
-                    "Set this address for example to a docker-internal network, "
-                    "when you are running a reverse proxy to enhance security and "
-                    "protect outside access to the webinterface and API. \n\n"
-                    "This is an advanced setting that should normally "
-                    "not be adjusted in regular setups.",
-                    category="advanced",
-                ),
-                ConfigEntry(
-                    key=CONF_ENABLE_SSL,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
-                    label="Enable SSL/TLS",
-                    description="Enable HTTPS by providing an SSL certificate and private key. \n"
-                    "This encrypts all communication with the webserver.",
-                    category="advanced",
-                ),
-                ConfigEntry(
-                    key=CONF_SSL_CERTIFICATE,
-                    type=ConfigEntryType.STRING,
-                    label="SSL Certificate",
-                    description="Paste the contents of your SSL certificate file (PEM format). \n"
-                    "This should include the full certificate chain if applicable.",
-                    category="advanced",
-                    required=False,
-                    hidden=not ssl_enabled,
-                ),
-                ConfigEntry(
-                    key=CONF_SSL_PRIVATE_KEY,
-                    type=ConfigEntryType.SECURE_STRING,
-                    label="SSL Private Key",
-                    description="Paste the contents of your SSL private key file (PEM format). \n"
-                    "This is securely encrypted and stored.",
-                    category="advanced",
-                    required=False,
-                    hidden=not ssl_enabled,
-                ),
-                ConfigEntry(
-                    key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=True,
-                    label="Allow Self-Registration",
-                    description="Allow users to create accounts via Home Assistant OAuth. \n"
-                    "New users will have USER role by default.",
-                    category="advanced",
-                    hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
-                ),
-            ]
+        return (
+            ConfigEntry(
+                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Allow User Self-Registration",
+                description="Allow users to create accounts via Home Assistant OAuth. \n"
+                "New users will have USER role by default.",
+                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+            ),
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=default_base_url,
+                label="Base URL",
+                description="The (base) URL to reach this webserver in the network. \n"
+                "Override this in advanced scenarios where for example you're running "
+                "the webserver behind a reverse proxy.",
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                label="TCP Port",
+                description="The TCP port to run the webserver.",
+            ),
+            ConfigEntry(
+                key="webserver_warn",
+                type=ConfigEntryType.ALERT,
+                label="Please note that the webserver is unencrypted. "
+                "Never ever expose the webserver directly to the internet! \n\n"
+                "Use a reverse proxy or VPN to secure access, or enable SSL below. \n\n"
+                "As an alternative, consider using the Remote Access feature which "
+                "secures access to your Music Assistant instance without the need to "
+                "expose your webserver directly.",
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                depends_on_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_SSL,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Enable SSL/TLS",
+                description="Enable HTTPS by providing an SSL certificate and private key. \n"
+                "This encrypts all communication with the webserver.",
+            ),
+            ConfigEntry(
+                key=CONF_SSL_CERTIFICATE,
+                type=ConfigEntryType.STRING,
+                label="SSL Certificate",
+                description="Paste the contents of your SSL certificate file (PEM format). \n"
+                "This should include the full certificate chain if applicable.",
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+            ),
+            ConfigEntry(
+                key=CONF_SSL_PRIVATE_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                label="SSL Private Key",
+                description="Paste the contents of your SSL private key file (PEM format). \n"
+                "This is securely encrypted and stored.",
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_IP,
+                type=ConfigEntryType.STRING,
+                default_value="0.0.0.0",
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                label="Bind to IP/interface",
+                description="Bind the (web)server to this specific interface. \n"
+                "Use 0.0.0.0 to bind to all interfaces. \n"
+                "Set this address for example to a docker-internal network, "
+                "when you are running a reverse proxy to enhance security and "
+                "protect outside access to the webinterface and API. \n\n"
+                "This is an advanced setting that should normally "
+                "not be adjusted in regular setups.",
+                category="advanced",
+            ),
         )
-
-        return tuple(entries)
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -291,13 +281,23 @@ class WebserverController(CoreController):
         if not self.mass.config.onboard_done:
             self.logger.warning(
                 "\n\n################################################################################\n"
-                "Starting webserver on  %s:%s - base url: %s\n"
-                "If this is incorrect, see the documentation how to configure the Webserver\n"
-                "in Settings --> Core modules --> Webserver\n"
+                "###                           SETUP REQUIRED                                 ###\n"
+                "################################################################################\n"
+                "\n"
+                "Music Assistant is running in setup mode.\n"
+                "Please complete the setup by visiting:\n"
+                "\n"
+                "    %s/setup\n"
+                "\n"
+                "Webserver running on: %s:%s\n"
+                "\n"
+                "If this address is incorrect, see the documentation on how to configure\n"
+                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "\n"
                 "################################################################################\n",
+                base_url,
                 bind_ip,
                 self.publish_port,
-                base_url,
             )
         else:
             self.logger.info(
@@ -379,7 +379,8 @@ class WebserverController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        await self.remote_access.close()
+        if self.remote_access.is_running:
+            await self.remote_access.close()
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
@@ -467,6 +468,10 @@ class WebserverController(CoreController):
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
+        # Block until onboarding is complete
+        if not self.mass.config.onboard_done:
+            return web.Response(status=503, text="Setup required")
+
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
@@ -647,6 +652,18 @@ class WebserverController(CoreController):
 
     async def _handle_auth_login(self, request: web.Request) -> web.Response:
         """Handle login request."""
+        # Block until onboarding is complete
+        if not self.mass.config.onboard_done:
+            return web.json_response(
+                {"success": False, "error": "Setup required"},
+                status=403,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+            )
+
         try:
             if not request.can_read_body:
                 return web.Response(status=400, text="Body required")
@@ -985,9 +1002,9 @@ class WebserverController(CoreController):
         display_name = body.get("display_name")
 
         # Validation
-        if not username or len(username) < 3:
+        if not username or len(username) < 2:
             return web.json_response(
-                {"success": False, "error": "Username must be at least 3 characters"}, status=400
+                {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
         if not password or len(password) < 8:

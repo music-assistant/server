@@ -116,7 +116,7 @@ class MusicCastPlayer(Player):
             self._attr_name = self.zone_device.zone_data.name
 
         # group
-        self._attr_can_group_with = {self.provider.lookup_key}
+        self._attr_can_group_with = {self.provider.instance_id}
 
         self._attr_available = True
 

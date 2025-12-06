@@ -2,7 +2,7 @@
 Timestamped multi-client audio stream for position-aware playback.
 
 This module provides a multi-client streaming implementation optimized for
-aioresonate's synchronized multi-room audio playback. Each audio chunk is
+aiosendspin's synchronized multi-room audio playback. Each audio chunk is
 timestamped, allowing late-joining players to start at the correct position
 for synchronized playback across multiple devices.
 """
@@ -22,9 +22,9 @@ LOGGER = logging.getLogger(__name__)
 
 # Minimum/target buffer retention time in seconds
 # This 10s buffer is currently required since:
-# - aioresonate currently uses a fixed 5s buffer to allow up to ~4s of network interruption
+# - aiosendspin currently uses a fixed 5s buffer to allow up to ~4s of network interruption
 # - ~2s allows for ffmpeg processing time and some margin
-# - ~3s are currently needed internally by aioresonate for initial buffering
+# - ~3s are currently needed internally by aiosendspin for initial buffering
 MIN_BUFFER_DURATION = 10.0
 # Maximum buffer duration before raising an error (safety mechanism)
 MAX_BUFFER_DURATION = MIN_BUFFER_DURATION + 5.0

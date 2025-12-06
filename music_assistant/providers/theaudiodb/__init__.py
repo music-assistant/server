@@ -256,7 +256,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )
@@ -304,7 +304,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )
@@ -358,7 +358,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )

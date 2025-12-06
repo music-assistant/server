@@ -7,9 +7,11 @@ bridging them to the local WebSocket API.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import EventType
 
@@ -57,6 +59,7 @@ class RemoteAccessManager:
         self._remote_id: str | None = None
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
+        self._on_unload_callbacks: list[Callable[[], None]] = []
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
@@ -78,6 +81,8 @@ class RemoteAccessManager:
     async def close(self) -> None:
         """Cleanup on exit."""
         await self.stop()
+        for unload_cb in self._on_unload_callbacks:
+            unload_cb()
 
     async def start(self) -> None:
         """Start the remote access gateway."""
@@ -102,6 +107,9 @@ class RemoteAccessManager:
             local_ws_url=local_ws_url,
             remote_id=self._remote_id,
             ice_servers=ice_servers,
+            # Pass callback to get fresh ICE servers for each client connection
+            # This ensures TURN credentials are always valid
+            ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
         )
 
         await self.gateway.start()
@@ -137,7 +145,6 @@ class RemoteAccessManager:
         ha_provider = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
         if not ha_provider:
             return False, None
-
         try:
             hass_client = ha_provider.hass
             if not hass_client or not hass_client.connected:
@@ -146,15 +153,45 @@ class RemoteAccessManager:
             result = await hass_client.send_command("cloud/status")
             logged_in = result.get("logged_in", False)
             active_subscription = result.get("active_subscription", False)
-
             if not (logged_in and active_subscription):
                 return False, None
+            # HA Cloud is available, get ICE servers
+            # The cloud/webrtc/ice_servers command was added in HA 2025.12.0b6
+            if AwesomeVersion(hass_client.version) >= AwesomeVersion("2025.12.0b6"):
+                if ice_servers := await hass_client.send_command("cloud/webrtc/ice_servers"):
+                    return True, ice_servers
+            else:
+                self.logger.debug(
+                    "HA version %s not supported for optimized WebRTC mode "
+                    "(requires 2025.12.0b6 or later)",
+                    hass_client.version,
+                )
+            self.logger.debug("HA Cloud available but no ICE servers returned")
+        except Exception as err:
+            self.logger.exception("Error getting HA Cloud status: %s", err)
+        return False, None
 
-            return True, None
+    async def get_ice_servers(self) -> list[dict[str, str]]:
+        """Get ICE servers for WebRTC connections.
 
-        except Exception:
-            self.logger.exception("Error getting HA Cloud status")
-            return False, None
+        Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
+        This method can be called regardless of whether remote access is enabled.
+
+        :return: List of ICE server configurations.
+        """
+        # Default public STUN servers
+        default_ice_servers: list[dict[str, str]] = [
+            {"urls": "stun:stun.l.google.com:19302"},
+            {"urls": "stun:stun.cloudflare.com:3478"},
+            {"urls": "stun:stun.home-assistant.io:3478"},
+        ]
+
+        # Try to get HA Cloud ICE servers
+        _, ice_servers = await self._get_ha_cloud_status()
+        if ice_servers:
+            return ice_servers
+
+        return default_ice_servers
 
     @property
     def is_enabled(self) -> bool:
@@ -203,7 +240,11 @@ class RemoteAccessManager:
                 await self.stop()
             return await get_remote_access_info()
 
-        self.mass.register_api_command("remote_access/info", get_remote_access_info)
-        self.mass.register_api_command(
-            "remote_access/configure", configure_remote_access, required_role="admin"
+        self._on_unload_callbacks.append(
+            self.mass.register_api_command("remote_access/info", get_remote_access_info)
+        )
+        self._on_unload_callbacks.append(
+            self.mass.register_api_command(
+                "remote_access/configure", configure_remote_access, required_role="admin"
+            )
         )

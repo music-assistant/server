@@ -211,7 +211,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider.lookup_key == provider_filter)
+            and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (not user_filter or player.player_id in user_filter)
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
@@ -410,7 +410,7 @@ class PlayerController(CoreController):
                 await player.play()
         else:
             # try to resume the player
-            await self.cmd_resume(player.player_id)
+            await self._handle_cmd_resume(player.player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -464,44 +464,19 @@ class PlayerController(CoreController):
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume")
+    @handle_player_command
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
-        """
-        Send RESUME command to given player.
+        """Send RESUME command to given player.
 
         Resume (or restart) playback on the player.
+
+        :param player_id: player_id of the player to handle the command.
+        :param source: Optional source to resume.
+        :param media: Optional media to resume.
         """
-        player = self._get_player_with_redirect(player_id)
-        source = source or player.active_source
-        media = media or player.current_media
-        # power on the player if needed
-        if not player.powered and player.power_control != PLAYER_CONTROL_NONE:
-            await self.cmd_power(player.player_id, True)
-        # Redirect to queue controller if it is active
-        if active_queue := self.mass.player_queues.get(source or player_id):
-            await self.mass.player_queues.resume(active_queue.queue_id)
-            return
-        # try to handle command on player directly
-        # TODO: check if player has an active source with native resume support
-        active_source = next((x for x in player.source_list if x.id == source), None)
-        if (
-            player.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
-            and active_source
-            and active_source.can_play_pause
-        ):
-            # player has some other source active and native resume support
-            await player.play()
-            return
-        if active_source and not active_source.passive:
-            await self.select_source(player_id, active_source.id)
-            return
-        if media:
-            # try to re-play the current media item
-            await player.play_media(media)
-            return
-        # fallback: just send play command - which will fail if nothing can be played
-        await player.play()
+        await self._handle_cmd_resume(player_id, source, media)
 
     @api_command("players/cmd/seek")
     async def cmd_seek(self, player_id: str, position: int) -> None:
@@ -600,145 +575,20 @@ class PlayerController(CoreController):
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
-        - player_id: player_id of the player to handle the command.
-        - powered: bool if player should be powered on or off.
+        :param player_id: player_id of the player to handle the command.
+        :param powered: bool if player should be powered on or off.
         """
-        player = self.get(player_id, True)
-        assert player is not None  # for type checking
-        player_state = player.state
-
-        if player_state.powered == powered:
-            self.logger.debug(
-                "Ignoring power %s command for player %s: already in state %s",
-                "ON" if powered else "OFF",
-                player_state.name,
-                "ON" if player_state.powered else "OFF",
-            )
-            return  # nothing to do
-
-        # ungroup player at power off
-        player_was_synced = player.synced_to is not None
-        if player.type == PlayerType.PLAYER and not powered:
-            # ungroup player if it is synced (or is a sync leader itself)
-            # NOTE: ungroup will be ignored if the player is not grouped or synced
-            await self.cmd_ungroup(player_id)
-
-        # always stop player at power off
-        if (
-            not powered
-            and not player_was_synced
-            and player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-        ):
-            await self.cmd_stop(player_id)
-            # short sleep: allow the stop command to process and prevent race conditions
-            await asyncio.sleep(0.2)
-
-        # power off all synced childs when player is a sync leader
-        elif not powered and player.type == PlayerType.PLAYER and player.group_members:
-            async with TaskManager(self.mass) as tg:
-                for member in self.iter_group_members(player, True):
-                    if member.power_control == PLAYER_CONTROL_NONE:
-                        continue
-                    tg.create_task(self.cmd_power(member.player_id, False))
-
-        # handle actual power command
-        if player.power_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support power control"
-            )
-        if player.power_control == PLAYER_CONTROL_NATIVE:
-            # player supports power command natively: forward to player provider
-            async with self._player_throttlers[player_id]:
-                await player.power(powered)
-        elif player.power_control == PLAYER_CONTROL_FAKE:
-            # user wants to use fake power control - so we (optimistically) update the state
-            # and store the state in the cache
-            player.extra_data[ATTR_FAKE_POWER] = powered
-            player.update_state()  # trigger update of the player state
-            await self.mass.cache.set(
-                key=player_id,
-                data=powered,
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_POWER,
-            )
-        else:
-            # handle external player control
-            player_control = self._controls.get(player.power_control)
-            control_name = player_control.name if player_control else player.power_control
-            self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_power:
-                raise UnsupportedFeaturedException(
-                    f"Player control {control_name} is not available"
-                )
-            if powered:
-                assert player_control.power_on is not None  # for type checking
-                await player_control.power_on()
-            else:
-                assert player_control.power_off is not None  # for type checking
-                await player_control.power_off()
-
-        # always trigger a state update to update the UI
-        player.update_state()
-
-        # handle 'auto play on power on' feature
-        if (
-            not player.active_group
-            and powered
-            and player.config.get_value(CONF_AUTO_PLAY)
-            and player.active_source in (None, player_id)
-            and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
-        ):
-            await self.mass.player_queues.resume(player_id)
+        await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
     @handle_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
-        - player_id: player_id of the player to handle the command.
-        - volume_level: volume level (0..100) to set on the player.
+        :param player_id: player_id of the player to handle the command.
+        :param volume_level: volume level (0..100) to set on the player.
         """
-        player = self.get(player_id, True)
-        assert player is not None  # for type checker
-        if player.type == PlayerType.GROUP:
-            # redirect to special group volume control
-            await self.cmd_group_volume(player_id, volume_level)
-            return
-
-        if player.volume_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support volume control"
-            )
-
-        if player.mute_control != PLAYER_CONTROL_NONE and player.volume_muted:
-            # if player is muted, we unmute it first
-            self.logger.debug(
-                "Unmuting player %s before setting volume",
-                player.display_name,
-            )
-            await self.cmd_volume_mute(player_id, False)
-
-        if player.volume_control == PLAYER_CONTROL_NATIVE:
-            # player supports volume command natively: forward to player
-            async with self._player_throttlers[player_id]:
-                await player.volume_set(volume_level)
-            return
-        if player.volume_control == PLAYER_CONTROL_FAKE:
-            # user wants to use fake volume control - so we (optimistically) update the state
-            # and store the state in the cache
-            player.extra_data[ATTR_FAKE_VOLUME] = volume_level
-            # trigger update
-            player.update_state()
-            return
-        # else: handle external player control
-        player_control = self._controls.get(player.volume_control)
-        control_name = player_control.name if player_control else player.volume_control
-        self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
-        if not player_control or not player_control.supports_volume:
-            raise UnsupportedFeaturedException(f"Player control {control_name} is not available")
-        async with self._player_throttlers[player_id]:
-            assert player_control.volume_set is not None
-            await player_control.volume_set(volume_level)
+        await self._handle_cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -1013,7 +863,7 @@ class PlayerController(CoreController):
         player = self._get_player_with_redirect(player_id)
         # power on the player if needed
         if player.powered is False and player.power_control != PLAYER_CONTROL_NONE:
-            await self.cmd_power(player.player_id, True)
+            await self._handle_cmd_power(player.player_id, True)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
         await player.play_media(media)
@@ -1039,7 +889,7 @@ class PlayerController(CoreController):
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state)
                 await self.cmd_stop(player_id)
-                await asyncio.sleep(0.5)  # small delay to allow stop to process
+                await asyncio.sleep(2)  # small delay to allow stop to process
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -1128,7 +978,7 @@ class PlayerController(CoreController):
             # check if player can be synced/grouped with the target player
             if not (
                 child_player_id in parent_player.can_group_with
-                or child_player.provider.lookup_key in parent_player.can_group_with
+                or child_player.provider.instance_id in parent_player.can_group_with
                 or "*" in parent_player.can_group_with
             ):
                 raise UnsupportedFeaturedException(
@@ -1161,7 +1011,7 @@ class PlayerController(CoreController):
                             child_player.name,
                             child_player.active_group,
                         )
-                        await self.cmd_power(child_player.active_group, False)
+                        await self._handle_cmd_power(child_player.active_group, False)
                     else:
                         await other_group.set_members(player_ids_to_remove=[child_player.player_id])
                 else:
@@ -1170,7 +1020,7 @@ class PlayerController(CoreController):
                         child_player.name,
                         child_player.active_group,
                     )
-                    await self.cmd_power(child_player.active_group, False)
+                    await self._handle_cmd_power(child_player.active_group, False)
             elif child_player.synced_to and child_player.synced_to != target_player:
                 self.logger.warning(
                     "Player %s is already synced to another player, ungrouping first",
@@ -1180,7 +1030,7 @@ class PlayerController(CoreController):
 
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
-                await self.cmd_power(child_player.player_id, True)
+                await self._handle_cmd_power(child_player.player_id, True)
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 
@@ -1712,7 +1562,8 @@ class PlayerController(CoreController):
             new_child_volume = int(cur_child_volume + volume_dif)
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
-            coros.append(self.cmd_volume_set(child_player.player_id, new_child_volume))
+            # Use private method to skip permission check - already validated on group
+            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
@@ -1850,7 +1701,7 @@ class PlayerController(CoreController):
         if player_disabled:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
-                await self.cmd_power(config.player_id, False)
+                await self._handle_cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
         # if the PlayerQueue was playing, restart playback
@@ -1994,7 +1845,7 @@ class PlayerController(CoreController):
                     player.display_name,
                     prev_group.display_name,
                 )
-                await self.cmd_power(player.player_id, False)
+                await self._handle_cmd_power(player.player_id, False)
         elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # normal/standalone player: stop player if its currently playing
             self.logger.debug(
@@ -2087,7 +1938,7 @@ class PlayerController(CoreController):
                 self.logger.debug(
                     "Announcement to player %s - turning player off again...", player.display_name
                 )
-                await self.cmd_power(player.player_id, False)
+                await self._handle_cmd_power(player.player_id, False)
             # nothing to do anymore, player was not previously powered
             # and does not support power control
             return
@@ -2117,7 +1968,7 @@ class PlayerController(CoreController):
                 await self.cmd_play(prev_group.player_id)
         elif prev_state == PlaybackState.PLAYING:
             # player was playing something before the announcement - try to resume that here
-            await self.cmd_resume(player.player_id, prev_source, prev_media)
+            await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
@@ -2237,6 +2088,194 @@ class PlayerController(CoreController):
             #   (or vice versa)
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
+
+    # Private command handlers (no permission checks)
+
+    async def _handle_cmd_resume(
+        self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
+    ) -> None:
+        """
+        Handle resume playback command.
+
+        Skips the permission checks (internal use only).
+        """
+        player = self._get_player_with_redirect(player_id)
+        source = source or player.active_source
+        media = media or player.current_media
+        # power on the player if needed
+        if not player.powered and player.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True)
+        # Redirect to queue controller if it is active
+        if active_queue := self.mass.player_queues.get(source or player_id):
+            await self.mass.player_queues.resume(active_queue.queue_id)
+            return
+        # try to handle command on player directly
+        # TODO: check if player has an active source with native resume support
+        active_source = next((x for x in player.source_list if x.id == source), None)
+        if (
+            player.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
+            and active_source
+            and active_source.can_play_pause
+        ):
+            # player has some other source active and native resume support
+            await player.play()
+            return
+        if active_source and not active_source.passive:
+            await self.select_source(player_id, active_source.id)
+            return
+        if media:
+            # try to re-play the current media item
+            await player.play_media(media)
+            return
+        # fallback: just send play command - which will fail if nothing can be played
+        await player.play()
+
+    async def _handle_cmd_power(self, player_id: str, powered: bool) -> None:
+        """
+        Handle player power on/off command.
+
+        Skips the permission checks (internal use only).
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+        player_state = player.state
+
+        if player_state.powered == powered:
+            self.logger.debug(
+                "Ignoring power %s command for player %s: already in state %s",
+                "ON" if powered else "OFF",
+                player_state.name,
+                "ON" if player_state.powered else "OFF",
+            )
+            return  # nothing to do
+
+        # ungroup player at power off
+        player_was_synced = player.synced_to is not None
+        if player.type == PlayerType.PLAYER and not powered:
+            # ungroup player if it is synced (or is a sync leader itself)
+            # NOTE: ungroup will be ignored if the player is not grouped or synced
+            await self.cmd_ungroup(player_id)
+
+        # always stop player at power off
+        if (
+            not powered
+            and not player_was_synced
+            and player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        ):
+            await self.cmd_stop(player_id)
+            # short sleep: allow the stop command to process and prevent race conditions
+            await asyncio.sleep(0.2)
+
+        # power off all synced childs when player is a sync leader
+        elif not powered and player.type == PlayerType.PLAYER and player.group_members:
+            async with TaskManager(self.mass) as tg:
+                for member in self.iter_group_members(player, True):
+                    if member.power_control == PLAYER_CONTROL_NONE:
+                        continue
+                    # Use private method to skip permission check for child players
+                    tg.create_task(self._handle_cmd_power(member.player_id, False))
+
+        # handle actual power command
+        if player.power_control == PLAYER_CONTROL_NONE:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support power control"
+            )
+        if player.power_control == PLAYER_CONTROL_NATIVE:
+            # player supports power command natively: forward to player provider
+            async with self._player_throttlers[player_id]:
+                await player.power(powered)
+        elif player.power_control == PLAYER_CONTROL_FAKE:
+            # user wants to use fake power control - so we (optimistically) update the state
+            # and store the state in the cache
+            player.extra_data[ATTR_FAKE_POWER] = powered
+            player.update_state()  # trigger update of the player state
+            await self.mass.cache.set(
+                key=player_id,
+                data=powered,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_POWER,
+            )
+        else:
+            # handle external player control
+            player_control = self._controls.get(player.power_control)
+            control_name = player_control.name if player_control else player.power_control
+            self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
+            if not player_control or not player_control.supports_power:
+                raise UnsupportedFeaturedException(
+                    f"Player control {control_name} is not available"
+                )
+            if powered:
+                assert player_control.power_on is not None  # for type checking
+                await player_control.power_on()
+            else:
+                assert player_control.power_off is not None  # for type checking
+                await player_control.power_off()
+
+        # always trigger a state update to update the UI
+        player.update_state()
+
+        # handle 'auto play on power on' feature
+        if (
+            not player.active_group
+            and powered
+            and player.config.get_value(CONF_AUTO_PLAY)
+            and player.active_source in (None, player_id)
+            and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        ):
+            await self.mass.player_queues.resume(player_id)
+
+    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        """
+        Handle Player volume set command.
+
+        Skips the permission checks (internal use only).
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checker
+        if player.type == PlayerType.GROUP:
+            # redirect to special group volume control
+            await self.cmd_group_volume(player_id, volume_level)
+            return
+
+        if player.volume_control == PLAYER_CONTROL_NONE:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support volume control"
+            )
+
+        if player.mute_control != PLAYER_CONTROL_NONE and player.volume_muted:
+            # if player is muted, we unmute it first
+            self.logger.debug(
+                "Unmuting player %s before setting volume",
+                player.display_name,
+            )
+            await self.cmd_volume_mute(player_id, False)
+
+        # Check if a plugin source is active with a volume callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.on_volume:
+                await plugin_source.on_volume(volume_level)
+
+        if player.volume_control == PLAYER_CONTROL_NATIVE:
+            # player supports volume command natively: forward to player
+            async with self._player_throttlers[player_id]:
+                await player.volume_set(volume_level)
+            return
+        if player.volume_control == PLAYER_CONTROL_FAKE:
+            # user wants to use fake volume control - so we (optimistically) update the state
+            # and store the state in the cache
+            player.extra_data[ATTR_FAKE_VOLUME] = volume_level
+            # trigger update
+            player.update_state()
+            return
+        # else: handle external player control
+        player_control = self._controls.get(player.volume_control)
+        control_name = player_control.name if player_control else player.volume_control
+        self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
+        if not player_control or not player_control.supports_volume:
+            raise UnsupportedFeaturedException(f"Player control {control_name} is not available")
+        async with self._player_throttlers[player_id]:
+            assert player_control.volume_set is not None
+            await player_control.volume_set(volume_level)
 
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
