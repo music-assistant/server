@@ -933,3 +933,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # No user filter - use the provided filter as is
             final_provider_filter = [provider] if isinstance(provider, str) else provider
         return final_provider_filter
+
+    def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
+        """Select the correct provider id to use for fetching the item."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        # prefer user provider filter if available
+        for mapping in library_item.provider_mappings:
+            if user_provider_filter and mapping.provider_instance not in user_provider_filter:
+                continue
+            return (mapping.provider_instance, mapping.item_id)
+        # fallback to first mapping
+        mapping = next(iter(library_item.provider_mappings))
+        return (mapping.provider_instance, mapping.item_id)

@@ -104,10 +104,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             library_podcast = await self.get_library_item(item_id)
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
-            for provider_mapping in library_podcast.provider_mappings:
-                item_id = provider_mapping.item_id
-                provider_instance_id_or_domain = provider_mapping.provider_instance
-                break
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
         # podcast episodes are not stored in the db/library
         # so we always need to fetch them from the provider
         async for episode in self._get_provider_podcast_episodes(

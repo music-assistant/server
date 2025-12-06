@@ -1285,15 +1285,21 @@ class MusicController(CoreController):
         """
         Return all unique MusicProvider (instance or domain) ids.
 
-        This will return instance_ids for non-streaming providers
-        and domain names for streaming providers to avoid duplicates.
+        This will return a set of provider instance ids but will only return
+        a single instance_id per streaming provider domain.
         """
+        processed_domains: set[str] = set()
+        # Get user provider filter if set
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         result: set[str] = set()
         for provider in self.providers:
-            if provider.is_streaming_provider:
-                result.add(provider.domain)
-            else:
-                result.add(provider.instance_id)
+            if provider.is_streaming_provider and provider.domain in processed_domains:
+                continue
+            if user_provider_filter and provider.instance_id not in user_provider_filter:
+                continue
+            result.add(provider.instance_id)
+            processed_domains.add(provider.domain)
         return result
 
     async def cleanup_provider(self, provider_instance: str) -> None:
