@@ -889,7 +889,7 @@ class PlayerController(CoreController):
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state)
                 await self.cmd_stop(player_id)
-                await asyncio.sleep(0.5)  # small delay to allow stop to process
+                await asyncio.sleep(2)  # small delay to allow stop to process
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
