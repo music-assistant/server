@@ -315,6 +315,7 @@ class SendspinProvider(PlayerProvider):
                 await self.mass.webserver.auth.update_user_filters(
                     user, player_filter=new_filter, provider_filter=None
                 )
+                user.player_filter = new_filter
 
         return {
             "local_ws_url": f"ws://{self.mass.streams.publish_ip}:8927/sendspin",

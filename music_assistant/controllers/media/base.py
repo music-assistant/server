@@ -7,7 +7,7 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -116,6 +116,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         self._db_add_lock = asyncio.Lock()
 
+    @final
     async def add_item_to_library(
         self,
         item: ItemCls,
@@ -129,6 +130,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self._update_library_item(library_id, item, overwrite=overwrite_existing)
         else:
             # actually add a new item in the library db
+            self.mass.music.match_provider_instances(item)
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
@@ -141,6 +143,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return library_item
 
+    @final
     async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
         if item.provider == "library":
             return int(item.item_id)
@@ -169,10 +172,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return int(db_item.item_id)
         return None
 
+    @final
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
         """Update existing library record in the library database."""
+        self.mass.music.match_provider_instances(update)
         await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
@@ -376,6 +381,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return item
         return None
 
+    @final
     async def get_library_item_by_prov_mappings(
         self,
         provider_mappings: Iterable[ProviderMapping],
@@ -397,6 +403,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return item
         return None
 
+    @final
     async def get_library_item_by_external_id(
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
@@ -413,6 +420,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return item
         return None
 
+    @final
     async def get_library_item_by_external_ids(
         self, external_ids: set[tuple[ExternalID, str]]
     ) -> ItemCls | None:
@@ -422,6 +430,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return match
         return None
 
+    @final
     async def get_library_items_by_prov_id(
         self,
         provider_domain: str | None = None,
@@ -461,6 +470,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             extra_query_params=query_params,
         )
 
+    @final
     async def iter_library_items_by_prov_id(
         self,
         provider_instance_id_or_domain: str,
@@ -482,6 +492,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 break
             offset += limit
 
+    @final
     async def set_favorite(self, item_id: str | int, favorite: bool) -> None:
         """Set the favorite bool on a database item."""
         db_id = int(item_id)  # ensure integer
@@ -494,6 +505,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @guard_single_request  # type: ignore[type-var]  # TODO: fix typing for MediaControllerBase
+    @final
     async def get_provider_item(
         self,
         item_id: str,
@@ -551,6 +563,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         raise MediaNotFoundError(msg)
 
+    @final
     async def add_provider_mapping(
         self, item_id: str | int, provider_mapping: ProviderMapping
     ) -> None:
@@ -563,6 +576,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item.provider_mappings.add(provider_mapping)
         await self.set_provider_mappings(db_id, library_item.provider_mappings)
 
+    @final
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
     ) -> None:
@@ -610,6 +624,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
 
+    @final
     async def remove_provider_mappings(self, item_id: str | int, provider_instance_id: str) -> None:
         """Remove all provider mappings from an item."""
         db_id = int(item_id)  # ensure integer
@@ -645,6 +660,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
 
+    @final
     async def set_provider_mappings(
         self,
         item_id: str | int,
@@ -708,6 +724,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> list[Track]:
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
 
+    @final
     async def _get_library_items_by_query(
         self,
         favorite: bool | None = None,
@@ -755,6 +772,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         ]
 
+    @final
     def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
         """Preprocess search string and add to query params."""
         if search:
@@ -762,11 +780,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["search"] = f"%{search}%"
         return search
 
+    @final
     @staticmethod
     def _clean_query_parts(query_parts: list[str]) -> list[str]:
         """Clean the query parts list by removing duplicate where statements."""
         return [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
 
+    @final
     def _apply_random_subquery(
         self,
         query_parts: list[str],
@@ -808,6 +828,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
         join_parts.clear()
 
+    @final
     def _apply_filters(
         self,
         query_parts: list[str],
@@ -840,6 +861,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 f"AND ({' OR '.join(provider_conditions)})"
             )
 
+    @final
     def _build_final_query(
         self,
         query_parts: list[str],
@@ -867,6 +889,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query
 
+    @final
     @staticmethod
     def _parse_db_row(db_row: Mapping[str, Any]) -> dict[str, Any]:
         """Parse raw db Mapping into a dict."""
@@ -903,6 +926,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     db_row_dict["metadata"]["images"] = [album_thumb]
         return db_row_dict
 
+    @final
     def _ensure_provider_filter(
         self,
         provider: str | list[str] | None,
@@ -934,6 +958,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             final_provider_filter = [provider] if isinstance(provider, str) else provider
         return final_provider_filter
 
+    @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
         """Select the correct provider id to use for fetching the item."""
         user = get_current_user()

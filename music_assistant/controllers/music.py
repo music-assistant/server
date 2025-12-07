@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
+    ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -1497,6 +1498,43 @@ class MusicController(CoreController):
         for sync_task in self.in_progress_syncs:
             if sync_task.provider_instance == provider_instance_id:
                 sync_task.task.cancel()
+
+    def match_provider_instances(
+        self,
+        item: MediaItemType,
+    ) -> None:
+        """Match all provider instances for the given item."""
+        for provider_mapping in list(item.provider_mappings):
+            if provider_mapping.is_unique:
+                # unique mapping, no need to map
+                continue
+            if not (provider := self.mass.get_provider(item.provider)):
+                continue
+            if not provider.is_streaming_provider:
+                continue
+            provider_instances = self.get_provider_instances(
+                provider.domain, return_unavailable=True
+            )
+            if len(provider_instances) <= 1:
+                # only a single instance, no need to map
+                continue
+            for prov_instance in provider_instances:
+                if prov_instance.instance_id == provider.instance_id:
+                    continue
+                # create additional mapping for other provider instances of the same provider
+                item.provider_mappings.add(
+                    ProviderMapping(
+                        item_id=provider_mapping.item_id,
+                        provider_domain=provider.domain,
+                        provider_instance=prov_instance.instance_id,
+                        available=provider_mapping.available,
+                        is_unique=provider_mapping.is_unique,
+                        audio_format=provider_mapping.audio_format,
+                        url=provider_mapping.url,
+                        details=provider_mapping.details,
+                        in_library=provider_mapping.in_library,
+                    )
+                )
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""
