@@ -351,9 +351,6 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 url=audiobook_obj["external_urls"]["spotify"],
-                # mark audiobooks as unique to prevent other instances auto mapping
-                # because playback of audiobooks is tricky and often limited to the main account
-                is_unique=True,
             )
         },
     )
