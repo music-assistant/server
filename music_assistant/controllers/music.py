@@ -94,7 +94,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 22
+DB_SCHEMA_VERSION: Final[int] = 23
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -1352,6 +1352,16 @@ class MusicController(CoreController):
             return self.genres
         raise NotImplementedError
 
+    def get_provider_instances(
+        self, domain: str, return_unavailable: bool = False
+    ) -> list[MusicProvider]:
+        """Return all provider instances for a given domain."""
+        return [
+            prov
+            for prov in self.providers
+            if prov.domain == domain and (return_unavailable or prov.available)
+        ]
+
     def get_unique_providers(self) -> set[str]:
         """
         Return all unique MusicProvider (instance or domain) ids.
@@ -1824,7 +1834,7 @@ class MusicController(CoreController):
         else:
             self.logger.debug("Compacting database done")
 
-    async def __migrate_database(self, prev_version: int) -> None:
+    async def __migrate_database(self, prev_version: int) -> None:  # noqa: PLR0915
         """Perform a database migration."""
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
@@ -1955,6 +1965,16 @@ class MusicController(CoreController):
             except Exception as err:
                 # If we can't create the index due to duplicate entries, log and continue
                 self.logger.warning("Could not create unique index on playlog: %s", err)
+
+        if prev_version <= 23:
+            # add is_unique column to provider_mappings table
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN is_unique BOOLEAN"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
 
         # save changes
         await self._database.commit()
@@ -2150,6 +2170,7 @@ class MusicController(CoreController):
             [provider_item_id] TEXT NOT NULL,
             [available] BOOLEAN NOT NULL DEFAULT 1,
             [in_library] BOOLEAN NOT NULL DEFAULT 0,
+            [is_unique] BOOLEAN,
             [url] text,
             [audio_format] json,
             [details] TEXT,

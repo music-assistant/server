@@ -1131,9 +1131,12 @@ class MusicProvider(Provider):
         """Check if provider mapping(s) are consistent between library and provider items."""
         for provider_mapping in provider_item.provider_mappings:
             if provider_mapping.item_id != provider_item.item_id:
+                # this should never happen, but guard against it
                 raise MusicAssistantError("Inconsistent provider mapping item_id found")
             if provider_mapping.provider_instance != self.instance_id:
+                # this should never happen, but guard against it
                 raise MusicAssistantError("Inconsistent provider mapping instance_id found")
+            # check if the provider mapping matches the library item
             provider_mapping.in_library = in_library
             library_mapping = next(
                 (
@@ -1147,6 +1150,34 @@ class MusicProvider(Provider):
             if not library_mapping:
                 return False
             if provider_mapping.in_library != library_mapping.in_library:
+                # in-library status doesn't match
                 return False
+            if provider_mapping.is_unique != library_mapping.is_unique:
+                # unique status doesn't match
+                return False
+            # check if the library item has all provider instances mappings
+            is_unique = provider_mapping.is_unique or (not self.is_streaming_provider)
+            if not is_unique:
+                # for streaming providers we need to make sure all provider instances
+                # for this domain are represented in the provider mappings
+                prov_instances = self.mass.music.get_provider_instances(
+                    domain=provider_mapping.provider_domain,
+                    return_unavailable=True,
+                )
+                if len(prov_instances) > 1:
+                    # multiple provider instances for this domain exist
+                    # make sure the library item has all provider mappings
+                    for prov_instance in prov_instances:
+                        if not any(
+                            x.provider_instance == prov_instance.instance_id
+                            and x.item_id == provider_mapping.item_id
+                            for x in library_item.provider_mappings
+                        ):
+                            # missing provider mapping for another instance
+                            # the rest of the core logic will take care of adding it
+                            # just return False here to trigger that logic
+                            return False
+
+            # final check: availability
             return provider_mapping.available == library_mapping.available
         return False

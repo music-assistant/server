@@ -922,6 +922,7 @@ class AppleMusicProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=attributes.get("url"),
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             is_editable=is_editable,

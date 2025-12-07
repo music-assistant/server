@@ -272,6 +272,7 @@ def parse_playlist(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=f"{BROWSE_URL}/{url_path}/{raw_id}",
+                is_unique=is_editable,  # user-owned playlists are unique
             )
         },
         is_editable=is_editable,
