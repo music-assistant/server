@@ -1521,6 +1521,12 @@ class MusicController(CoreController):
             for prov_instance in provider_instances:
                 if prov_instance.instance_id == provider.instance_id:
                     continue
+                if any(
+                    pm.provider_instance == prov_instance.instance_id
+                    for pm in item.provider_mappings
+                ):
+                    # mapping already exists
+                    continue
                 # create additional mapping for other provider instances of the same provider
                 item.provider_mappings.add(
                     ProviderMapping(
@@ -1532,7 +1538,7 @@ class MusicController(CoreController):
                         audio_format=provider_mapping.audio_format,
                         url=provider_mapping.url,
                         details=provider_mapping.details,
-                        in_library=provider_mapping.in_library,
+                        in_library=None,
                     )
                 )
 

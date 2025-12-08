@@ -850,10 +850,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if provider_filter:
             provider_conditions = []
             for prov in provider_filter:
-                provider_conditions.append(
-                    f"provider_mappings.provider_instance = '{prov}' "
-                    f"OR provider_mappings.provider_domain = '{prov}'"
-                )
+                provider_conditions.append(f"provider_mappings.provider_instance = '{prov}'")
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "

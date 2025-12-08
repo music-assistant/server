@@ -62,6 +62,7 @@ class RemoteAccessManager:
         self._remote_id: str | None = None
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
+        self._starting: bool = False  # Prevents concurrent gateway starts
         self._on_unload_callbacks: list[Callable[[], None]] = []
 
     async def setup(self) -> None:
@@ -99,37 +100,41 @@ class RemoteAccessManager:
 
     async def _start_gateway(self) -> None:
         """Start the remote access gateway (internal implementation)."""
-        if self.is_running:
-            self.logger.debug("Gateway already running, skipping start")
+        if self.is_running or self._starting:
+            self.logger.debug("Gateway already running or starting, skipping start")
             return
         if not self._enabled:
             self.logger.debug("Remote access disabled, skipping start")
             return
 
-        base_url = self.mass.webserver.base_url
-        local_ws_url = base_url.replace("http", "ws")
-        if not local_ws_url.endswith("/"):
-            local_ws_url += "/"
-        local_ws_url += "ws"
+        self._starting = True
+        try:
+            base_url = self.mass.webserver.base_url
+            local_ws_url = base_url.replace("http", "ws")
+            if not local_ws_url.endswith("/"):
+                local_ws_url += "/"
+            local_ws_url += "ws"
 
-        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
+            ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
+            self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
 
-        mode = "optimized" if self._using_ha_cloud else "basic"
-        self.logger.info("Starting remote access in %s mode (ID: %s)", mode, self._remote_id)
+            mode = "optimized" if self._using_ha_cloud else "basic"
+            self.logger.info("Starting remote access in %s mode (ID: %s)", mode, self._remote_id)
 
-        self.gateway = WebRTCGateway(
-            http_session=self.mass.http_session,
-            signaling_url=SIGNALING_SERVER_URL,
-            local_ws_url=local_ws_url,
-            remote_id=self._remote_id,
-            ice_servers=ice_servers,
-            # Pass callback to get fresh ICE servers for each client connection
-            # This ensures TURN credentials are always valid
-            ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
-        )
+            self.gateway = WebRTCGateway(
+                http_session=self.mass.http_session,
+                signaling_url=SIGNALING_SERVER_URL,
+                local_ws_url=local_ws_url,
+                remote_id=self._remote_id,
+                ice_servers=ice_servers,
+                # Pass callback to get fresh ICE servers for each client connection
+                # This ensures TURN credentials are always valid
+                ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            )
 
-        await self.gateway.start()
+            await self.gateway.start()
+        finally:
+            self._starting = False
 
     async def stop(self) -> None:
         """Stop the remote access gateway."""
@@ -145,8 +150,8 @@ class RemoteAccessManager:
         if not self._enabled:
             return
 
-        # If not running yet, schedule start (debounced)
-        if not self.is_running:
+        # If not running yet and not currently starting, schedule start (debounced)
+        if not self.is_running and not self._starting:
             self._schedule_start()
             return
 

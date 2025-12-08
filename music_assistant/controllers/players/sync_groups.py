@@ -254,9 +254,6 @@ class SyncGroupPlayer(GroupPlayer):
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
         prev_power = self._attr_powered
-        if powered == prev_power:
-            # no change
-            return
 
         # always stop at power off
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
@@ -264,11 +261,11 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_current_media = None
 
         # optimistically set the group state
-
         self._attr_powered = powered
-        self.update_state()
+        if prev_power != powered:
+            self.update_state()
 
-        if not prev_power and powered:
+        if powered:
             # ensure static members are present when powering on
             for static_group_member in self._attr_static_group_members:
                 member_player = self.mass.players.get(static_group_member)
@@ -277,6 +274,8 @@ class SyncGroupPlayer(GroupPlayer):
                         self._attr_group_members.remove(static_group_member)
                     continue
                 if static_group_member not in self._attr_group_members:
+                    # Always add static members when power(true) is called,
+                    # this will ensure that static members that just became available are added
                     self._attr_group_members.append(static_group_member)
             # Select sync leader and handle turn on
             new_leader = self._select_sync_leader()
@@ -288,7 +287,11 @@ class SyncGroupPlayer(GroupPlayer):
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players._handle_cmd_power(member.player_id, True)
             # Set up the sync group with the new leader
-            await self._handle_leader_transition(new_leader)
+            if prev_power and new_leader == self.sync_leader:
+                # Already powered on with same leader, just re-sync members without full transition
+                await self._form_syncgroup()
+            else:
+                await self._handle_leader_transition(new_leader)
         elif prev_power and not powered:
             # handle TURN_OFF of the group player by dissolving group and turning off all members
             await self._dissolve_syncgroup()
@@ -313,7 +316,7 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        # power on (which will also resync if needed)
+        # power on (which will also resync and add static members if needed)
         await self.power(True)
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:

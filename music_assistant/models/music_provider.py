@@ -481,7 +481,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -490,36 +490,82 @@ class MusicProvider(Provider):
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
 
-        subpath = path.split("://", 1)[1]
+        path_parts = path.split("://")[1].split("/")
+        subpath = path_parts[0] if len(path_parts) > 0 else None
+        sub_subpath = path_parts[1] if len(path_parts) > 1 else None
         # this reference implementation can be overridden with a provider specific approach
         if subpath == "artists":
-            return await self.mass.music.artists.library_items(
+            if artists := await self.mass.music.artists.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return artists
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_artists()]
         if subpath == "albums":
-            return await self.mass.music.albums.library_items(
+            if albums := await self.mass.music.albums.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return albums
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_albums()]
         if subpath == "tracks":
-            return await self.mass.music.tracks.library_items(
+            if tracks := await self.mass.music.tracks.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return tracks
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_tracks()]
         if subpath == "radios":
-            return await self.mass.music.radio.library_items(
+            if radios := await self.mass.music.radio.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return radios
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_radios()]
         if subpath == "playlists":
-            return await self.mass.music.playlists.library_items(
+            if playlists := await self.mass.music.playlists.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return playlists
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_playlists()]
         if subpath == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(
+            if audiobooks := await self.mass.music.audiobooks.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return audiobooks
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_audiobooks()]
         if subpath == "podcasts":
-            return await self.mass.music.podcasts.library_items(
+            if podcasts := await self.mass.music.podcasts.library_items(
                 provider=self.instance_id,
-            )
+            ):
+                return podcasts
+            # library items not (yet) synced, fallback to direct retrieval
+            return [x async for x in self.get_library_podcasts()]
+        if subpath == "recommendations" and sub_subpath:
+            # recommendations contents listing
+            recommendations = await self.recommendations()
+            for rec in recommendations:
+                if rec.item_id == sub_subpath:
+                    return rec.items
+        if subpath == "recommendations":
+            # Main recommendations listing
+            result: list[BrowseFolder] = []
+            recommendations = await self.recommendations()
+            for rec in recommendations:
+                result.append(
+                    BrowseFolder(
+                        item_id=rec.item_id,
+                        provider=self.instance_id,
+                        name=rec.name,
+                        is_playable=rec.is_playable,
+                        image=rec.image,
+                        path=f"{path}/{rec.item_id}",
+                    )
+                )
+            return result
+
         if subpath:
             # unknown path
             msg = "Invalid subpath"
@@ -533,7 +579,7 @@ class MusicProvider(Provider):
                     item_id="artists",
                     provider=self.instance_id,
                     path=path + "artists",
-                    name="Artists",
+                    name="",
                     translation_key="artists",
                     is_playable=True,
                 )
@@ -544,7 +590,7 @@ class MusicProvider(Provider):
                     item_id="albums",
                     provider=self.instance_id,
                     path=path + "albums",
-                    name="Albums",
+                    name="",
                     translation_key="albums",
                     is_playable=True,
                 )
@@ -555,7 +601,7 @@ class MusicProvider(Provider):
                     item_id="tracks",
                     provider=self.domain,
                     path=path + "tracks",
-                    name="Tracks",
+                    name="",
                     translation_key="tracks",
                     is_playable=True,
                 )
@@ -566,7 +612,7 @@ class MusicProvider(Provider):
                     item_id="playlists",
                     provider=self.instance_id,
                     path=path + "playlists",
-                    name="Playlists",
+                    name="",
                     translation_key="playlists",
                     is_playable=True,
                 )
@@ -577,7 +623,7 @@ class MusicProvider(Provider):
                     item_id="radios",
                     provider=self.instance_id,
                     path=path + "radios",
-                    name="Radio",
+                    name="",
                     translation_key="radios",
                 )
             )
@@ -587,7 +633,7 @@ class MusicProvider(Provider):
                     item_id="audiobooks",
                     provider=self.instance_id,
                     path=path + "audiobooks",
-                    name="Audiobooks",
+                    name="",
                     translation_key="audiobooks",
                 )
             )
@@ -597,8 +643,18 @@ class MusicProvider(Provider):
                     item_id="podcasts",
                     provider=self.instance_id,
                     path=path + "podcasts",
-                    name="Podcasts",
+                    name="",
                     translation_key="podcasts",
+                )
+            )
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            folders.append(
+                BrowseFolder(
+                    item_id="recommendations",
+                    provider=self.instance_id,
+                    path=path + "recommendations",
+                    name="",
+                    translation_key="recommendations",
                 )
             )
         if len(folders) == 1:
