@@ -47,7 +47,7 @@ orjson==3.11.5
 pillow==11.3.0
 pkce==1.0.3
 plexapi==4.17.2
-podcastparser==0.6.10
+podcastparser==0.6.11
 propcache>=0.2.1
 py-opensonic==7.0.2
 pyblu==2.0.5

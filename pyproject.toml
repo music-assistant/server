@@ -31,7 +31,7 @@ dependencies = [
   "mutagen==1.47.0",
   "orjson==3.11.5",
   "pillow==11.3.0",
-  "podcastparser==0.6.10",
+  "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
