@@ -270,8 +270,7 @@ class SyncGroupPlayer(GroupPlayer):
             for static_group_member in self._attr_static_group_members:
                 member_player = self.mass.players.get(static_group_member)
                 if not member_player or not member_player.available or not member_player.enabled:
-                    if not prev_power and static_group_member in self._attr_group_members:
-                        # Only remove unavailable static members when powering on the group
+                    if static_group_member in self._attr_group_members:
                         self._attr_group_members.remove(static_group_member)
                     continue
                 if static_group_member not in self._attr_group_members:
