@@ -43,6 +43,7 @@ class SendspinProvider(PlayerProvider):
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
     _webrtc_sessions: dict[str, SendspinWebRTCSession]
+    _pending_unregisters: dict[str, asyncio.Event]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -53,6 +54,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
         self._webrtc_sessions = {}
+        self._pending_unregisters = {}
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
             # WebRTC signaling commands for Sendspin connections
@@ -72,12 +74,26 @@ class SendspinProvider(PlayerProvider):
         self.logger.debug("Received SendspinEvent: %s", event)
         match event:
             case ClientAddedEvent(client_id):
+                # Wait for any pending unregister to complete before registering
+                # This prevents a race condition where a slow unregister removes
+                # a newly registered player after a quick reconnect
+                if pending_event := self._pending_unregisters.get(client_id):
+                    self.logger.debug(
+                        "Waiting for pending unregister of %s before registering", client_id
+                    )
+                    await pending_event.wait()
                 player = SendspinPlayer(self, client_id)
                 self.logger.debug("Client %s connected", client_id)
                 await self.mass.players.register(player)
             case ClientRemovedEvent(client_id):
                 self.logger.debug("Client %s disconnected", client_id)
-                await self.mass.players.unregister(client_id)
+                unregister_event = asyncio.Event()
+                self._pending_unregisters[client_id] = unregister_event
+                try:
+                    await self.mass.players.unregister(client_id)
+                finally:
+                    self._pending_unregisters.pop(client_id, None)
+                    unregister_event.set()
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 

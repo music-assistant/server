@@ -597,4 +597,3 @@ class SendspinPlayer(Player):
         await super().on_unload()
         self.unsub_event_cb()
         self.unsub_group_event_cb()
-        await self.api.disconnect()
