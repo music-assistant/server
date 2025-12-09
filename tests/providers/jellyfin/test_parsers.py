@@ -3,13 +3,12 @@
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
-from typing import cast
+from typing import Any
 
 import aiofiles
 import aiohttp
 import pytest
 from aiojellyfin import Artist, Connection
-from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from syrupy.assertion import SnapshotAssertion
@@ -92,13 +91,10 @@ async def test_parse_tracks(
 def test_audio_format_empty_mediastreams() -> None:
     """Test audio_format handles empty MediaStreams array."""
     # Track with empty MediaStreams
-    track = cast(
-        "JellyTrack",
-        {
-            ITEM_KEY_MEDIA_STREAMS: [],
-        },
-    )
-    result = audio_format(track)
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_STREAMS: [],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
 
     # Verify no exception is raised and result has expected attributes
     assert result is not None
@@ -108,20 +104,17 @@ def test_audio_format_empty_mediastreams() -> None:
 def test_audio_format_missing_channels() -> None:
     """Test audio_format applies default when Channels field is missing."""
     # Track with MediaStreams but missing Channels
-    track = cast(
-        "JellyTrack",
-        {
-            ITEM_KEY_MEDIA_STREAMS: [
-                {
-                    ITEM_KEY_MEDIA_CODEC: "mp3",
-                    "SampleRate": 48000,
-                    "BitDepth": 16,
-                    "BitRate": 320000,
-                }
-            ],
-        },
-    )
-    result = audio_format(track)
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_STREAMS: [
+            {
+                ITEM_KEY_MEDIA_CODEC: "mp3",
+                "SampleRate": 48000,
+                "BitDepth": 16,
+                "BitRate": 320000,
+            }
+        ],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
 
     # Verify defaults are applied correctly
     assert result is not None
