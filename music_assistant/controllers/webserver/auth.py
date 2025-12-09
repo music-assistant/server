@@ -1325,22 +1325,21 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
+        is_admin = current_user_obj.role == UserRole.ADMIN
         if user_id and user_id != current_user_obj.user_id:
             # Updating another user - requires admin
-            if current_user_obj.role != UserRole.ADMIN:
+            if not is_admin:
                 raise InsufficientPermissions("Admin access required")
             target_user = await self.get_user(user_id)
             if not target_user:
                 raise InvalidDataError("User not found")
-            is_admin_update = True
         else:
             # Updating own profile
             target_user = current_user_obj
-            is_admin_update = False
 
         # Update role (admin only)
         if role:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update user roles")
 
             try:
@@ -1376,7 +1375,7 @@ class AuthenticationManager:
 
         # Update player_filter and provider_filter (admin only)
         if player_filter is not None or provider_filter is not None:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update player/provider filters")
             target_user = await self.update_user_filters(
                 target_user, player_filter, provider_filter
@@ -1384,9 +1383,7 @@ class AuthenticationManager:
 
         # Update password if provided
         if password:
-            await self._update_profile_password(
-                target_user, password, is_admin_update, current_user_obj
-            )
+            await self._update_profile_password(target_user, password, is_admin, current_user_obj)
 
         return target_user
 

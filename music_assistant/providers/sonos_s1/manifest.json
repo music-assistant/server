@@ -5,6 +5,7 @@
   "name": "SONOS S1",
   "description": "Play music, manage groups, and control Series 1 SONOS speakers throughout your home. Select this provider if you have SONOS devices on the S1 operating system (with the S1 Controller app)",
   "codeowners": ["@music-assistant"],
+  "credits": ["[SoCo](https://github.com/SoCo/SoCo)"],
   "requirements": ["soco==0.30.12", "defusedxml==0.7.1"],
   "documentation": "https://music-assistant.io/player-support/sonos/",
   "multi_instance": false,

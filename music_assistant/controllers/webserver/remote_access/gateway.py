@@ -18,15 +18,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
-from aiortc import (
-    RTCConfiguration,
-    RTCIceServer,
-    RTCPeerConnection,
-    RTCSessionDescription,
-)
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
@@ -219,12 +214,11 @@ class WebRTCGateway:
             self.logger.debug("Sending registration")
             await self._register()
             self._current_reconnect_delay = self._reconnect_delay
-            self.logger.info("Registration sent, waiting for confirmation...")
+            self.logger.debug("Registration sent, waiting for confirmation...")
 
             # Message loop
             self.logger.debug("Entering message loop")
             async for msg in self._signaling_ws:
-                self.logger.debug("Received WebSocket message type: %s", msg.type)
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         await self._handle_signaling_message(json.loads(msg.data))
@@ -232,10 +226,10 @@ class WebRTCGateway:
                         self.logger.exception("Error handling signaling message")
                 elif msg.type == aiohttp.WSMsgType.PING:
                     # WebSocket ping - autoping should handle this, just log
-                    self.logger.debug("Received WebSocket PING")
+                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PING")
                 elif msg.type == aiohttp.WSMsgType.PONG:
                     # WebSocket pong response - just log
-                    self.logger.debug("Received WebSocket PONG")
+                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PONG")
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
                     # Close frame received
                     self.logger.warning(
@@ -254,7 +248,7 @@ class WebRTCGateway:
                     self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
 
             ws_exception = self._signaling_ws.exception()
-            self.logger.info(
+            self.logger.debug(
                 "Message loop exited - WebSocket closed: %s, close_code: %s, exception: %s",
                 self._signaling_ws.closed,
                 self._signaling_ws.close_code,

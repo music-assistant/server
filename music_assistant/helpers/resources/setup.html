@@ -329,13 +329,8 @@
             </div>
 
             <div class="info-box ingress" id="ingressAccountInfo" style="display: none;">
-                <h3>About your login credentials</h3>
-                <p>While Home Assistant handles authentication for Ingress access, you'll need these credentials for:</p>
-                <ul>
-                    <li>Direct access to Music Assistant (outside Home Assistant)</li>
-                    <li>Music Assistant mobile apps</li>
-                    <li>API access and third-party integrations</li>
-                </ul>
+                <h3>Home Assistant Login</h3>
+                <p>You are automatically logged in using your Home Assistant account. If you ever want to access Music Assistant outside of Home Assistant, you can set up a password later in the profile settings.</p>
             </div>
 
             <div class="error-message" id="errorMessage"></div>
@@ -446,6 +441,22 @@
             const usernameField = document.getElementById('username');
             usernameField.value = ingressUsername;
             usernameField.disabled = true;
+
+            // Hide password fields for ingress users (they don't need to set a password)
+            document.querySelector('.form-group:has(#password)').style.display = 'none';
+            document.querySelector('.form-group:has(#confirmPassword)').style.display = 'none';
+
+            // Remove required attribute from password fields for HTML5 validation
+            document.getElementById('password').removeAttribute('required');
+            document.getElementById('confirmPassword').removeAttribute('required');
+
+            // Update step header for ingress users
+            const stepHeader = document.querySelector('.step[data-step="1"] .step-header');
+            stepHeader.querySelector('h2').textContent = 'Confirm Your Account';
+            stepHeader.querySelector('p').textContent = 'Your account will be linked to your Home Assistant user.';
+
+            // Update button text for ingress users
+            document.getElementById('createAccountBtn').textContent = 'Complete Setup';
         }
 
         function updateStepIndicator() {
@@ -523,14 +534,17 @@
                 return;
             }
 
-            if (password.length < 8) {
-                showError('Password must be at least 8 characters long');
-                return;
-            }
+            // Password validation only for non-ingress users
+            if (!isIngressSetup) {
+                if (password.length < 8) {
+                    showError('Password must be at least 8 characters long');
+                    return;
+                }
 
-            if (password !== confirmPassword) {
-                showError('Passwords do not match');
-                return;
+                if (password !== confirmPassword) {
+                    showError('Passwords do not match');
+                    return;
+                }
             }
 
             setLoading(true);

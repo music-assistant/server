@@ -28,6 +28,7 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
+from .helpers.auth_providers import get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -92,7 +93,7 @@ class WebsocketClientHandler:
         await self._send_message(server_info)
 
         # Block until onboarding is complete
-        if not self.mass.config.onboard_done:
+        if not self.mass.config.onboard_done and not self._is_ingress:
             await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
             await wsock.close()
             return wsock
@@ -377,10 +378,11 @@ class WebsocketClientHandler:
 
                 if not user:
                     # Auto-create user for Ingress (they're already authenticated by HA)
-                    # Always create with USER role (admin is created during setup)
+                    # Determine role based on HA admin status
+                    role = await get_ha_user_role(self.mass, ingress_user_id)
                     user = await self.webserver.auth.create_user(
                         username=ingress_username,
-                        role=UserRole.USER,
+                        role=role,
                         display_name=ingress_display_name,
                     )
 
