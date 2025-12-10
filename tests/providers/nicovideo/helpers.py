@@ -19,7 +19,6 @@ def create_converter_manager() -> NicovideoConverterManager:
     """Create a NicovideoConverterManager for testing."""
     # Create mock provider
     mock_provider = Mock()
-    mock_provider.lookup_key = "nicovideo"
     mock_provider.instance_id = "nicovideo_test"
     mock_provider.domain = "nicovideo"
 

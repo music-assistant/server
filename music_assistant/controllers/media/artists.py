@@ -12,7 +12,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
+from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping, Track
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -82,7 +82,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         :param album_artists_only: Only return artists that have albums.
@@ -100,7 +100,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
@@ -231,7 +231,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             query = f"tracks.item_id in ({subquery})"
             return await self.mass.music.tracks._get_library_items_by_query(
-                extra_query_parts=[query], provider=provider_instance_id_or_domain
+                extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []
 
@@ -267,7 +267,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             query = f"albums.item_id in ({subquery})"
             return await self.mass.music.albums._get_library_items_by_query(
-                extra_query_parts=[query], provider=provider_instance_id_or_domain
+                extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []
 
@@ -370,35 +370,16 @@ class ArtistsController(MediaControllerBase[Artist]):
             in_library_only=False,
         )
 
-    async def match_providers(self, db_artist: Artist) -> None:
-        """Try to find matching artists on all providers for the provided (database) item_id.
-
-        This is used to link objects of different providers together.
+    async def match_provider(
+        self, db_artist: Artist, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
         """
-        assert db_artist.provider == "library", "Matching only supported for database items!"
-        cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
-        for provider in self.mass.music.providers:
-            if provider.domain in cur_provider_domains:
-                continue
-            if ProviderFeature.SEARCH not in provider.supported_features:
-                continue
-            if not provider.library_supported(MediaType.ARTIST):
-                continue
-            if not provider.is_streaming_provider:
-                # matching on unique providers is pointless as they push (all) their content to MA
-                continue
-            if await self._match_provider(db_artist, provider):
-                cur_provider_domains.add(provider.domain)
-            else:
-                self.logger.debug(
-                    "Could not find match for Artist %s on provider %s",
-                    db_artist.name,
-                    provider.name,
-                )
+        Try to find match on (streaming) provider for the provided (database) artist.
 
-    async def _match_provider(self, db_artist: Artist, provider: MusicProvider) -> bool:
-        """Try to find matching artists on given provider for the provided (database) artist."""
+        This is used to link objects of different providers/qualities together.
+        """
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
+        matches: list[ProviderMapping] = []
         # try to get a match with some reference tracks of this artist
         ref_tracks = await self.mass.music.artists.tracks(db_artist.item_id, db_artist.provider)
         if len(ref_tracks) < 10:
@@ -412,11 +393,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             search_str = f"{db_artist.name} - {ref_track.name}"
             search_results = await self.mass.music.tracks.search(search_str, provider.domain)
             for search_result_item in search_results:
-                if not compare_strings(search_result_item.name, ref_track.name, strict=True):
+                if not compare_strings(search_result_item.name, ref_track.name, strict=strict):
                     continue
                 # get matching artist from track
                 for search_item_artist in search_result_item.artists:
-                    if not compare_strings(search_item_artist.name, db_artist.name, strict=True):
+                    if not compare_strings(search_item_artist.name, db_artist.name, strict=strict):
                         continue
                     # 100% track match
                     # get full artist details so we have all metadata
@@ -425,11 +406,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                         search_item_artist.provider,
                         fallback=search_item_artist,
                     )
-                    # 100% match, we update the db with the additional provider mapping(s)
-                    for provider_mapping in prov_artist.provider_mappings:
-                        await self.add_provider_mapping(db_artist.item_id, provider_mapping)
-                        db_artist.provider_mappings.add(provider_mapping)
-                    return True
+                    # 100% match
+                    matches.extend(prov_artist.provider_mappings)
+                    if matches:
+                        return matches
         # try to get a match with some reference albums of this artist
         ref_albums = await self.mass.music.artists.albums(db_artist.item_id, db_artist.provider)
         if len(ref_albums) < 10:
@@ -449,10 +429,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             for search_result_album in search_result_albums:
                 if not search_result_album.artists:
                     continue
-                if not compare_strings(search_result_album.name, ref_album.name):
+                if not compare_strings(search_result_album.name, ref_album.name, strict=strict):
                     continue
                 # artist must match 100%
-                if not compare_artist(db_artist, search_result_album.artists[0]):
+                if not compare_artist(db_artist, search_result_album.artists[0], strict=strict):
                     continue
                 # 100% match
                 # get full artist details so we have all metadata
@@ -461,9 +441,44 @@ class ArtistsController(MediaControllerBase[Artist]):
                     search_result_album.artists[0].provider,
                     fallback=search_result_album.artists[0],
                 )
-                await self._update_library_item(db_artist.item_id, prov_artist)
-                return True
-        return False
+                matches.extend(prov_artist.provider_mappings)
+                if matches:
+                    return matches
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Artist %s on provider %s",
+                db_artist.name,
+                provider.name,
+            )
+        return matches
+
+    async def match_providers(self, db_artist: Artist) -> None:
+        """Try to find matching artists on all providers for the provided (database) item_id.
+
+        This is used to link objects of different providers together.
+        """
+        if db_artist.provider != "library":
+            return  # Matching only supported for database items
+
+        # try to find match on all providers
+
+        cur_provider_domains = {
+            x.provider_domain for x in db_artist.provider_mappings if x.available
+        }
+        for provider in self.mass.music.providers:
+            if provider.domain in cur_provider_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not provider.library_supported(MediaType.ARTIST):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(db_artist, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_artist.item_id, match)
+                cur_provider_domains.add(provider.domain)
 
     def artist_from_item_mapping(self, item: ItemMapping) -> Artist:
         """Create an Artist object from an ItemMapping object."""

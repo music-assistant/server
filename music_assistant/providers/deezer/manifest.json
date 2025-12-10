@@ -5,6 +5,7 @@
   "name": "Deezer",
   "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio.",
   "codeowners": ["@arctixdev", "@micha91"],
+  "credits": ["[deezer-python-async](https://github.com/music-assistant/deezer-python-async)"],
   "documentation": "https://music-assistant.io/music-providers/deezer/",
   "requirements": ["deezer-python-async==0.3.0", "pycryptodome==3.23.0"],
   "multi_instance": true

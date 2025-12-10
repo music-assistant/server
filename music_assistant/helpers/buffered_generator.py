@@ -54,7 +54,13 @@ async def buffered(
         return
 
     async def producer() -> None:
-        """Read from the original generator and fill the buffer."""
+        """Read from the original generator and fill the buffer.
+
+        Note: When the buffer is full, buffer.put() will naturally wait for the consumer
+        to drain items. This is the intended buffering behavior and may trigger asyncio
+        "slow callback" warnings (typically 0.1-0.2s) which are harmless and expected.
+        These warnings are filtered out in the main logging configuration.
+        """
         nonlocal producer_error
         generator_consumed = False
         try:

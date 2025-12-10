@@ -5,6 +5,7 @@
   "name": "SONOS",
   "description": "Play music, manage groups, and control SONOS speakers throughout your home.",
   "codeowners": ["@music-assistant"],
+  "credits": ["[aiosonos](https://github.com/music-assistant/aiosonos)"],
   "requirements": ["aiosonos==0.1.9"],
   "documentation": "https://music-assistant.io/player-support/sonos/",
   "multi_instance": false,

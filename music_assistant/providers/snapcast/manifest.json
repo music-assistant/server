@@ -5,6 +5,7 @@
   "name": "Snapcast",
   "description": "Synchronize and play music across Snapcast clients (including web browsers and Android devices) on your network.",
   "codeowners": ["@SantiagoSotoC"],
+  "credits": ["[python-snapcast](https://github.com/happyleavesaoc/python-snapcast)"],
   "requirements": [
     "snapcast==2.3.7",
     "bidict==0.23.1",

@@ -30,7 +30,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
         """Convert a nicovideo UserMylistItem into a Playlist."""
         playlist = Playlist(
             item_id=str(mylist.id_),
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             name=(mylist.title if isinstance(mylist, EssentialMylist) else mylist.name),
             owner=mylist.owner.id_ or "",
             is_editable=True,  # Own mylists are editable by default
@@ -53,7 +53,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=mylist.owner.icon_url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )

@@ -175,7 +175,7 @@ class TracksController(MediaControllerBase[Track]):
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -203,7 +203,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -223,7 +223,7 @@ class TracksController(MediaControllerBase[Track]):
                 search=None,
                 limit=limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
@@ -373,54 +373,32 @@ class TracksController(MediaControllerBase[Track]):
         query = f"{DB_TABLE_ALBUMS}.item_id in ({subquery})"
         return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
 
-    async def match_providers(self, ref_track: Track) -> None:
-        """Try to find matching track on all providers for the provided (database) track_id.
+    async def match_provider(
+        self,
+        db_track: Track,
+        provider: MusicProvider,
+        strict: bool = True,
+        ref_albums: list[Album] | None = None,
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) track.
 
         This is used to link objects of different providers/qualities together.
         """
-        track_albums = await self.albums(ref_track.item_id, ref_track.provider)
-        for provider in self.mass.music.providers:
-            if ProviderFeature.SEARCH not in provider.supported_features:
-                continue
-            if not provider.is_streaming_provider:
-                # matching on unique providers is pointless as they push (all) their content to MA
-                continue
-            if not provider.library_supported(MediaType.TRACK):
-                continue
-            provider_matches = await self.match_provider(
-                provider, ref_track, strict=True, ref_albums=track_albums
-            )
-            for provider_mapping in provider_matches:
-                # 100% match, we update the db with the additional provider mapping(s)
-                await self.add_provider_mapping(ref_track.item_id, provider_mapping)
-                ref_track.provider_mappings.add(provider_mapping)
-
-    async def match_provider(
-        self,
-        provider: MusicProvider,
-        ref_track: Track,
-        strict: bool = True,
-        ref_albums: list[Album] | None = None,
-    ) -> set[ProviderMapping]:
-        """Try to find matching track on given provider."""
         if ref_albums is None:
-            ref_albums = await self.albums(ref_track.item_id, ref_track.provider)
-        if ProviderFeature.SEARCH not in provider.supported_features:
-            raise UnsupportedFeaturedException("Provider does not support search")
-        if not provider.is_streaming_provider:
-            raise UnsupportedFeaturedException("Matching only possible for streaming providers")
-        self.logger.debug("Trying to match track %s on provider %s", ref_track.name, provider.name)
-        matches: set[ProviderMapping] = set()
-        for artist in ref_track.artists:
+            ref_albums = await self.albums(db_track.item_id, db_track.provider)
+        self.logger.debug("Trying to match track %s on provider %s", db_track.name, provider.name)
+        matches: list[ProviderMapping] = []
+        for artist in db_track.artists:
             if matches:
                 break
-            search_str = f"{artist.name} - {ref_track.name}"
+            search_str = f"{artist.name} - {db_track.name}"
             search_result = await self.search(search_str, provider.domain)
             for search_result_item in search_result:
                 if not search_result_item.available:
                     continue
                 # do a basic compare first
-                if not compare_media_item(ref_track, search_result_item, strict=False):
+                if not compare_media_item(db_track, search_result_item, strict=False):
                     continue
                 # we must fetch the full version, search results can be simplified objects
                 prov_track = await self.get_provider_item(
@@ -428,16 +406,44 @@ class TracksController(MediaControllerBase[Track]):
                     search_result_item.provider,
                     fallback=search_result_item,
                 )
-                if compare_track(ref_track, prov_track, strict=strict, track_albums=ref_albums):
-                    matches.update(search_result_item.provider_mappings)
+                if compare_track(db_track, prov_track, strict=strict, track_albums=ref_albums):
+                    matches.extend(search_result_item.provider_mappings)
 
         if not matches:
             self.logger.debug(
                 "Could not find match for Track %s on provider %s",
-                ref_track.name,
+                db_track.name,
                 provider.name,
             )
         return matches
+
+    async def match_providers(self, db_track: Track) -> None:
+        """Try to find matching track on all providers for the provided (database) track_id.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        if db_track.provider != "library":
+            return  # Matching only supported for database items
+
+        track_albums = await self.albums(db_track.item_id, db_track.provider)
+        # try to find match on all providers
+        processed_domains = set()
+        for provider in self.mass.music.providers:
+            if provider.domain in processed_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not provider.library_supported(MediaType.TRACK):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(
+                db_track, provider, strict=True, ref_albums=track_albums
+            ):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_track.item_id, match)
+                processed_domains.add(provider.domain)
 
     async def radio_mode_base_tracks(
         self,

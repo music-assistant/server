@@ -28,6 +28,7 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
+from .helpers.auth_providers import get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -90,6 +91,12 @@ class WebsocketClientHandler:
         # send server(version) info when client connects
         server_info = self.mass.get_server_info()
         await self._send_message(server_info)
+
+        # Block until onboarding is complete
+        if not self.webserver.auth.has_users and not self._is_ingress:
+            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await wsock.close()
+            return wsock
 
         # For Ingress connections, auto-create/link user and subscribe to events immediately
         # For regular connections, events will be subscribed after successful authentication
@@ -361,21 +368,20 @@ class WebsocketClientHandler:
             )
 
             if not user:
-                # Security: Ensure at least one user exists (setup should have been completed)
-                if not await self.webserver.auth.has_users():
-                    # No users exist - setup has not been completed
-                    # This should not happen as the server redirects to /setup
-                    self._logger.warning("Ingress connection attempted before setup completed")
-                    return
+                # Check if a user with this username already exists
+                user = await self.webserver.auth.get_user_by_username(ingress_username)
 
-                # Auto-create user for Ingress (they're already authenticated by HA)
-                # Always create with USER role (admin is created during setup)
-                user = await self.webserver.auth.create_user(
-                    username=ingress_username,
-                    role=UserRole.USER,
-                    display_name=ingress_display_name,
-                )
-                # Link to Home Assistant provider
+                if not user:
+                    # Auto-create user for Ingress (they're already authenticated by HA)
+                    # Determine role based on HA admin status
+                    role = await get_ha_user_role(self.mass, ingress_user_id)
+                    user = await self.webserver.auth.create_user(
+                        username=ingress_username,
+                        role=role,
+                        display_name=ingress_display_name,
+                    )
+
+                # Link to Home Assistant provider (or create the link if user already existed)
                 await self.webserver.auth.link_user_to_provider(
                     user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
                 )

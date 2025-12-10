@@ -7,10 +7,14 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
@@ -112,6 +116,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         self._db_add_lock = asyncio.Lock()
 
+    @final
     async def add_item_to_library(
         self,
         item: ItemCls,
@@ -125,6 +130,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self._update_library_item(library_id, item, overwrite=overwrite_existing)
         else:
             # actually add a new item in the library db
+            self.mass.music.match_provider_instances(item)
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
@@ -137,6 +143,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return library_item
 
+    @final
     async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
         if item.provider == "library":
             return int(item.item_id)
@@ -158,17 +165,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # search by (exact) name match
         query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
-        async for db_item in self.iter_library_items(
-            extra_query=query, extra_query_params=query_params
+        for db_item in await self._get_library_items_by_query(
+            extra_query_parts=[query], extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
                 return int(db_item.item_id)
         return None
 
+    @final
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
         """Update existing library record in the library database."""
+        self.mass.music.match_provider_instances(update)
         await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
@@ -242,7 +251,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
         )
@@ -259,15 +268,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Iterate all in-database items."""
         limit: int = 500
         offset: int = 0
+        if provider is not None:
+            provider_filter = provider if isinstance(provider, list) else [provider]
+        else:
+            provider_filter = None
         while True:
-            next_items = await self.library_items(
+            next_items = await self._get_library_items_by_query(
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-                provider=provider,
-                extra_query=extra_query,
+                provider_filter=provider_filter,
+                extra_query_parts=[extra_query] if extra_query else None,
                 extra_query_params=extra_query_params,
             )
             for item in next_items:
@@ -344,7 +357,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
         extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
-        async for db_item in self.iter_library_items(extra_query=extra_query):
+        for db_item in await self._get_library_items_by_query(
+            extra_query_parts=[extra_query],
+        ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
         raise MediaNotFoundError(msg)
@@ -366,6 +381,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return item
         return None
 
+    @final
     async def get_library_item_by_prov_mappings(
         self,
         provider_mappings: Iterable[ProviderMapping],
@@ -387,6 +403,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return item
         return None
 
+    @final
     async def get_library_item_by_external_id(
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
@@ -403,6 +420,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return item
         return None
 
+    @final
     async def get_library_item_by_external_ids(
         self, external_ids: set[tuple[ExternalID, str]]
     ) -> ItemCls | None:
@@ -412,6 +430,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return match
         return None
 
+    @final
     async def get_library_items_by_prov_id(
         self,
         provider_domain: str | None = None,
@@ -451,6 +470,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             extra_query_params=query_params,
         )
 
+    @final
     async def iter_library_items_by_prov_id(
         self,
         provider_instance_id_or_domain: str,
@@ -472,6 +492,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 break
             offset += limit
 
+    @final
     async def set_favorite(self, item_id: str | int, favorite: bool) -> None:
         """Set the favorite bool on a database item."""
         db_id = int(item_id)  # ensure integer
@@ -484,6 +505,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @guard_single_request  # type: ignore[type-var]  # TODO: fix typing for MediaControllerBase
+    @final
     async def get_provider_item(
         self,
         item_id: str,
@@ -541,18 +563,37 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         raise MediaNotFoundError(msg)
 
+    @final
     async def add_provider_mapping(
         self, item_id: str | int, provider_mapping: ProviderMapping
     ) -> None:
         """Add provider mapping to existing library item."""
+        await self.add_provider_mappings(item_id, [provider_mapping])
+
+    @final
+    async def add_provider_mappings(
+        self, item_id: str | int, provider_mappings: Iterable[ProviderMapping]
+    ) -> None:
+        """
+        Add provider mappings to existing library item.
+
+        :param item_id: The library item ID to add mappings to.
+        :param provider_mappings: The provider mappings to add.
+        """
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
-        # ignore if the mapping is already present
-        if provider_mapping in library_item.provider_mappings:
-            return
-        library_item.provider_mappings.add(provider_mapping)
-        await self.set_provider_mappings(db_id, library_item.provider_mappings)
+        new_mappings: set[ProviderMapping] = set()
+        for provider_mapping in provider_mappings:
+            # ignore if the mapping is already present
+            if provider_mapping not in library_item.provider_mappings:
+                new_mappings.add(provider_mapping)
+        if new_mappings:
+            library_item.provider_mappings.update(new_mappings)
+            self.mass.music.match_provider_instances(library_item)
+            await self.set_provider_mappings(db_id, library_item.provider_mappings)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
+    @final
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
     ) -> None:
@@ -600,6 +641,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
 
+    @final
     async def remove_provider_mappings(self, item_id: str | int, provider_instance_id: str) -> None:
         """Remove all provider mappings from an item."""
         db_id = int(item_id)  # ensure integer
@@ -635,6 +677,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
 
+    @final
     async def set_provider_mappings(
         self,
         item_id: str | int,
@@ -698,6 +741,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> list[Track]:
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
 
+    @final
     async def _get_library_items_by_query(
         self,
         favorite: bool | None = None,
@@ -705,7 +749,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
-        provider: str | list[str] | None = None,
+        provider_filter: list[str] | None = None,
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
@@ -714,18 +758,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_params = extra_query_params or {}
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
-
         search = self._preprocess_search(search, query_params)
-
         # create special performant random query
         if order_by and order_by.startswith("random"):
             self._apply_random_subquery(
-                query_parts, query_params, join_parts, favorite, search, provider, limit
+                query_parts=query_parts,
+                query_params=query_params,
+                join_parts=join_parts,
+                favorite=favorite,
+                search=search,
+                provider_filter=provider_filter,
+                limit=limit,
             )
         else:
             # apply filters
-            self._apply_filters(query_parts, query_params, join_parts, favorite, search, provider)
-
+            self._apply_filters(
+                query_parts=query_parts,
+                query_params=query_params,
+                join_parts=join_parts,
+                favorite=favorite,
+                search=search,
+                provider_filter=provider_filter,
+            )
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
         return [
@@ -735,6 +789,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         ]
 
+    @final
     def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
         """Preprocess search string and add to query params."""
         if search:
@@ -742,11 +797,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["search"] = f"%{search}%"
         return search
 
+    @final
     @staticmethod
     def _clean_query_parts(query_parts: list[str]) -> list[str]:
         """Clean the query parts list by removing duplicate where statements."""
         return [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
 
+    @final
     def _apply_random_subquery(
         self,
         query_parts: list[str],
@@ -754,7 +811,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         join_parts: list[str],
         favorite: bool | None,
         search: str | None,
-        provider: str | list[str] | None,
+        provider_filter: list[str] | None,
         limit: int,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -763,7 +820,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # Apply all filters to the subquery
         self._apply_filters(
-            sub_query_parts, query_params, sub_join_parts, favorite, search, provider
+            query_parts=sub_query_parts,
+            query_params=query_params,
+            join_parts=sub_join_parts,
+            favorite=favorite,
+            search=search,
+            provider_filter=provider_filter,
         )
 
         # Build the subquery
@@ -783,6 +845,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
         join_parts.clear()
 
+    @final
     def _apply_filters(
         self,
         query_parts: list[str],
@@ -790,59 +853,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         join_parts: list[str],
         favorite: bool | None,
         search: str | None,
-        provider: str | list[str] | None,
+        provider_filter: list[str] | None,
     ) -> None:
-        """Apply search, favorite, and provider filters.
-
-        If the current user has a provider_filter set, it will be applied automatically.
-        If an explicit provider filter is provided, it will be validated against the user's
-        allowed providers.
-        """
+        """Apply search, favorite, and provider filters."""
         # handle search
         if search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
-
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
-
-        # Apply user provider filter
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-
-        # Determine final provider filter
-        final_provider_filter: list[str] | None = None
-
-        if user_provider_filter:
-            # User has a provider filter set
-            if provider:
-                # Explicit provider filter provided - validate against user's allowed providers
-                requested_providers = [provider] if isinstance(provider, str) else provider
-                # Only include providers that are in both the user's filter and the requested list
-                final_provider_filter = [
-                    p for p in requested_providers if p in user_provider_filter
-                ]
-                if not final_provider_filter:
-                    # No overlap - user requested providers they don't have access to
-                    # Return empty results by adding impossible condition
-                    query_parts.append("1 = 0")
-                    return
-            else:
-                # No explicit filter - use user's provider filter
-                final_provider_filter = user_provider_filter
-        elif provider:
-            # No user filter, but explicit provider filter provided
-            final_provider_filter = [provider] if isinstance(provider, str) else provider
-
-        # Apply the final provider filter
-        if final_provider_filter:
+        # Apply the provider filter
+        if provider_filter:
             provider_conditions = []
-            for prov in final_provider_filter:
-                provider_conditions.append(
-                    f"provider_mappings.provider_instance = '{prov}' "
-                    f"OR provider_mappings.provider_domain = '{prov}'"
-                )
+            for prov in provider_filter:
+                provider_conditions.append(f"provider_mappings.provider_instance = '{prov}'")
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
@@ -850,6 +875,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 f"AND ({' OR '.join(provider_conditions)})"
             )
 
+    @final
     def _build_final_query(
         self,
         query_parts: list[str],
@@ -877,6 +903,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query
 
+    @final
     @staticmethod
     def _parse_db_row(db_row: Mapping[str, Any]) -> dict[str, Any]:
         """Parse raw db Mapping into a dict."""
@@ -912,3 +939,49 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 else:
                     db_row_dict["metadata"]["images"] = [album_thumb]
         return db_row_dict
+
+    @final
+    def _ensure_provider_filter(
+        self,
+        provider: str | list[str] | None,
+    ) -> list[str] | None:
+        """Ensure the provider filter respects the current user's provider filter."""
+        # Apply user provider filter if needed
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        final_provider_filter: list[str] | None = None
+        if user_provider_filter:
+            # User has a provider filter set
+            if provider:
+                # Explicit provider filter provided - validate against user's allowed providers
+                requested_providers = [provider] if isinstance(provider, str) else provider
+                # Only include providers that are in both the user's filter and the requested list
+                final_provider_filter = [
+                    p for p in requested_providers if p in user_provider_filter
+                ]
+                if not final_provider_filter:
+                    # No overlap - user requested providers they don't have access to
+                    raise InsufficientPermissions(
+                        "User does not have permission to access the requested provider(s)."
+                    )
+            else:
+                # No explicit filter - use user's provider filter
+                final_provider_filter = user_provider_filter
+        elif provider is not None:
+            # No user filter - use the provided filter as is
+            final_provider_filter = [provider] if isinstance(provider, str) else provider
+        return final_provider_filter
+
+    @final
+    def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
+        """Select the correct provider id to use for fetching the item."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        # prefer user provider filter if available
+        for mapping in library_item.provider_mappings:
+            if user_provider_filter and mapping.provider_instance not in user_provider_filter:
+                continue
+            return (mapping.provider_instance, mapping.item_id)
+        # fallback to first mapping
+        mapping = next(iter(library_item.provider_mappings))
+        return (mapping.provider_instance, mapping.item_id)

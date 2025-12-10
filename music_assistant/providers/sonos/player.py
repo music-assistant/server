@@ -154,7 +154,7 @@ class SonosPlayer(Player):
         )
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
-        self._attr_can_group_with = {self._provider.lookup_key}
+        self._attr_can_group_with = {self._provider.instance_id}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
@@ -384,7 +384,9 @@ class SonosPlayer(Player):
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
 
-        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
+        if (
+            not self.flow_mode and media.source_id and media.queue_item_id
+        ) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -572,7 +574,7 @@ class SonosPlayer(Player):
                     if x.player_id != airplay_player.player_id
                 )
             else:
-                self._attr_can_group_with = {self._provider.lookup_key}
+                self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
             group_parent: SonosPlayer = self.mass.players.get(
