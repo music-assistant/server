@@ -330,9 +330,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             for item in files:
                 prev_checksum = file_checksums.get(item.relative_path)
                 # Wrap _process_item in executor since it's blocking
-                if await asyncio.to_thread(
-                    self._process_item, item, prev_checksum, import_as_favorite
-                ):
+                if await asyncio.to_thread(self._process_item, item, prev_checksum):
                     cur_filenames.add(item.relative_path)
 
             # Recurse into directories
