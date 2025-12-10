@@ -187,6 +187,7 @@ class SendspinPlayer(Player):
     last_sent_artist_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
     timed_client_stream: TimedClientStream | None = None
+    is_web_player: bool = False
 
     def __init__(self, provider: SendspinProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -229,7 +230,12 @@ class SendspinPlayer(Player):
                 (EventType.QUEUE_UPDATED),
             )
         )
-        self._attr_expose_to_ha_by_default = "Music Assistant Web" not in sendspin_client.name
+        self.is_web_player = sendspin_client.name.startswith(
+            "Music Assistant Web ("  # The regular Web Interface
+        ) or sendspin_client.name.startswith(
+            "Music Assistant ("  # The PWA App
+        )
+        self._attr_expose_to_ha_by_default = not self.is_web_player
 
     async def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin server."""
