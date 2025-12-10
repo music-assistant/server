@@ -114,25 +114,30 @@ def _add_artists_to_album(instance_id: str, album: Album, jellyfin_album: JellyA
 
 def _add_artists_to_track(instance_id: str, track: Track, jellyfin_track: JellyTrack) -> None:
     """Add artists to a track from Jellyfin metadata."""
-    for artist_item in jellyfin_track.get(ITEM_KEY_ARTIST_ITEMS, []):
-        track.artists.append(
-            ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=artist_item[ITEM_KEY_ID],
-                provider=instance_id,
-                name=artist_item[ITEM_KEY_NAME],
+    if artist_items := jellyfin_track.get(ITEM_KEY_ARTIST_ITEMS):
+        for artist_item in artist_items:
+            track.artists.append(
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=artist_item[ITEM_KEY_ID],
+                    provider=instance_id,
+                    name=artist_item[ITEM_KEY_NAME],
+                )
             )
-        )
+    else:
+        track.artists.append(UNKNOWN_ARTIST_MAPPING)
 
 
 def _add_album_to_track(instance_id: str, track: Track, jellyfin_track: JellyTrack) -> None:
     """Add album to a track from Jellyfin metadata."""
-    if ITEM_KEY_ALBUM in jellyfin_track and ITEM_KEY_ALBUM_ID in jellyfin_track:
+    if ITEM_KEY_ALBUM_ID in jellyfin_track:
+        album_id = jellyfin_track[ITEM_KEY_ALBUM_ID]
+        album_name = jellyfin_track.get(ITEM_KEY_ALBUM) or f"Unknown Album ({album_id})"
         track.album = ItemMapping(
             media_type=MediaType.ALBUM,
-            item_id=jellyfin_track[ITEM_KEY_ALBUM_ID],
+            item_id=album_id,
             provider=instance_id,
-            name=jellyfin_track[ITEM_KEY_ALBUM],
+            name=album_name,
         )
 
 

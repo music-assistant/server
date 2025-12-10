@@ -17,7 +17,6 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
-from music_assistant.providers.jellyfin import JellyfinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -45,7 +44,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = {
 }
 
 
-def setup(
+async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration.
@@ -55,14 +54,17 @@ def setup(
     :param config: Provider configuration.
     :return: Initialized provider instance.
     """
+    # Import here to avoid circular imports
+    from music_assistant.providers.jellyfin import JellyfinProvider  # noqa: PLC0415
+
     return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-def get_config_entries(
-    _mass: MusicAssistant,
-    _instance_id: str | None = None,
-    _action: str | None = None,
-    _values: dict[str, ConfigValueType] | None = None,
+async def get_config_entries(
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider.
 
