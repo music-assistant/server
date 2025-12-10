@@ -60,45 +60,23 @@ if TYPE_CHECKING:
     from aiojellyfin import Track as JellyTrack
 
 
-def parse_album(
-    logger: Logger, instance_id: str, connection: Connection, jellyfin_album: JellyAlbum
-) -> Album:
-    """Parse a Jellyfin Album response to an Album model object."""
-    album_id = jellyfin_album[ITEM_KEY_ID]
-    album = Album(
-        item_id=album_id,
-        provider=DOMAIN,
-        name=jellyfin_album[ITEM_KEY_NAME],
-        provider_mappings={
-            ProviderMapping(
-                item_id=str(album_id),
-                provider_domain=DOMAIN,
-                provider_instance=instance_id,
-            )
-        },
-    )
-    if ITEM_KEY_PRODUCTION_YEAR in jellyfin_album:
-        album.year = jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
-    album.metadata.images = _get_artwork(instance_id, connection, jellyfin_album)
-    if ITEM_KEY_OVERVIEW in jellyfin_album:
-        album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
-    if ITEM_KEY_MUSICBRAINZ_ALBUM in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
+def _add_external_ids_to_album(logger: Logger, album: Album, jellyfin_album: JellyAlbum) -> None:
+    """Add external IDs to an album from Jellyfin metadata."""
+    provider_ids = jellyfin_album[ITEM_KEY_PROVIDER_IDS]
+    if ITEM_KEY_MUSICBRAINZ_ALBUM in provider_ids:
         try:
-            album.add_external_id(
-                ExternalID.MB_ALBUM,
-                jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ALBUM],
-            )
+            album.add_external_id(ExternalID.MB_ALBUM, provider_ids[ITEM_KEY_MUSICBRAINZ_ALBUM])
         except InvalidDataError as error:
             logger.warning(
                 "Jellyfin has an invalid musicbrainz album id for album %s",
                 album.name,
                 exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
             )
-    if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
+    if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in provider_ids:
         try:
             album.add_external_id(
                 ExternalID.MB_RELEASEGROUP,
-                jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP],
+                provider_ids[ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP],
             )
         except InvalidDataError as error:
             logger.warning(
@@ -106,8 +84,10 @@ def parse_album(
                 album.name,
                 exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
             )
-    if ITEM_KEY_SORT_NAME in jellyfin_album:
-        album.sort_name = jellyfin_album[ITEM_KEY_SORT_NAME]
+
+
+def _add_artists_to_album(instance_id: str, album: Album, jellyfin_album: JellyAlbum) -> None:
+    """Add artists to an album from Jellyfin metadata."""
     if ITEM_KEY_ALBUM_ARTIST in jellyfin_album:
         for album_artist in jellyfin_album[ITEM_KEY_ALBUM_ARTISTS]:
             album.artists.append(
@@ -131,13 +111,67 @@ def parse_album(
     else:
         album.artists.append(UNKNOWN_ARTIST_MAPPING)
 
+
+def _add_artists_to_track(instance_id: str, track: Track, jellyfin_track: JellyTrack) -> None:
+    """Add artists to a track from Jellyfin metadata."""
+    for artist_item in jellyfin_track.get(ITEM_KEY_ARTIST_ITEMS, []):
+        track.artists.append(
+            ItemMapping(
+                media_type=MediaType.ARTIST,
+                item_id=artist_item[ITEM_KEY_ID],
+                provider=instance_id,
+                name=artist_item[ITEM_KEY_NAME],
+            )
+        )
+
+
+def _add_album_to_track(instance_id: str, track: Track, jellyfin_track: JellyTrack) -> None:
+    """Add album to a track from Jellyfin metadata."""
+    if ITEM_KEY_ALBUM in jellyfin_track and ITEM_KEY_ALBUM_ID in jellyfin_track:
+        track.album = ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=jellyfin_track[ITEM_KEY_ALBUM_ID],
+            provider=instance_id,
+            name=jellyfin_track[ITEM_KEY_ALBUM],
+        )
+
+
+def parse_album(
+    logger: Logger, instance_id: str, connection: Connection, jellyfin_album: JellyAlbum
+) -> Album:
+    """Parse a Jellyfin Album response to an Album model object."""
+    album_id = jellyfin_album[ITEM_KEY_ID]
+    album = Album(
+        item_id=album_id,
+        provider=DOMAIN,
+        name=jellyfin_album[ITEM_KEY_NAME],
+        provider_mappings={
+            ProviderMapping(
+                item_id=str(album_id),
+                provider_domain=DOMAIN,
+                provider_instance=instance_id,
+            )
+        },
+    )
+    if ITEM_KEY_PRODUCTION_YEAR in jellyfin_album:
+        album.year = jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
+    album.metadata.images = _get_artwork(instance_id, connection, jellyfin_album)
+    if ITEM_KEY_OVERVIEW in jellyfin_album:
+        album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
+    _add_external_ids_to_album(logger, album, jellyfin_album)
+    if ITEM_KEY_SORT_NAME in jellyfin_album:
+        album.sort_name = jellyfin_album[ITEM_KEY_SORT_NAME]
+    _add_artists_to_album(instance_id, album, jellyfin_album)
     user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
     album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
     return album
 
 
 def parse_artist(
-    logger: Logger, instance_id: str, connection: Connection, jellyfin_artist: JellyArtist
+    logger: Logger,
+    instance_id: str,
+    connection: Connection,
+    jellyfin_artist: JellyArtist,
 ) -> Artist:
     """Parse a Jellyfin Artist response to Artist model object."""
     artist_id = jellyfin_artist[ITEM_KEY_ID]
@@ -195,7 +229,6 @@ def parse_track(
     logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
 ) -> Track:
     """Parse a Jellyfin Track response to a Track model object."""
-    available = False
     available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
     track = Track(
         item_id=jellyfin_track[ITEM_KEY_ID],
@@ -219,30 +252,8 @@ def parse_track(
         track.position = track.track_number
 
     track.metadata.images = _get_artwork(instance_id, client, jellyfin_track)
-
-    if jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
-        for artist_item in jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
-            track.artists.append(
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    item_id=artist_item[ITEM_KEY_ID],
-                    provider=instance_id,
-                    name=artist_item[ITEM_KEY_NAME],
-                )
-            )
-    else:
-        track.artists.append(UNKNOWN_ARTIST_MAPPING)
-
-    if ITEM_KEY_ALBUM_ID in jellyfin_track:
-        if not (album_name := jellyfin_track.get(ITEM_KEY_ALBUM)):
-            logger.debug("Track %s has AlbumID but no AlbumName", track.name)
-            album_name = f"Unknown Album ({jellyfin_track[ITEM_KEY_ALBUM_ID]})"
-        track.album = ItemMapping(
-            media_type=MediaType.ALBUM,
-            item_id=jellyfin_track[ITEM_KEY_ALBUM_ID],
-            provider=instance_id,
-            name=album_name,
-        )
+    _add_artists_to_track(instance_id, track, jellyfin_track)
+    _add_album_to_track(instance_id, track, jellyfin_track)
 
     if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
         track.duration = int(
