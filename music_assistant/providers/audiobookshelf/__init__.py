@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import itertools
 import time
@@ -14,7 +15,6 @@ from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibrary
 from aioaudiobookshelf.client.items import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
-from aioaudiobookshelf.client.session_configuration import asyncio
 from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
 from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.schema.author import AuthorExpanded
@@ -73,6 +73,7 @@ from music_assistant.providers.audiobookshelf.parsers import (
 from .constants import (
     ABS_BROWSE_ITEMS_TO_PATH,
     ABS_SHELF_ID_ICONS,
+    AIOHTTP_TIMEOUT,
     CACHE_CATEGORY_LIBRARIES,
     CACHE_KEY_LIBRARIES,
     CONF_API_TOKEN,
@@ -237,6 +238,7 @@ class Audiobookshelf(MusicProvider):
             verify_ssl=verify_ssl,
             logger=self.logger,
             pagination_items_per_page=30,  # audible provider goes with 50 for pagination
+            timeout=AIOHTTP_TIMEOUT,
         )
         try:
             if token_api is not None or token_old is not None:

@@ -138,7 +138,7 @@ class WebRTCGateway:
 
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
-        self.logger.info("Starting WebRTC Gateway with Remote ID: %s", self.remote_id)
+        self.logger.info("Starting WebRTC Gateway")
         self.logger.debug("Signaling URL: %s", self.signaling_url)
         self.logger.debug("Local WS URL: %s", self.local_ws_url)
         self._running = True
@@ -290,7 +290,7 @@ class WebRTCGateway:
             pass
         elif msg_type == "registered":
             self._is_connected = True
-            self.logger.info("Registered with signaling server as: %s", message.get("remoteId"))
+            self.logger.info("Registered with signaling server")
         elif msg_type == "error":
             error_msg = message.get("error") or message.get("message", "Unknown error")
             self.logger.error("Signaling server error: %s", error_msg)

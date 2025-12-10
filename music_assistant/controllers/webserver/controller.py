@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
-import json
 import os
 import ssl
 import tempfile
@@ -27,7 +26,7 @@ from aiohttp import ClientTimeout, web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
@@ -35,8 +34,6 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
-    CONF_ONBOARD_DONE,
-    DB_TABLE_PLAYLOG,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -278,7 +275,7 @@ class WebserverController(CoreController):
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
-        if not self.mass.config.onboard_done:
+        if not self.auth.has_users:
             self.logger.warning(
                 "\n\n################################################################################\n"
                 "###                           SETUP REQUIRED                                 ###\n"
@@ -294,6 +291,7 @@ class WebserverController(CoreController):
             )
         else:
             self.logger.info(
+                "\n"
                 "################################################################################\n"
                 "\n"
                 "Webserver available on: %s\n"
@@ -466,8 +464,8 @@ class WebserverController(CoreController):
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
-        # Block until onboarding is complete
-        if not self.mass.config.onboard_done:
+        # Fail early if we don't have any users yet
+        if not self.auth.has_users:
             return web.Response(status=503, text="Setup required")
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
@@ -601,28 +599,17 @@ class WebserverController(CoreController):
         return await self._server.serve_static(swagger_html_path, request)
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
-        """Handle request for index page with onboarding check."""
+        """Handle request for index page (Vue frontend)."""
         # If not yet onboarded, redirect to setup
-        if not self.mass.config.onboard_done or (
-            not self.auth.has_users() and not is_request_from_ingress(request)
-        ):
-            # Preserve return_url parameter if present (will be passed back after setup)
-            return_url = request.query.get("return_url")
-            if return_url:
-                quoted_return = urllib.parse.quote(return_url, safe="")
-                setup_url = f"setup?return_url={quoted_return}"
-            else:
-                # No return URL - just redirect to setup without the parameter
-                setup_url = "setup"
-            return web.Response(status=302, headers={"Location": setup_url})
-
+        if not self.auth.has_users and not is_request_from_ingress(request):
+            return web.Response(status=302, headers={"Location": "setup"})
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
 
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
-        # If not yet onboarded, redirect to setup
-        if not self.mass.config.onboard_done:
+        if not self.auth.has_users:
+            # not yet onboarded (no first admin user exists), redirect to setup
             return_url = request.query.get("return_url", "")
             device_name = request.query.get("device_name", "")
             setup_url = (
@@ -631,7 +618,6 @@ class WebserverController(CoreController):
                 else "/setup"
             )
             return web.Response(status=302, headers={"Location": setup_url})
-
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
         async with aiofiles.open(login_html_path) as f:
@@ -641,7 +627,7 @@ class WebserverController(CoreController):
     async def _handle_auth_login(self, request: web.Request) -> web.Response:
         """Handle login request."""
         # Block until onboarding is complete
-        if not self.mass.config.onboard_done:
+        if not self.auth.has_users:
             return web.json_response(
                 {"success": False, "error": "Setup required"},
                 status=403,
@@ -946,32 +932,19 @@ class WebserverController(CoreController):
         else:
             return_url = "/login"
         # check if setup is already completed
-        if self.mass.config.onboard_done:
+        if self.auth.has_users:
             # Setup already completed, redirect to login (or provided return_url)
             return web.Response(status=302, headers={"Location": return_url})
-        # Serve setup page
+
         setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
         async with aiofiles.open(setup_html_path) as f:
             html_content = await f.read()
 
-        # Check if this is from Ingress - if so, pre-fill user info
-        if is_request_from_ingress(request):
-            ingress_username = request.headers.get("X-Remote-User-Name", "")
-            ingress_display_name = request.headers.get("X-Remote-User-Display-Name", "")
-
-            # Inject ingress user info into the page (use json.dumps to escape properly)
-            html_content = html_content.replace(
-                "const deviceName = urlParams.get('device_name');",
-                f"const deviceName = urlParams.get('device_name');\n"
-                f"        const ingressUsername = {json.dumps(ingress_username)};\n"
-                f"        const ingressDisplayName = {json.dumps(ingress_display_name)};",
-            )
-
         return web.Response(text=html_content, content_type="text/html")
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
-        """Handle first-time setup request to create admin user."""
-        if self.mass.config.onboard_done:
+        """Handle first-time setup request to create admin user (non-ingress only)."""
+        if self.auth.has_users:
             return web.json_response(
                 {"success": False, "error": "Setup already completed"}, status=400
             )
@@ -982,11 +955,6 @@ class WebserverController(CoreController):
         body = await request.json()
         username = body.get("username", "").strip()
         password = body.get("password", "")
-        from_ingress = body.get("from_ingress", False)
-        display_name = body.get("display_name")
-
-        # Check if this is a valid ingress request (from_ingress flag + actual ingress headers)
-        is_valid_ingress = from_ingress and is_request_from_ingress(request)
 
         # Validation
         if not username or len(username) < 2:
@@ -994,51 +962,29 @@ class WebserverController(CoreController):
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        # Password is only required for non-ingress users
-        if not is_valid_ingress and (not password or len(password) < 8):
+        if not password or len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )
 
         try:
-            if is_valid_ingress:
-                # Ingress setup: Create user with HA provider link only (no password required)
-                ha_user_id = request.headers.get("X-Remote-User-ID")
-                if not ha_user_id:
-                    return web.json_response(
-                        {"success": False, "error": "Missing Home Assistant user ID"}, status=400
-                    )
-
-                # Create admin user without password
-                user = await self.auth.create_user(
-                    username=username,
-                    role=UserRole.ADMIN,
-                    display_name=display_name,
+            builtin_provider = self.auth.login_providers.get("builtin")
+            if not builtin_provider:
+                return web.json_response(
+                    {"success": False, "error": "Built-in auth provider not available"},
+                    status=500,
                 )
 
-                # Link to Home Assistant provider
-                await self.auth.link_user_to_provider(
-                    user, AuthProviderType.HOME_ASSISTANT, ha_user_id
+            if not isinstance(builtin_provider, BuiltinLoginProvider):
+                return web.json_response(
+                    {"success": False, "error": "Built-in provider configuration error"},
+                    status=500,
                 )
-            else:
-                # Non-ingress setup: Create user with password
-                builtin_provider = self.auth.login_providers.get("builtin")
-                if not builtin_provider:
-                    return web.json_response(
-                        {"success": False, "error": "Built-in auth provider not available"},
-                        status=500,
-                    )
 
-                if not isinstance(builtin_provider, BuiltinLoginProvider):
-                    return web.json_response(
-                        {"success": False, "error": "Built-in provider configuration error"},
-                        status=500,
-                    )
-
-                # Create admin user with password
-                user = await builtin_provider.create_user_with_password(
-                    username, password, role=UserRole.ADMIN, display_name=display_name
-                )
+            # Create admin user with password
+            user = await builtin_provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN
+            )
 
             # Create token for the new admin
             device_name = body.get(
@@ -1046,19 +992,9 @@ class WebserverController(CoreController):
             )
             token = await self.auth.create_token(user, device_name)
 
-            # Migrate existing playlog entries to this first user
-            await self._migrate_playlog_to_first_user(user.user_id)
-
-            # Mark onboarding as complete
-            self.mass.config.set(CONF_ONBOARD_DONE, True)
-            self.mass.config.save(immediate=True)
-
             self.logger.info("First admin user created: %s", username)
 
-            # Announce to Home Assistant now that onboarding is complete
-            if self.mass.running_as_hass_addon:
-                await self._announce_to_homeassistant()
-
+            # Return token - frontend will complete onboarding via config/onboard_complete
             return web.json_response(
                 {
                     "success": True,
@@ -1072,27 +1008,6 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
-
-    async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
-        """
-        Migrate all existing playlog entries to the first user.
-
-        This is called during onboarding when the first admin user is created.
-        All existing playlog entries (which have NULL userid) will be updated
-        to belong to this first user.
-
-        :param user_id: The user ID of the first admin user.
-        """
-        try:
-            # Update all playlog entries with NULL userid to this user
-            await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
-                {"userid": user_id},
-            )
-            await self.mass.music.database.commit()
-            self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
-        except Exception as err:
-            self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""

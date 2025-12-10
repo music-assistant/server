@@ -49,10 +49,6 @@ async def get_authenticated_user(request: web.Request) -> User | None:
             AuthProviderType.HOME_ASSISTANT, ingress_user_id
         )
         if not user:
-            # Only auto-create users after onboarding is complete
-            if not mass.config.onboard_done:
-                return None
-
             user = await mass.webserver.auth.get_user_by_username(ingress_username)
             if not user:
                 role = await get_ha_user_role(mass, ingress_user_id)

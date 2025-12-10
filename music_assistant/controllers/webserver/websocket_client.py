@@ -93,7 +93,7 @@ class WebsocketClientHandler:
         await self._send_message(server_info)
 
         # Block until onboarding is complete
-        if not self.mass.config.onboard_done and not self._is_ingress:
+        if not self.webserver.auth.has_users and not self._is_ingress:
             await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
             await wsock.close()
             return wsock
@@ -368,11 +368,6 @@ class WebsocketClientHandler:
             )
 
             if not user:
-                # Only auto-create users after onboarding is complete
-                if not self.mass.config.onboard_done:
-                    self._logger.warning("Ingress connection attempted before setup")
-                    return
-
                 # Check if a user with this username already exists
                 user = await self.webserver.auth.get_user_by_username(ingress_username)
 

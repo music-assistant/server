@@ -117,12 +117,38 @@ class ConfigController:
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
+        if not self.onboard_done:
+            self.mass.register_api_command(
+                "config/onboard_complete",
+                self.set_onboard_complete,
+                authenticated=True,
+                alias=True,  # hide from public API docs
+            )
         LOGGER.debug("Started.")
 
     @property
     def onboard_done(self) -> bool:
         """Return True if onboarding is done."""
         return bool(self.get(CONF_ONBOARD_DONE, False))
+
+    async def set_onboard_complete(self) -> None:
+        """
+        Mark onboarding as complete.
+
+        This is called by the frontend after the user has completed the onboarding wizard.
+        Only available when onboarding is not yet complete.
+        """
+        if self.onboard_done:
+            msg = "Onboarding already completed"
+            raise InvalidDataError(msg)
+
+        self.set(CONF_ONBOARD_DONE, True)
+        self.save(immediate=True)
+        LOGGER.info("Onboarding completed")
+
+        # (re)Announce to Home Assistant if running as addon
+        if self.mass.running_as_hass_addon:
+            await self.mass.webserver._announce_to_homeassistant()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -1453,4 +1479,6 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
+        # mark onboard as complete as soon as the first provider is added
+        await self.set_onboard_complete()
         return config

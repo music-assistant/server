@@ -119,7 +119,7 @@ class RemoteAccessManager:
             self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
 
             mode = "optimized" if self._using_ha_cloud else "basic"
-            self.logger.info("Starting remote access in %s mode (ID: %s)", mode, self._remote_id)
+            self.logger.info("Starting remote access in %s mode", mode)
 
             self.gateway = WebRTCGateway(
                 http_session=self.mass.http_session,
