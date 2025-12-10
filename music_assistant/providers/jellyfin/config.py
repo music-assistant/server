@@ -45,7 +45,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = {
 }
 
 
-async def setup(
+def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration.
@@ -58,7 +58,7 @@ async def setup(
     return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
+def get_config_entries(
     _mass: MusicAssistant,
     _instance_id: str | None = None,
     _action: str | None = None,
