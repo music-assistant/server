@@ -737,6 +737,7 @@ class QobuzProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"https://open.qobuz.com/playlist/{playlist_obj['id']}",
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             is_editable=is_editable,

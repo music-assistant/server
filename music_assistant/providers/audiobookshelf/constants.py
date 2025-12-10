@@ -3,6 +3,11 @@
 from enum import StrEnum
 
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
+from aiohttp.client import ClientTimeout
+
+# AIOHTTP
+# we use twice the default values
+AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
 
 # CONFIG
 CONF_URL = "url"

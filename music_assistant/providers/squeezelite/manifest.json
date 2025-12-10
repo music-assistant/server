@@ -5,6 +5,7 @@
   "name": "Squeezelite (slimproto players)",
   "description": "Stream music to Squeezelite and some legacy Squeezebox players on your local network.",
   "codeowners": ["@music-assistant"],
+  "credits": ["[aioslimproto](https://github.com/music-assistant/aioslimproto)"],
   "requirements": ["aioslimproto==3.1.1"],
   "documentation": "https://music-assistant.io/player-support/squeezelite/",
   "multi_instance": false,

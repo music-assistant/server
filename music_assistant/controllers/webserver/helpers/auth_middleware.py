@@ -10,6 +10,8 @@ from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 
+from .auth_providers import get_ha_user_role
+
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
@@ -46,21 +48,13 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         user = await mass.webserver.auth.get_user_by_provider_link(
             AuthProviderType.HOME_ASSISTANT, ingress_user_id
         )
-
         if not user:
-            # Only auto-create users after onboarding is complete
-            if not mass.config.onboard_done:
-                return None
-
-            # Check if a user with this username already exists
             user = await mass.webserver.auth.get_user_by_username(ingress_username)
-
             if not user:
-                # Auto-create user for Ingress (they're already authenticated by HA)
-                # Always create with USER role (admin is created during setup)
+                role = await get_ha_user_role(mass, ingress_user_id)
                 user = await mass.webserver.auth.create_user(
                     username=ingress_username,
-                    role=UserRole.USER,
+                    role=role,
                     display_name=ingress_display_name,
                 )
 

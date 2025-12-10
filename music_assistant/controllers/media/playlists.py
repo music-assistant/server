@@ -84,10 +84,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
-            # a playlist can only have one provider so simply pick the first one
-            prov_map = next(x for x in library_item.provider_mappings)
-            item_id = prov_map.item_id
-            provider_instance_id_or_domain = prov_map.provider_instance
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
         page = 0

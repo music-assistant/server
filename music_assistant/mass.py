@@ -810,6 +810,11 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_monochrome.svg")
                         if await isfile(icon_path):
                             provider_manifest.icon_svg_monochrome = await get_icon_string(icon_path)
+                    # override Home Assistant provider if we're running as add-on
+                    if provider_manifest.domain == "hass" and self.running_as_hass_addon:
+                        provider_manifest.builtin = True
+                        provider_manifest.allow_disable = False
+
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:

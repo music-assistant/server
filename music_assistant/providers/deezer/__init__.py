@@ -657,6 +657,7 @@ class DeezerProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=getattr(playlist, "link", None),
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             metadata=MediaItemMetadata(

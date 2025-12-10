@@ -25,7 +25,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
-    CONF_ONBOARD_DONE,
+    DB_TABLE_PLAYLOG,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -76,6 +76,7 @@ class AuthenticationManager:
         self.logger = LOGGER
         # Pending OAuth sessions for remote clients (session_id -> token)
         self._pending_oauth_sessions: dict[str, str | None] = {}
+        self._has_users: bool = False
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -94,15 +95,7 @@ class AuthenticationManager:
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
 
-        # Migration: Reset onboard_done if no users exist
-        # This handles existing setups where authentication was optional
-        if self.mass.config.onboard_done and not await self.has_users():
-            self.logger.warning(
-                "Authentication is mandatory but no users exist. "
-                "Resetting onboard_done to redirect to setup."
-            )
-            self.mass.config.set(CONF_ONBOARD_DONE, False)
-            self.mass.config.save(immediate=True)
+        self._has_users = await self.database.get_count("users") > 0
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -112,6 +105,11 @@ class AuthenticationManager:
         """Cleanup on exit."""
         if self.database:
             await self.database.close()
+
+    @property
+    def has_users(self) -> bool:
+        """Check if any users exist in the system."""
+        return self._has_users
 
     async def _setup_database(self) -> None:
         """Set up database schema and handle migrations."""
@@ -340,11 +338,6 @@ class AuthenticationManager:
             del self.login_providers["homeassistant"]
             self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
 
-    async def has_users(self) -> bool:
-        """Check if any users exist in the system."""
-        count = await self.database.get_count("users")
-        return count > 0
-
     async def authenticate_with_credentials(
         self, provider_id: str, credentials: dict[str, Any]
     ) -> AuthResult:
@@ -501,7 +494,10 @@ class AuthenticationManager:
         :param player_filter: Optional list of player IDs user has access to.
         :param provider_filter: Optional list of provider instance IDs user has access to.
         """
-        username = normalize_username(username)
+        normalized_username = normalize_username(username)
+
+        # Check if this is the first non-system user
+        is_first_user = not await self._has_non_system_users()
 
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
@@ -514,7 +510,7 @@ class AuthenticationManager:
 
         user_data = {
             "user_id": user_id,
-            "username": username,
+            "username": normalized_username,
             "role": role.value,
             "enabled": True,
             "created_at": created_at.isoformat(),
@@ -527,9 +523,9 @@ class AuthenticationManager:
 
         await self.database.insert("users", user_data)
 
-        return User(
+        user = User(
             user_id=user_id,
-            username=username,
+            username=normalized_username,
             role=role,
             enabled=True,
             created_at=created_at,
@@ -539,6 +535,39 @@ class AuthenticationManager:
             player_filter=player_filter,
             provider_filter=provider_filter,
         )
+
+        # If this is the first non-system user, migrate playlog entries to them
+        if is_first_user and normalized_username != HOMEASSISTANT_SYSTEM_USER:
+            self._has_users = True
+            await self._migrate_playlog_to_first_user(user_id)
+
+        return user
+
+    async def _has_non_system_users(self) -> bool:
+        """Check if any non-system users exist."""
+        user_rows = await self.database.get_rows("users", limit=10)
+        return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
+
+    async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
+        """
+        Migrate all existing playlog entries to the first user.
+
+        This is called automatically when the first non-system user is created.
+        All existing playlog entries (which have NULL userid) will be updated
+        to belong to this first user.
+
+        :param user_id: The user ID of the first user.
+        """
+        try:
+            # Update all playlog entries with NULL userid to this user
+            await self.mass.music.database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                {"userid": user_id},
+            )
+            await self.mass.music.database.commit()
+            self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
+        except Exception as err:
+            self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def get_homeassistant_system_user(self) -> User:
         """
@@ -1325,22 +1354,21 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
+        is_admin = current_user_obj.role == UserRole.ADMIN
         if user_id and user_id != current_user_obj.user_id:
             # Updating another user - requires admin
-            if current_user_obj.role != UserRole.ADMIN:
+            if not is_admin:
                 raise InsufficientPermissions("Admin access required")
             target_user = await self.get_user(user_id)
             if not target_user:
                 raise InvalidDataError("User not found")
-            is_admin_update = True
         else:
             # Updating own profile
             target_user = current_user_obj
-            is_admin_update = False
 
         # Update role (admin only)
         if role:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update user roles")
 
             try:
@@ -1376,7 +1404,7 @@ class AuthenticationManager:
 
         # Update player_filter and provider_filter (admin only)
         if player_filter is not None or provider_filter is not None:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update player/provider filters")
             target_user = await self.update_user_filters(
                 target_user, player_filter, provider_filter
@@ -1384,9 +1412,7 @@ class AuthenticationManager:
 
         # Update password if provided
         if password:
-            await self._update_profile_password(
-                target_user, password, is_admin_update, current_user_obj
-            )
+            await self._update_profile_password(target_user, password, is_admin, current_user_obj)
 
         return target_user
 

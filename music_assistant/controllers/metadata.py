@@ -43,7 +43,6 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     VARIOUS_ARTISTS_MBID,
@@ -516,9 +515,6 @@ class MetaDataController(CoreController):
         if TYPE_CHECKING:
             local_provs = cast("set[str]", local_provs)
 
-        # ensure the item is matched to all providers
-        await self.mass.music.artists.match_providers(artist)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
@@ -575,9 +571,6 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Album %s", album.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.albums.match_providers(album)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
@@ -630,9 +623,6 @@ class MetaDataController(CoreController):
             return
 
         self.logger.debug("Updating metadata for Track %s", track.name)
-
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.tracks.match_providers(track)
 
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
@@ -763,9 +753,6 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Audiobook %s", audiobook.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.audiobooks.match_providers(audiobook)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
@@ -811,9 +798,6 @@ class MetaDataController(CoreController):
             return
 
         self.logger.debug("Updating metadata for Podcast %s", podcast.name)
-
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.podcasts.match_providers(podcast)
 
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
@@ -943,20 +927,6 @@ class MetaDataController(CoreController):
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
-            await asyncio.sleep(30)
-
-        # Scan for missing album images
-        self.logger.debug("Start lookup for missing album images...")
-        query = (
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-            f"AND (json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') ISNULL "
-            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') = '[]')"
-        )
-        for album in await self.mass.music.albums.library_items(
-            limit=5, order_by="random", extra_query=query
-        ):
-            if album.uri:
-                self.schedule_update_metadata(album.uri)
             await asyncio.sleep(30)
 
         # Force refresh playlist metadata every refresh interval

@@ -98,7 +98,7 @@ async def test_has_users_initially_empty(auth_manager: AuthenticationManager) ->
 
     :param auth_manager: AuthenticationManager instance.
     """
-    has_users = await auth_manager.has_users()
+    has_users = auth_manager.has_users
     assert has_users is False
 
 
@@ -121,7 +121,7 @@ async def test_create_user(auth_manager: AuthenticationManager) -> None:
     assert user.user_id is not None
 
     # Verify user exists in database
-    has_users = await auth_manager.has_users()
+    has_users = auth_manager.has_users
     assert has_users is True
 
 

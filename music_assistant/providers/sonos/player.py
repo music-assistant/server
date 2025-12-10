@@ -384,7 +384,9 @@ class SonosPlayer(Player):
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
 
-        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
+        if (
+            not self.flow_mode and media.source_id and media.queue_item_id
+        ) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"

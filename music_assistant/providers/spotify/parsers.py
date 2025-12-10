@@ -215,6 +215,7 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=playlist_obj["external_urls"]["spotify"],
+                is_unique=is_editable,  # user-owned playlists are unique
             )
         },
         is_editable=is_editable,

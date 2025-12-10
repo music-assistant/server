@@ -854,6 +854,7 @@ class SpotifyProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url="https://open.spotify.com/collection/tracks",
+                    is_unique=True,  # liked songs is user-specific
                 )
             },
         )

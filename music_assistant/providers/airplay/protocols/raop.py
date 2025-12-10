@@ -198,4 +198,5 @@ class RaopStream(AirPlayProtocol):
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         logger.debug("CLIRaop stderr reader ended")
-        await self.stop()
+        if not self._stopped:
+            await self.stop()

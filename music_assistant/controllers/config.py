@@ -117,12 +117,38 @@ class ConfigController:
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
+        if not self.onboard_done:
+            self.mass.register_api_command(
+                "config/onboard_complete",
+                self.set_onboard_complete,
+                authenticated=True,
+                alias=True,  # hide from public API docs
+            )
         LOGGER.debug("Started.")
 
     @property
     def onboard_done(self) -> bool:
         """Return True if onboarding is done."""
         return bool(self.get(CONF_ONBOARD_DONE, False))
+
+    async def set_onboard_complete(self) -> None:
+        """
+        Mark onboarding as complete.
+
+        This is called by the frontend after the user has completed the onboarding wizard.
+        Only available when onboarding is not yet complete.
+        """
+        if self.onboard_done:
+            msg = "Onboarding already completed"
+            raise InvalidDataError(msg)
+
+        self.set(CONF_ONBOARD_DONE, True)
+        self.save(immediate=True)
+        LOGGER.info("Onboarding completed")
+
+        # (re)Announce to Home Assistant if running as addon
+        if self.mass.running_as_hass_addon:
+            await self.mass.webserver._announce_to_homeassistant()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -910,7 +936,7 @@ class ConfigController:
         )
         default_config.validate()
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
-        self.set(conf_key, default_config.to_raw())
+        self.set_default(conf_key, default_config.to_raw())
 
     @api_command("config/core", required_role="admin")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
@@ -1311,25 +1337,21 @@ class ConfigController:
                 values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
-        # migrate player configs: always use lookup key for provider
-        prov_configs = self._data.get(CONF_PROVIDERS, {})
+        # migrate player configs: always use instance_id for provider
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if "provider" not in player_config:
                 continue
             player_provider = player_config["provider"]
-            if prov_conf := prov_configs.get(player_provider):
-                try:
-                    if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
-                        continue
-                except KeyError:
-                    # removed provider
+            try:
+                if not (prov := self.mass.get_provider(player_provider)):
                     continue
-                if prov_manifest.multi_instance:
-                    # multi instance providers use instance_id as lookup key
-                    continue
-                # single instance providers use domain as lookup key
-                player_config["provider"] = prov_conf["domain"]
-                changed = True
+            except KeyError:
+                # removed provider
+                continue
+            if player_config["provider"] == prov.instance_id:
+                continue
+            player_config["provider"] = prov.instance_id
+            changed = True
 
         if changed:
             await self._async_save()
@@ -1457,4 +1479,6 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
+        # mark onboard as complete as soon as the first provider is added
+        await self.set_onboard_complete()
         return config

@@ -845,6 +845,7 @@ class YoutubeMusicProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             is_editable=is_editable,
