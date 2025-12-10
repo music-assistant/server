@@ -211,7 +211,14 @@ class SendspinPlayer(Player):
         }
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
-        self._attr_device_info = DeviceInfo()
+        if device_info := sendspin_client.info.device_info:
+            self._attr_device_info = DeviceInfo(
+                model=device_info.product_name or "Unknown model",
+                manufacturer=device_info.manufacturer or "Unknown Manufacturer",
+                software_version=device_info.software_version,
+            )
+        else:
+            self._attr_device_info = DeviceInfo()
         if player_client := sendspin_client.player:
             self._attr_volume_level = player_client.volume
             self._attr_volume_muted = player_client.muted
