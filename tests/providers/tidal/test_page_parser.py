@@ -17,7 +17,6 @@ PAGE_FIXTURES = list(FIXTURES_DIR.glob("pages/*.json"))
 def provider_mock() -> Mock:
     """Return a mock provider."""
     provider = Mock()
-    provider.lookup_key = "tidal"
     provider.domain = "tidal"
     provider.instance_id = "tidal_instance"
     provider.auth.user_id = "12345"

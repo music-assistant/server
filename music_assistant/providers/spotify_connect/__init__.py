@@ -168,6 +168,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._runner_error_count = 0
         self._spotify_device_id: str | None = None
         self._last_session_connected_time: float = 0
+        self._last_volume_sent_to_spotify: int | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -253,12 +254,14 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.on_next = self._on_next
             self._source_details.on_previous = self._on_previous
             self._source_details.on_seek = self._on_seek
+            self._source_details.on_volume = self._on_volume
         else:
             self._source_details.on_play = None
             self._source_details.on_pause = None
             self._source_details.on_next = None
             self._source_details.on_previous = None
             self._source_details.on_seek = None
+            self._source_details.on_volume = None
 
         # Trigger player update to reflect capability changes
         if self._source_details.in_use_by:
@@ -326,6 +329,30 @@ class SpotifyConnectProvider(PluginProvider):
             await self._spotify_provider._put_data(f"me/player/seek?position_ms={position_ms}")
         except Exception as err:
             self.logger.warning("Failed to send seek command via Spotify Web API: %s", err)
+            raise
+
+    async def _on_volume(self, volume: int) -> None:
+        """Handle volume change command via Spotify Web API.
+
+        :param volume: Volume level (0-100) from Music Assistant.
+        """
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Volume control requires a matching Spotify music provider"
+            )
+
+        # Prevent ping-pong: only send if volume actually changed from what we last sent
+        if self._last_volume_sent_to_spotify == volume:
+            self.logger.debug("Skipping volume update to Spotify - already at %d%%", volume)
+            return
+
+        try:
+            # Bypass throttler for volume changes to ensure responsive UI
+            async with self._spotify_provider.throttler.bypass():
+                await self._spotify_provider._put_data(f"me/player/volume?volume_percent={volume}")
+                self._last_volume_sent_to_spotify = volume
+        except Exception as err:
+            self.logger.warning("Failed to send volume command via Spotify Web API: %s", err)
             raise
 
     async def _get_spotify_device_id(self) -> str | None:
@@ -458,6 +485,11 @@ class SpotifyConnectProvider(PluginProvider):
         await check_output("mkfifo", self.named_pipe)
         await asyncio.sleep(0.1)
         try:
+            # Get initial volume from player, or use 20 as fallback
+            initial_volume = 20
+            _player = self.mass.players.get(self.mass_player_id)
+            if _player and _player.volume_level:
+                initial_volume = _player.volume_level
             args: list[str] = [
                 self._librespot_bin,
                 "--name",
@@ -475,11 +507,11 @@ class SpotifyConnectProvider(PluginProvider):
                 "none",
                 # disable volume control
                 "--mixer",
-                "softvol",
+                "passthrough",
                 "--volume-ctrl",
-                "fixed",
+                "passthrough",
                 "--initial-volume",
-                "100",
+                str(initial_volume),
                 "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
@@ -633,6 +665,7 @@ class SpotifyConnectProvider(PluginProvider):
             else:
                 # Spotify Connect volume is 0-65535
                 volume = int(int(volume) / 65535 * 100)
+                self._last_volume_sent_to_spotify = volume
                 try:
                     await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
                 except UnsupportedFeaturedException:

@@ -402,9 +402,8 @@ class GPodder(MusicProvider):
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
-                lookup_key=self.lookup_key,
-                domain=self.domain,
                 instance_id=self.instance_id,
+                domain=self.domain,
             )
 
         self.timestamp_subscriptions = subscriptions.timestamp
@@ -420,9 +419,8 @@ class GPodder(MusicProvider):
         return parse_podcast(
             feed_url=prov_podcast_id,
             parsed_feed=parsed_podcast,
-            lookup_key=self.lookup_key,
-            domain=self.domain,
             instance_id=self.instance_id,
+            domain=self.domain,
         )
 
     async def get_podcast_episodes(
@@ -449,7 +447,6 @@ class GPodder(MusicProvider):
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
                 domain=self.domain,
-                lookup_key=self.lookup_key,
                 instance_id=self.instance_id,
             )
             if mass_episode is None:
@@ -578,7 +575,7 @@ class GPodder(MusicProvider):
         if stream_url is None:
             raise MediaNotFoundError
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_url),

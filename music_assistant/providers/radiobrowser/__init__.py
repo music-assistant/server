@@ -333,7 +333,7 @@ class RadioBrowserProvider(MusicProvider):
                 folder.image = MediaItemImage(
                     type=ImageType.THUMB,
                     path=country.favicon,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             items.append(folder)
@@ -471,7 +471,7 @@ class RadioBrowserProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=radio_obj.favicon,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             ]

@@ -175,7 +175,7 @@ class TracksController(MediaControllerBase[Track]):
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -203,7 +203,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -223,7 +223,7 @@ class TracksController(MediaControllerBase[Track]):
                 search=None,
                 limit=limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,

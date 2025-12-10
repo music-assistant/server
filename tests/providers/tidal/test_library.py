@@ -15,7 +15,6 @@ from music_assistant.providers.tidal.library import TidalLibraryManager
 def provider_mock() -> Mock:
     """Return a mock provider."""
     provider = Mock()
-    provider.lookup_key = "tidal"
     provider.domain = "tidal"
     provider.instance_id = "tidal_instance"
     provider.auth.user_id = "12345"
@@ -37,7 +36,7 @@ def provider_mock() -> Mock:
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=provider.lookup_key,
+            provider=provider.instance_id,
             name=name,
         )
 

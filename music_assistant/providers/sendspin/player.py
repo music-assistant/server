@@ -1,4 +1,4 @@
-"""Resonate Player implementation."""
+"""Sendspin Player implementation."""
 
 from __future__ import annotations
 
@@ -8,31 +8,33 @@ from collections.abc import AsyncGenerator, Callable
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
-from aioresonate.models import MediaCommand
-from aioresonate.models.types import PlaybackStateType
-from aioresonate.models.types import RepeatMode as ResonateRepeatMode
-from aioresonate.server import AudioFormat as ResonateAudioFormat
-from aioresonate.server import (
+from aiosendspin.models import MediaCommand
+from aiosendspin.models.types import ArtworkSource, PlaybackStateType
+from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
+from aiosendspin.server import AudioFormat as SendspinAudioFormat
+from aiosendspin.server import (
     ClientEvent,
     GroupCommandEvent,
     GroupEvent,
     GroupStateChangedEvent,
+    SendspinGroup,
     VolumeChangedEvent,
 )
-from aioresonate.server.client import DisconnectBehaviour
-from aioresonate.server.events import ClientGroupChangedEvent
-from aioresonate.server.group import (
+from aiosendspin.server.client import DisconnectBehaviour
+from aiosendspin.server.events import ClientGroupChangedEvent
+from aiosendspin.server.group import (
     GroupDeletedEvent,
     GroupMemberAddedEvent,
     GroupMemberRemovedEvent,
 )
-from aioresonate.server.metadata import Metadata
-from aioresonate.server.stream import AudioCodec, MediaStream
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from aiosendspin.server.metadata import Metadata
+from aiosendspin.server.stream import AudioCodec, MediaStream
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
     EventType,
+    ImageType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -44,7 +46,9 @@ from PIL import Image
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+    CONF_ENTRY_SAMPLE_RATES,
     CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
 )
@@ -53,17 +57,33 @@ from music_assistant.models.player import Player, PlayerMedia
 
 from .timed_client_stream import TimedClientStream
 
-if TYPE_CHECKING:
-    from aioresonate.server.client import ResonateClient
-    from music_assistant_models.event import MassEvent
+# Supported group commands for Sendspin players
+SUPPORTED_GROUP_COMMANDS = [
+    MediaCommand.PLAY,
+    MediaCommand.PAUSE,
+    MediaCommand.STOP,
+    MediaCommand.NEXT,
+    MediaCommand.PREVIOUS,
+    MediaCommand.REPEAT_OFF,
+    MediaCommand.REPEAT_ONE,
+    MediaCommand.REPEAT_ALL,
+    MediaCommand.SHUFFLE,
+    MediaCommand.UNSHUFFLE,
+]
 
-    from .provider import ResonateProvider
+if TYPE_CHECKING:
+    from aiosendspin.server.client import SendspinClient
+    from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.event import MassEvent
+    from music_assistant_models.queue_item import QueueItem
+
+    from .provider import SendspinProvider
 
 
 class MusicAssistantMediaStream(MediaStream):
     """MediaStream implementation for Music Assistant with per-player DSP support."""
 
-    player_instance: ResonatePlayer
+    player_instance: SendspinPlayer
     internal_format: AudioFormat
     output_format: AudioFormat
 
@@ -71,8 +91,8 @@ class MusicAssistantMediaStream(MediaStream):
         self,
         *,
         main_channel_source: AsyncGenerator[bytes, None],
-        main_channel_format: ResonateAudioFormat,
-        player_instance: ResonatePlayer,
+        main_channel_format: SendspinAudioFormat,
+        player_instance: SendspinPlayer,
         internal_format: AudioFormat,
         output_format: AudioFormat,
     ) -> None:
@@ -82,7 +102,7 @@ class MusicAssistantMediaStream(MediaStream):
         Args:
             main_channel_source: Audio source generator for the main channel.
             main_channel_format: Audio format for the main channel (includes codec).
-            player_instance: The ResonatePlayer instance for accessing mass and streams.
+            player_instance: The SendspinPlayer instance for accessing mass and streams.
             internal_format: Internal processing format (float32 for headroom).
             output_format: Output PCM format (16-bit for player output).
         """
@@ -97,9 +117,9 @@ class MusicAssistantMediaStream(MediaStream):
     async def player_channel(
         self,
         player_id: str,
-        preferred_format: ResonateAudioFormat | None = None,
+        preferred_format: SendspinAudioFormat | None = None,
         position_us: int = 0,
-    ) -> tuple[AsyncGenerator[bytes, None], ResonateAudioFormat, int] | None:
+    ) -> tuple[AsyncGenerator[bytes, None], SendspinAudioFormat, int] | None:
         """
         Get a player-specific audio stream with per-player DSP.
 
@@ -136,7 +156,7 @@ class MusicAssistantMediaStream(MediaStream):
             filter_params=filter_params,
         )
 
-        # Convert position from seconds to microseconds for aioresonate API
+        # Convert position from seconds to microseconds for aiosendspin API
         actual_position_us = int(actual_position * 1_000_000)
 
         # Return actual position in microseconds relative to main_stream start
@@ -147,7 +167,7 @@ class MusicAssistantMediaStream(MediaStream):
         )
         return (
             stream_gen,
-            ResonateAudioFormat(
+            SendspinAudioFormat(
                 sample_rate=self.output_format.sample_rate,
                 bit_depth=self.output_format.bit_depth,
                 channels=self.output_format.channels,
@@ -157,38 +177,42 @@ class MusicAssistantMediaStream(MediaStream):
         )
 
 
-class ResonatePlayer(Player):
-    """A resonate audio player in Music Assistant."""
+class SendspinPlayer(Player):
+    """A sendspin audio player in Music Assistant."""
 
-    api: ResonateClient
+    api: SendspinClient
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
+    last_sent_artist_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
     timed_client_stream: TimedClientStream | None = None
 
-    def __init__(self, provider: ResonateProvider, player_id: str) -> None:
+    def __init__(self, provider: SendspinProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        resonate_client = provider.server_api.get_client(player_id)
-        assert resonate_client is not None
-        self.api = resonate_client
+        sendspin_client = provider.server_api.get_client(player_id)
+        assert sendspin_client is not None
+        self.api = sendspin_client
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-        self.unsub_event_cb = resonate_client.add_event_listener(self.event_cb)
-        self.unsub_group_event_cb = resonate_client.group.add_event_listener(self.group_event_cb)
+        self.unsub_event_cb = sendspin_client.add_event_listener(self.event_cb)
+        self.unsub_group_event_cb = sendspin_client.group.add_event_listener(self.group_event_cb)
+        sendspin_client.group.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
-        self._attr_name = resonate_client.name
+        self._attr_name = sendspin_client.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
         }
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
-        if player_client := resonate_client.player:
+        if player_client := sendspin_client.player:
             self._attr_volume_level = player_client.volume
             self._attr_volume_muted = player_client.muted
         self._attr_available = True
@@ -198,9 +222,10 @@ class ResonatePlayer(Player):
                 (EventType.QUEUE_UPDATED),
             )
         )
+        self._attr_expose_to_ha_by_default = "Music Assistant Web" not in sendspin_client.name
 
-    async def event_cb(self, event: ClientEvent) -> None:
-        """Event callback registered to the resonate server."""
+    async def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
+        """Event callback registered to the sendspin server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
             case VolumeChangedEvent(volume=volume, muted=muted):
@@ -218,40 +243,54 @@ class ResonatePlayer(Player):
                         self._attr_playback_state = PlaybackState.PAUSED
                     case PlaybackStateType.STOPPED:
                         self._attr_playback_state = PlaybackState.IDLE
+                # Update in case this is a newly created group
+                new_group.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+                # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
+                # so group members are already up to date at this point
+                if self.synced_to is None:
+                    # We are the leader, stop on disconnect
+                    self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+                else:
+                    self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
                 self.update_state()
 
-    async def group_event_cb(self, event: GroupEvent) -> None:
-        """Event callback registered to the resonate group this player belongs to."""
+    async def _handle_group_command(self, command: MediaCommand) -> None:
+        """Handle a group command from aiosendspin."""
+        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        match command:
+            case MediaCommand.PLAY:
+                await self.mass.players.cmd_play(self.player_id)
+            case MediaCommand.PAUSE:
+                await self.mass.players.cmd_pause(self.player_id)
+            case MediaCommand.STOP:
+                await self.mass.players.cmd_stop(self.player_id)
+            case MediaCommand.NEXT:
+                await self.mass.players.cmd_next_track(self.player_id)
+            case MediaCommand.PREVIOUS:
+                await self.mass.players.cmd_previous_track(self.player_id)
+            case MediaCommand.REPEAT_OFF if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+            case MediaCommand.REPEAT_ONE if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+            case MediaCommand.REPEAT_ALL if queue:
+                self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+            case MediaCommand.SHUFFLE if queue:
+                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
+            case MediaCommand.UNSHUFFLE if queue:
+                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
+
+    async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Event callback registered to the sendspin group this player belongs to."""
         if self.synced_to is not None:
-            # Only handle group events as the leader
-            return
+            # Only handle group events as the leader, except for GroupMemberRemovedEvent
+            if not isinstance(event, GroupMemberRemovedEvent):
+                return
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
-            case GroupCommandEvent(command=command, volume=volume, mute=mute):
+            case GroupCommandEvent(command=command):
                 self.logger.debug("Group command received: %s", command)
-                match command:
-                    case MediaCommand.PLAY:
-                        await self.mass.players.cmd_play(self.player_id)
-                    case MediaCommand.PAUSE:
-                        await self.mass.players.cmd_pause(self.player_id)
-                    case MediaCommand.STOP:
-                        await self.mass.players.cmd_stop(self.player_id)
-                    case MediaCommand.NEXT:
-                        await self.mass.players.cmd_next_track(self.player_id)
-                    case MediaCommand.PREVIOUS:
-                        await self.mass.players.cmd_previous_track(self.player_id)
-                    case MediaCommand.SEEK:
-                        raise NotImplementedError("TODO: not supported by spec yet")
-                    case MediaCommand.VOLUME:
-                        assert volume is not None
-                        await self.mass.players.cmd_group_volume(self.player_id, volume)
-                    case MediaCommand.MUTE:
-                        assert mute is not None
-                        for member in self.mass.players.iter_group_members(
-                            self, active_only=True, exclude_self=True
-                        ):
-                            await member.volume_mute(mute)
+                await self._handle_group_command(command)
             case GroupStateChangedEvent(state=state):
                 self.logger.debug("Group state changed to: %s", state)
                 match state:
@@ -271,7 +310,25 @@ class ResonatePlayer(Player):
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
-                if client_id in self._attr_group_members:
+                if client_id == self.player_id:
+                    if len(self._attr_group_members) > 0:
+                        # We were just removed as a leader:
+                        # 1. stop playback on the old group
+                        await group.stop()
+                        # 2. clear our members (since we are now alone)
+                        group_members = [
+                            member for member in self._attr_group_members if member != client_id
+                        ]
+                        self._attr_group_members = []
+                        # 3. assign new leader if there are members left
+                        if len(group_members) > 0 and (
+                            new_leader := self.mass.players.get(group_members[0])
+                        ):
+                            new_leader._attr_group_members = group_members[1:]
+                            new_leader.update_state()
+                    self.update_state()
+                elif client_id in self._attr_group_members:
+                    # Someone else left our group
                     self._attr_group_members.remove(client_id)
                     self.update_state()
             case GroupDeletedEvent():
@@ -351,7 +408,7 @@ class ResonatePlayer(Player):
             )
 
             # Setup the main channel subscription
-            # aioresonate only really supports 16-bit for now TODO: upgrade later to 32-bit
+            # aiosendspin only really supports 16-bit for now TODO: upgrade later to 32-bit
             main_channel_gen, main_position = await self.timed_client_stream.get_stream(
                 output_format=pcm_format,
                 filter_params=None,  # TODO: this should probably still include the safety limiter
@@ -359,7 +416,7 @@ class ResonatePlayer(Player):
             assert main_position == 0.0  # first subscriber, should be zero
             media_stream = MusicAssistantMediaStream(
                 main_channel_source=main_channel_gen,
-                main_channel_format=ResonateAudioFormat(
+                main_channel_format=SendspinAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     channels=pcm_format.channels,
@@ -392,18 +449,75 @@ class ResonatePlayer(Player):
         )
         for player_id in player_ids_to_remove or []:
             player = self.mass.players.get(player_id, True)
-            player = cast("ResonatePlayer", player)  # For type checking
+            player = cast("SendspinPlayer", player)  # For type checking
             await self.api.group.remove_client(player.api)
-            player.api.disconnect_behaviour = DisconnectBehaviour.STOP
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
-            player = cast("ResonatePlayer", player)  # For type checking
-            player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
+            player = cast("SendspinPlayer", player)  # For type checking
             await self.api.group.add_client(player.api)
         # self.group_members will be updated by the group event callback
 
+    async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
+        """
+        Send album artwork to the sendspin group.
+
+        Args:
+            current_item: The current queue item.
+        """
+        artwork_url = None
+        if current_item.image is not None:
+            artwork_url = self.mass.metadata.get_image_url(current_item.image)
+
+        if artwork_url != self.last_sent_artwork_url:
+            # Image changed, resend the artwork
+            self.last_sent_artwork_url = artwork_url
+            if artwork_url is not None and current_item.media_item is not None:
+                image_data = await self.mass.metadata.get_image_data_for_item(
+                    current_item.media_item
+                )
+                if image_data is not None:
+                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
+                    await self.api.group.set_media_art(image, source=ArtworkSource.ALBUM)
+            else:
+                # Clear artwork if none available
+                await self.api.group.set_media_art(None, source=ArtworkSource.ALBUM)
+
+        return artwork_url
+
+    async def _send_artist_artwork(self, current_item: QueueItem) -> None:
+        """
+        Send artist artwork to the sendspin group.
+
+        Args:
+            current_item: The current queue item.
+        """
+        # Extract primary artist if available
+        artist_artwork_url = None
+        if current_item.media_item is not None and hasattr(current_item.media_item, "artists"):
+            artists = getattr(current_item.media_item, "artists", None)
+            if artists and len(artists) > 0:
+                primary_artist = artists[0]
+                if hasattr(primary_artist, "image"):
+                    artist_image = getattr(primary_artist, "image", None)
+                    if artist_image is not None:
+                        artist_artwork_url = self.mass.metadata.get_image_url(artist_image)
+
+        if artist_artwork_url != self.last_sent_artist_artwork_url:
+            # Artist image changed, resend the artwork
+            self.last_sent_artist_artwork_url = artist_artwork_url
+            if artist_artwork_url is not None:
+                artist_image_data = await self.mass.metadata.get_image_data_for_item(
+                    primary_artist, img_type=ImageType.THUMB
+                )
+                if artist_image_data is not None:
+                    artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
+                    await self.api.group.set_media_art(artist_image, source=ArtworkSource.ARTIST)
+            else:
+                # Clear artist artwork if none available
+                await self.api.group.set_media_art(None, source=ArtworkSource.ARTIST)
+
     async def _on_queue_update(self, event: MassEvent) -> None:
-        """Extract and send current media metadata to resonate players on queue updates."""
+        """Extract and send current media metadata to sendspin players on queue updates."""
         queue = self.mass.player_queues.get_active_queue(self.player_id)
         if not queue or not queue.current_item:
             return
@@ -438,28 +552,17 @@ class ResonatePlayer(Player):
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
 
-        if current_item.image is not None:
-            artwork_url = self.mass.metadata.get_image_url(current_item.image)
-
-        if artwork_url != self.last_sent_artwork_url:
-            # Image changed, resend the artwork
-            self.last_sent_artwork_url = artwork_url
-            if artwork_url is not None and current_item.media_item is not None:
-                image_data = await self.mass.metadata.get_image_data_for_item(
-                    current_item.media_item
-                )
-                if image_data is not None:
-                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                    await self.api.group.set_media_art(image)
-            # TODO: null media art if not set?
+        # Send album and artist artwork
+        artwork_url = await self._send_album_artwork(current_item)
+        await self._send_artist_artwork(current_item)
 
         track_duration = current_item.duration
 
-        repeat = ResonateRepeatMode.OFF
+        repeat = SendspinRepeatMode.OFF
         if queue.repeat_mode == RepeatMode.ALL:
-            repeat = ResonateRepeatMode.ALL
+            repeat = SendspinRepeatMode.ALL
         elif queue.repeat_mode == RepeatMode.ONE:
-            repeat = ResonateRepeatMode.ONE
+            repeat = SendspinRepeatMode.ONE
 
         shuffle = queue.shuffle_enabled
 
@@ -471,8 +574,9 @@ class ResonatePlayer(Player):
             artwork_url=artwork_url,
             year=year,
             track=track,
-            track_duration=track_duration,
-            playback_speed=1,
+            track_duration=track_duration * 1000 if track_duration is not None else None,
+            track_progress=int(queue.corrected_elapsed_time * 1000),
+            playback_speed=1000,
             repeat=repeat,
             shuffle=shuffle,
         )
@@ -490,17 +594,9 @@ class ResonatePlayer(Player):
         return [
             *default_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            ConfigEntry.from_dict(
-                {
-                    **CONF_ENTRY_OUTPUT_CODEC.to_dict(),
-                    "default_value": "pcm",
-                    "options": [
-                        {"title": "PCM (lossless, uncompressed)", "value": "pcm"},
-                        {"title": "FLAC (lossless, compressed)", "value": "flac"},
-                        {"title": "OPUS (lossy)", "value": "opus"},
-                    ],
-                }
-            ),
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+            ConfigEntry.from_dict({**CONF_ENTRY_SAMPLE_RATES.to_dict(), "hidden": True}),
         ]
 
     async def on_unload(self) -> None:
@@ -508,4 +604,3 @@ class ResonatePlayer(Player):
         await super().on_unload()
         self.unsub_event_cb()
         self.unsub_group_event_cb()
-        await self.api.disconnect()

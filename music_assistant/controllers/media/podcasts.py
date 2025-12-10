@@ -60,7 +60,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -72,7 +72,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
@@ -87,7 +87,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 search=None,
                 limit=limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
             )
@@ -104,10 +104,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             library_podcast = await self.get_library_item(item_id)
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
-            for provider_mapping in library_podcast.provider_mappings:
-                item_id = provider_mapping.item_id
-                provider_instance_id_or_domain = provider_mapping.provider_instance
-                break
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
         # podcast episodes are not stored in the db/library
         # so we always need to fetch them from the provider
         async for episode in self._get_provider_podcast_episodes(
@@ -226,7 +223,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 DB_TABLE_PLAYLOG,
                 {
                     "item_id": episode.item_id,
-                    "provider": prov.lookup_key,
+                    "provider": prov.instance_id,
                     "media_type": MediaType.PODCAST_EPISODE,
                 },
             )

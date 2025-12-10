@@ -81,7 +81,7 @@ async def make_api_request(
 
 
 def parse_podcast_from_feed(
-    feed_data: dict[str, Any], lookup_key: str, domain: str, instance_id: str
+    feed_data: dict[str, Any], instance_id: str, domain: str
 ) -> Podcast | None:
     """Parse podcast from API feed data."""
     feed_url = feed_data.get("url")
@@ -94,7 +94,7 @@ def parse_podcast_from_feed(
         item_id=str(podcast_id),
         name=feed_data.get("title", "Unknown Podcast"),
         publisher=feed_data.get("author") or feed_data.get("ownerName", "Unknown"),
-        provider=lookup_key,
+        provider=instance_id,
         provider_mappings={
             ProviderMapping(
                 item_id=str(podcast_id),
@@ -121,7 +121,7 @@ def parse_podcast_from_feed(
             MediaItemImage(
                 type=ImageType.THUMB,
                 path=image_url,
-                provider=lookup_key,
+                provider=instance_id,
                 remotely_accessible=True,
             )
         )
@@ -143,9 +143,8 @@ def parse_episode_from_data(
     episode_data: dict[str, Any],
     podcast_id: str,
     episode_idx: int,
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     podcast_name: str | None = None,
 ) -> PodcastEpisode | None:
     """Parse episode from API episode data."""
@@ -170,13 +169,13 @@ def parse_episode_from_data(
 
     episode = PodcastEpisode(
         item_id=episode_id,
-        provider=lookup_key,
+        provider=instance_id,
         name=episode_data.get("title", "Unknown Episode"),
         duration=duration,
         position=position,
         podcast=ItemMapping(
             item_id=podcast_id,
-            provider=lookup_key,
+            provider=instance_id,
             name=podcast_name,
             media_type=MediaType.PODCAST,
         ),
@@ -210,7 +209,7 @@ def parse_episode_from_data(
             MediaItemImage(
                 type=ImageType.THUMB,
                 path=image_url,
-                provider=lookup_key,
+                provider=instance_id,
                 remotely_accessible=True,
             )
         )

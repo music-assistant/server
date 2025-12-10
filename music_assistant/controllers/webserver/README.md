@@ -137,10 +137,20 @@ Manages individual WebSocket connections:
 
 ### First-Time Setup Flow
 
-1. **Initial State**: No users exist, `onboard_done = false`
+1. **Initial State**: No users exist
 2. **Setup Required**: User is redirected to `/setup`
 3. **Admin Creation**: User creates the first admin account with username/password
-4. **Onboarding Complete**: `onboard_done` is set to `true`
+4. **Setup completes** User gets redirected to the frontend
+5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
+4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
+
+### First-Time Setup Flow when HA Ingress is used
+
+1. **Initial State**: No users exist
+2. **Auto user creation**: User is auto created based on HA user
+4. **Setup completes** User gets redirected to the frontend
+5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
+4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
 
 ### Login Flow (Standard)
 
@@ -273,7 +283,6 @@ Most connections succeed with public STUN servers alone, but they may fail in:
 **Optimized Mode (HA Cloud):**
 - STUN/TURN servers provided by Home Assistant Cloud
 - Includes TURN relay servers for guaranteed connectivity
-- Currently in development (uses Basic Mode fallback until implemented)
 
 ### Availability
 

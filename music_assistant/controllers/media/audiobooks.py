@@ -77,7 +77,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID or domain (single string or list).
+        :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         """
@@ -89,7 +89,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
@@ -104,7 +104,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 search=None,
                 limit=limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
             )
@@ -277,14 +277,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # cleanup provider specific entries for this item
         # we always prefer the library playlog entry
         for prov_mapping in media_item.provider_mappings:
-            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
-                continue
             await self.mass.music.database.delete(
                 DB_TABLE_PLAYLOG,
                 {
                     "media_type": self.media_type.value,
                     "item_id": prov_mapping.item_id,
-                    "provider": provider.lookup_key,
+                    "provider": prov_mapping.provider_instance,
                 },
             )
         if media_item.fully_played is None and media_item.resume_position_ms is None:
