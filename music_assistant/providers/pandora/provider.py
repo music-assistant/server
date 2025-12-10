@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -79,7 +80,7 @@ async def get_config_entries(
     return (
         ConfigEntry(
             key=CONF_USERNAME,
-            type=ConfigEntryType.SECURE_STRING,
+            type=ConfigEntryType.STRING,
             label="Username",
             required=True,
             description="Your Pandora account email address",
@@ -101,6 +102,7 @@ class PandoraProvider(MusicProvider):
     _user_id: str | None = None
     _csrf_token: str | None = None
     _on_unload_callbacks: list[Callable[[], None]]
+    _station_fragments: dict[str, list[dict[str, Any] | None]] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -285,13 +287,28 @@ class PandoraProvider(MusicProvider):
             can_seek=False,
             allow_seek=False,
             stream_metadata=StreamMetadata(
-                title="Pandora",
+                title="Pandora Radio",
             ),
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=5,  # Check every 5 seconds
         )
 
-    # @use_cache(300)  # Cache fragments for 5 minutes
+    @use_cache(600)  # Cache fragments for 10 minutes
     async def _get_fragment_data(self, station_id: str, fragment_index: int) -> dict[str, Any]:
         """Fetch fragment data from Pandora API (cached per station + fragment index)."""
+        # Check if we already have this fragment cached for this stream
+        if station_id in self._station_fragments:
+            if fragment_index < len(self._station_fragments[station_id]):
+                cached_fragment = self._station_fragments[station_id][fragment_index]
+                if cached_fragment is not None:
+                    self.logger.debug(
+                        "Using cached fragment %d for station %s",
+                        fragment_index,
+                        station_id,
+                    )
+                    return cached_fragment
+
+        # Only fetch if not already cached
         self.logger.debug(
             "Fetching fragment %d for station %s",
             fragment_index,
@@ -309,11 +326,21 @@ class PandoraProvider(MusicProvider):
         }
 
         try:
-            return await self._api_request(
+            result = await self._api_request(
                 "POST",
                 f"{API_BASE}/playlist/getFragment",
                 data=fragment_data,
             )
+
+            # Store in instance cache for metadata updates
+            if station_id not in self._station_fragments:
+                self._station_fragments[station_id] = []
+            while len(self._station_fragments[station_id]) <= fragment_index:
+                self._station_fragments[station_id].append(None)
+            self._station_fragments[station_id][fragment_index] = result
+
+            return result
+
         except Exception as err:
             self.logger.error(
                 "Failed to fetch fragment %d for station %s: %s",
@@ -344,11 +371,12 @@ class PandoraProvider(MusicProvider):
         fragment_idx = track_num // TRACKS_PER_FRAGMENT
         track_idx = track_num % TRACKS_PER_FRAGMENT
 
-        self.logger.debug(
-            "Stream request: track %d = fragment %d, track %d",
+        self.logger.info(
+            "=== STREAM URL REQUESTED === Track number %d (fragment %d, track %d) at time %s",
             track_num,
             fragment_idx,
             track_idx,
+            time.time(),
         )
 
         try:
@@ -372,25 +400,14 @@ class PandoraProvider(MusicProvider):
                 self.logger.error("No audio URL in track data")
                 return web.Response(status=404, text="No audio URL available")
 
-            # Update metadata if we have queue context
-            #            if queue_id and queue_item_id:
-            #                queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
-            #                if queue_item and queue_item.streamdetails:
-            #                    # Get the best quality album art
-            #                    album_art_url = None
-            #                    if album_art := track.get("albumArt"):
-            #                        # Get the 500px version (good balance of quality/size)
-            #                        album_art_url = next(
-            #                           (art["url"] for art in album_art if art.get("size") == 500),
-            #                           album_art[-1]["url"] if album_art else None,
-            #                        )
-            #                    queue_item.streamdetails.stream_metadata = StreamMetadata(
-            #                        title=track.get("songTitle", "Unknown Song"),
-            #                        artist=track.get("artistName", "Unknown Artist"),
-            #                        album=track.get("albumTitle"),
-            #                        image_url=album_art_url,
-            #                        duration=track.get("trackLength"),
-            #                    )
+            self.logger.info(
+                "=== REDIRECTING TO === %s - %s (track_num=%d, duration=%ds)",
+                track.get("artistName"),
+                track.get("songTitle"),
+                track_num,
+                track.get("trackLength", 0),
+            )
+
             # Redirect to the actual audio URL
             return web.Response(status=302, headers={"Location": audio_url})
 
@@ -423,6 +440,82 @@ class PandoraProvider(MusicProvider):
                     break
 
         return SearchResults(radio=results)
+
+    async def _update_stream_metadata(
+        self, streamdetails: StreamDetails, elapsed_time: int
+    ) -> None:
+        """Update stream metadata based on elapsed playback time."""
+        station_id = streamdetails.item_id
+
+        # Get cached fragments for this station
+        if station_id not in self._station_fragments:
+            return
+
+        # Get only the non-None fragments
+        fragments = [f for f in self._station_fragments[station_id] if f is not None]
+
+        if not fragments:
+            return
+
+        # Calculate which track should be playing based on elapsed time
+        cumulative_time = 0
+        current_track = None
+
+        for fragment in fragments:
+            tracks = fragment.get("tracks", [])
+            for track in tracks:
+                track_duration = track.get("trackLength", 180)
+
+                # Curator messages have incorrect durations in API
+                if "Curator Message" in track.get("songTitle", ""):
+                    track_duration = 15
+
+                if cumulative_time <= elapsed_time < cumulative_time + track_duration:
+                    current_track = track
+                    break
+
+                cumulative_time += track_duration
+
+            if current_track:
+                break
+
+        # Update metadata if we found the current track
+        if current_track and streamdetails.stream_metadata:
+            # Get album art
+            album_art_url = None
+            if album_art := current_track.get("albumArt"):
+                album_art_url = next(
+                    (art["url"] for art in album_art if art.get("size") == 500),
+                    album_art[-1]["url"] if album_art else None,
+                )
+
+            # Only update AND LOG if metadata actually changed
+            new_title = current_track.get("songTitle", "Unknown Song")
+            if streamdetails.stream_metadata.title != new_title:
+                # Count fragments and tracks for the log
+                total_tracks = sum(len(f.get("tracks", [])) for f in fragments)
+
+                self.logger.info(
+                    "=== METADATA CHANGED === Elapsed: %ds, Fragments: %d, Tracks: %d",
+                    elapsed_time,
+                    len(fragments),
+                    total_tracks,
+                )
+                self.logger.info(
+                    "  Old: %s, New: %s - %s",
+                    streamdetails.stream_metadata.title,
+                    current_track.get("artistName"),
+                    new_title,
+                )
+
+                streamdetails.stream_metadata.title = new_title
+                streamdetails.stream_metadata.artist = current_track.get(
+                    "artistName", "Unknown Artist"
+                )
+                streamdetails.stream_metadata.album = current_track.get("albumTitle")
+                streamdetails.stream_metadata.image_url = album_art_url
+                streamdetails.stream_metadata.duration = current_track.get("trackLength")
+                streamdetails.stream_metadata.uri = current_track.get("songDetailURL")
 
     # TODO: Remove this when default implementation is fixed
     async def browse(self, path: str) -> list[Radio]:
