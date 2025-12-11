@@ -334,7 +334,10 @@ class ChromecastPlayer(Player):
                 self._last_sent_codec,
                 current_codec,
             )
-            await self._send_sendspin_server_url()
+            try:
+                await self._send_sendspin_server_url()
+            except Exception as err:
+                self.logger.warning("Failed to send updated Sendspin config to Chromecast: %s", err)
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
