@@ -295,8 +295,10 @@ class SendspinPlayer(Player):
     async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
         if self.synced_to is not None:
-            # Only handle group events as the leader, except for GroupMemberRemovedEvent
-            if not isinstance(event, GroupMemberRemovedEvent):
+            # Only handle group events as the leader, except for:
+            # - GroupMemberRemovedEvent: to handle being removed from a group
+            # - GroupStateChangedEvent: to update playback state when leader stops/disconnects
+            if not isinstance(event, (GroupMemberRemovedEvent, GroupStateChangedEvent)):
                 return
         self.logger.debug("Received GroupEvent: %s", event)
 
