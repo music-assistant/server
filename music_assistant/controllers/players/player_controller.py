@@ -1733,24 +1733,24 @@ class PlayerController(CoreController):
                 player_provider.on_player_disabled(config.player_id)
             elif ATTR_ENABLED in changed_keys and config.enabled:
                 player_provider.on_player_enabled(config.player_id)
-        # ensure player state gets updated with any updated config
         if not (player := self.get(config.player_id)):
             return  # guard against player not being registered (yet)
-        player.set_config(config)
-        await player.on_config_updated()
-        player.update_state()
         resume_queue: PlayerQueue | None = (
             self.mass.player_queues.get(player.active_source) if player.active_source else None
         )
-        if player_disabled:
+        if player_disabled and player.available:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
                 await self._handle_cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
+        # ensure player state gets updated with any updated config
+        player.set_config(config)
+        await player.on_config_updated()
+        player.update_state()
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
-        elif not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
+        if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
