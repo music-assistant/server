@@ -1337,12 +1337,15 @@ class ConfigController:
                 values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
-        # cleanup 'builtin_player' player entries
+        # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if player_config.get("provider") != "builtin_player":
                 continue
-            # remove any builtin_player entries as they are no longer used
             self._data[CONF_PLAYERS].pop(player_id, None)
+            # Also remove any DSP config for this player
+            if CONF_PLAYER_DSP in self._data:
+                self._data[CONF_PLAYER_DSP].pop(player_id, None)
+            LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
             changed = True
 
         # migrate player configs: always use instance_id for provider
