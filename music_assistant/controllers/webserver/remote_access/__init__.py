@@ -16,12 +16,14 @@ from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
-from music_assistant.controllers.webserver.remote_access.gateway import (
-    WebRTCGateway,
-    generate_remote_id,
+from music_assistant.controllers.webserver.remote_access.gateway import WebRTCGateway
+from music_assistant.helpers.webrtc_certificate import (
+    get_or_create_webrtc_certificate,
+    get_remote_id_from_certificate,
 )
 
 if TYPE_CHECKING:
+    from aiortc.rtcdtlstransport import RTCCertificate
     from music_assistant_models.event import MassEvent
 
     from music_assistant.controllers.webserver import WebserverController
@@ -31,7 +33,6 @@ if TYPE_CHECKING:
 SIGNALING_SERVER_URL = "wss://signaling.music-assistant.io/ws"
 
 CONF_KEY_MAIN = "remote_access"
-CONF_REMOTE_ID = "remote_id"
 CONF_ENABLED = "enabled"
 
 TASK_ID_START_GATEWAY = "remote_access_start_gateway"
@@ -59,7 +60,8 @@ class RemoteAccessManager:
         self.mass = webserver.mass
         self.logger = webserver.logger.getChild("remote_access")
         self.gateway: WebRTCGateway | None = None
-        self._remote_id: str | None = None
+        self._remote_id: str
+        self._certificate: RTCCertificate
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
         self._starting: bool = False  # Prevents concurrent gateway starts
@@ -67,16 +69,13 @@ class RemoteAccessManager:
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
+        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
+
+        self._remote_id = get_remote_id_from_certificate(self._certificate)
+        self.logger.info("WebRTC certificate remote_id: %s", self._remote_id)
+
         enabled_value = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", False)
         self._enabled = bool(enabled_value)
-        remote_id_value = self.mass.config.get(
-            f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_REMOTE_ID}", None
-        )
-        if not remote_id_value:
-            remote_id_value = generate_remote_id()
-            self.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_REMOTE_ID}", remote_id_value)
-
-        self._remote_id = str(remote_id_value)
         self._register_api_commands()
         self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED)
         if self._enabled:
@@ -123,9 +122,10 @@ class RemoteAccessManager:
 
             self.gateway = WebRTCGateway(
                 http_session=self.mass.http_session,
+                remote_id=self._remote_id,
+                certificate=self._certificate,
                 signaling_url=SIGNALING_SERVER_URL,
                 local_ws_url=local_ws_url,
-                remote_id=self._remote_id,
                 ice_servers=ice_servers,
                 # Pass callback to get fresh ICE servers for each client connection
                 # This ensures TURN credentials are always valid
@@ -236,9 +236,14 @@ class RemoteAccessManager:
         return self.gateway is not None and self.gateway.is_connected
 
     @property
-    def remote_id(self) -> str | None:
+    def remote_id(self) -> str:
         """Return the current Remote ID."""
         return self._remote_id
+
+    @property
+    def certificate(self) -> RTCCertificate:
+        """Return the persistent WebRTC DTLS certificate."""
+        return self._certificate
 
     def _register_api_commands(self) -> None:
         """Register API commands for remote access."""
@@ -249,7 +254,7 @@ class RemoteAccessManager:
                 enabled=self.is_enabled,
                 running=self.is_running,
                 connected=self.is_connected,
-                remote_id=self._remote_id or "",
+                remote_id=self._remote_id,
                 using_ha_cloud=self._using_ha_cloud,
                 signaling_url=SIGNALING_SERVER_URL,
             )

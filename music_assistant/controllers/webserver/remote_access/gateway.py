@@ -11,31 +11,25 @@ import asyncio
 import contextlib
 import json
 import logging
-import secrets
-import string
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
+
+if TYPE_CHECKING:
+    from aiortc.rtcdtlstransport import RTCCertificate
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
 # Reduce verbose logging from aiortc/aioice
 logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
-
-
-def generate_remote_id() -> str:
-    """Generate a unique Remote ID in the format MA-XXXX-XXXX."""
-    chars = string.ascii_uppercase + string.digits
-    part1 = "".join(secrets.choice(chars) for _ in range(4))
-    part2 = "".join(secrets.choice(chars) for _ in range(4))
-    return f"MA-{part1}-{part2}"
 
 
 @dataclass
@@ -72,19 +66,21 @@ class WebRTCGateway:
     def __init__(
         self,
         http_session: aiohttp.ClientSession,
+        remote_id: str,
+        certificate: RTCCertificate,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
-        remote_id: str | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
         """Initialize the WebRTC Gateway.
 
         :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
+        :param remote_id: Remote ID for this server instance.
+        :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
-        :param remote_id: Optional Remote ID to use (generated if not provided).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
             If provided, this will be called for each client connection to get fresh TURN
             credentials. If not provided, the static ice_servers will be used.
@@ -92,7 +88,8 @@ class WebRTCGateway:
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
-        self.remote_id = remote_id or generate_remote_id()
+        self._remote_id = remote_id
+        self._certificate = certificate
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
 
@@ -271,7 +268,7 @@ class WebRTCGateway:
             await self._signaling_ws.send_json(
                 {
                     "type": "register-server",
-                    "remoteId": self.remote_id,
+                    "remoteId": self._remote_id,
                     "iceServers": self.ice_servers,
                 }
             )
@@ -332,7 +329,7 @@ class WebRTCGateway:
         config = RTCConfiguration(
             iceServers=[RTCIceServer(**server) for server in session_ice_servers]
         )
-        pc = RTCPeerConnection(configuration=config)
+        pc = create_peer_connection_with_certificate(self._certificate, configuration=config)
         session = WebRTCSession(session_id=session_id, peer_connection=pc)
         self.sessions[session_id] = session
 

@@ -16,6 +16,7 @@ from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEve
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -156,9 +157,10 @@ class SendspinProvider(PlayerProvider):
             len(ice_servers),
         )
 
-        # Create peer connection with ICE servers
+        # Create peer connection with ICE servers and persistent certificate
         config = RTCConfiguration(iceServers=[RTCIceServer(**server) for server in ice_servers])
-        pc = RTCPeerConnection(configuration=config)
+        certificate = self.mass.webserver.remote_access.certificate
+        pc = create_peer_connection_with_certificate(certificate, configuration=config)
 
         session = SendspinWebRTCSession(
             session_id=session_id,
