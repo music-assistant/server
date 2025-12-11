@@ -339,7 +339,9 @@ class SendspinPlayer(Player):
                         if len(group_members) > 0 and (
                             new_leader := self.mass.players.get(group_members[0])
                         ):
+                            new_leader = cast("SendspinPlayer", new_leader)
                             new_leader._attr_group_members = group_members[1:]
+                            new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
                             new_leader.update_state()
                     self.update_state()
                 elif client_id in self._attr_group_members:
