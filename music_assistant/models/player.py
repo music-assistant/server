@@ -46,6 +46,7 @@ from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -1300,6 +1301,13 @@ class Player(ABC):
 
     def __calculate_current_media(self) -> PlayerMedia | None:
         """Calculate the current media for the player."""
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # if an announcement is in progress, return announcement details
+            return PlayerMedia(
+                uri="announcement",
+                media_type=MediaType.ANNOUNCEMENT,
+                title="ANNOUNCEMENT",
+            )
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):

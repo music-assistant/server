@@ -196,7 +196,6 @@ class RaopStream(AirPlayProtocol):
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)  # Yield to event loop
 
-        # ensure we're cleaned up afterwards (this also logs the returncode)
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
-            await self.stop()
+            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)

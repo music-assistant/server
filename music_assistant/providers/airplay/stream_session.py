@@ -362,9 +362,6 @@ class AirPlayStreamSession:
             await ffmpeg.write_eof()
             await ffmpeg.wait_with_timeout(30)
             del ffmpeg
-        assert airplay_player.stream  # for type checker
-        # then stop the player stream
-        await airplay_player.stream.stop()
 
     async def _send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
         """Send metadata to all players."""
