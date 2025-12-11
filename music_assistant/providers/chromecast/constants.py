@@ -18,6 +18,7 @@ SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 CONF_USE_SENDSPIN_MODE = "use_sendspin_mode"
 CONF_SENDSPIN_SYNC_DELAY = "sendspin_sync_delay"
+CONF_SENDSPIN_CODEC = "sendspin_codec"
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,

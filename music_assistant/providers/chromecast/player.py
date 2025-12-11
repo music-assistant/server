@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -39,6 +39,7 @@ from .constants import (
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
+    CONF_SENDSPIN_CODEC,
     CONF_SENDSPIN_SYNC_DELAY,
     CONF_USE_MASS_APP,
     CONF_USE_SENDSPIN_MODE,
@@ -266,6 +267,25 @@ class ChromecastPlayer(Player):
             hidden=not sendspin_available or self.type == PlayerType.GROUP,
         )
 
+        # Codec config entry (only visible when sendspin provider is available)
+        sendspin_codec_config = ConfigEntry(
+            key=CONF_SENDSPIN_CODEC,
+            type=ConfigEntryType.STRING,
+            label="Sendspin audio codec",
+            description="Audio codec used for the experimental Sendspin mode. "
+            "FLAC offers good compression with lossless quality. "
+            "Opus provides better compression but may have compatibility issues."
+            "PCM is uncompressed and uses more bandwidth.",
+            required=False,
+            default_value="flac",
+            options=[
+                ConfigValueOption("FLAC", "flac"),
+                ConfigValueOption("Opus", "opus"),
+                ConfigValueOption("PCM", "pcm"),
+            ],
+            hidden=not sendspin_available or self.type == PlayerType.GROUP,
+        )
+
         if self.type == PlayerType.GROUP:
             return [
                 *base_entries,
@@ -279,6 +299,7 @@ class ChromecastPlayer(Player):
             CONF_ENTRY_SAMPLE_RATES_CAST,
             sendspin_config,
             sendspin_sync_delay_config,
+            sendspin_codec_config,
         ]
 
     async def stop(self) -> None:
@@ -812,9 +833,16 @@ class ChromecastPlayer(Player):
                 self.player_id, CONF_SENDSPIN_SYNC_DELAY, -350
             )
         )
+        # Get codec from config (default to flac)
+        codec = str(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_SENDSPIN_CODEC, "flac"
+            )
+        )
+        codecs = [codec]
 
         def send_message() -> None:
-            # Send custom message to receiver with server URL, player ID, name, sync delay
+            # Send custom message to receiver with server URL, player ID, name, sync delay, codecs
             self.cc.socket_client.send_app_message(
                 SENDSPIN_CAST_NAMESPACE,
                 {
@@ -822,14 +850,16 @@ class ChromecastPlayer(Player):
                     "playerId": self.sendspin_player_id,
                     "playerName": player_name,
                     "syncDelay": sync_delay,
+                    "codecs": codecs,
                 },
             )
 
         self.logger.debug(
-            "Sending Sendspin config to Cast receiver: url=%s, name=%s, syncDelay=%dms",
+            "Sending Sendspin config to Cast receiver: url=%s, name=%s, syncDelay=%dms, codecs=%s",
             server_url,
             player_name,
             sync_delay,
+            codecs,
         )
         await self.mass.loop.run_in_executor(None, send_message)
         self._last_sent_sync_delay = sync_delay
