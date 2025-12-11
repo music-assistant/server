@@ -358,9 +358,7 @@ class ChromecastPlayer(Player):
                     else:
                         self.logger.warning("Sendspin player did not connect, but app is running.")
                 else:
-                    # Fall back to standard app
-                    self.logger.warning("Sendspin app launch failed, falling back to standard app.")
-                    await self._launch_app()
+                    raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
             else:
                 await self._launch_app()
             self._attr_active_source = self.player_id
@@ -902,11 +900,7 @@ class ChromecastPlayer(Player):
         # Sendspin player not connected yet - launch app and connect
         launch_success = await self._launch_sendspin_app()
         if not launch_success:
-            self.logger.error(
-                "Failed to launch Sendspin Cast App, falling back to standard playback"
-            )
-            await self._fallback_to_standard_playback(media)
-            return
+            raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
 
         # Give the app a moment to initialize
         await asyncio.sleep(1)
@@ -915,22 +909,8 @@ class ChromecastPlayer(Player):
         # Wait for the Sendspin player to connect
         sendspin_player = await self._wait_for_sendspin_player()
         if not sendspin_player:
-            self.logger.error(
-                "Failed to establish Sendspin connection, falling back to standard playback"
-            )
-            await self._fallback_to_standard_playback(media)
-            return
+            raise PlayerUnavailableError("Failed to establish Sendspin connection")
 
         # Redirect playback to the Sendspin player
         self.logger.info("Starting playback on Sendspin player %s", sendspin_player.player_id)
         await self.mass.players.play_media(sendspin_player.player_id, media)
-
-    async def _fallback_to_standard_playback(self, media: PlayerMedia) -> None:
-        """Fall back to standard Chromecast playback when Sendspin fails."""
-        await self._launch_app()
-        queuedata = {
-            "type": "LOAD",
-            "media": self._create_cc_media_item(media),
-        }
-        media_controller = self.cc.media_controller
-        await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
