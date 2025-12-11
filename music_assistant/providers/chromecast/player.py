@@ -274,14 +274,14 @@ class ChromecastPlayer(Player):
             label="Sendspin audio codec",
             description="Audio codec used for the experimental Sendspin mode. "
             "FLAC offers good compression with lossless quality. "
-            "Opus provides better compression but may have compatibility issues."
+            "Opus provides better compression but may have compatibility issues. "
             "PCM is uncompressed and uses more bandwidth.",
             required=False,
             default_value="flac",
             options=[
-                ConfigValueOption("FLAC", "flac"),
-                ConfigValueOption("Opus", "opus"),
-                ConfigValueOption("PCM", "pcm"),
+                ConfigValueOption("FLAC (lossless, compressed)", "flac"),
+                ConfigValueOption("Opus (lossy, experimental)", "opus"),
+                ConfigValueOption("PCM (lossless, uncompressed)", "pcm"),
             ],
             hidden=not sendspin_available or self.type == PlayerType.GROUP,
         )
