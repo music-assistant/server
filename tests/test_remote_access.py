@@ -3,14 +3,19 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from aiortc import RTCConfiguration, RTCPeerConnection
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
+from aiortc.rtcdtlstransport import RTCCertificate
 
 from music_assistant.controllers.webserver.remote_access import RemoteAccessInfo
 from music_assistant.controllers.webserver.remote_access.gateway import (
     WebRTCGateway,
     WebRTCSession,
 )
-from music_assistant.helpers.webrtc_certificate import get_remote_id_from_certificate
+from music_assistant.helpers.webrtc_certificate import (
+    _generate_certificate,
+    create_peer_connection_with_certificate,
+    get_remote_id_from_certificate,
+)
 
 
 @pytest.fixture
@@ -356,3 +361,33 @@ async def test_webrtc_gateway_handle_ice_candidate_without_session(mock_certific
     await gateway._handle_ice_candidate("nonexistent-session", candidate_data)
 
     # Should not crash
+
+
+async def test_create_peer_connection_with_certificate() -> None:
+    """Test that create_peer_connection_with_certificate correctly sets the custom certificate.
+
+    This verifies the fragile name-mangled private attribute access works correctly
+    and that our custom certificate fully replaces the auto-generated one, which is
+    critical for DTLS pinning.
+    """
+    # First verify the name-mangled attribute exists on RTCPeerConnection.
+    # If aiortc changes its internals, this will fail and alert us to update our code.
+    pc = RTCPeerConnection()
+    try:
+        assert hasattr(pc, "_RTCPeerConnection__certificates")
+    finally:
+        await pc.close()
+
+    # Now test our function correctly sets the certificate
+    private_key, cert = _generate_certificate()
+    certificate = RTCCertificate(key=private_key, cert=cert)
+    config = RTCConfiguration(iceServers=[RTCIceServer(urls="stun:stun.example.com:3478")])
+
+    pc = create_peer_connection_with_certificate(certificate, configuration=config)
+
+    try:
+        certificates = pc._RTCPeerConnection__certificates  # type: ignore[attr-defined]
+        assert len(certificates) == 1
+        assert certificates[0] is certificate
+    finally:
+        await pc.close()
