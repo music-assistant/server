@@ -95,7 +95,7 @@ class AuthenticationManager:
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
 
-        self._has_users = await self.database.get_count("users") > 0
+        self._has_users = await self._has_non_system_users()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)

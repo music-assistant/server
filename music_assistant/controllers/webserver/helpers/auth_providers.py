@@ -49,8 +49,7 @@ async def get_ha_user_role(mass: MusicAssistant, ha_user_id: str) -> UserRole:
     try:
         hass_prov = mass.get_provider("hass")
         if hass_prov is None or not hass_prov.available:
-            LOGGER.debug("HA provider not available, returning USER role")
-            return UserRole.USER
+            raise RuntimeError("Home Assistant provider not available")
 
         hass_prov = cast("HomeAssistantProvider", hass_prov)
         # Query HA for user list to check admin status
@@ -64,7 +63,7 @@ async def get_ha_user_role(mass: MusicAssistant, ha_user_id: str) -> UserRole:
                     return UserRole.ADMIN
                 break
     except Exception as err:
-        LOGGER.debug("Failed to check HA admin status: %s", err)
+        LOGGER.error("Failed to check HA admin status: %s", err)
 
     return UserRole.USER
 

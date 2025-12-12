@@ -52,7 +52,7 @@ from .helpers.auth_middleware import (
     is_request_from_ingress,
     set_current_user,
 )
-from .helpers.auth_providers import BuiltinLoginProvider
+from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
 from .websocket_client import WebsocketClientHandler
 
@@ -598,11 +598,42 @@ class WebserverController(CoreController):
         swagger_html_path = str(RESOURCES_DIR.joinpath("swagger_ui.html"))
         return await self._server.serve_static(swagger_html_path, request)
 
+    async def _render_error_page(self, error_message: str, status: int = 403) -> web.Response:
+        """Render a user-friendly error page with the given message.
+
+        :param error_message: The error message to display to the user.
+        :param status: HTTP status code for the response.
+        """
+        error_html_path = str(RESOURCES_DIR.joinpath("error.html"))
+        async with aiofiles.open(error_html_path) as f:
+            html_content = await f.read()
+        # Replace placeholder with the actual error message (escape to prevent XSS)
+        html_content = html_content.replace("{{ERROR_MESSAGE}}", html.escape(error_message))
+        return web.Response(text=html_content, content_type="text/html", status=status)
+
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
         # If not yet onboarded, redirect to setup
-        if not self.auth.has_users and not is_request_from_ingress(request):
-            return web.Response(status=302, headers={"Location": "setup"})
+        if not self.auth.has_users or not self.mass.config.onboard_done:
+            if is_request_from_ingress(request):
+                ingress_user_id = request.headers.get("X-Remote-User-ID", "")
+                role = await get_ha_user_role(self.mass, ingress_user_id)
+                if role != UserRole.ADMIN and not self.auth.has_users:
+                    return await self._render_error_page(
+                        "Administrator permissions are required to complete the initial setup. "
+                        "Please ask a Home Assistant administrator to complete the setup first."
+                    )
+                if role != UserRole.ADMIN and not self.mass.config.onboard_done:
+                    return await self._render_error_page(
+                        "Setup is not yet complete. "
+                        "Please ask a Home Assistant administrator to complete the setup first."
+                    )
+                # NOTE: For ingress admin user,
+                # we allow access to index, user will be auto created and then forwarded to the
+                # frontend (which will take care of onboarding)
+            elif not self.auth.has_users:
+                # non ingress request, redirect to setup
+                return web.Response(status=302, headers={"Location": "setup"})
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
 
@@ -930,11 +961,11 @@ class WebserverController(CoreController):
             if not is_valid:
                 return web.Response(status=400, text="Invalid return_url")
         else:
-            return_url = "/login"
-        # check if setup is already completed
+            return_url = "/"
+
         if self.auth.has_users:
-            # Setup already completed, redirect to login (or provided return_url)
-            return web.Response(status=302, headers={"Location": return_url})
+            # this should not happen, but guard anyways
+            return await self._render_error_page("Setup has already been completed.")
 
         setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
         async with aiofiles.open(setup_html_path) as f:
