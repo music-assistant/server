@@ -804,6 +804,3 @@ class BBCSoundsProvider(MusicProvider):
                     self.logger.debug(f"Updated play status: {success}")
                 except exceptions.APIResponseError as err:
                     self.logger.error(f"Error updating play status: {err}")
-        # Cancel now playing task
-        if FEATURES["now_playing"] and not is_playing and self.current_task:
-            self.current_task.cancel()
