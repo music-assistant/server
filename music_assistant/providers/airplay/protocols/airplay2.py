@@ -160,4 +160,5 @@ class AirPlay2Stream(AirPlayProtocol):
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         if not self._stopped:
-            await self.stop()
+            self._stopped = True
+            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
