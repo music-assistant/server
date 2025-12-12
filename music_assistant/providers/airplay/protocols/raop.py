@@ -198,4 +198,5 @@ class RaopStream(AirPlayProtocol):
 
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
+            self._stopped = True
             self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
