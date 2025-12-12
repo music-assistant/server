@@ -486,14 +486,14 @@ class WebRTCGateway:
             session.forward_to_local_task = asyncio.create_task(self._forward_to_local(session))
             session.forward_from_local_task = asyncio.create_task(self._forward_from_local(session))
 
-            @channel.on("message")  # type: ignore[misc]
+            @channel.on("message")  # type: ignore[untyped-decorator]
             def on_message(message: str) -> None:
                 # Called from aiortc thread, use call_soon_threadsafe
                 # Only queue message if session is still active
                 if session.forward_to_local_task and not session.forward_to_local_task.done():
                     loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
 
-            @channel.on("close")  # type: ignore[misc]
+            @channel.on("close")  # type: ignore[untyped-decorator]
             def on_close() -> None:
                 # Called from aiortc thread, use call_soon_threadsafe to schedule task
                 asyncio.run_coroutine_threadsafe(self._close_session(session.session_id), loop)
