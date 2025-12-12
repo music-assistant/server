@@ -614,26 +614,26 @@ class WebserverController(CoreController):
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
         # If not yet onboarded, redirect to setup
-        if not self.auth.has_users or not self.mass.config.onboard_done:
-            if is_request_from_ingress(request):
-                ingress_user_id = request.headers.get("X-Remote-User-ID", "")
-                role = await get_ha_user_role(self.mass, ingress_user_id)
-                if role != UserRole.ADMIN and not self.auth.has_users:
-                    return await self._render_error_page(
-                        "Administrator permissions are required to complete the initial setup. "
-                        "Please ask a Home Assistant administrator to complete the setup first."
-                    )
-                if role != UserRole.ADMIN and not self.mass.config.onboard_done:
-                    return await self._render_error_page(
-                        "Setup is not yet complete. "
-                        "Please ask a Home Assistant administrator to complete the setup first."
-                    )
-                # NOTE: For ingress admin user,
-                # we allow access to index, user will be auto created and then forwarded to the
-                # frontend (which will take care of onboarding)
-            elif not self.auth.has_users:
-                # non ingress request, redirect to setup
-                return web.Response(status=302, headers={"Location": "setup"})
+        if (
+            not self.auth.has_users
+            and not self.mass.config.onboard_done
+            and is_request_from_ingress(request)
+        ):
+            # a non-admin user tries to access the index via HA ingress
+            # while we're not yet onboarded, prevent that as it leads to a bad UX
+            ingress_user_id = request.headers.get("X-Remote-User-ID", "")
+            role = await get_ha_user_role(self.mass, ingress_user_id)
+            if role != UserRole.ADMIN:
+                return await self._render_error_page(
+                    "Administrator permissions are required to complete the initial setup. "
+                    "Please ask a Home Assistant administrator to complete the setup first."
+                )
+            # NOTE: For ingress admin user,
+            # we allow access to index, user will be auto created and then forwarded to the
+            # frontend (which will take care of onboarding)
+        if not self.auth.has_users:
+            # non ingress request and no users yet, redirect to setup
+            return web.Response(status=302, headers={"Location": "setup"})
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
 
