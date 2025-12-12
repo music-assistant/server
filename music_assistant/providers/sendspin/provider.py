@@ -400,7 +400,7 @@ class SendspinProvider(PlayerProvider):
         loop = asyncio.get_event_loop()
 
         # Register message handler FIRST to capture any messages sent immediately
-        @channel.on("message")  # type: ignore[misc]
+        @channel.on("message")  # type: ignore[untyped-decorator]
         def on_message(message: str | bytes) -> None:
             if session.forward_task and not session.forward_task.done():
                 loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
@@ -408,7 +408,7 @@ class SendspinProvider(PlayerProvider):
                 # Queue message even if forward task not started yet
                 session.message_queue.put_nowait(message)
 
-        @channel.on("close")  # type: ignore[misc]
+        @channel.on("close")  # type: ignore[untyped-decorator]
         def on_close() -> None:
             asyncio.run_coroutine_threadsafe(self._close_webrtc_session(session.session_id), loop)
 
