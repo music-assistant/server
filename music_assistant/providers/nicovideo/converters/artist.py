@@ -44,7 +44,7 @@ class NicovideoArtistConverter(NicovideoConverterBase):
 
         artist = Artist(
             item_id=item_id,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             name=name,
             metadata=MediaItemMetadata(
                 description=owner_or_user.description
@@ -63,7 +63,7 @@ class NicovideoArtistConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=icon_url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )

@@ -338,6 +338,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     description="Duration in seconds of the standard crossfade between tracks when"
     " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
+    depends_on_value="standard_crossfade",
     category="audio",
 )
 
@@ -811,7 +812,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
@@ -823,7 +824,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_ALBUMS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
@@ -835,7 +836,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_TRACKS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
@@ -847,7 +848,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
@@ -859,7 +860,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
@@ -871,7 +872,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
@@ -883,7 +884,7 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
     default_value=720,
     category="sync_options",
     depends_on=CONF_ENTRY_LIBRARY_SYNC_RADIOS.key,
-    depends_on_value_not="no_import",
+    depends_on_value=True,
     required=True,
 )
 

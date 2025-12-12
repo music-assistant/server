@@ -46,6 +46,7 @@ from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -726,8 +727,8 @@ class Player(ABC):
     @property
     @final
     def provider_id(self) -> str:
-        """Return the provider id of the player."""
-        return self._provider.lookup_key
+        """Return the provider (instance) id of the player."""
+        return self._provider.instance_id
 
     @property
     @final
@@ -1300,6 +1301,13 @@ class Player(ABC):
 
     def __calculate_current_media(self) -> PlayerMedia | None:
         """Calculate the current media for the player."""
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # if an announcement is in progress, return announcement details
+            return PlayerMedia(
+                uri="announcement",
+                media_type=MediaType.ANNOUNCEMENT,
+                title="ANNOUNCEMENT",
+            )
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
@@ -1332,7 +1340,7 @@ class Player(ABC):
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
-                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="png")
+                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="jpeg")
                 if current_item.image
                 else None
             )

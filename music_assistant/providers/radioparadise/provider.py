@@ -65,7 +65,7 @@ class RadioParadiseProvider(MusicProvider):
 
         stream_details = StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=content_type,
                 channels=2,
@@ -112,7 +112,7 @@ class RadioParadiseProvider(MusicProvider):
 
     def _parse_radio(self, channel_id: str) -> Radio:
         """Create a Radio object from cached channel information."""
-        return parsers.parse_radio(channel_id, self.lookup_key, self.domain, self.instance_id)
+        return parsers.parse_radio(channel_id, self.instance_id, self.domain)
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
         """Get current track and upcoming tracks from Radio Paradise's block API.

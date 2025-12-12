@@ -117,12 +117,38 @@ class ConfigController:
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
+        if not self.onboard_done:
+            self.mass.register_api_command(
+                "config/onboard_complete",
+                self.set_onboard_complete,
+                authenticated=True,
+                alias=True,  # hide from public API docs
+            )
         LOGGER.debug("Started.")
 
     @property
     def onboard_done(self) -> bool:
         """Return True if onboarding is done."""
         return bool(self.get(CONF_ONBOARD_DONE, False))
+
+    async def set_onboard_complete(self) -> None:
+        """
+        Mark onboarding as complete.
+
+        This is called by the frontend after the user has completed the onboarding wizard.
+        Only available when onboarding is not yet complete.
+        """
+        if self.onboard_done:
+            msg = "Onboarding already completed"
+            raise InvalidDataError(msg)
+
+        self.set(CONF_ONBOARD_DONE, True)
+        self.save(immediate=True)
+        LOGGER.info("Onboarding completed")
+
+        # (re)Announce to Home Assistant if running as addon
+        if self.mass.running_as_hass_addon:
+            await self.mass.webserver._announce_to_homeassistant()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -496,7 +522,7 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
-                raw_conf["provider"] = player.provider.lookup_key
+                raw_conf["provider"] = player.provider.instance_id
                 # pass action and values to get_config_entries
                 if values is None:
                     values = raw_conf.get("values", {})
@@ -910,7 +936,7 @@ class ConfigController:
         )
         default_config.validate()
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
-        self.set(conf_key, default_config.to_raw())
+        self.set_default(conf_key, default_config.to_raw())
 
     @api_command("config/core", required_role="admin")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
@@ -1281,6 +1307,15 @@ class ConfigController:
             provider_config["instance_id"] = "universal_group"
             self._data[CONF_PROVIDERS]["universal_group"] = provider_config
 
+        # Migrate resonate provider to sendspin (renamed in 2.7 beta 19)
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if provider_config.get("domain") == "resonate":
+                self._data[CONF_PROVIDERS].pop(instance_id, None)
+                provider_config["domain"] = "sendspin"
+                provider_config["instance_id"] = "sendspin"
+                self._data[CONF_PROVIDERS]["sendspin"] = provider_config
+                changed = True
+
         # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
@@ -1302,21 +1337,32 @@ class ConfigController:
                 values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
-        # migrate player configs: always use lookup key for provider
-        prov_configs = self._data.get(CONF_PROVIDERS, {})
+        # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if player_config.get("provider") != "builtin_player":
+                continue
+            self._data[CONF_PLAYERS].pop(player_id, None)
+            # Also remove any DSP config for this player
+            if CONF_PLAYER_DSP in self._data:
+                self._data[CONF_PLAYER_DSP].pop(player_id, None)
+            LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
+            changed = True
+
+        # migrate player configs: always use instance_id for provider
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if "provider" not in player_config:
                 continue
             player_provider = player_config["provider"]
-            if prov_conf := prov_configs.get(player_provider):
-                if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
+            try:
+                if not (prov := self.mass.get_provider(player_provider)):
                     continue
-                if prov_manifest.multi_instance:
-                    # multi instance providers use instance_id as lookup key
-                    continue
-                # single instance providers use domain as lookup key
-                player_config["provider"] = prov_conf["domain"]
-                changed = True
+            except KeyError:
+                # removed provider
+                continue
+            if player_config["provider"] == prov.instance_id:
+                continue
+            player_config["provider"] = prov.instance_id
+            changed = True
 
         if changed:
             await self._async_save()
@@ -1444,4 +1490,10 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
+        if not self.onboard_done:
+            # mark onboard as complete as soon as the first provider is added
+            await self.set_onboard_complete()
+        if manifest.type == ProviderType.MUSIC:
+            # correct any multi-instance provider mappings
+            self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
         return config

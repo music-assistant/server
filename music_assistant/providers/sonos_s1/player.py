@@ -85,7 +85,7 @@ class SonosPlayer(Player):
         self._attr_needs_poll = True
         self._attr_poll_interval = 5
         self._attr_available = True
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
 
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
@@ -708,7 +708,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all(provider_filter=_provider.lookup_key):
+        if players := self.mass.players.all(provider_filter=_provider.instance_id):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 

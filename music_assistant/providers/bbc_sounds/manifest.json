@@ -7,6 +7,7 @@
   "codeowners": [
     "@kieranhogg"
   ],
+  "credits": ["[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"],
   "requirements": [
     "auntie-sounds==1.1.4",
     "pytz==2025.2"

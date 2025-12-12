@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import shutil
+import time
 from collections.abc import Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -35,6 +36,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
+    ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -94,9 +96,12 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 22
+DB_SCHEMA_VERSION: Final[int] = 23
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
+CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
+LAST_PROVIDER_INSTANCE_SCAN: Final[str] = "last_provider_instance_scan"
+PROVIDER_INSTANCE_SCAN_INTERVAL: Final[int] = 30 * 24 * 60 * 60  # one month in seconds
 
 
 class MusicController(CoreController):
@@ -174,6 +179,10 @@ class MusicController(CoreController):
             self.domain, CONF_DELETED_PROVIDERS, []
         ):
             await self.cleanup_provider(removed_provider)
+        # schedule cleanup task for matching provider instances
+        last_scan = cast("int", self.config.get_value(LAST_PROVIDER_INSTANCE_SCAN, 0))
+        if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
+            self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -247,6 +256,14 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        # use a (short-lived) cache to avoid repeated searches
+        cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}"  # noqa: E501
+        if user := get_current_user():
+            cache_key += user.user_id
+        if cache := await self.mass.cache.get(
+            key=cache_key, provider=self.domain, category=CACHE_CATEGORY_SEARCH_RESULTS
+        ):
+            return cache
         if not media_types:
             media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
@@ -260,6 +277,7 @@ class MusicController(CoreController):
             self.logger.warning("%s", str(err))
             return SearchResults()
         else:
+            # handle special case of direct shareable url search
             if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
                 try:
                     item = await self.get_item(
@@ -285,67 +303,87 @@ class MusicController(CoreController):
                         return SearchResults(podcasts=[item])
                     else:
                         return SearchResults()
-
-        # include results from library +  all (unique) music providers
-        search_providers = [] if library_only else self.get_unique_providers()
-        results_per_provider: list[SearchResults] = await asyncio.gather(
-            self.search_library(search_query, media_types, limit=limit),
-            *[
-                self.search_provider(
-                    search_query,
-                    provider_instance,
-                    media_types,
-                    limit=limit,
+        # handle normal global search by querying all providers
+        results_per_provider: list[SearchResults] = []
+        # always first search the library
+        library_results = await self.search_library(search_query, media_types, limit=limit)
+        results_per_provider.append(library_results)
+        if not library_only:
+            # create a set of all provider item ids already in library
+            # this way we can avoid returning duplicates in the search results
+            all_prov_item_ids = {
+                (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
+                for result in (
+                    library_results.artists,
+                    library_results.albums,
+                    library_results.tracks,
+                    library_results.playlists,
+                    library_results.audiobooks,
+                    library_results.podcasts,
                 )
-                for provider_instance in search_providers
-            ],
-        )
-        # return result from all providers while keeping index
-        # so the result is sorted as each provider delivered
-        result = SearchResults(
-            artists=[
-                item
-                for sublist in zip_longest(*[x.artists for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            albums=[
-                item
-                for sublist in zip_longest(*[x.albums for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            tracks=[
-                item
-                for sublist in zip_longest(*[x.tracks for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            playlists=[
-                item
-                for sublist in zip_longest(*[x.playlists for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            radio=[
-                item
-                for sublist in zip_longest(*[x.radio for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            audiobooks=[
-                item
-                for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-            podcasts=[
-                item
-                for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-        )
+                for item in result
+                for prov_mapping in item.provider_mappings
+            }
+            # include results from library + all (unique) music providers
+            search_providers = self.get_unique_providers()
+            results_per_provider += await asyncio.gather(
+                *[
+                    self._search_provider(
+                        search_query,
+                        provider_instance,
+                        media_types,
+                        limit=limit,
+                        skip_item_ids=all_prov_item_ids,
+                    )
+                    for provider_instance in search_providers
+                ],
+            )
+            # return result from all providers while keeping index
+            # so the result is sorted as each provider delivered
+            result = SearchResults(
+                artists=[
+                    item
+                    for sublist in zip_longest(*[x.artists for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                albums=[
+                    item
+                    for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                tracks=[
+                    item
+                    for sublist in zip_longest(*[x.tracks for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                playlists=[
+                    item
+                    for sublist in zip_longest(*[x.playlists for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                radio=[
+                    item
+                    for sublist in zip_longest(*[x.radio for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                audiobooks=[
+                    item
+                    for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+                podcasts=[
+                    item
+                    for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+            )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
@@ -357,14 +395,22 @@ class MusicController(CoreController):
         result.radio = self._sort_search_result(search_query, result.radio)
         result.audiobooks = self._sort_search_result(search_query, result.audiobooks)
         result.podcasts = self._sort_search_result(search_query, result.podcasts)
+        await self.mass.cache.set(
+            key=cache_key,
+            data=result,
+            expiration=300,
+            provider=self.domain,
+            category=CACHE_CATEGORY_SEARCH_RESULTS,
+        )
         return result
 
-    async def search_provider(
+    async def _search_provider(
         self,
         search_query: str,
         provider_instance_id_or_domain: str,
         media_types: list[MediaType],
         limit: int = 10,
+        skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
     ) -> SearchResults:
         """Perform search on given provider.
 
@@ -382,11 +428,44 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-        return await prov.search(
+        prov_search_results = await prov.search(
             search_query,
             media_types,
             limit,
         )
+        if skip_item_ids:
+            # filter out items already in skip_item_ids
+            prov_search_results.artists = [
+                item
+                for item in prov_search_results.artists
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+            prov_search_results.albums = [
+                item
+                for item in prov_search_results.albums
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+            prov_search_results.tracks = [
+                item
+                for item in prov_search_results.tracks
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+            prov_search_results.playlists = [
+                item
+                for item in prov_search_results.playlists
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+            prov_search_results.audiobooks = [
+                item
+                for item in prov_search_results.audiobooks
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+            prov_search_results.podcasts = [
+                item
+                for item in prov_search_results.podcasts
+                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
+            ]
+        return prov_search_results
 
     async def search_library(
         self,
@@ -474,7 +553,7 @@ class MusicController(CoreController):
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
-        available_providers = ("library", *get_global_cache_value("unique_providers", []))
+        available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -521,7 +600,7 @@ class MusicController(CoreController):
         self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        available_providers = ("library", *get_global_cache_value("unique_providers", []))
+        available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -772,7 +851,7 @@ class MusicController(CoreController):
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
         library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
-        # perform full metadata scan (and provider match)
+        # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
@@ -786,7 +865,7 @@ class MusicController(CoreController):
                 tg.create_task(self.refresh_item(media_item))
 
     @api_command("music/refresh_item")
-    async def refresh_item(
+    async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
     ) -> MediaItemType | None:
@@ -867,7 +946,7 @@ class MusicController(CoreController):
                         await self.mass.music.tracks.update_item_in_library(
                             album_track.item_id, prov_track
                         )
-
+        await ctrl.match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
@@ -885,10 +964,12 @@ class MusicController(CoreController):
         if loudness in (None, inf, -inf):
             # skip invalid values
             return
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         values = {
             "item_id": item_id,
             "media_type": media_type.value,
-            "provider": provider.lookup_key,
+            "provider": prov_key,
             "loudness": loudness,
         }
         if album_loudness not in (None, inf, -inf):
@@ -914,10 +995,12 @@ class MusicController(CoreController):
             return
         beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
         downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         values = {
             "fragment": analysis.fragment.value,
             "item_id": item_id,
-            "provider": provider.lookup_key,
+            "provider": prov_key,
             "bpm": analysis.bpm,
             "beats": beats_json,
             "downbeats": downbeats_json,
@@ -935,11 +1018,13 @@ class MusicController(CoreController):
         """Get Smart Fades BPM analysis for a track from db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         db_row = await self.database.get_row(
             DB_TABLE_SMART_FADES_ANALYSIS,
             {
                 "item_id": item_id,
-                "provider": provider.lookup_key,
+                "provider": prov_key,
                 "fragment": fragment.value,
             },
         )
@@ -965,12 +1050,14 @@ class MusicController(CoreController):
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         db_row = await self.database.get_row(
             DB_TABLE_LOUDNESS_MEASUREMENTS,
             {
                 "item_id": item_id,
                 "media_type": media_type.value,
-                "provider": provider.lookup_key,
+                "provider": prov_key,
             },
         )
         if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
@@ -1207,18 +1294,18 @@ class MusicController(CoreController):
 
         # Try to get position from providers
         for prov_mapping in media_item.provider_mappings:
-            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
+            if not (
+                provider := self.mass.get_provider(
+                    prov_mapping.provider_instance, provider_type=MusicProvider
+                )
+            ):
                 continue
-            # Type guard: ensure this is a MusicProvider with get_resume_position method
-            if isinstance(provider, MusicProvider):
-                with suppress(NotImplementedError):
-                    (
-                        provider_fully_played,
-                        provider_position_ms,
-                    ) = await provider.get_resume_position(
-                        prov_mapping.item_id, media_item.media_type
-                    )
-                    break  # Use first provider that returns data
+            with suppress(NotImplementedError):
+                (
+                    provider_fully_played,
+                    provider_position_ms,
+                ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
         ma_fully_played = False
@@ -1273,20 +1360,39 @@ class MusicController(CoreController):
             return self.genres
         raise NotImplementedError
 
+    def get_provider_instances(
+        self, domain: str, return_unavailable: bool = False
+    ) -> list[MusicProvider]:
+        """Return all provider instances for a given domain."""
+        return [
+            prov
+            # don't use self.providers here as that applies user filters
+            for prov in self.mass.providers
+            if isinstance(prov, MusicProvider)
+            and prov.domain == domain
+            and (return_unavailable or prov.available)
+        ]
+
     def get_unique_providers(self) -> set[str]:
         """
-        Return all unique MusicProvider instance ids.
+        Return all unique MusicProvider (instance or domain) ids.
 
-        This will return all filebased instances but only one instance
-        for streaming providers.
+        This will return a set of provider instance ids but will only return
+        a single instance_id per streaming provider domain.
         """
-        instances = set()
-        domains = set()
+        processed_domains: set[str] = set()
+        # Get user provider filter if set
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        result: set[str] = set()
         for provider in self.providers:
-            if provider.domain not in domains or not provider.is_streaming_provider:
-                instances.add(provider.instance_id)
-                domains.add(provider.domain)
-        return instances
+            if provider.is_streaming_provider and provider.domain in processed_domains:
+                continue
+            if user_provider_filter and provider.instance_id not in user_provider_filter:
+                continue
+            result.add(provider.instance_id)
+            processed_domains.add(provider.domain)
+        return result
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
@@ -1402,6 +1508,75 @@ class MusicController(CoreController):
         for sync_task in self.in_progress_syncs:
             if sync_task.provider_instance == provider_instance_id:
                 sync_task.task.cancel()
+
+    def match_provider_instances(
+        self,
+        item: MediaItemType,
+    ) -> bool:
+        """Match all provider instances for the given item."""
+        mappings_added = False
+        for provider_mapping in list(item.provider_mappings):
+            if provider_mapping.is_unique:
+                # unique mapping, no need to map
+                continue
+            if not (provider := self.mass.get_provider(provider_mapping.provider_instance)):
+                continue
+            if not provider.is_streaming_provider:
+                continue
+            provider_instances = self.get_provider_instances(
+                provider.domain, return_unavailable=True
+            )
+            if len(provider_instances) <= 1:
+                # only a single instance, no need to map
+                continue
+            for prov_instance in provider_instances:
+                if prov_instance.instance_id == provider.instance_id:
+                    continue
+                if any(
+                    pm.provider_instance == prov_instance.instance_id
+                    for pm in item.provider_mappings
+                ):
+                    # mapping already exists
+                    continue
+                # create additional mapping for other provider instances of the same provider
+                item.provider_mappings.add(
+                    ProviderMapping(
+                        item_id=provider_mapping.item_id,
+                        provider_domain=provider.domain,
+                        provider_instance=prov_instance.instance_id,
+                        available=provider_mapping.available,
+                        is_unique=provider_mapping.is_unique,
+                        audio_format=provider_mapping.audio_format,
+                        url=provider_mapping.url,
+                        details=provider_mapping.details,
+                        in_library=None,
+                    )
+                )
+                mappings_added = True
+        return mappings_added
+
+    @api_command("music/add_provider_mapping")
+    async def add_provider_mapping(
+        self, media_type: MediaType, db_id: str, mapping: ProviderMapping
+    ) -> None:
+        """Add provider mapping to the given library item."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.add_provider_mappings(db_id, [mapping])
+
+    @api_command("music/remove_provider_mapping")
+    async def remove_provider_mapping(
+        self, media_type: MediaType, db_id: str, mapping: ProviderMapping
+    ) -> None:
+        """Remove provider mapping from the given library item."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
+
+    @api_command("music/match_providers")
+    async def match_providers(self, media_type: MediaType, db_id: str) -> None:
+        """Search for mappings on all providers for the given library item."""
+        ctrl = self.get_controller(media_type)
+        db_item = await ctrl.get_library_item(db_id)
+        await ctrl.match_providers(db_item)
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""
@@ -1739,7 +1914,7 @@ class MusicController(CoreController):
         else:
             self.logger.debug("Compacting database done")
 
-    async def __migrate_database(self, prev_version: int) -> None:
+    async def __migrate_database(self, prev_version: int) -> None:  # noqa: PLR0915
         """Perform a database migration."""
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
@@ -1870,6 +2045,16 @@ class MusicController(CoreController):
             except Exception as err:
                 # If we can't create the index due to duplicate entries, log and continue
                 self.logger.warning("Could not create unique index on playlog: %s", err)
+
+        if prev_version <= 23:
+            # add is_unique column to provider_mappings table
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN is_unique BOOLEAN"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
 
         # save changes
         await self._database.commit()
@@ -2065,6 +2250,7 @@ class MusicController(CoreController):
             [provider_item_id] TEXT NOT NULL,
             [available] BOOLEAN NOT NULL DEFAULT 1,
             [in_library] BOOLEAN NOT NULL DEFAULT 0,
+            [is_unique] BOOLEAN,
             [url] text,
             [audio_format] json,
             [details] TEXT,
@@ -2257,3 +2443,30 @@ class MusicController(CoreController):
                 """
             )
         await self.database.commit()
+
+    async def correct_multi_instance_provider_mappings(self) -> None:
+        """Correct provider mappings for multi-instance providers."""
+        self.logger.debug("Correcting provider mappings for multi-instance providers...")
+        multi_instance_providers: set[str] = set()
+        for provider in self.providers:
+            if len(self.get_provider_instances(provider.domain)) > 1:
+                multi_instance_providers.add(provider.instance_id)
+        if not multi_instance_providers:
+            return  # no multi-instance providers found, nothing to do
+
+        for ctrl in (
+            self.albums,
+            self.artists,
+            self.tracks,
+            self.playlists,
+            self.radio,
+            self.audiobooks,
+            self.podcasts,
+        ):
+            async for db_item in ctrl.iter_library_items(provider=list(multi_instance_providers)):
+                if self.match_provider_instances(db_item):
+                    await ctrl.update_item_in_library(db_item.item_id, db_item)
+        self.mass.config.set_raw_core_config_value(
+            self.domain, LAST_PROVIDER_INSTANCE_SCAN, int(time.time())
+        )
+        self.logger.debug("Provider mappings correction done")

@@ -242,7 +242,7 @@ async def test_get_item_mapping(provider: TidalProvider) -> None:
 
     assert mapping.media_type == MediaType.ARTIST
     assert mapping.item_id == "123"
-    assert mapping.provider == provider.lookup_key
+    assert mapping.provider == provider.instance_id
     assert mapping.name == "Test Artist"
 
 

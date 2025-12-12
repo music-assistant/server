@@ -876,9 +876,6 @@ class PlayerQueuesController(CoreController):
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
-        prefer_flow_mode = await self.mass.config.get_player_config_value(
-            queue_id, CONF_FLOW_MODE, return_type=bool
-        )
         target_player = self.mass.players.get(queue_id)
         if target_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -898,8 +895,6 @@ class PlayerQueuesController(CoreController):
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
         async def _play_index(index: int, debounce: bool) -> None:
-            if debounce:
-                await asyncio.sleep(0.25)
             for attempt in range(5):
                 try:
                     queue_item = self.get_item(queue_id, index)
@@ -933,6 +928,10 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
+            # work out if we need to use flow mode
+            prefer_flow_mode = await self.mass.config.get_player_config_value(
+                queue_id, CONF_FLOW_MODE, default=False
+            )
             flow_mode = (
                 prefer_flow_mode or not enqueue_supported
             ) and queue_item.media_type not in (
@@ -940,27 +939,35 @@ class PlayerQueuesController(CoreController):
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
             )
-            if debounce:
-                await asyncio.sleep(0.25)
+            await asyncio.sleep(0.5 if debounce else 0.1)
             queue.flow_mode = flow_mode
             await self.mass.players.play_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(queue_item, flow_mode),
             )
+            queue.current_index = index
+            queue.current_item = queue_item
             await asyncio.sleep(2)
             self._transitioning_players.discard(queue_id)
 
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._transitioning_players.add(queue_id)
+
+        # we debounce the play_index command to handle the case where someone
+        # is spamming next/previous on the player
+        task_id = f"play_index_{queue_id}"
+        if existing_task := self.mass.get_task(task_id):
+            existing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await existing_task
         task = self.mass.create_task(
             _play_index,
             index,
             debounce,
-            task_id=f"play_media_{queue_id}",
-            abort_existing=True,
+            task_id=task_id,
         )
-        self.signal_update(queue_id)
         await task
+        self.signal_update(queue_id)
 
     @api_command("player_queues/transfer")
     async def transfer_queue(
@@ -1427,7 +1434,12 @@ class PlayerQueuesController(CoreController):
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
             if queue_item.image:
-                media.image_url = self.mass.metadata.get_image_url(queue_item.image, size=512)
+                # the image format needs to be 500x500 jpeg for maximum compatibility with players
+                # we prefer the imageproxy on the streamserver here because this request is sent
+                # to the player itself which may not be able to reach the regular webserver
+                media.image_url = self.mass.metadata.get_image_url(
+                    queue_item.image, size=500, prefer_stream_server=True
+                )
         return media
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:

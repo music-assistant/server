@@ -86,9 +86,7 @@ class PodcastIndexProvider(MusicProvider):
 
         podcasts = []
         for feed_data in response.get("feeds", []):
-            podcast = parse_podcast_from_feed(
-                feed_data, self.lookup_key, self.domain, self.instance_id
-            )
+            podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
             if podcast:
                 podcasts.append(podcast)
 
@@ -218,9 +216,7 @@ class PodcastIndexProvider(MusicProvider):
             # Try by ID first
             response = await self._api_request("podcasts/byfeedid", params={"id": prov_podcast_id})
             if response.get("feed"):
-                podcast = parse_podcast_from_feed(
-                    response["feed"], self.lookup_key, self.domain, self.instance_id
-                )
+                podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
         except (ProviderUnavailableError, InvalidDataError):
@@ -272,9 +268,8 @@ class PodcastIndexProvider(MusicProvider):
                     episode_data,
                     prov_podcast_id,
                     idx,
-                    self.lookup_key,
-                    self.domain,
                     self.instance_id,
+                    self.domain,
                     podcast_name,
                 )
                 if episode:
@@ -303,7 +298,7 @@ class PodcastIndexProvider(MusicProvider):
 
             if episode_data:
                 episode = parse_episode_from_data(
-                    episode_data, podcast_id, 0, self.lookup_key, self.domain, self.instance_id
+                    episode_data, podcast_id, 0, self.instance_id, self.domain
                 )
                 if episode:
                     return episode
@@ -341,7 +336,7 @@ class PodcastIndexProvider(MusicProvider):
                 stream_url = episode_data.get("enclosureUrl")
                 if stream_url:
                     return StreamDetails(
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         item_id=item_id,
                         audio_format=AudioFormat(
                             content_type=ContentType.try_parse(
@@ -381,9 +376,7 @@ class PodcastIndexProvider(MusicProvider):
         response = await self._api_request(endpoint, params)
         podcasts = []
         for feed_data in response.get("feeds", []):
-            podcast = parse_podcast_from_feed(
-                feed_data, self.lookup_key, self.domain, self.instance_id
-            )
+            podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
             if podcast:
                 podcasts.append(podcast)
         return podcasts
@@ -444,9 +437,8 @@ class PodcastIndexProvider(MusicProvider):
                     episode_data,
                     podcast_id,
                     idx,
-                    self.lookup_key,
-                    self.domain,
                     self.instance_id,
+                    self.domain,
                     podcast_name,
                 )
                 if episode:
@@ -504,9 +496,7 @@ class PodcastIndexProvider(MusicProvider):
 
             podcasts = []
             for feed_data in search_response.get("feeds", []):
-                podcast = parse_podcast_from_feed(
-                    feed_data, self.lookup_key, self.domain, self.instance_id
-                )
+                podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
                 if podcast:
                     podcasts.append(podcast)
 

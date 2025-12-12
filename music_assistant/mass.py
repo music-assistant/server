@@ -8,7 +8,7 @@ import os
 import pathlib
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
 import aiofiles
@@ -86,6 +86,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 
 _R = TypeVar("_R")
+_ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
 
 
 def is_music_provider(provider: ProviderInstanceType) -> TypeGuard[MusicProvider]:
@@ -304,10 +305,35 @@ class MusicAssistant:
         """Return all loaded/running Providers (instances)."""
         return list(self._providers.values())
 
+    @overload
     def get_provider(
-        self, provider_instance_or_domain: str, return_unavailable: bool = False
-    ) -> ProviderInstanceType | None:
-        """Return provider by instance id or domain."""
+        self,
+        provider_instance_or_domain: str,
+        return_unavailable: bool = False,
+        provider_type: None = None,
+    ) -> ProviderInstanceType | None: ...
+
+    @overload
+    def get_provider(
+        self,
+        provider_instance_or_domain: str,
+        return_unavailable: bool = False,
+        *,
+        provider_type: type[_ProviderT],
+    ) -> _ProviderT | None: ...
+
+    def get_provider(
+        self,
+        provider_instance_or_domain: str,
+        return_unavailable: bool = False,
+        provider_type: type[_ProviderT] | None = None,
+    ) -> ProviderInstanceType | _ProviderT | None:
+        """Return provider by instance id or domain.
+
+        :param provider_instance_or_domain: Instance ID or domain of the provider.
+        :param return_unavailable: Also return unavailable providers.
+        :param provider_type: Optional type hint for the expected provider type (unused at runtime).
+        """
         # lookup by instance_id first
         if prov := self._providers.get(provider_instance_or_domain):
             if return_unavailable or prov.available:
@@ -473,13 +499,12 @@ class MusicAssistant:
         self._tracked_timers[task_id] = handle
         return handle
 
-    def get_task(self, task_id: str) -> asyncio.Task[Any]:
+    def get_task(self, task_id: str) -> asyncio.Task[Any] | None:
         """Get existing scheduled task."""
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
             return existing
-        msg = "Task does not exist"
-        raise KeyError(msg)
+        return None
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel existing scheduled task."""
@@ -519,7 +544,7 @@ class MusicAssistant:
         )
 
         def unregister() -> None:
-            self.command_handlers.pop(command)
+            self.command_handlers.pop(command, None)
 
         return unregister
 
@@ -784,6 +809,11 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_monochrome.svg")
                         if await isfile(icon_path):
                             provider_manifest.icon_svg_monochrome = await get_icon_string(icon_path)
+                    # override Home Assistant provider if we're running as add-on
+                    if provider_manifest.domain == "hass" and self.running_as_hass_addon:
+                        provider_manifest.builtin = True
+                        provider_manifest.allow_disable = False
+
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:
@@ -899,14 +929,14 @@ class MusicAssistant:
                     *{x.domain for x in self.providers},
                     *{x.instance_id for x in self.providers},
                 },
-                "unique_providers": {x.lookup_key for x in self.providers},
+                "unique_providers": self.music.get_unique_providers(),
                 "streaming_providers": {
-                    x.lookup_key
+                    x.domain
                     for x in self.providers
                     if is_music_provider(x) and x.is_streaming_provider
                 },
                 "non_streaming_providers": {
-                    x.lookup_key
+                    x.instance_id
                     for x in self.providers
                     if not (is_music_provider(x) and x.is_streaming_provider)
                 },

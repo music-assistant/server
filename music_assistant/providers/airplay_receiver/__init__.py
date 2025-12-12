@@ -115,8 +115,8 @@ class AirPlayReceiverProvider(PluginProvider):
         # Initialize named pipe helpers
         audio_pipe_path = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
         metadata_pipe_path = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
-        self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path, self.logger)
-        self.metadata_pipe = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
+        self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path)
+        self.metadata_pipe = AsyncNamedPipeWriter(metadata_pipe_path)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
         # Use port 7000+ for AirPlay 2 compatibility
         # Each instance gets a unique port: 7000, 7001, 7002, etc.
@@ -269,7 +269,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         self.logger.debug("Writing silence to audio pipe to unblock stream")
         silence = b"\x00" * 176400  # 1 second of silence in PCM_S16LE stereo 44.1kHz
-        await self.audio_pipe.write(silence, log_slow_writes=False)
+        await self.audio_pipe.write(silence)
 
     def _process_shairport_log_line(self, line: str) -> None:
         """Process a log line from shairport-sync stderr.

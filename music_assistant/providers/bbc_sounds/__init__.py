@@ -550,7 +550,7 @@ class BBCSoundsProvider(MusicProvider):
                 return item_list
             sub_menu = self.menu.get(sub_path)
 
-            if sub_menu and isinstance(sub_menu, Container):
+            if sub_menu and sub_path != "listen_live" and isinstance(sub_menu, Container):
                 if sub_menu.sub_items:
                     # We have some sub-items, so let's show those
                     for item in sub_menu.sub_items:

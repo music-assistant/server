@@ -733,8 +733,7 @@ def generate_openapi_spec(
                 "summary": "Initial server setup",
                 "description": (
                     "Handle initial setup of the Music Assistant server including creating "
-                    "the first admin user. Only accessible when no users exist "
-                    "(onboard_done=false)."
+                    "the first admin user. Only accessible when no users exist."
                 ),
                 "operationId": "setup",
                 "tags": ["Server"],

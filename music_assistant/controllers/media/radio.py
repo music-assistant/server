@@ -5,12 +5,18 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Radio, Track
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.media_items import ProviderMapping, Radio, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
-from music_assistant.helpers.compare import create_safe_string, loose_compare_strings
+from music_assistant.helpers.compare import (
+    compare_media_item,
+    compare_radio,
+    create_safe_string,
+    loose_compare_strings,
+)
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
 
@@ -126,9 +132,65 @@ class RadioController(MediaControllerBase[Radio]):
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
 
-    async def match_providers(self, db_item: Radio) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) item.
+    async def match_provider(
+        self, db_radio: Radio, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) radio.
 
         This is used to link objects of different providers/qualities together.
         """
-        raise NotImplementedError
+        self.logger.debug(
+            "Trying to match radio %s on provider %s",
+            db_radio.name,
+            provider.name,
+        )
+        matches: list[ProviderMapping] = []
+        search_str = db_radio.name
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_radio, search_result_item, strict=strict):
+                continue
+            # we must fetch the full radio version, search results can be simplified objects
+            prov_radio = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_radio(db_radio, prov_radio, strict=strict):
+                # 100% match
+                matches.extend(prov_radio.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Radio %s on provider %s",
+                db_radio.name,
+                provider.name,
+            )
+        return matches
+
+    async def match_providers(self, db_radio: Radio) -> None:
+        """Try to find match on all (streaming) providers for the provided (database) radio.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        if db_radio.provider != "library":
+            return  # Matching only supported for database items
+
+        # try to find match on all providers
+        cur_provider_domains = {x.provider_domain for x in db_radio.provider_mappings}
+        for provider in self.mass.music.providers:
+            if provider.domain in cur_provider_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not provider.library_supported(MediaType.RADIO):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(db_radio, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_radio.item_id, match)
+                cur_provider_domains.add(provider.domain)

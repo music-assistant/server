@@ -83,4 +83,4 @@ class PlayerProvider(Provider):
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
-        return self.mass.players.all(provider_filter=self.lookup_key, return_sync_groups=False)
+        return self.mass.players.all(provider_filter=self.instance_id, return_sync_groups=False)

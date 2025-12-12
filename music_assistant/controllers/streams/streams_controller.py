@@ -877,7 +877,7 @@ class StreamsController(CoreController):
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     def get_stream(
-        self, media: PlayerMedia, pcm_format: AudioFormat
+        self, media: PlayerMedia, pcm_format: AudioFormat, force_flow_mode: bool = False
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -922,7 +922,11 @@ class StreamsController(CoreController):
                 audio_source = ugp_stream.subscribe_raw()
             else:
                 audio_source = ugp_stream.get_stream(output_format=pcm_format)
-        elif media.source_id and media.queue_item_id and media.media_type == MediaType.FLOW_STREAM:
+        elif (
+            media.source_id
+            and media.queue_item_id
+            and (media.media_type == MediaType.FLOW_STREAM or force_flow_mode)
+        ):
             # regular queue (flow) stream request
             queue = self.mass.player_queues.get(media.source_id)
             assert queue
@@ -1206,37 +1210,71 @@ class StreamsController(CoreController):
         pre_announce_url: str = ANNOUNCE_ALERT_FILE,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special announcement stream."""
-        filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
+        announcement_data: asyncio.Queue[bytes | None] = asyncio.Queue(10)
+        # we are doing announcement in PCM first to avoid multiple encodings
+        # when mixing pre-announce and announcement
+        # also we have to deal with some TTS sources being super slow in delivering audio
+        # so we take an approach where we start fetching the announcement in the background
+        # while we can already start playing the pre-announce sound (if any)
 
-        if pre_announce:
-            # Note: TTS URLs might take a while to load cause the actual data are often generated
-            # asynchronously by the TTS provider. If we ask ffmpeg to mix the pre-announce, it will
-            # wait until it reads the TTS data, so the whole stream will be delayed. It is much
-            # faster to first play the pre-announce using a separate ffmpeg stream, and only
-            # afterwards play the TTS itself.
-            #
-            # For this to be effective the player itself needs to be able to start playback fast.
-            # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
-            # So far players seem to tolerate this, but it might break some player in the future.
+        pcm_format = (
+            output_format
+            if output_format.content_type.is_pcm()
+            else AudioFormat(
+                sample_rate=output_format.sample_rate,
+                content_type=ContentType.PCM_S16LE,
+                bit_depth=16,
+                channels=output_format.channels,
+            )
+        )
 
+        async def fetch_announcement() -> None:
+            fmt = announcement_url.rsplit(".")[-1]
             async for chunk in get_ffmpeg_stream(
-                audio_input=pre_announce_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
-                output_format=output_format,
-                filter_params=filter_params,
-                chunk_size=get_chunksize(output_format, 1),
+                audio_input=announcement_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                output_format=pcm_format,
+                chunk_size=get_chunksize(pcm_format, 1),
             ):
-                yield chunk
+                await announcement_data.put(chunk)
+            await announcement_data.put(None)  # signal end of stream
 
-        # work out output format/details
-        fmt = announcement_url.rsplit(".")[-1]
-        audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
+        self.mass.create_task(fetch_announcement())
+
+        async def _announcement_stream() -> AsyncGenerator[bytes, None]:
+            """Generate the PCM audio stream for the announcement + optional pre-announce."""
+            if pre_announce:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=pre_announce_url,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
+                    output_format=pcm_format,
+                    chunk_size=get_chunksize(pcm_format, 1),
+                ):
+                    yield chunk
+            # pad silence while we're waiting for the announcement to be ready
+            while announcement_data.empty():
+                yield b"\0" * int(
+                    pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
+                )
+                await asyncio.sleep(0.1)
+            # stream announcement
+            while True:
+                announcement_chunk = await announcement_data.get()
+                if announcement_chunk is None:
+                    break
+                yield announcement_chunk
+
+        if output_format == pcm_format:
+            # no need to re-encode, just yield the raw PCM stream
+            async for chunk in _announcement_stream():
+                yield chunk
+            return
+
+        # stream final announcement in requested output format
         async for chunk in get_ffmpeg_stream(
-            audio_input=announcement_url,
-            input_format=audio_format,
+            audio_input=_announcement_stream(),
+            input_format=pcm_format,
             output_format=output_format,
-            filter_params=filter_params,
-            chunk_size=get_chunksize(output_format, 1),
         ):
             yield chunk
 
@@ -1821,9 +1859,6 @@ class StreamsController(CoreController):
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
-        if content_type == ContentType.WAV and output_bit_depth > 16:
-            # WAV 24bit is not widely supported, fallback to 16bit
-            output_bit_depth = 16
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
         return AudioFormat(
