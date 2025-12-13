@@ -650,14 +650,28 @@ class MusicController(CoreController):
         return result
 
     async def get_playlog_provider_item_ids(
-        self, provider_instance_id: str, limit: int = 0
+        self, provider_instance_id: str, limit: int = 0, userid: str | None = None
     ) -> list[tuple[MediaType, str]]:
         """Return a list of MediaType and provider_item_id of items in playlog of provider."""
+        # check if there is a provider user
+        # this method is not available in the frontend, so no need to check for session users.
+        user: User | None = None
+        if userid:
+            # userid overridden by parameter
+            user = await self.mass.webserver.auth.get_user(userid)
+        elif provider_user := await self._get_user_for_provider(provider_instance_id):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
             "WHERE media_type in ('audiobook', 'podcast_episode') "
             f"AND provider in ('library','{provider_instance_id}')"
         )
+
+        if user:
+            # NOTE: if no user was found, we will return playlog items for all users
+            query += f" AND userid = '{user.user_id}'"
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
 
         result: list[tuple[MediaType, str]] = []
@@ -2517,14 +2531,17 @@ class MusicController(CoreController):
         self.logger.debug("Provider mappings correction done")
 
     async def _get_user_for_provider(
-        self, provider_mappings: Iterable[ProviderMapping]
+        self, provider_mappings_or_instance_id: Iterable[ProviderMapping] | str
     ) -> User | None:
         """Try to get the MA User based on provider mappings and provider filter."""
         all_users = await self.mass.webserver.auth.list_users()
-        for mapping in provider_mappings:
+        for mapping_or_instance_id in provider_mappings_or_instance_id:
             for user in all_users:
                 if not user.provider_filter:
                     continue
-                if mapping.provider_instance in user.provider_filter:
+                if isinstance(mapping_or_instance_id, str):
+                    if provider_mappings_or_instance_id in user.provider_filter:
+                        return user
+                elif mapping_or_instance_id.provider_instance in user.provider_filter:
                     return user
         return None
