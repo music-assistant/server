@@ -1173,19 +1173,20 @@ class MusicController(CoreController):
         Mark item as unplayed in playlog.
 
         :param media_item: The media item to mark as unplayed.
-        :param userid: The user ID to mark the item as unplayed for (instead of the current user).
+        :param userid: The user ID to mark the item as unplayed for. Required if all_users is False.
         :param all_users: If True, mark the item as unplayed for all users.
         """
-        current_user = get_current_user()
-        if userid is None:
-            userid = current_user.user_id if current_user else "system"
         params = {
             "item_id": media_item.item_id,
             "provider": media_item.provider,
             "media_type": media_item.media_type.value,
         }
         if not all_users:
-            params["userid"] = userid
+            if not userid:
+                current_user = get_current_user()
+                userid = current_user.user_id if current_user else None
+            if userid:
+                params["userid"] = userid
         await self.database.delete(DB_TABLE_PLAYLOG, params)
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
