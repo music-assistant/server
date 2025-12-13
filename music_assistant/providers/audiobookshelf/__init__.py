@@ -137,12 +137,14 @@ async def get_config_entries(
     ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
     ma_user_list = [user for user in ma_user_list if user.enabled]
     ma_current_user = get_current_user()
-    assert ma_current_user is not None  # for type checking
     user_options = [
         ConfigValueOption(title=user.display_name or user.username, value=user.user_id)
         for user in ma_user_list
         if user.enabled
     ]
+    default_playlog_user_id = (
+        str(user_options[0].value) if not ma_current_user else ma_current_user.user_id
+    )
 
     # ruff: noqa: ARG001
     return (
@@ -190,7 +192,7 @@ async def get_config_entries(
             label="Music Assistant user to sync playlog with",
             type=ConfigEntryType.STRING,
             options=user_options,
-            default_value=ma_current_user.user_id,
+            default_value=default_playlog_user_id,
             description="The abs provider will sync its playlog, i.e. resume position,"
             " finished..., with this Music Assistant user.",
         ),

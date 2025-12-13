@@ -19,7 +19,12 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    ProviderConfig,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -36,6 +41,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
@@ -67,6 +73,7 @@ CONF_URL_NC = "url_nc"
 # General config
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
+CONF_PLAYLOG_USER_ID = "playlog_user_id"
 
 
 CACHE_CATEGORY_PODCAST_ITEMS = 0  # the individual parsed podcast (dict from podcastparser)
@@ -133,6 +140,19 @@ async def get_config_entries(
         authenticated_nc = False
 
     using_gpodder = bool(values.get(CONF_USING_GPODDER, False))
+
+    # User options for playlog sync
+    ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
+    ma_user_list = [user for user in ma_user_list if user.enabled]
+    ma_current_user = get_current_user()
+    user_options = [
+        ConfigValueOption(title=user.display_name or user.username, value=user.user_id)
+        for user in ma_user_list
+        if user.enabled
+    ]
+    default_playlog_user_id = (
+        str(user_options[0].value) if not ma_current_user else ma_current_user.user_id
+    )
 
     return (
         ConfigEntry(
@@ -211,6 +231,15 @@ async def get_config_entries(
             key="label_general",
             type=ConfigEntryType.LABEL,
             label="General config:",
+        ),
+        ConfigEntry(
+            key=CONF_PLAYLOG_USER_ID,
+            label="Music Assistant user to sync playlog with",
+            type=ConfigEntryType.STRING,
+            options=user_options,
+            default_value=default_playlog_user_id,
+            description="The gpodder provider will sync its playlog, i.e. resume position,"
+            " finished..., with this Music Assistant user.",
         ),
         ConfigEntry(
             key=CONF_MAX_NUM_EPISODES,
@@ -390,12 +419,16 @@ class GPodder(MusicProvider):
                         continue
                     match _action:
                         case EpisodeActionNew():
-                            await self.mass.music.mark_item_unplayed(mass_episode)
+                            await self.mass.music.mark_item_unplayed(
+                                mass_episode,
+                                userid=str(self.config.get_value(CONF_PLAYLOG_USER_ID)),
+                            )
                         case EpisodeActionPlay():
                             await self.mass.music.mark_item_played(
                                 mass_episode,
                                 fully_played=_action.position >= _action.total,
                                 seconds_played=_action.position,
+                                userid=str(self.config.get_value(CONF_PLAYLOG_USER_ID)),
                             )
 
             # cache
@@ -469,7 +502,7 @@ class GPodder(MusicProvider):
 
                         # propagate to playlog
                         await self.mass.music.mark_item_unplayed(
-                            mass_episode,
+                            mass_episode, userid=str(self.config.get_value(CONF_PLAYLOG_USER_ID))
                         )
                     elif isinstance(action, EpisodeActionPlay):
                         fully_played = action.position >= action.total
@@ -482,6 +515,7 @@ class GPodder(MusicProvider):
                             mass_episode,
                             fully_played=fully_played,
                             seconds_played=resume_position_s,
+                            userid=str(self.config.get_value(CONF_PLAYLOG_USER_ID)),
                         )
                     elif isinstance(action, EpisodeActionDelete):
                         for mapping in mass_episode.provider_mappings:
