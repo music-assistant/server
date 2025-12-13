@@ -16,6 +16,7 @@ CONF_PASSWORD = "password"
 CONF_OLD_TOKEN = "token"
 CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)
 CONF_VERIFY_SSL = "verify_ssl"
+CONF_PLAYLOG_USER_ID = "playlog_user_id"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
 

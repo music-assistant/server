@@ -41,7 +41,12 @@ from aioaudiobookshelf.schema.shelf import (
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    ProviderConfig,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -62,6 +67,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -79,6 +85,7 @@ from .constants import (
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_OLD_TOKEN,
     CONF_PASSWORD,
+    CONF_PLAYLOG_USER_ID,
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
@@ -126,6 +133,17 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    # User options for playlog sync
+    ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
+    ma_user_list = [user for user in ma_user_list if user.enabled]
+    ma_current_user = get_current_user()
+    assert ma_current_user is not None  # for type checking
+    user_options = [
+        ConfigValueOption(title=user.display_name or user.username, value=user.user_id)
+        for user in ma_user_list
+        if user.enabled
+    ]
+
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
@@ -166,6 +184,15 @@ async def get_config_entries(
             description="Instead of using a username and password, "
             "you may provide an API key (ABS version >= 2.26). "
             "Please consult the docs.",
+        ),
+        ConfigEntry(
+            key=CONF_PLAYLOG_USER_ID,
+            label="Music Assistant user to sync playlog with",
+            type=ConfigEntryType.STRING,
+            options=user_options,
+            default_value=ma_current_user.user_id,
+            description="The abs provider will sync its playlog, i.e. resume position,"
+            " finished..., with this Music Assistant user.",
         ),
         ConfigEntry(
             key=CONF_OLD_TOKEN,
@@ -1404,6 +1431,29 @@ for more details.
 
         return known_ids
 
+    async def _mark_item_played(
+        self,
+        media_item: MediaItemType,
+        fully_played: bool,
+        seconds_played: int,
+    ) -> None:
+        """Mark item played and include configured playlog user."""
+        playlog_user_id = str(self.config.get_value(CONF_PLAYLOG_USER_ID))
+        await self.mass.music.mark_item_played(
+            media_item=media_item,
+            fully_played=fully_played,
+            seconds_played=seconds_played,
+            userid=playlog_user_id,
+        )
+
+    async def _mark_item_unplayed(
+        self,
+        media_item: MediaItemType,
+    ) -> None:
+        """Mark item unplayed and include configured playlog user."""
+        playlog_user_id = str(self.config.get_value(CONF_PLAYLOG_USER_ID))
+        await self.mass.music.mark_item_unplayed(media_item=media_item, userid=playlog_user_id)
+
     async def _set_playlog_from_user(self, user: User) -> None:
         """Update on user callback.
 
@@ -1467,14 +1517,14 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self._mark_item_unplayed(discarded_item)
             else:
                 with suppress(MediaNotFoundError):
                     discarded_item = await self.get_podcast_episode(
                         prov_episode_id=discarded_progress_id, add_progress=False
                     )
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self._mark_item_unplayed(discarded_item)
             self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
@@ -1491,9 +1541,9 @@ for more details.
         if mass_audiobook is None:
             return
         if int(progress.current_time) == 0:
-            await self.mass.music.mark_item_unplayed(mass_audiobook)
+            await self._mark_item_unplayed(mass_audiobook)
         else:
-            await self.mass.music.mark_item_played(
+            await self._mark_item_played(
                 mass_audiobook,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
@@ -1512,9 +1562,9 @@ for more details.
         except MediaNotFoundError:
             return
         if int(progress.current_time) == 0:
-            await self.mass.music.mark_item_unplayed(mass_episode)
+            await self._mark_item_unplayed(mass_episode)
         else:
-            await self.mass.music.mark_item_played(
+            await self._mark_item_played(
                 mass_episode,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
