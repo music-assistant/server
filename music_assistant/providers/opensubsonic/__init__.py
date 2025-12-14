@@ -12,6 +12,7 @@ from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_
 from .sonic_provider import (
     CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
+    CONF_ALLOW_INSECURE_CONN,
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
     CONF_OVERRIDE_OFFSET,
@@ -115,6 +116,14 @@ async def get_config_entries(
             label="Enable Legacy Auth",
             required=True,
             description='Enable OpenSubsonic "legacy" auth support',
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_ALLOW_INSECURE_CONN,
+            type=ConfigEntryType.BOOLEAN,
+            label="Allow Insecure Connection",
+            required=True,
+            description='This will allow you to use self signed certificates',
             default_value=False,
         ),
         ConfigEntry(

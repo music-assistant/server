@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
+CONF_ALLOW_INSECURE_CONN = "allow_insecure_conn"
 CONF_OVERRIDE_OFFSET = "override_transcode_offest"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
@@ -112,6 +113,7 @@ class OpenSonicProvider(MusicProvider):
             username=str(self.config.get_value(CONF_USERNAME)),
             password=str(self.config.get_value(CONF_PASSWORD)),
             legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
+            insecure=bool(self.config.get_value(CONF_ALLOW_INSECURE_CONN)),
             port=port,
             server_path=str(path),
             app_name="Music Assistant",
