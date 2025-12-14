@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     ProviderFeature,
 )
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import (
@@ -329,9 +329,13 @@ class AlexaPlayer(Player):
                     auth=auth,
                 ) as resp:
                     await resp.text()
-            except Exception as exc:
-                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
-                return
+            except Exception:
+                msg = (
+                    "Failed to push URL to Alexa API: "
+                    "Please verify your API connection and configuration"
+                )
+                _LOGGER.error(msg)
+                raise ActionUnavailable(msg)
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
