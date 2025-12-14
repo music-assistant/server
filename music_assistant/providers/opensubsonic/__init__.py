@@ -10,9 +10,9 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
 
 from .sonic_provider import (
+    CONF_ALLOW_INSECURE_CONN,
     CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
-    CONF_ALLOW_INSECURE_CONN,
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
     CONF_OVERRIDE_OFFSET,
@@ -123,7 +123,7 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             label="Allow Insecure Connection",
             required=True,
-            description='This will allow you to use self signed certificates',
+            description="This will allow you to use self signed certificates",
             default_value=False,
         ),
         ConfigEntry(
