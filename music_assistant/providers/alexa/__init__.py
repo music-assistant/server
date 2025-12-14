@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -290,25 +289,21 @@ class AlexaPlayer(Player):
         await self.api.stop()
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
-        self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         await self.api.play()
         self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
         await self.api.pause()
         self._attr_playback_state = PlaybackState.PAUSED
-        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.api.set_volume(volume_level / 100)
         self._attr_volume_level = volume_level
-        self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -356,22 +351,6 @@ class AlexaPlayer(Player):
         )
 
         await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
-
-        state = await self.api.get_state()
-        if state:
-            state = state.get("playerInfo", None)
-
-        if state:
-            device_media = state.get("infoText")
-            if device_media:
-                media.title = device_media.get("title")
-                media.artist = device_media.get("subText1")
-                self._attr_current_media = media
-            self._attr_elapsed_time = 0
-            self._attr_elapsed_time_last_updated = time.time()
-            if state.get("playbackState") == "PLAYING":
-                self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()
 
     async def get_config_entries(
         self,
