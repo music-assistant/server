@@ -564,18 +564,21 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
         uri = (
             "me/tracks"
             if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
         # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(uri, limit=1, offset=0)
+        cache_checksum = await self._get_etag(
+            uri, limit=1, offset=0, use_global_session=is_liked_songs
+        )
 
         page_size = 50
         offset = page * page_size
         spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset
+            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=is_liked_songs
         )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
