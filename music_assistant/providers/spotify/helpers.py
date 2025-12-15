@@ -99,7 +99,6 @@ async def pkce_auth_flow(
     :param session_id: Session ID for the authentication helper.
     :param client_id: The client ID to use for authentication.
     :return: Refresh token string.
-    :raises LoginFailed: If expected_user_id is provided and doesn't match.
     """
     # spotify PKCE auth flow
     # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
