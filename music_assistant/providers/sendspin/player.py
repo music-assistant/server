@@ -539,8 +539,13 @@ class SendspinPlayer(Player):
 
     async def _on_queue_update(self, event: MassEvent) -> None:
         """Extract and send current media metadata to sendspin players on queue updates."""
+        if self.synced_to is not None:
+            # Only leader sends metadata
+            return
         queue = self.mass.player_queues.get_active_queue(self.player_id)
         if not queue or not queue.current_item:
+            # Clear metadata when queue has no current item
+            self.api.group.set_metadata(Metadata())
             return
 
         current_item = queue.current_item
