@@ -150,7 +150,7 @@ class ScrobblerConfig:
 
 async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntry:
     """Create a reusable configentry to specify a userlist for scrobbling providers."""
-    # User options for playlog sync
+    # User options for scrobble filtering
     ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
     ma_user_list = [user for user in ma_user_list if user.enabled]
     user_options = [
