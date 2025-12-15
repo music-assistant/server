@@ -134,13 +134,12 @@ class AirPlayStreamSession:
 
     async def remove_client(self, airplay_player: AirPlayPlayer) -> None:
         """Remove a sync client from the session."""
-        if airplay_player not in self.sync_clients:
-            return
-        assert airplay_player.stream
-        assert airplay_player.stream.session == self
         async with self._lock:
+            if airplay_player not in self.sync_clients:
+                return
             self.sync_clients.remove(airplay_player)
-        await airplay_player.stream.stop()
+        if airplay_player.stream and airplay_player.stream.session == self:
+            await airplay_player.stream.stop()
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
         # If this was the last client, stop the session
@@ -219,6 +218,7 @@ class AirPlayStreamSession:
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
         _last_metadata: str | None = None
+        prev_progress_report: float = 0.0
         pcm_sample_size = self.pcm_format.pcm_sample_size
         stream_start_time = time.time()
         first_chunk_received = False
@@ -256,14 +256,14 @@ class AirPlayStreamSession:
                     player = sync_clients[i]
 
                     if isinstance(result, asyncio.TimeoutError):
-                        self.prov.logger.error(
-                            "TIMEOUT writing chunk to player %s - REMOVING from sync group!",
+                        self.prov.logger.warning(
+                            "Removing player %s from session: stopped reading data (write timeout)",
                             player.player_id,
                         )
                         players_to_remove.append(player)
                     elif isinstance(result, Exception):
-                        self.prov.logger.error(
-                            ("Error writing chunk to player %s: %s - REMOVING from sync group!"),
+                        self.prov.logger.warning(
+                            "Removing player %s from session due to write error: %s",
                             player.player_id,
                             result,
                         )
@@ -271,15 +271,7 @@ class AirPlayStreamSession:
 
                 # Remove failed/timed-out players from sync group
                 for player in players_to_remove:
-                    if player in self.sync_clients:
-                        self.sync_clients.remove(player)
-                        self.prov.logger.warning(
-                            "Player %s removed from sync group due to write failure/timeout",
-                            player.player_id,
-                        )
-                        # Stop the player's stream
-                        if player.stream:
-                            self.mass.create_task(player.stream.stop())
+                    self.mass.create_task(self.remove_client(player))
 
                 # Update chunk counter (each chunk is exactly one second of audio)
                 chunk_seconds = len(chunk) / pcm_sample_size
@@ -326,7 +318,6 @@ class AirPlayStreamSession:
         For late joiners, compensates for chunks sent between join time and actual chunk delivery.
         Blocks (async) until the data has been written.
         """
-        write_start = time.time()
         player_id = airplay_player.player_id
 
         # don't write a chunk if we're paused
@@ -339,21 +330,10 @@ class AirPlayStreamSession:
         # to the named pipe associated with the player's stream
         if ffmpeg := self._player_ffmpeg.get(player_id):
             if ffmpeg.closed:
-                raise RuntimeError(f"FFMpeg process for player {player_id} is closed")
-            await ffmpeg.write(chunk)
-
-        stream_write_start = time.time()
-        stream_write_elapsed = time.time() - stream_write_start
-        total_elapsed = time.time() - write_start
-        # Log only truly abnormal writes (>5s indicates a real stall)
-        # Can take up to ~4s if player's latency buffer is being drained
-        if total_elapsed > 5.0:
-            self.prov.logger.error(
-                "!!! STALLED WRITE: Player %s writing chunk took %.3fs total (stream write: %.3fs)",
-                player_id,
-                total_elapsed,
-                stream_write_elapsed,
-            )
+                return
+            # Use a 10 second timeout - if the write takes longer, the player
+            # has stopped reading data and we're in a deadlock situation
+            await asyncio.wait_for(ffmpeg.write(chunk), timeout=10.0)
 
     async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
         """Write EOF to a specific player."""

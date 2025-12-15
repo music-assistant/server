@@ -349,20 +349,21 @@ class SnapCastPlayer(Player):
             return stream
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
+        extra_args = ""
         if (
             self.provider._use_builtin_server
             and queue_id
             and self.provider._controlscript_available
         ):
+            # Create socket server for control script communication
+            socket_path = await self.provider.get_or_create_socket_server(queue_id)
             extra_args = (
                 f"&controlscript={urllib.parse.quote_plus('control.py')}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
-                f"--api-port={self.mass.webserver.publish_port}%20"
+                f"--socket={urllib.parse.quote_plus(socket_path)}%20"
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
-        else:
-            extra_args = ""
 
         attempts = 50
         while attempts:

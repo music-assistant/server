@@ -72,7 +72,6 @@ class RemoteAccessManager:
         self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
 
         self._remote_id = get_remote_id_from_certificate(self._certificate)
-        self.logger.debug("WebRTC certificate remote_id: %s", self._remote_id)
 
         enabled_value = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", False)
         self._enabled = bool(enabled_value)

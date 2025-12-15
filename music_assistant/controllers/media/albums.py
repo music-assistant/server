@@ -454,11 +454,16 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: Album,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
-        return await self.tracks(item_id, provider_instance_id_or_domain, in_library_only=False)
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Album to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        return await self.tracks(item.item_id, item.provider, in_library_only=False)
 
     async def _set_album_artists(
         self,

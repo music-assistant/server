@@ -2,13 +2,14 @@
 """
 Control Music Assistant Snapcast plugin.
 
-This script is a bridge between Music Assistant and Snapcast
-It listens to the MA websocket and sends metadata to Snapcast
-and listens for player commands
+This script is a bridge between Music Assistant and Snapcast.
+It connects to Music Assistant via a Unix socket and sends metadata to Snapcast
+and listens for player commands.
 """
 
 import json
 import logging
+import socket
 import sys
 import threading
 import urllib.parse
@@ -17,7 +18,6 @@ from time import sleep
 from typing import Any
 
 import shortuuid
-import websocket
 
 LOOP_STATUS_MAP = {
     "all": "playlist",
@@ -37,37 +37,36 @@ def send(json_msg: dict[str, Any]) -> None:
 
 
 class MusicAssistantControl:
-    """Music Assistant websocket remote control Snapcast plugin."""
+    """Music Assistant Unix socket remote control Snapcast plugin."""
 
     def __init__(
-        self, queue_id: str, streamserver_ip: str, streamserver_port: int, api_port: int
+        self,
+        queue_id: str,
+        socket_path: str,
+        streamserver_ip: str,
+        streamserver_port: int,
     ) -> None:
         """Initialize."""
         self.queue_id = queue_id
-        self.api_port = api_port
+        self.socket_path = socket_path
         self.streamserver_ip = streamserver_ip
         self.streamserver_port = streamserver_port
         self._metadata: dict[str, Any] = {}
         self._properties: dict[str, Any] = {}
         self._request_callbacks: dict[str, MessageCallback] = {}
         self._seek_offset = 0.0
-        self.websocket = websocket.WebSocketApp(
-            url=f"ws://localhost:{api_port}/ws",
-            on_message=self._on_ws_message,
-            on_error=self._on_ws_error,
-            on_open=self._on_ws_open,
-            on_close=self._on_ws_close,
-        )
+        self._socket: socket.socket | None = None
         self._stopped = False
-        self.websocket_thread = threading.Thread(target=self._websocket_loop, args=())
-        self.websocket_thread.name = "massControl"
-        self.websocket_thread.start()
+        self._socket_thread = threading.Thread(target=self._socket_loop, args=())
+        self._socket_thread.name = "massControl"
+        self._socket_thread.start()
 
     def stop(self) -> None:
-        """Stop the websocket thread."""
+        """Stop the socket thread."""
         self._stopped = True
-        self.websocket.close()
-        self.websocket_thread.join()
+        if self._socket:
+            self._socket.close()
+        self._socket_thread.join()
 
     def handle_snapcast_request(self, request: dict[str, Any]) -> None:
         """Handle (JSON RPC) message from Snapcast."""
@@ -114,7 +113,7 @@ class MusicAssistantControl:
                 self.send_request("player_queues/skip", queue_id=queue_id, seconds=seek_offset)
         elif cmd == "SetProperty":
             properties = request["params"]
-            logger.debug(f"SetProperty: {property}")
+            logger.debug(f"SetProperty: {properties}")
             if "shuffle" in properties:
                 self.send_request(
                     "player_queues/shuffle",
@@ -173,14 +172,75 @@ class MusicAssistantControl:
         """Send stream ready notification to Snapcast."""
         send({"jsonrpc": "2.0", "method": "Plugin.Stream.Ready"})
 
-    def _websocket_loop(self) -> None:
-        logger.info("Started websocket loop")
+    def _socket_loop(self) -> None:
+        logger.info("Started socket loop")
         while not self._stopped:
             try:
-                self.websocket.run_forever()
-                sleep(2)
+                self._connect_and_read()
             except (Exception, KeyboardInterrupt) as e:
-                logger.info(f"Exception: {e!s}")
+                logger.info(f"Exception in socket loop: {e!s}")
+                if not self._stopped:
+                    sleep(2)
+
+    def _connect_and_read(self) -> None:
+        """Connect to the Unix socket and read messages."""
+        logger.info("Connecting to Unix socket: %s", self.socket_path)
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self._socket.connect(self.socket_path)
+            logger.info("Connected to Unix socket")
+            self.send_snapcast_stream_ready_notification()
+
+            # Read messages from socket
+            buffer = ""
+            while not self._stopped:
+                try:
+                    data = self._socket.recv(4096)
+                    if not data:
+                        logger.info("Socket closed by server")
+                        break
+                    buffer += data.decode()
+
+                    # Process complete lines
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        if line.strip():
+                            self._handle_socket_message(line)
+                except TimeoutError:
+                    continue
+                except OSError as e:
+                    logger.error(f"Socket error: {e}")
+                    break
+        finally:
+            if self._socket:
+                self._socket.close()
+                self._socket = None
+
+    def _handle_socket_message(self, message: str) -> None:
+        """Handle a message from the Music Assistant socket."""
+        logger.debug("Socket message received: %s", message)
+        try:
+            data = json.loads(message)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+            return
+
+        # Request response
+        if "message_id" in data:
+            message_id = data["message_id"]
+            if callback := self._request_callbacks.pop(message_id, None):
+                if result := data.get("result"):
+                    callback(result)
+                # TODO: handle failed requests
+            return
+
+        # Event
+        if "event" in data and data.get("object_id") == self.queue_id:
+            event = data["event"]
+            if event == "queue_updated":
+                properties = self._create_properties(data["data"])
+                self.send_snapcast_properties_notification(properties)
+                return
 
     def _create_properties(self, mass_queue_details: dict[str, Any]) -> dict[str, Any]:
         """Create snapcast properties from Music Assistant queue details."""
@@ -223,7 +283,7 @@ class MusicAssistantControl:
                 properties["metadata"]["artistSort"] = [
                     x["sort_name"] for x in media_item["artists"]
                 ]
-            if "album" in media_item:
+            if media_item.get("album"):
                 properties["metadata"]["album"] = media_item["album"]["name"]
                 properties["metadata"]["albumSort"] = media_item["album"]["sort_name"]
         elif current_queue_item:
@@ -235,45 +295,14 @@ class MusicAssistantControl:
 
         return properties
 
-    def _on_ws_message(self, ws: websocket.WebSocket, message: str) -> None:
-        # TODO: error handling
-        logger.debug("websocket message received: %s", message)
-        data = json.loads(message)
-
-        # Request response
-        if "message_id" in data:
-            message_id = data["message_id"]
-            if callback := self._request_callbacks.pop(message_id, None):
-                if result := data.get("result"):
-                    callback(result)
-                # TODO: handle failed requests
+    def send_request(
+        self, command: str, callback: MessageCallback | None = None, **args: str | float | bool
+    ) -> None:
+        """Send request to Music Assistant via Unix socket."""
+        if not self._socket:
+            logger.warning("Cannot send request - socket not connected")
             return
 
-        # Event
-        if "event" in data and data["object_id"] == self.queue_id:
-            event = data["event"]
-            if event == "queue_updated":
-                properties = self._create_properties(data["data"])
-                self.send_snapcast_properties_notification(properties)
-                return
-
-    def _on_ws_error(self, ws: websocket.WebSocket, error: Exception | str) -> None:
-        logger.error("Websocket error")
-        logger.error(error)
-
-    def _on_ws_open(self, ws: websocket.WebSocket) -> None:
-        logger.info("Snapcast RPC websocket opened")
-        self.send_snapcast_stream_ready_notification()
-
-    def _on_ws_close(
-        self, ws: websocket.WebSocket, close_status_code: int | None, close_msg: str | None
-    ) -> None:
-        logger.info("Snapcast RPC websocket closed")
-
-    def send_request(
-        self, command: str, callback: MessageCallback | None = None, **args: str | float
-    ) -> None:
-        """Send request to Music Assistant."""
         msg_id = shortuuid.random(10)
         command_msg = {
             "message_id": msg_id,
@@ -283,13 +312,18 @@ class MusicAssistantControl:
         logger.debug("send_request: %s", command_msg)
         if callback:
             self._request_callbacks[msg_id] = callback
-        self.websocket.send(json.dumps(command_msg))
+        try:
+            data = json.dumps(command_msg) + "\n"
+            self._socket.sendall(data.encode())
+        except OSError as e:
+            logger.error(f"Failed to send request: {e}")
+            self._request_callbacks.pop(msg_id, None)
 
 
 if __name__ == "__main__":
     # Parse command line
     queue_id = None
-    api_port = None
+    socket_path: str | None = None
     streamserver_ip: str | None = None
     streamserver_port: str | None = None
     stream_id: str | None = None
@@ -298,15 +332,15 @@ if __name__ == "__main__":
             stream_id = arg.split("=")[1]
         if arg.startswith("--queueid="):
             queue_id = arg.split("=")[1]
+        if arg.startswith("--socket="):
+            socket_path = arg.split("=")[1]
         if arg.startswith("--streamserver-ip="):
             streamserver_ip = arg.split("=")[1]
         if arg.startswith("--streamserver-port="):
             streamserver_port = arg.split("=")[1]
-        if arg.startswith("--api-port="):
-            api_port = arg.split("=")[1]
 
-    if not queue_id or not api_port:
-        print("Usage: --stream=<stream_id> --api_port=<api_port>")  # noqa: T201
+    if not queue_id or not socket_path:
+        print("Usage: --stream=<stream_id> --socket=<socket_path>")  # noqa: T201
         sys.exit()
 
     log_format_stderr = "%(asctime)s %(module)s %(levelname)s: %(message)s"
@@ -321,12 +355,12 @@ if __name__ == "__main__":
     logger.addHandler(log_handler)
 
     logger.debug(
-        "Initializing for stream_id %s, queue_id %s and api_port %s", stream_id, queue_id, api_port
+        "Initializing for stream_id %s, queue_id %s and socket %s", stream_id, queue_id, socket_path
     )
 
     assert streamserver_ip is not None  # for type checking
     assert streamserver_port is not None
-    ctrl = MusicAssistantControl(queue_id, streamserver_ip, int(streamserver_port), int(api_port))
+    ctrl = MusicAssistantControl(queue_id, socket_path, streamserver_ip, int(streamserver_port))
 
     # keep listening for messages on stdin and forward them
     try:

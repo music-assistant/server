@@ -1326,7 +1326,7 @@ class PlayerQueuesController(CoreController):
             item.sort_index += insert_at_index + index
         # (re)shuffle the final batch if needed
         if shuffle:
-            next_items = random.sample(next_items, len(next_items))
+            next_items = _smart_shuffle(next_items)
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -1832,6 +1832,16 @@ class PlayerQueuesController(CoreController):
             queue.display_name,
             ", ".join([x.name for x in queue.radio_source]),
         )
+
+        # Get user's preferred provider instances for steering provider selection
+        preferred_provider_instances: list[str] | None = None
+        if (
+            queue.userid
+            and (playback_user := await self.mass.webserver.auth.get_user(queue.userid))
+            and playback_user.provider_filter
+        ):
+            preferred_provider_instances = playback_user.provider_filter
+
         available_base_tracks: list[Track] = []
         base_track_sample_size = 5
         # Some providers have very deterministic similar track algorithms when providing
@@ -1852,7 +1862,8 @@ class PlayerQueuesController(CoreController):
                     available_base_tracks += [
                         track
                         for track in await ctrl.radio_mode_base_tracks(
-                            radio_item.item_id, radio_item.provider
+                            radio_item,  # type: ignore[arg-type]
+                            preferred_provider_instances,
                         )
                         # Avoid duplicate base tracks
                         if track not in available_base_tracks
@@ -1883,6 +1894,7 @@ class PlayerQueuesController(CoreController):
                         base_track.item_id,
                         base_track.provider,
                         allow_lookup=allow_lookup,
+                        preferred_provider_instances=preferred_provider_instances,
                     )
                 except MediaNotFoundError:
                     # Some providers don't have similar tracks for all items. For example,
@@ -2383,3 +2395,98 @@ class PlayerQueuesController(CoreController):
                 userid=queue.userid,
             ),
         )
+
+
+def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
+    """Shuffle queue items with smart spacing rules.
+
+    This shuffle tries to prevent the same track and artist from appearing
+    too close together. Spacing requirements scale with playlist size:
+    - >1000 items: track spacing 15, artist spacing 10
+    - >500 items: track spacing 10, artist spacing 6
+    - >100 items: track spacing 5, artist spacing 3
+    - <=100 items: track spacing 2, no artist spacing
+
+    This is a best-effort approach - when playing an album where all tracks
+    are from the same artist, artist spacing won't be possible.
+
+    :param items: List of queue items to shuffle.
+    """
+    if len(items) <= 1:
+        return items
+
+    # Determine spacing based on playlist size
+    num_items = len(items)
+    if num_items > 1000:
+        track_spacing, artist_spacing = 15, 10
+    elif num_items > 500:
+        track_spacing, artist_spacing = 10, 6
+    elif num_items > 100:
+        track_spacing, artist_spacing = 5, 3
+    else:
+        track_spacing, artist_spacing = 2, 0
+
+    # Extract artist from name format "<artist(s)> - <title>"
+    def get_artist(name: str) -> str | None:
+        return name.split(" - ", 1)[0] if " - " in name else None
+
+    # Start with a random shuffle
+    shuffled = random.sample(items, len(items))
+
+    # Iteratively fix violations
+    max_attempts = len(items) * 3
+    for _ in range(max_attempts):
+        violation_found = False
+
+        for i in range(1, len(shuffled)):
+            current = shuffled[i]
+            current_artist = get_artist(current.name)
+
+            # Check for track collision
+            has_violation = any(
+                shuffled[j].name == current.name for j in range(max(0, i - track_spacing), i)
+            )
+
+            # Check for artist collision (only if artist_spacing > 0)
+            if not has_violation and artist_spacing and current_artist:
+                has_violation = any(
+                    get_artist(shuffled[j].name) == current_artist
+                    for j in range(max(0, i - artist_spacing), i)
+                )
+
+            if has_violation:
+                violation_found = True
+                # Find best position after current by scoring distance from conflicts
+                best_pos, best_score = i, -1
+                for pos in range(i + 1, len(shuffled)):
+                    track_dist = min(
+                        (
+                            pos - j
+                            for j in range(max(0, pos - track_spacing), pos)
+                            if shuffled[j].name == current.name
+                        ),
+                        default=track_spacing,
+                    )
+                    artist_dist = artist_spacing
+                    if artist_spacing and current_artist:
+                        artist_dist = min(
+                            (
+                                pos - j
+                                for j in range(max(0, pos - artist_spacing), pos)
+                                if get_artist(shuffled[j].name) == current_artist
+                            ),
+                            default=artist_spacing,
+                        )
+                    score = track_dist * 2 + artist_dist
+                    if score > best_score:
+                        best_score, best_pos = score, pos
+
+                if best_pos != i:
+                    item = shuffled.pop(i)
+                    shuffled.insert(best_pos, item)
+                    break
+
+        if not violation_found:
+            break
+
+    return shuffled

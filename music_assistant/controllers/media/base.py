@@ -736,10 +736,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     @abstractmethod
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: ItemCls,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The MediaItem to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+            When provided, these providers will be tried first before falling back to others.
+        """
 
     @final
     async def _get_library_items_by_query(
