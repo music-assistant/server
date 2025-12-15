@@ -815,29 +815,11 @@ class SpotifyProvider(MusicProvider):
         self.update_config_value(
             CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
         )
-        # check if librespot still has valid auth
-        if self._librespot_bin is None:
-            raise LoginFailed("Librespot binary not available")
-        args = [
-            self._librespot_bin,
-            "--cache",
-            self.cache_dir,
-            "--check-auth",
-        ]
-        ret_code, stdout = await check_output(*args)
-        if ret_code != 0:
-            # cached librespot creds are invalid, re-authenticate
-            # we can use the check-token option to send a new token to librespot
-            # librespot will then get its own token from spotify (somehow) and cache that.
-            args += [
-                "--access-token",
-                auth_info["access_token"],
-            ]
-            ret_code, stdout = await check_output(*args)
-            if ret_code != 0:
-                # this should not happen, but guard it just in case
-                err_str = stdout.decode("utf-8").strip()
-                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
+
+        # Setup librespot with global token only if dev token is not configured
+        # (if dev token exists, librespot will be set up in login_dev instead)
+        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
+            await self._setup_librespot_auth(auth_info["access_token"])
 
         # get logged-in user info
         if not self._sp_user:
@@ -887,8 +869,41 @@ class SpotifyProvider(MusicProvider):
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
         self.update_config_value(CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True)
+
+        # Setup librespot with dev token (preferred over global token)
+        await self._setup_librespot_auth(auth_info["access_token"])
+
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
+
+    async def _setup_librespot_auth(self, access_token: str) -> None:
+        """Set up librespot authentication with the given access token.
+
+        :param access_token: Spotify access token to use for librespot authentication.
+        """
+        if self._librespot_bin is None:
+            raise LoginFailed("Librespot binary not available")
+
+        args = [
+            self._librespot_bin,
+            "--cache",
+            self.cache_dir,
+            "--check-auth",
+        ]
+        ret_code, stdout = await check_output(*args)
+        if ret_code != 0:
+            # cached librespot creds are invalid, re-authenticate
+            # we can use the check-token option to send a new token to librespot
+            # librespot will then get its own token from spotify (somehow) and cache that.
+            args += [
+                "--access-token",
+                access_token,
+            ]
+            ret_code, stdout = await check_output(*args)
+            if ret_code != 0:
+                # this should not happen, but guard it just in case
+                err_str = stdout.decode("utf-8").strip()
+                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """Get auth info for API requests, preferring dev session if available.

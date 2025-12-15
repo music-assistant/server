@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.errors import InvalidDataError, LoginFailed
 
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
@@ -284,5 +284,5 @@ async def setup(
 
     if global_token in (None, ""):
         msg = "Re-Authentication required"
-        raise SetupFailedError(msg)
+        raise LoginFailed(msg)
     return SpotifyProvider(mass, manifest, config, SUPPORTED_FEATURES)
