@@ -323,10 +323,6 @@ for more details.
         # progress guard
         self.progress_guard = ProgressGuard()
 
-        # update playlog information if just started
-        user = await self._client.get_my_user()
-        await self._set_playlog_from_user(user)
-
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
