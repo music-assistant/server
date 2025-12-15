@@ -136,30 +136,6 @@ async def test_webrtc_gateway_handle_registration_message(mock_certificate: Mock
     # Should log but not crash
 
 
-async def test_webrtc_gateway_handle_ping_pong(mock_certificate: Mock) -> None:
-    """Test WebRTCGateway handles ping/pong messages."""
-    mock_session = Mock()
-    gateway = WebRTCGateway(
-        http_session=mock_session,
-        remote_id="TEST-REMOTE-ID",
-        certificate=mock_certificate,
-    )
-
-    # Mock signaling WebSocket
-    mock_ws = AsyncMock()
-    gateway._signaling_ws = mock_ws
-
-    # Test ping
-    await gateway._handle_signaling_message({"type": "ping"})
-    mock_ws.send_json.assert_called_once_with({"type": "pong"})
-
-    # Test pong
-    mock_ws.reset_mock()
-    await gateway._handle_signaling_message({"type": "pong"})
-    # Should not send anything back
-    mock_ws.send_json.assert_not_called()
-
-
 async def test_webrtc_gateway_handle_error_message(mock_certificate: Mock) -> None:
     """Test WebRTCGateway handles error messages."""
     mock_session = Mock()

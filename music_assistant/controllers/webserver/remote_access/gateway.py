@@ -222,7 +222,7 @@ class WebRTCGateway:
         try:
             self._signaling_ws = await self.http_session.ws_connect(
                 self.signaling_url,
-                heartbeat=None,
+                heartbeat=30.0,  # Send WebSocket ping every 30s to keep connection alive
             )
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
@@ -315,10 +315,9 @@ class WebRTCGateway:
         """
         msg_type = message.get("type")
 
-        if msg_type == "ping":
-            if self._signaling_ws:
-                await self._signaling_ws.send_json({"type": "pong"})
-        elif msg_type == "pong":
+        if msg_type in ("ping", "pong"):
+            # Ignore JSON-level ping/pong messages - we use WebSocket protocol-level heartbeat
+            # The signaling server still sends these for backward compatibility with older clients
             pass
         elif msg_type == "registered":
             self._is_connected = True
