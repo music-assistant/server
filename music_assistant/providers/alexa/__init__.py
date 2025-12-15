@@ -334,12 +334,12 @@ class AlexaPlayer(Player):
                     auth=auth,
                 ) as resp:
                     await resp.text()
-            except Exception:
+            except Exception as exc:
                 msg = (
-                    "Failed to push URL to Alexa API: "
+                    "Failed to push URL to MA Alexa API: "
                     "Please verify your API connection and configuration"
                 )
-                _LOGGER.error(msg)
+                _LOGGER.error("Failed to push URL to MA Alexa API: %s", exc)
                 raise ActionUnavailable(msg)
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
