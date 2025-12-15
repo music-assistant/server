@@ -363,6 +363,7 @@ class AlexaPlayer(Player):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_current_media = media
         self.update_state()
 
     async def get_config_entries(
