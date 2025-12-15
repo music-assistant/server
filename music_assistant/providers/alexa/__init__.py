@@ -333,7 +333,15 @@ class AlexaPlayer(Player):
                     timeout=aiohttp.ClientTimeout(total=10),
                     auth=auth,
                 ) as resp:
-                    await resp.text()
+                    resp_text = await resp.text()
+                    if resp.status < 200 or resp.status >= 300:
+                        msg = (
+                            f"Failed to push URL to MA Alexa API: "
+                            f"Status code: {resp.status}, Response: {resp_text}. "
+                            "Please verify your API connection and configuration"
+                        )
+                        _LOGGER.error(msg)
+                        raise ActionUnavailable(msg)
             except Exception as exc:
                 msg = (
                     "Failed to push URL to MA Alexa API: "
