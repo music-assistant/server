@@ -342,6 +342,8 @@ class AlexaPlayer(Player):
                         )
                         _LOGGER.error(msg)
                         raise ActionUnavailable(msg)
+            except ActionUnavailable:
+                raise
             except Exception as exc:
                 msg = (
                     "Failed to push URL to MA Alexa API: "
