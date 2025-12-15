@@ -156,7 +156,6 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
     user_options = [
         ConfigValueOption(title=user.display_name or user.username, value=user.user_id)
         for user in ma_user_list
-        if user.enabled
     ]
     return ConfigEntry(
         key=CONF_SCROBBLE_USERS,
