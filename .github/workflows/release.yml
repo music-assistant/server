@@ -167,7 +167,7 @@ jobs:
           python3 -m build
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: release-dists
           path: dist/
