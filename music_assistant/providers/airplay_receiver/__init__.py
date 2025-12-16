@@ -130,9 +130,10 @@ class AirPlayReceiverProvider(PluginProvider):
         self._default_player_id: str = (
             cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         )
-        # Whether manual player switching is allowed
-        self._allow_player_switch: bool = cast(
-            "bool", self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
+        # Whether manual player switching is allowed (default to True for upgrades)
+        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
+        self._allow_player_switch: bool = (
+            cast("bool", allow_switch_value) if allow_switch_value is not None else True
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
@@ -293,6 +294,9 @@ class AirPlayReceiverProvider(PluginProvider):
                     "Manual player switching disabled, ignoring selection on %s",
                     new_player_id,
                 )
+                # Revert in_use_by to reflect the rejection
+                self._source_details.in_use_by = current_target
+                self.mass.players.trigger_player_update(new_player_id)
                 return
 
         # If there's already an active player and it's different, kick it out
