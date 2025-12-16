@@ -1385,8 +1385,8 @@ class PlayerController(CoreController):
         """Trigger an update for the given player."""
         if self.mass.closing:
             return
-        player = self.get(player_id, True)
-        assert player is not None  # for type checker
+        if not (player := self.get(player_id)):
+            return
         self.mass.loop.call_soon(player.update_state, force_update)
 
     async def unregister(self, player_id: str, permanent: bool = False) -> None:

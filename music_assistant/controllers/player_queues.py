@@ -474,7 +474,9 @@ class PlayerQueuesController(CoreController):
                         start_item_uri = start_item
                     elif start_item is not None:
                         start_item_uri = start_item.uri
-                    media_items += await self._resolve_media_items(media_item, start_item_uri)
+                    media_items += await self._resolve_media_items(
+                        media_item, start_item_uri, queue_id=queue_id
+                    )
 
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
@@ -847,6 +849,9 @@ class PlayerQueuesController(CoreController):
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )
         else:
+            # Queue is empty, try to resume from playlog
+            if await self._try_resume_from_playlog(queue):
+                return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
@@ -1775,6 +1780,7 @@ class PlayerQueuesController(CoreController):
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
         userid: str | None = None,
+        queue_id: str | None = None,
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
@@ -1784,15 +1790,25 @@ class PlayerQueuesController(CoreController):
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
         if media_item.media_type == MediaType.PLAYLIST:
             media_item = cast("Playlist", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
             return list(await self.get_playlist_tracks(media_item, start_item))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item))
+            self.mass.create_task(
+                self.mass.music.mark_item_played(media_item, queue_id=queue_id, user_initiated=True)
+            )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
             return list(await self.get_album_tracks(media_item, start_item))
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
@@ -1803,7 +1819,11 @@ class PlayerQueuesController(CoreController):
             return [media_item]
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
-            self.mass.create_task(self.mass.music.mark_item_played(media_item, userid=userid))
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
             return list(await self.get_next_podcast_episodes(media_item, start_item, userid=userid))
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
@@ -1813,6 +1833,50 @@ class PlayerQueuesController(CoreController):
             return list(await self._get_folder_tracks(media_item))
         # all other: single track or radio item
         return [cast("MediaItemType", media_item)]
+
+    async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
+        """Try to resume playback from playlog when queue is empty.
+
+        Attempts to find user-initiated recently played items in the following order:
+        1. By userid AND queue_id
+        2. By queue_id only
+        3. By userid only (if available)
+        4. Any recently played item
+
+        :param queue: The queue to resume playback on.
+        :return: True if playback was started, False otherwise.
+        """
+        # Try different filter combinations in order of specificity
+        filter_attempts: list[tuple[str | None, str | None, str]] = []
+        if queue.userid:
+            filter_attempts.append((queue.userid, queue.queue_id, "userid + queue_id match"))
+        filter_attempts.append((None, queue.queue_id, "queue_id match"))
+        if queue.userid:
+            filter_attempts.append((queue.userid, None, "userid match"))
+        filter_attempts.append((None, None, "any recent item"))
+
+        for userid, queue_id, match_type in filter_attempts:
+            items = await self.mass.music.recently_played(
+                limit=5,
+                fully_played_only=False,
+                user_initiated_only=True,
+                userid=userid,
+                queue_id=queue_id,
+            )
+            for item in items:
+                if not item.uri:
+                    continue
+                try:
+                    await self.play_media(queue.queue_id, item)
+                    self.logger.info(
+                        "Resumed queue %s from playlog (%s)", queue.display_name, match_type
+                    )
+                    return True
+                except Exception as err:
+                    self.logger.debug("Failed to resume with item %s: %s", item.name, err)
+                    continue
+
+        return False
 
     async def _get_radio_tracks(
         self, queue_id: str, is_initial_radio_mode: bool = False
@@ -2355,6 +2419,8 @@ class PlayerQueuesController(CoreController):
                 seconds_played=seconds_played,
                 is_playing=is_playing,
                 userid=queue.userid,
+                queue_id=queue.queue_id,
+                user_initiated=False,
             )
         )
 

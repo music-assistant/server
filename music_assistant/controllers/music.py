@@ -97,7 +97,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 24
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -558,30 +558,43 @@ class MusicController(CoreController):
 
     @api_command("music/recently_played_items")
     async def recently_played(
-        self, limit: int = 10, media_types: list[MediaType] | None = None, all_users: bool = True
+        self,
+        limit: int = 10,
+        media_types: list[MediaType] | None = None,
+        userid: str | None = None,
+        queue_id: str | None = None,
+        fully_played_only: bool = True,
+        user_initiated_only: bool = False,
     ) -> list[ItemMapping]:
-        """Return a list of the last played items."""
+        """Return a list of the last played items.
+
+        :param limit: Maximum number of items to return.
+        :param media_types: Filter by media types.
+        :param userid: Filter by specific user ID.
+        :param queue_id: Filter by specific queue ID.
+        :param fully_played_only: If True, only return fully played items.
+        :param user_initiated_only: If True, only return items initiated by the user.
+        """
         if media_types is None:
-            media_types = [
-                MediaType.ALBUM,
-                MediaType.AUDIOBOOK,
-                MediaType.ARTIST,
-                MediaType.PLAYLIST,
-                MediaType.PODCAST,
-                MediaType.FOLDER,
-                MediaType.RADIO,
-                MediaType.GENRE,
-            ]
+            media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in {media_types_str} AND fully_played = 1 "
+            f"WHERE media_type in {media_types_str} "
             f"AND provider in {available_providers_str} "
         )
-        if not all_users and (user := get_current_user()):
+        if fully_played_only:
+            query += "AND fully_played = 1 "
+        if user_initiated_only:
+            query += "AND user_initiated = 1 "
+        if userid:
+            query += f"AND userid = '{userid}' "
+        elif user := get_current_user():
             query += f"AND userid = '{user.user_id}' "
+        if queue_id:
+            query += f"AND queue_id = '{queue_id}' "
         query += "ORDER BY timestamp DESC"
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
@@ -1112,6 +1125,8 @@ class MusicController(CoreController):
         seconds_played: int | None = None,
         is_playing: bool = False,
         userid: str | None = None,
+        queue_id: str | None = None,
+        user_initiated: bool = True,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -1121,6 +1136,8 @@ class MusicController(CoreController):
         :param seconds_played: The number of seconds played.
         :param is_playing: If True, the item is currently playing.
         :param userid: The user ID to mark the item as played for (instead of the current user).
+        :param queue_id: The queue ID where the item was played.
+        :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
         """
         timestamp = utc_timestamp()
         if (
@@ -1140,6 +1157,8 @@ class MusicController(CoreController):
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
+            "queue_id": queue_id,
+            "user_initiated": user_initiated,
         }
         # try to figure out the user that triggered the action
         user: User | None = None
@@ -1663,7 +1682,7 @@ class MusicController(CoreController):
                 name="Recently played",
                 translation_key="recently_played",
                 icon="mdi-motion-play",
-                items=await self.recently_played(limit=10),
+                items=await self.recently_played(limit=10, user_initiated_only=True),
             ),
             RecommendationFolder(
                 item_id="recently_added_tracks",
@@ -2124,6 +2143,24 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
+        if prev_version <= 24:
+            # add queue_id and user_initiated columns to playlog table
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                    "ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self._database.commit()
 
@@ -2160,6 +2197,8 @@ class MusicController(CoreController):
                 [fully_played] BOOLEAN,
                 [seconds_played] INTEGER,
                 [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 UNIQUE(item_id, provider, media_type, userid));"""
         )
         await self.database.execute(
