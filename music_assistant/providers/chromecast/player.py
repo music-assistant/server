@@ -321,20 +321,25 @@ class ChromecastPlayer(Player):
             )
         )
 
-        # Resend if either value changed
-        if (
-            self._last_sent_sync_delay != current_sync_delay
-            or self._last_sent_codec != current_codec
-        ):
-            self.logger.debug(
-                "Sendspin config changed, resending (sync_delay: %s -> %s, codec: %s -> %s)",
-                self._last_sent_sync_delay,
-                current_sync_delay,
-                self._last_sent_codec,
-                current_codec,
-            )
+        sync_delay_changed = self._last_sent_sync_delay != current_sync_delay
+        codec_changed = self._last_sent_codec != current_codec
+
+        if sync_delay_changed or codec_changed:
+            # Update immediately to prevent duplicate sends from concurrent events
+            self._last_sent_sync_delay = current_sync_delay
+            self._last_sent_codec = current_codec
             try:
-                await self._send_sendspin_server_url()
+                if codec_changed:
+                    # Codec changed - need full reconnection
+                    self.logger.debug(
+                        "Sendspin codec changed (%s -> %s), sending full config",
+                        self._last_sent_codec,
+                        current_codec,
+                    )
+                    await self._send_sendspin_server_url()
+                else:
+                    # Only sync delay changed, don't reconnect, just send updated delay
+                    await self._send_sendspin_sync_delay(current_sync_delay)
             except Exception as err:
                 self.logger.warning("Failed to send updated Sendspin config to Chromecast: %s", err)
 
@@ -896,6 +901,22 @@ class ChromecastPlayer(Player):
         await self.mass.loop.run_in_executor(None, send_message)
         self._last_sent_sync_delay = sync_delay
         self._last_sent_codec = codec
+
+    async def _send_sendspin_sync_delay(self, sync_delay: int) -> None:
+        """Send only the sync delay update to the Cast receiver (no reconnection)."""
+
+        def send_message() -> None:
+            self.cc.socket_client.send_app_message(
+                SENDSPIN_CAST_NAMESPACE,
+                {"syncDelay": sync_delay},
+            )
+
+        self.logger.debug(
+            "Sending Sendspin sync delay update to Cast receiver: syncDelay=%dms",
+            sync_delay,
+        )
+        await self.mass.loop.run_in_executor(None, send_message)
+        self._last_sent_sync_delay = sync_delay
 
     async def _wait_for_sendspin_player(self, timeout: float = 15.0) -> Player | None:
         """Wait for the Sendspin player to connect and become available."""
