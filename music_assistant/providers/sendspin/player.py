@@ -570,14 +570,29 @@ class SendspinPlayer(Player):
 
         shuffle = queue.shuffle_enabled if queue else False
 
+        # Extract extra metadata from queue item if available
+        album_artist: str | None = None
+        year: int | None = None
+        track_number: int | None = None
+        if queue_item and (media_item := queue_item.media_item):
+            track_number = getattr(media_item, "track_number", None)
+            # Album on queue item is simplified to ItemMapping, fetch full album for extra metadata
+            if album_mapping := getattr(media_item, "album", None):
+                try:
+                    full_album = await self.mass.music.get_item_by_uri(album_mapping.uri)
+                    album_artist = getattr(full_album, "artist_str", None)
+                    year = getattr(full_album, "year", None)
+                except Exception as err:
+                    self.logger.debug("Failed to fetch album for metadata: %s", err)
+
         metadata = Metadata(
             title=current_media.title,
             artist=current_media.artist,
-            album_artist=None,  # TODO: extract from optional queue item
+            album_artist=album_artist,
             album=current_media.album,
             artwork_url=current_media.image_url,
-            year=None,  # TODO: extract from optional queue item
-            track=None,  # TODO: extract from optional queue item
+            year=year,
+            track=track_number,
             track_duration=track_duration * 1000 if track_duration is not None else None,
             track_progress=int(current_media.corrected_elapsed_time * 1000)
             if current_media.corrected_elapsed_time
