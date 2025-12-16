@@ -1774,8 +1774,24 @@ class PlayerController(CoreController):
         await player.on_config_updated()
         player.update_state()
         # if the PlayerQueue was playing, restart playback
-        # TODO: add property to ConfigEntry if it requires a restart of playback on change
+        # TODO: add restart_stream property to ConfigEntry and use that instead of immediate_apply
+        # to check if we need to restart playback
         if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
+            config_entries = await player.get_config_entries()
+            needs_restart = False
+            for key in changed_keys:
+                if not key.startswith("values/"):
+                    continue  # skip root values like "enabled", "name"
+                actual_key = key.removeprefix("values/")
+                entry = next((e for e in config_entries if e.key == actual_key), None)
+                if entry is None or not entry.immediate_apply:
+                    needs_restart = True
+                    break
+
+            if not needs_restart:
+                # All changed config entries have immediate_apply=True, so no need to restart
+                # the playback
+                return
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
