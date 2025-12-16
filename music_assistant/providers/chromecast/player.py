@@ -223,7 +223,9 @@ class ChromecastPlayer(Player):
                 )
             )
             if self._last_sent_sync_delay != current_sync_delay:
-                self.mass.create_task(self._send_sendspin_server_url())
+                # Update immediately to prevent duplicate sends from concurrent events
+                self._last_sent_sync_delay = current_sync_delay
+                self.mass.create_task(self._send_sendspin_sync_delay(current_sync_delay))
 
     async def get_config_entries(
         self,
