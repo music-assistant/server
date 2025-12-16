@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from math import inf
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -585,18 +585,24 @@ class MusicController(CoreController):
             f"WHERE media_type in {media_types_str} "
             f"AND provider in {available_providers_str} "
         )
+        params: dict[str, Any] = {}
         if fully_played_only:
             query += "AND fully_played = 1 "
         if user_initiated_only:
             query += "AND user_initiated = 1 "
         if userid:
-            query += f"AND userid = '{userid}' "
+            query += "AND userid = :userid "
+            params["userid"] = userid
         elif user := get_current_user():
-            query += f"AND userid = '{user.user_id}' "
+            query += "AND userid = :userid "
+            params["userid"] = user.user_id
         if queue_id:
-            query += f"AND queue_id = '{queue_id}' "
+            query += "AND queue_id = :queue_id "
+            params["queue_id"] = queue_id
         query += "ORDER BY timestamp DESC"
-        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            query, params=params or None, limit=limit
+        )
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
 

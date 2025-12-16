@@ -1872,7 +1872,7 @@ class PlayerQueuesController(CoreController):
                         "Resumed queue %s from playlog (%s)", queue.display_name, match_type
                     )
                     return True
-                except Exception as err:
+                except MusicAssistantError as err:
                     self.logger.debug("Failed to resume with item %s: %s", item.name, err)
                     continue
 
