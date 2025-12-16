@@ -262,11 +262,13 @@ class ChromecastPlayer(Player):
             label="Sendspin sync delay (ms)",
             description="Static delay in milliseconds to adjust audio synchronization. "
             "Positive values delay playback, negative values advance it. "
-            "Use this to compensate for device-specific audio latency.",
+            "Use this to compensate for device-specific audio latency. "
+            "Changes take effect immediately.",
             required=False,
             default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
             range=(-1000, 1000),
             hidden=not sendspin_available or self.type == PlayerType.GROUP,
+            immediate_apply=True,
         )
 
         # Codec config entry (only visible when sendspin provider is available)
