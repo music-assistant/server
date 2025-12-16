@@ -1778,17 +1778,19 @@ class PlayerController(CoreController):
         # to check if we need to restart playback
         if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
             config_entries = await player.get_config_entries()
-            needs_restart = False
+            has_value_changes = False
+            all_immediate_apply = True
             for key in changed_keys:
                 if not key.startswith("values/"):
                     continue  # skip root values like "enabled", "name"
+                has_value_changes = True
                 actual_key = key.removeprefix("values/")
                 entry = next((e for e in config_entries if e.key == actual_key), None)
                 if entry is None or not entry.immediate_apply:
-                    needs_restart = True
+                    all_immediate_apply = False
                     break
 
-            if not needs_restart:
+            if has_value_changes and all_immediate_apply:
                 # All changed config entries have immediate_apply=True, so no need to restart
                 # the playback
                 return

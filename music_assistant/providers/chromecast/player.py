@@ -327,6 +327,8 @@ class ChromecastPlayer(Player):
         codec_changed = self._last_sent_codec != current_codec
 
         if sync_delay_changed or codec_changed:
+            # Store old values for logging before updating state
+            old_codec = self._last_sent_codec
             # Update immediately to prevent duplicate sends from concurrent events
             self._last_sent_sync_delay = current_sync_delay
             self._last_sent_codec = current_codec
@@ -335,7 +337,7 @@ class ChromecastPlayer(Player):
                     # Codec changed - need full reconnection
                     self.logger.debug(
                         "Sendspin codec changed (%s -> %s), sending full config",
-                        self._last_sent_codec,
+                        old_codec,
                         current_codec,
                     )
                     await self._send_sendspin_server_url()
