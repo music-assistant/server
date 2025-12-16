@@ -240,7 +240,11 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         # If there's an active player (source was selected on a player), use it
         if self._active_player_id:
-            return self._active_player_id
+            # Validate that the active player still exists
+            if self.mass.players.get(self._active_player_id):
+                return self._active_player_id
+            # Active player no longer exists, clear it
+            self._active_player_id = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
@@ -260,8 +264,13 @@ class AirPlayReceiverProvider(PluginProvider):
             # No player available
             return None
 
-        # Use the specific default player if configured
-        return self._default_player_id
+        # Use the specific default player if configured and it still exists
+        if self.mass.players.get(self._default_player_id):
+            return self._default_player_id
+        self.logger.warning(
+            "Configured default player '%s' no longer exists", self._default_player_id
+        )
+        return None
 
     async def _on_source_selected(self) -> None:
         """
@@ -276,10 +285,10 @@ class AirPlayReceiverProvider(PluginProvider):
             return
 
         # Check if manual player switching is allowed
-        if not self._allow_player_switch and self._default_player_id != PLAYER_ID_AUTO:
-            # Player switching disabled and we have a fixed player configured
-            # Only allow if it's the configured player
-            if new_player_id != self._default_player_id:
+        if not self._allow_player_switch:
+            # Player switching disabled - only allow if it matches the current target
+            current_target = self._get_target_player_id()
+            if new_player_id != current_target:
                 self.logger.debug(
                     "Manual player switching disabled, ignoring selection on %s",
                     new_player_id,
@@ -305,8 +314,9 @@ class AirPlayReceiverProvider(PluginProvider):
         self._active_player_id = new_player_id
         self.logger.debug("Active player set to: %s", new_player_id)
 
-        # Persist the last selected player in config for auto mode
-        self._save_last_player_id(new_player_id)
+        # Only persist the selected player as the new default if not in auto mode
+        if self._default_player_id != PLAYER_ID_AUTO:
+            self._save_last_player_id(new_player_id)
 
     def _clear_active_player(self) -> None:
         """
@@ -536,7 +546,6 @@ class AirPlayReceiverProvider(PluginProvider):
                 if target_player_id:
                     self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                     self._active_player_id = target_player_id
-                    self._last_selected_player_id = target_player_id
                     self.mass.create_task(
                         self.mass.players.select_source(target_player_id, self.instance_id)
                     )
