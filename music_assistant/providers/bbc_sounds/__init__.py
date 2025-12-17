@@ -278,6 +278,7 @@ class BBCSoundsProvider(MusicProvider):
         if episode_info and FEATURES["catchup_segments"]:
             stream_details.data = {"vpid": episode_info.id}
             stream_details.stream_metadata_update_callback = self._update_on_demand_stream_metadata
+            stream_details.stream_metadata_update_interval = 5
         return stream_details
 
     async def _get_station_stream_details(self, item_id: str) -> StreamDetails:
@@ -299,6 +300,7 @@ class BBCSoundsProvider(MusicProvider):
 
         if FEATURES["now_playing"]:
             stream_details.stream_metadata_update_callback = self._update_live_stream_metadata
+            stream_details.stream_metadata_update_interval = 5
         return stream_details
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
