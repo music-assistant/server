@@ -215,6 +215,7 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
+            self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -286,14 +287,18 @@ class MediaAssistantPlayer(Player):
 
                 if "position" in media_state:
                     try:
-                        self._attr_elapsed_time = (
-                            int(media_state["position"].split(" ", 1)[0]) / 1000
-                        )
+                        position = int(media_state["position"].split(" ", 1)[0]) / 1000
+                        if self.elapsed_time is not None:
+                            if abs(position - self.elapsed_time) > 10:
+                                self._attr_current_media = self.queued
+                        self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = time.time()
                     except Exception:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
                         )
+
+                self.update_state()
 
                 if not self.current_media or self._attr_playback_state != PlaybackState.PLAYING:
                     return
@@ -303,7 +308,7 @@ class MediaAssistantPlayer(Player):
                 album_name = self.current_media.album or ""
                 song_name = self.current_media.title or ""
                 artist_name = self.current_media.artist or ""
-                if app_running:
+                if app_running and self.flow_mode:
                     await self.roku_input(
                         {
                             "u": "",
