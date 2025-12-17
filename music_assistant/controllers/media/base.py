@@ -707,7 +707,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "available": provider_mapping.available,
                 "audio_format": serialize_to_json(provider_mapping.audio_format),
             }
-            for key in ("url", "details", "in_library"):
+            for key in ("url", "details", "in_library", "is_unique"):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             await self.mass.music.database.upsert(
