@@ -164,7 +164,6 @@ class MediaAssistantPlayer(Player):
 
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
-        self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -219,7 +218,6 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
-            self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
