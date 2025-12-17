@@ -79,6 +79,9 @@ class MediaAssistantPlayer(Player):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info("Received POWER command on player %s", self.display_name)
+
         try:
             device_info = await self.roku.update()
             app_running = False
@@ -86,20 +89,21 @@ class MediaAssistantPlayer(Player):
                 app_running = device_info.app.app_id == self.provider.config.get_value(
                     CONF_ROKU_APP_ID
                 )
+        except Exception:
+            self.logger.error("Failed to get app state on: %s", self.name)
 
+        try:
             # There's no real way to "Power" on the app since device wake up / app start
             # is handled by The roku once it receives the Play Media request
             if not powered:
                 if app_running:
                     await self.roku.remote("home")
                     await self.roku.remote("power")
-
-            logger = self.provider.logger.getChild(self.player_id)
-            logger.info("Received POWER command on player %s", self.display_name)
-            # update the player state in the player manager
-            self.update_state()
         except Exception:
             self.logger.error("Failed to change Power state on: %s", self.name)
+
+        # update the player state in the player manager
+        self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
