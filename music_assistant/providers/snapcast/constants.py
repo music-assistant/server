@@ -36,6 +36,10 @@ DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
+# Socket path template for control script communication
+# The {queue_id} placeholder will be replaced with the actual queue ID
+CONTROL_SOCKET_PATH_TEMPLATE = "/tmp/ma-snapcast-{queue_id}.sock"  # noqa: S108
+
 MASS_STREAM_PREFIX = "Music Assistant - "
 MASS_ANNOUNCEMENT_POSTFIX = " (announcement)"
 SNAPWEB_DIR = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")

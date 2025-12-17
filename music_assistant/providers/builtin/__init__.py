@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
@@ -74,6 +75,8 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
+CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
+
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -134,21 +137,6 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # migrate old image path from absolute to relative
-        # TODO: remove this after 2.5+ release
-        for old_path in (
-            "/usr/local/lib/python3.12/site-packages/music_assistant/server/helpers/resources/",
-            "/app/venv/lib/python3.12/site-packages/music_assistant/server/helpers/resources/",
-            "/Users/marcelvanderveldt/Workdir/music-assistant/core/music_assistant/server/helpers/resources/",
-        ):
-            query = (
-                "UPDATE playlists SET metadata = "
-                f"REPLACE (metadata, '{old_path}', '') "
-                f"WHERE playlists.metadata LIKE '%{old_path}%'"
-            )
-            if self.mass.music.database:
-                await self.mass.music.database.execute(query)
-                await self.mass.music.database.commit()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -544,6 +532,7 @@ class BuiltinProvider(MusicProvider):
             allow_seek=not is_radio,
         )
 
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
@@ -554,6 +543,7 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(limit=500, order_by="random_play_count")
@@ -562,22 +552,20 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
-        for in_library_only in (True, False):
-            for min_tracks_required in (10, 5, 1):
-                for random_album in await self.mass.music.albums.library_items(
-                    limit=25, order_by="random"
-                ):
-                    tracks = await self.mass.music.albums.tracks(
-                        random_album.item_id, random_album.provider, in_library_only=in_library_only
-                    )
-                    if len(tracks) < min_tracks_required:
-                        continue
-                    for idx, track in enumerate(tracks, 1):
-                        track.position = idx
-                    return tracks
+        for random_album in await self.mass.music.albums.library_items(
+            limit=1, order_by="random", extra_query="album_type != 'single'"
+        ):
+            tracks = await self.mass.music.albums.tracks(
+                random_album.item_id, random_album.provider
+            )
+            for idx, track in enumerate(tracks, 1):
+                track.position = idx
+            return tracks
         return []
 
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_artist(self) -> list[Track]:
         for in_library_only in (True, False):
             for min_tracks_required in (25, 10, 5, 1):
@@ -596,6 +584,7 @@ class BuiltinProvider(MusicProvider):
                     return tracks
         return []
 
+    @use_cache(expiration=30, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
@@ -620,6 +609,7 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    @use_cache(expiration=60, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_added_tracks(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_added_tracks(100)

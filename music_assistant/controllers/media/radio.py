@@ -124,11 +124,15 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        limit: int = 25,
+        item: Radio,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Radio to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
 

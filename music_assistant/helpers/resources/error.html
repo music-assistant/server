@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant - Error</title>
+    <link rel="stylesheet" href="resources/common.css">
+    <style>
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .error-container {
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
+                        0 0 0 1px var(--border);
+            padding: 48px 40px;
+            width: 100%;
+            max-width: 520px;
+            text-align: center;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+
+        .logo-icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 16px;
+        }
+
+        .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .logo h1 {
+            color: var(--fg);
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .error-icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 24px;
+            background: var(--error-bg);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .error-icon svg {
+            width: 32px;
+            height: 32px;
+            color: var(--error-text);
+        }
+
+        .error-title {
+            color: var(--fg);
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .error-message {
+            color: var(--text-secondary);
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 32px;
+            display: block;
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 15px 32px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            filter: brightness(1.1);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+            filter: brightness(0.95);
+        }
+
+        .help-text {
+            margin-top: 24px;
+            color: var(--text-tertiary);
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="logo">
+            <div class="logo-icon">
+                <img src="logo.png" alt="Music Assistant">
+            </div>
+            <h1>Music Assistant</h1>
+        </div>
+
+        <div class="error-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+        </div>
+
+        <h2 class="error-title" id="errorTitle">Access Denied</h2>
+        <p class="error-message" id="errorMessage">{{ERROR_MESSAGE}}</p>
+
+        <a href="/" class="btn btn-primary">Go to Home</a>
+
+        <p class="help-text">
+            If you believe this is an error, please contact your administrator.
+        </p>
+    </div>
+</body>
+</html>

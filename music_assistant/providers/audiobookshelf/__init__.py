@@ -62,7 +62,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -324,10 +323,6 @@ for more details.
         # progress guard
         self.progress_guard = ProgressGuard()
 
-        # update playlog information if just started
-        user = await self._client.get_my_user()
-        await self._set_playlog_from_user(user)
-
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
@@ -418,7 +413,6 @@ for more details.
 
         return abs_podcast
 
-    @use_cache(3600)
     @handle_refresh_token
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get single podcast."""
@@ -531,7 +525,6 @@ for more details.
 
         return abs_audiobook
 
-    @use_cache(3600)
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get a single audiobook.

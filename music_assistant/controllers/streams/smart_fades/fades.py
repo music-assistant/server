@@ -187,6 +187,14 @@ class SmartCrossFade(SmartFade):
             bpm=self.fade_out_analysis.bpm,
         )
 
+        # Additional verbose logging to debug rare failures
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "SmartCrossFade build: fade_out: %s, fade_in: %s",
+            self.fade_out_analysis,
+            self.fade_in_analysis,
+        )
+
         # Calculate optimal crossfade bars that fit in available buffer
         crossfade_bars = self._calculate_optimal_crossfade_bars()
 

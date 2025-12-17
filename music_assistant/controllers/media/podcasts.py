@@ -75,6 +75,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -90,6 +91,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -243,11 +245,15 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        limit: int = 25,
+        item: Podcast,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Podcast to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         msg = "Dynamic tracks not supported for Podcast MediaItem"
         raise NotImplementedError(msg)
 

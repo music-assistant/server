@@ -14,6 +14,7 @@ from uuid import uuid4
 import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
+from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.event import MassEvent
@@ -277,15 +278,21 @@ class MusicAssistant:
     def get_providers(
         self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
-        """Return all loaded/running Providers (instances), optionally filtered by ProviderType."""
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
+        """
+        Return all loaded/running Providers (instances).
 
+        Optionally filtered by ProviderType.
+        Note that this applies user filters for music providers (for non admin users).
+        """
+        user = get_current_user()
+        user_provider_filter = (
+            user.provider_filter if user and user.role != UserRole.ADMIN else None
+        )
         return [
             x
             for x in self._providers.values()
             if (provider_type is None or provider_type == x.type)
-            # handle optional user (music) provider filter
+            # apply user provider filter
             and (
                 not user_provider_filter
                 or x.instance_id in user_provider_filter
@@ -293,7 +300,7 @@ class MusicAssistant:
             )
         ]
 
-    @api_command("logging/get")
+    @api_command("logging/get", required_role=UserRole.ADMIN)
     async def get_application_log(self) -> str:
         """Return the application log from file."""
         logfile = os.path.join(self.storage_path, "musicassistant.log")
@@ -302,7 +309,11 @@ class MusicAssistant:
 
     @property
     def providers(self) -> list[ProviderInstanceType]:
-        """Return all loaded/running Providers (instances)."""
+        """
+        Return all loaded/running Providers (instances).
+
+        Note that this skips user filters so may only be called from internal code.
+        """
         return list(self._providers.values())
 
     @overload
@@ -349,6 +360,25 @@ class MusicAssistant:
             if return_unavailable or prov.available:
                 return prov
         return None
+
+    def get_provider_instances(
+        self,
+        domain: str,
+        return_unavailable: bool = False,
+        provider_type: ProviderType | None = None,
+    ) -> list[ProviderInstanceType]:
+        """
+        Return all provider instances for a given domain.
+
+        Note that this skips user filters so may only be called from internal code.
+        """
+        return [
+            prov
+            for prov in self._providers.values()
+            if (provider_type is None or provider_type == prov.type)
+            and prov.domain == domain
+            and (return_unavailable or prov.available)
+        ]
 
     def signal_event(
         self,
@@ -499,13 +529,12 @@ class MusicAssistant:
         self._tracked_timers[task_id] = handle
         return handle
 
-    def get_task(self, task_id: str) -> asyncio.Task[Any]:
+    def get_task(self, task_id: str) -> asyncio.Task[Any] | None:
         """Get existing scheduled task."""
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
             return existing
-        msg = "Task does not exist"
-        raise KeyError(msg)
+        return None
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel existing scheduled task."""

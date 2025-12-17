@@ -17,7 +17,11 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
+from music_assistant.helpers.scrobbler import (
+    ScrobblerConfig,
+    ScrobblerHelper,
+    create_scrobble_users_config_entry,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -135,7 +139,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,
@@ -150,4 +154,6 @@ async def get_config_entries(
             required=True,
             value=values.get(CONF_USER_TOKEN) if values else None,
         ),
+        # add user selection entry
+        await create_scrobble_users_config_entry(mass),
     )

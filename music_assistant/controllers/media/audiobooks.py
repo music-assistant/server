@@ -92,6 +92,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -107,6 +108,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -204,12 +206,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        limit: int = 25,
+        item: Audiobook,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
-        msg = "Dynamic tracks not supported for Radio MediaItem"
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Audiobook to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        msg = "Dynamic tracks not supported for Audiobook MediaItem"
         raise NotImplementedError(msg)
 
     async def match_provider(

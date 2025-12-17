@@ -517,25 +517,13 @@ class StreamsController(CoreController):
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
-
-        # readrate filter input args to control buffering
-        # we need to slowly feed the music to avoid the player stopping and later
-        # restarting (or completely failing) the audio stream by keeping the buffer short.
-        # this is reported to be an issue especially with Chromecast players.
-        # see for example: https://github.com/music-assistant/support/issues/3717
-        user_agent = request.headers.get("User-Agent", "")
         if queue_item.media_type == MediaType.RADIO:
             # keep very short buffer for radio streams
             # to keep them (more or less) realtime and prevent time outs
             read_rate_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "2"]
-        elif "Network_Module" in user_agent or "transferMode.dlna.org" in request.headers:
-            # and ofcourse we have an exception of the exception. Where most players actually NEED
-            # the readrate filter to avoid disconnecting, some other players (DLNA/MusicCast)
-            # actually fail when the filter is used. So we disable it completely for those players.
-            read_rate_input_args = None  # disable readrate for DLNA players
         else:
-            # allow buffer ahead of 10 seconds and read 1.5x faster than realtime
-            read_rate_input_args = ["-readrate", "1.5", "-readrate_initial_burst", "10"]
+            # just allow the player to buffer whatever it wants for single item streams
+            read_rate_input_args = None
 
         first_chunk_received = False
         bytes_sent = 0
@@ -674,8 +662,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of 8 seconds and read slightly faster than realtime
-            extra_input_args=["-readrate", "1.01", "-readrate_initial_burst", "8"],
+            # allow buffer ahead of 6 seconds and read rest in realtime
+            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "6"],
             chunk_size=icy_meta_interval if enable_icy else get_chunksize(output_format),
         ):
             try:
@@ -1210,37 +1198,71 @@ class StreamsController(CoreController):
         pre_announce_url: str = ANNOUNCE_ALERT_FILE,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special announcement stream."""
-        filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
+        announcement_data: asyncio.Queue[bytes | None] = asyncio.Queue(10)
+        # we are doing announcement in PCM first to avoid multiple encodings
+        # when mixing pre-announce and announcement
+        # also we have to deal with some TTS sources being super slow in delivering audio
+        # so we take an approach where we start fetching the announcement in the background
+        # while we can already start playing the pre-announce sound (if any)
 
-        if pre_announce:
-            # Note: TTS URLs might take a while to load cause the actual data are often generated
-            # asynchronously by the TTS provider. If we ask ffmpeg to mix the pre-announce, it will
-            # wait until it reads the TTS data, so the whole stream will be delayed. It is much
-            # faster to first play the pre-announce using a separate ffmpeg stream, and only
-            # afterwards play the TTS itself.
-            #
-            # For this to be effective the player itself needs to be able to start playback fast.
-            # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
-            # So far players seem to tolerate this, but it might break some player in the future.
+        pcm_format = (
+            output_format
+            if output_format.content_type.is_pcm()
+            else AudioFormat(
+                sample_rate=output_format.sample_rate,
+                content_type=ContentType.PCM_S16LE,
+                bit_depth=16,
+                channels=output_format.channels,
+            )
+        )
 
+        async def fetch_announcement() -> None:
+            fmt = announcement_url.rsplit(".")[-1]
             async for chunk in get_ffmpeg_stream(
-                audio_input=pre_announce_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
-                output_format=output_format,
-                filter_params=filter_params,
-                chunk_size=get_chunksize(output_format, 1),
+                audio_input=announcement_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                output_format=pcm_format,
+                chunk_size=get_chunksize(pcm_format, 1),
             ):
-                yield chunk
+                await announcement_data.put(chunk)
+            await announcement_data.put(None)  # signal end of stream
 
-        # work out output format/details
-        fmt = announcement_url.rsplit(".")[-1]
-        audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
+        self.mass.create_task(fetch_announcement())
+
+        async def _announcement_stream() -> AsyncGenerator[bytes, None]:
+            """Generate the PCM audio stream for the announcement + optional pre-announce."""
+            if pre_announce:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=pre_announce_url,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
+                    output_format=pcm_format,
+                    chunk_size=get_chunksize(pcm_format, 1),
+                ):
+                    yield chunk
+            # pad silence while we're waiting for the announcement to be ready
+            while announcement_data.empty():
+                yield b"\0" * int(
+                    pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
+                )
+                await asyncio.sleep(0.1)
+            # stream announcement
+            while True:
+                announcement_chunk = await announcement_data.get()
+                if announcement_chunk is None:
+                    break
+                yield announcement_chunk
+
+        if output_format == pcm_format:
+            # no need to re-encode, just yield the raw PCM stream
+            async for chunk in _announcement_stream():
+                yield chunk
+            return
+
+        # stream final announcement in requested output format
         async for chunk in get_ffmpeg_stream(
-            audio_input=announcement_url,
-            input_format=audio_format,
+            audio_input=_announcement_stream(),
+            input_format=pcm_format,
             output_format=output_format,
-            filter_params=filter_params,
-            chunk_size=get_chunksize(output_format, 1),
         ):
             yield chunk
 

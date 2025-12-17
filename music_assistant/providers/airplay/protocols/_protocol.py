@@ -55,11 +55,9 @@ class AirPlayProtocol(ABC):
         self._cli_proc: AsyncProcess | None = None
         self.audio_pipe = AsyncNamedPipeWriter(
             f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-audio",  # noqa: S108
-            self.logger,
         )
         self.commands_pipe = AsyncNamedPipeWriter(
             f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-cmd",  # noqa: S108
-            self.logger,
         )
         # State tracking
         self._stopped = False

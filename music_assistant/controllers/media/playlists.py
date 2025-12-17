@@ -440,13 +440,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: Playlist,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Playlist to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         return [
             x
-            async for x in self.tracks(item_id, provider_instance_id_or_domain)
+            async for x in self.tracks(item.item_id, item.provider)
             # filter out unavailable tracks
             if x.available
         ]
@@ -456,7 +461,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         This is used to link objects of different providers/qualities together.
         """
-        raise NotImplementedError
+        self.logger.debug("Matching providers for playlists is not possible, ignoring request")
 
     def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
         """Refresh playlist tracks by forcing a cache refresh."""

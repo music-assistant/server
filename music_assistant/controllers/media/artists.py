@@ -103,6 +103,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=True,
         )
 
     async def tracks(
@@ -124,8 +125,12 @@ class ArtistsController(MediaControllerBase[Artist]):
             # return in-library items only
             return result
         # return all (unique) items from all providers
-        unique_ids: set[str] = set()
+        # initialize unique_ids with db_items to prevent duplicates
+        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_providers = self.mass.music.get_unique_providers()
         for provider_mapping in library_artist.provider_mappings:
+            if provider_mapping.provider_instance not in unique_providers:
+                continue
             provider_tracks = await self.get_provider_artist_toptracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
@@ -162,8 +167,12 @@ class ArtistsController(MediaControllerBase[Artist]):
             # return in-library items only
             return result
         # return all (unique) items from all providers
-        unique_ids: set[str] = set()
+        # initialize unique_ids with db_items to prevent duplicates
+        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_providers = self.mass.music.get_unique_providers()
         for provider_mapping in library_artist.provider_mappings:
+            if provider_mapping.provider_instance not in unique_providers:
+                continue
             provider_albums = await self.get_provider_artist_albums(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
@@ -242,7 +251,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all tracks for an artist in the library/db."""
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
         query = f"tracks.item_id in ({subquery})"
-        return await self.mass.music.tracks._get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.tracks.library_items(extra_query=query)
 
     async def get_provider_artist_albums(
         self,
@@ -278,7 +287,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all in-library albums for an artist."""
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
         query = f"albums.item_id in ({subquery})"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.albums.library_items(extra_query=query)
 
     async def _add_library_item(
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
@@ -360,13 +369,18 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: Artist,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Artist to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         return await self.tracks(
-            item_id,
-            provider_instance_id_or_domain,
+            item.item_id,
+            item.provider,
             in_library_only=False,
         )
 
