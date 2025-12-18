@@ -103,7 +103,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            in_library_only=True,
         )
 
     async def tracks(

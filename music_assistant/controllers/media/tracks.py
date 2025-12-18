@@ -207,7 +207,6 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
-            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -228,7 +227,6 @@ class TracksController(MediaControllerBase[Track]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
-                in_library_only=True,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:

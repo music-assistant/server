@@ -2173,7 +2173,8 @@ class MusicController(CoreController):
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain IN "
-                "('filesystem_local', 'filesystem_smb', 'plex', 'jellyfin', 'opensubsonic', 'builtin');"  # noqa: E501
+                "('filesystem_local', 'filesystem_smb', 'plex', "
+                "'jellyfin', 'opensubsonic', 'builtin');"
             )
 
         # save changes
