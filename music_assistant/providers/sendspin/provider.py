@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.providers.hass import HomeAssistantProvider
+
 
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
@@ -53,6 +55,15 @@ class SendspinProvider(PlayerProvider):
                     await pending_event.wait()
                 player = SendspinPlayer(self, client_id)
                 self.logger.debug("Client %s connected", client_id)
+                if player.device_info.manufacturer == "ESPHome" and (
+                    hass := self.mass.get_provider("hass")
+                ):
+                    # Try to get device name from Home Assistant for ESPHome devices
+                    hass = cast("HomeAssistantProvider", hass)
+                    if hass_device := await hass.get_device_by_connection(client_id):
+                        player._attr_name = (
+                            hass_device["name_by_user"] or hass_device["name"] or player.name
+                        )
                 await self.mass.players.register(player)
             case ClientRemovedEvent(client_id):
                 self.logger.debug("Client %s disconnected", client_id)
