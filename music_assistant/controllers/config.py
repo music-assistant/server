@@ -422,13 +422,18 @@ class ConfigController:
             ):
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
 
-        return [
+        all_entries = [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
             *extra_entries,
             *await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
             ),
         ]
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
@@ -554,7 +559,12 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
 
-        return await player.get_config_entries(action=action, values=values)
+        all_entries = await player.get_config_entries(action=action, values=values)
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @overload
     async def get_player_config_value(
@@ -1036,10 +1046,15 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
-        return list(
+        all_entries = list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @api_command("config/core/save", required_role="admin")
     async def save_core_config(

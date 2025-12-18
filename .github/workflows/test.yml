@@ -28,7 +28,7 @@ jobs:
           python-version: "3.12"
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
       - name: Cache apt packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/apt-packages
           key: apt-ffmpeg-${{ runner.os }}
@@ -42,7 +42,7 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-3.12-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
@@ -69,7 +69,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
       - name: Cache apt packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/apt-packages
           key: apt-ffmpeg-${{ runner.os }}
@@ -83,7 +83,7 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
