@@ -181,7 +181,10 @@ class MusicController(CoreController):
         ):
             await self.cleanup_provider(removed_provider)
         # schedule cleanup task for matching provider instances
-        last_scan = cast("int", self.config.get_value(LAST_PROVIDER_INSTANCE_SCAN, 0))
+        last_scan = cast(
+            "int",
+            self.mass.config.get_raw_core_config_value(self.domain, LAST_PROVIDER_INSTANCE_SCAN, 0),
+        )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
 
