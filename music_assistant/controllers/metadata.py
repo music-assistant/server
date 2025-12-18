@@ -394,10 +394,12 @@ class MetaDataController(CoreController):
         image: MediaItemImage,
         size: int = 0,
         prefer_proxy: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
         prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
+        if image_format is None:
+            image_format = "png" if image.path.lower().endswith(".png") else "jpg"
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
@@ -417,11 +419,13 @@ class MetaDataController(CoreController):
         provider: str,
         size: int | None = None,
         base64: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             raise ProviderUnavailableError
+        if image_format is None:
+            image_format = "png" if path.lower().endswith(".png") else "jpg"
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             path = os.path.join(self._collage_images_dir, path.split("/collage/")[-1])
@@ -441,7 +445,9 @@ class MetaDataController(CoreController):
             # temporary for backwards compatibility
             provider = "builtin"
         size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", "png")
+        image_format = request.query.get("fmt", None)
+        if image_format is None:
+            image_format = "png" if path.lower().endswith(".png") else "jpg"
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         if "%" in path:
