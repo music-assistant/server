@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -51,12 +50,13 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
-    CONF_REFRESH_TOKEN,
+    CONF_REFRESH_TOKEN_DEV,
+    CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
 )
-from .helpers import get_librespot_binary
+from .helpers import get_librespot_binary, get_spotify_token
 from .parsers import (
     parse_album,
     parse_artist,
@@ -76,26 +76,46 @@ class NotModifiedError(Exception):
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
-    _auth_info: dict[str, Any] | None = None
+    # Global session (MA's client ID) - always present
+    _auth_info_global: dict[str, Any] | None = None
+    # Developer session (user's custom client ID) - optional
+    _auth_info_dev: dict[str, Any] | None = None
     _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
     _audiobooks_supported = False
-    custom_client_id_active: bool = False
+    # True if user has configured a custom client ID with valid authentication
+    dev_session_active: bool = False
     throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
+        # Default throttler for global session (heavy rate limited)
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
         self.streamer = LibrespotStreamer(self)
-        if self.config.get_value(CONF_CLIENT_ID):
-            # loosen the throttler a bit when a custom client id is used
-            self.throttler = ThrottlerManager(rate_limit=45, period=30)
-            self.custom_client_id_active = True
+
         # check if we have a librespot binary for this arch
         self._librespot_bin = await get_librespot_binary()
-        # try login which will raise if it fails
+        # try login which will raise if it fails (logs in global session)
         await self.login()
+
+        # Check if user has a custom client ID with valid dev token
+        client_id = self.config.get_value(CONF_CLIENT_ID)
+        dev_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+
+        if client_id and dev_token and self._sp_user:
+            await self.login_dev()
+            # Verify user matches
+            userinfo = await self._get_data("me", use_global_session=False)
+            if userinfo["id"] != self._sp_user["id"]:
+                raise LoginFailed(
+                    "Developer session must use the same Spotify account as the main session."
+                )
+            # loosen the throttler when a custom client id is used
+            self.throttler = ThrottlerManager(rate_limit=45, period=30)
+            self.dev_session_active = True
+            self.logger.info("Developer Spotify session active.")
+
         self._audiobooks_supported = await self._test_audiobook_support()
         if not self._audiobooks_supported:
             self.logger.info(
@@ -128,10 +148,6 @@ class SpotifyProvider(MusicProvider):
         if self.audiobooks_supported:
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
-        if not self.custom_client_id_active:
-            # Spotify has killed the similar tracks api for developers
-            # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
-            return {*features, ProviderFeature.SIMILAR_TRACKS}
         return features
 
     @property
@@ -548,18 +564,21 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
         uri = (
             "me/tracks"
             if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
         # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(uri, limit=1, offset=0)
+        cache_checksum = await self._get_etag(
+            uri, limit=1, offset=0, use_global_session=is_liked_songs
+        )
 
         page_size = 50
         offset = page * page_size
         spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset
+            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=is_liked_songs
         )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
@@ -658,8 +677,12 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 14)  # 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
+        # Recommendations endpoint is only available on global session (not developer API)
+        # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
         endpoint = "recommendations"
-        items = await self._get_data(endpoint, seed_tracks=prov_track_id, limit=limit)
+        items = await self._get_data(
+            endpoint, seed_tracks=prov_track_id, limit=limit, use_global_session=True
+        )
         return [parse_track(item, self) for item in items["tracks"] if (item and item["id"])]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -752,62 +775,115 @@ class SpotifyProvider(MusicProvider):
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
-        """Log-in Spotify and return Auth/token info."""
+        """Log-in Spotify global session and return Auth/token info.
+
+        This uses MA's global client ID which has full API access but heavy rate limits.
+        """
         # return existing token if we have one in memory
         if (
             not force_refresh
-            and self._auth_info
-            and (self._auth_info["expires_at"] > (time.time() - 600))
+            and self._auth_info_global
+            and (self._auth_info_global["expires_at"] > (time.time() - 600))
         ):
-            return self._auth_info
+            return self._auth_info_global
         # request new access token using the refresh token
-        if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
+        if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN_GLOBAL)):
             raise LoginFailed("Authentication required")
 
-        client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
-        params = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-        }
-        err = "Unknown error"
-        for _ in range(2):
-            async with self.mass.http_session.post(
-                "https://accounts.spotify.com/api/token", data=params
-            ) as response:
-                if response.status != 200:
-                    err = await response.text()
-                    if "revoked" in err:
-                        err_msg = f"Failed to refresh access token: {err}"
-                        # clear refresh token if it's invalid
-                        self.update_config_value(CONF_REFRESH_TOKEN, None)
-                        if self.available:
-                            # If we're already loaded, we need to unload and set an error
-                            self.unload_with_error(err_msg)
-                        raise LoginFailed(err_msg)
-                    # the token failed to refresh, we allow one retry
-                    await asyncio.sleep(2)
-                    continue
-                # if we reached this point, the token has been successfully refreshed
-                auth_info: dict[str, Any] = await response.json()
-                auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
-                self.logger.debug("Successfully refreshed access token")
-                break
-        else:
-            if self.available:
+        try:
+            auth_info = await get_spotify_token(
+                self.mass.http_session,
+                app_var(2),  # Always use MA's global client ID
+                cast("str", refresh_token),
+                "global",
+            )
+            self.logger.debug("Successfully refreshed global access token")
+        except LoginFailed as err:
+            if "revoked" in str(err):
+                # clear refresh token if it's invalid
+                self.update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                if self.available:
+                    self.unload_with_error(str(err))
+            elif self.available:
                 self.mass.create_task(
-                    self.mass.unload_provider_with_error(
-                        self.instance_id, f"Failed to refresh access token: {err}"
-                    )
+                    self.mass.unload_provider_with_error(self.instance_id, str(err))
                 )
-            raise LoginFailed(f"Failed to refresh access token: {err}")
+            raise
 
         # make sure that our updated creds get stored in memory + config
-        self._auth_info = auth_info
-        self.update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
-        # check if librespot still has valid auth
+        self._auth_info_global = auth_info
+        self.update_config_value(
+            CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
+        )
+
+        # Setup librespot with global token only if dev token is not configured
+        # (if dev token exists, librespot will be set up in login_dev instead)
+        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
+            await self._setup_librespot_auth(auth_info["access_token"])
+
+        # get logged-in user info
+        if not self._sp_user:
+            self._sp_user = userinfo = await self._get_data(
+                "me", auth_info=auth_info, use_global_session=True
+            )
+            self.mass.metadata.set_default_preferred_language(userinfo["country"])
+            self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
+        return auth_info
+
+    @lock
+    async def login_dev(self, force_refresh: bool = False) -> dict[str, Any]:
+        """Log-in Spotify developer session and return Auth/token info.
+
+        This uses the user's custom client ID which has less rate limits but limited API access.
+        """
+        # return existing token if we have one in memory
+        if (
+            not force_refresh
+            and self._auth_info_dev
+            and (self._auth_info_dev["expires_at"] > (time.time() - 600))
+        ):
+            return self._auth_info_dev
+        # request new access token using the refresh token
+        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+        client_id = self.config.get_value(CONF_CLIENT_ID)
+        if not refresh_token or not client_id:
+            raise LoginFailed("Developer authentication not configured")
+
+        try:
+            auth_info = await get_spotify_token(
+                self.mass.http_session,
+                cast("str", client_id),
+                cast("str", refresh_token),
+                "developer",
+            )
+            self.logger.debug("Successfully refreshed developer access token")
+        except LoginFailed as err:
+            if "revoked" in str(err):
+                # clear refresh token if it's invalid
+                self.update_config_value(CONF_REFRESH_TOKEN_DEV, None)
+                self.update_config_value(CONF_CLIENT_ID, None)
+            # Don't unload - we can still use the global session
+            self.dev_session_active = False
+            self.logger.warning(str(err))
+
+        # make sure that our updated creds get stored in memory + config
+        self._auth_info_dev = auth_info
+        self.update_config_value(CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True)
+
+        # Setup librespot with dev token (preferred over global token)
+        await self._setup_librespot_auth(auth_info["access_token"])
+
+        self.logger.info("Successfully logged in to Spotify developer session")
+        return auth_info
+
+    async def _setup_librespot_auth(self, access_token: str) -> None:
+        """Set up librespot authentication with the given access token.
+
+        :param access_token: Spotify access token to use for librespot authentication.
+        """
         if self._librespot_bin is None:
             raise LoginFailed("Librespot binary not available")
+
         args = [
             self._librespot_bin,
             "--cache",
@@ -821,20 +897,29 @@ class SpotifyProvider(MusicProvider):
             # librespot will then get its own token from spotify (somehow) and cache that.
             args += [
                 "--access-token",
-                auth_info["access_token"],
+                access_token,
             ]
             ret_code, stdout = await check_output(*args)
             if ret_code != 0:
                 # this should not happen, but guard it just in case
-                err = stdout.decode("utf-8").strip()
-                raise LoginFailed(f"Failed to verify credentials on Librespot: {err}")
+                err_str = stdout.decode("utf-8").strip()
+                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
 
-        # get logged-in user info
-        if not self._sp_user:
-            self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
-            self.mass.metadata.set_default_preferred_language(userinfo["country"])
-            self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
-        return auth_info
+    async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
+        """Get auth info for API requests, preferring dev session if available.
+
+        :param use_global_session: Force use of global session (for features not available on dev).
+        """
+        if use_global_session or not self.dev_session_active:
+            return await self.login()
+
+        # Try dev session first
+        try:
+            return await self.login_dev()
+        except LoginFailed:
+            # Fall back to global session
+            self.logger.debug("Falling back to global session after dev session failure")
+            return await self.login()
 
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
@@ -1006,12 +1091,17 @@ class SpotifyProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        """Get data from api."""
+        """Get data from api.
+
+        :param endpoint: API endpoint to call.
+        :param use_global_session: Force use of global session (for features not available on dev).
+        """
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
+        use_global_session = kwargs.pop("use_global_session", False)
         if not (auth_info := kwargs.pop("auth_info", None)):
-            auth_info = await self.login()
+            auth_info = await self._get_auth_info(use_global_session=use_global_session)
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
@@ -1038,7 +1128,10 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
-                self._auth_info = None
+                if use_global_session or not self.dev_session_active:
+                    self._auth_info_global = None
+                else:
+                    self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle 404 not found, convert to MediaNotFoundError
@@ -1054,7 +1147,9 @@ class SpotifyProvider(MusicProvider):
     async def _delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        auth_info = kwargs.pop("auth_info", await self.login())
+        use_global_session = kwargs.pop("use_global_session", False)
+        if not (auth_info := kwargs.pop("auth_info", None)):
+            auth_info = await self._get_auth_info(use_global_session=use_global_session)
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.delete(
             url, headers=headers, params=kwargs, json=data, ssl=True
@@ -1068,7 +1163,10 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
-                self._auth_info = None
+                if use_global_session or not self.dev_session_active:
+                    self._auth_info_global = None
+                else:
+                    self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
@@ -1079,7 +1177,9 @@ class SpotifyProvider(MusicProvider):
     async def _put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        auth_info = kwargs.pop("auth_info", await self.login())
+        use_global_session = kwargs.pop("use_global_session", False)
+        if not (auth_info := kwargs.pop("auth_info", None)):
+            auth_info = await self._get_auth_info(use_global_session=use_global_session)
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.put(
             url, headers=headers, params=kwargs, json=data, ssl=True
@@ -1093,7 +1193,10 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
-                self._auth_info = None
+                if use_global_session or not self.dev_session_active:
+                    self._auth_info_global = None
+                else:
+                    self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle temporary server error
@@ -1107,7 +1210,9 @@ class SpotifyProvider(MusicProvider):
     ) -> dict[str, Any]:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        auth_info = kwargs.pop("auth_info", await self.login())
+        use_global_session = kwargs.pop("use_global_session", False)
+        if not (auth_info := kwargs.pop("auth_info", None)):
+            auth_info = await self._get_auth_info(use_global_session=use_global_session)
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.post(
             url, headers=headers, params=kwargs, json=data, ssl=True
@@ -1121,7 +1226,10 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
-                self._auth_info = None
+                if use_global_session or not self.dev_session_active:
+                    self._auth_info_global = None
+                else:
+                    self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):

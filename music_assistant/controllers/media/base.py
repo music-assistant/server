@@ -129,6 +129,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # update existing item
             await self._update_library_item(library_id, item, overwrite=overwrite_existing)
         else:
+            for provider_mapping in item.provider_mappings:
+                if item.item_id == provider_mapping.item_id:
+                    provider_mapping.in_library = True
             # actually add a new item in the library db
             self.mass.music.match_provider_instances(item)
             async with self._db_add_lock:
@@ -568,13 +571,30 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self, item_id: str | int, provider_mapping: ProviderMapping
     ) -> None:
         """Add provider mapping to existing library item."""
+        await self.add_provider_mappings(item_id, [provider_mapping])
+
+    @final
+    async def add_provider_mappings(
+        self, item_id: str | int, provider_mappings: Iterable[ProviderMapping]
+    ) -> None:
+        """
+        Add provider mappings to existing library item.
+
+        :param item_id: The library item ID to add mappings to.
+        :param provider_mappings: The provider mappings to add.
+        """
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
-        # ignore if the mapping is already present
-        if provider_mapping in library_item.provider_mappings:
-            return
-        library_item.provider_mappings.add(provider_mapping)
-        await self.set_provider_mappings(db_id, library_item.provider_mappings)
+        new_mappings: set[ProviderMapping] = set()
+        for provider_mapping in provider_mappings:
+            # ignore if the mapping is already present
+            if provider_mapping not in library_item.provider_mappings:
+                new_mappings.add(provider_mapping)
+        if new_mappings:
+            library_item.provider_mappings.update(new_mappings)
+            self.mass.music.match_provider_instances(library_item)
+            await self.set_provider_mappings(db_id, library_item.provider_mappings)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @final
     async def remove_provider_mapping(
@@ -686,7 +706,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "available": provider_mapping.available,
                 "audio_format": serialize_to_json(provider_mapping.audio_format),
             }
-            for key in ("url", "details", "in_library"):
+            for key in ("url", "details", "in_library", "is_unique"):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             await self.mass.music.database.upsert(
@@ -719,10 +739,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     @abstractmethod
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: ItemCls,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The MediaItem to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+            When provided, these providers will be tried first before falling back to others.
+        """
 
     @final
     async def _get_library_items_by_query(
@@ -765,6 +791,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
+
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
             for db_row in await self.mass.music.database.get_rows_from_query(
@@ -854,7 +881,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                "AND provider_mappings.in_library = 1 "
+                f"AND provider_mappings.in_library = 1 "
                 f"AND ({' OR '.join(provider_conditions)})"
             )
 

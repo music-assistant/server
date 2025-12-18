@@ -6,7 +6,7 @@
   "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox.",
   "codeowners": ["@khers"],
   "credits": ["[py-opensonic](https://github.com/khers/py-opensonic)"],
-  "requirements": ["py-opensonic==7.0.2"],
+  "requirements": ["py-opensonic==7.0.3"],
   "documentation": "https://music-assistant.io/music-providers/subsonic/",
   "multi_instance": true
 }

@@ -16,6 +16,7 @@ from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEve
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -156,9 +157,10 @@ class SendspinProvider(PlayerProvider):
             len(ice_servers),
         )
 
-        # Create peer connection with ICE servers
+        # Create peer connection with ICE servers and persistent certificate
         config = RTCConfiguration(iceServers=[RTCIceServer(**server) for server in ice_servers])
-        pc = RTCPeerConnection(configuration=config)
+        certificate = self.mass.webserver.remote_access.certificate
+        pc = create_peer_connection_with_certificate(certificate, configuration=config)
 
         session = SendspinWebRTCSession(
             session_id=session_id,
@@ -400,7 +402,7 @@ class SendspinProvider(PlayerProvider):
         loop = asyncio.get_event_loop()
 
         # Register message handler FIRST to capture any messages sent immediately
-        @channel.on("message")  # type: ignore[misc]
+        @channel.on("message")  # type: ignore[untyped-decorator]
         def on_message(message: str | bytes) -> None:
             if session.forward_task and not session.forward_task.done():
                 loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
@@ -408,7 +410,7 @@ class SendspinProvider(PlayerProvider):
                 # Queue message even if forward task not started yet
                 session.message_queue.put_nowait(message)
 
-        @channel.on("close")  # type: ignore[misc]
+        @channel.on("close")  # type: ignore[untyped-decorator]
         def on_close() -> None:
             asyncio.run_coroutine_threadsafe(self._close_webrtc_session(session.session_id), loop)
 

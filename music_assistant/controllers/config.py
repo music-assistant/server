@@ -146,10 +146,6 @@ class ConfigController:
         self.save(immediate=True)
         LOGGER.info("Onboarding completed")
 
-        # (re)Announce to Home Assistant if running as addon
-        if self.mass.running_as_hass_addon:
-            await self.mass.webserver._announce_to_homeassistant()
-
     async def close(self) -> None:
         """Handle logic on server stop."""
         if not self._timer_handle:
@@ -219,7 +215,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers", required_role="admin")
+    @api_command("config/providers")
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -240,7 +236,7 @@ class ConfigController:
             and prov_conf["domain"] in prov_entries
         ]
 
-    @api_command("config/providers/get", required_role="admin")
+    @api_command("config/providers/get")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -938,7 +934,7 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set_default(conf_key, default_config.to_raw())
 
-    @api_command("config/core", required_role="admin")
+    @api_command("config/core")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -1337,6 +1333,17 @@ class ConfigController:
                 values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
+        # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if player_config.get("provider") != "builtin_player":
+                continue
+            self._data[CONF_PLAYERS].pop(player_id, None)
+            # Also remove any DSP config for this player
+            if CONF_PLAYER_DSP in self._data:
+                self._data[CONF_PLAYER_DSP].pop(player_id, None)
+            LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
+            changed = True
+
         # migrate player configs: always use instance_id for provider
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if "provider" not in player_config:
@@ -1479,6 +1486,10 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
-        # mark onboard as complete as soon as the first provider is added
-        await self.set_onboard_complete()
+        if not self.onboard_done:
+            # mark onboard as complete as soon as the first provider is added
+            await self.set_onboard_complete()
+        if manifest.type == ProviderType.MUSIC:
+            # correct any multi-instance provider mappings
+            self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
         return config

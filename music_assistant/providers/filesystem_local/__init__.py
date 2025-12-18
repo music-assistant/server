@@ -193,6 +193,8 @@ class LocalFileSystemProvider(MusicProvider):
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         music_features = {
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_ARTISTS,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
             *base_features,
@@ -319,6 +321,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        if media_type in (MediaType.ARTIST, MediaType.ALBUM):
+            # artists and albums are synced as part of track sync
+            return
         assert self.mass.music.database
         start_time = time.time()
         if self.sync_running:

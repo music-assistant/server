@@ -63,6 +63,7 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 
@@ -718,6 +719,8 @@ class SonosPlayer(Player):
 
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
+        if self.mass.closing:
+            return
         if self._listen_task and not self._listen_task.done():
             self.logger.debug("Already connected to Sonos player: %s", self.player_id)
             return
@@ -743,7 +746,7 @@ class SonosPlayer(Player):
                     self.logger.exception("Error in Sonos player listener: %s", err)
             finally:
                 self.logger.info("Disconnected from player API")
-                if self.connected:
+                if self.connected and not self.mass.closing:
                     # we didn't explicitly disconnect, try to reconnect
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
@@ -757,6 +760,8 @@ class SonosPlayer(Player):
 
     def reconnect(self, delay: float = 1) -> None:
         """Reconnect the player."""
+        if self.mass.closing:
+            return
         # use a task_id to prevent multiple reconnects
         task_id = f"sonos_reconnect_{self.player_id}"
         self.mass.call_later(delay, self._connect, delay, task_id=task_id)

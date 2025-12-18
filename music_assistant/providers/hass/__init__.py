@@ -378,8 +378,8 @@ class HomeAssistantProvider(PluginProvider):
         for entity_id in control_entity_ids:
             entity_platform = entity_id.split(".")[0]
             hass_state = hass_states.get(entity_id)
-            if hass_state:
-                name = f"{hass_state['attributes']['friendly_name']} ({entity_id})"
+            if hass_state and (friendly_name := hass_state["attributes"].get("friendly_name")):
+                name = f"{friendly_name} ({entity_id})"
             else:
                 name = entity_id
             control = PlayerControl(

@@ -11,31 +11,25 @@ import asyncio
 import contextlib
 import json
 import logging
-import secrets
-import string
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
+
+if TYPE_CHECKING:
+    from aiortc.rtcdtlstransport import RTCCertificate
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
 # Reduce verbose logging from aiortc/aioice
 logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
-
-
-def generate_remote_id() -> str:
-    """Generate a unique Remote ID in the format MA-XXXX-XXXX."""
-    chars = string.ascii_uppercase + string.digits
-    part1 = "".join(secrets.choice(chars) for _ in range(4))
-    part2 = "".join(secrets.choice(chars) for _ in range(4))
-    return f"MA-{part1}-{part2}"
 
 
 @dataclass
@@ -61,6 +55,10 @@ class WebRTCGateway:
     4. Bridges WebRTC DataChannel messages to the local WebSocket API
     """
 
+    # Close code 4000 means this connection was replaced by a new one from the same server
+    # In that case, we should not reconnect as another connection is now active
+    CLOSE_CODE_REPLACED = 4000
+
     # Default ICE servers (public STUN only - used as fallback)
     DEFAULT_ICE_SERVERS: list[dict[str, Any]] = [
         {"urls": "stun:stun.home-assistant.io:3478"},
@@ -72,19 +70,21 @@ class WebRTCGateway:
     def __init__(
         self,
         http_session: aiohttp.ClientSession,
+        remote_id: str,
+        certificate: RTCCertificate,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
         ice_servers: list[dict[str, Any]] | None = None,
-        remote_id: str | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
         """Initialize the WebRTC Gateway.
 
         :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
+        :param remote_id: Remote ID for this server instance.
+        :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
-        :param remote_id: Optional Remote ID to use (generated if not provided).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
             If provided, this will be called for each client connection to get fresh TURN
             credentials. If not provided, the static ice_servers will be used.
@@ -92,7 +92,8 @@ class WebRTCGateway:
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
-        self.remote_id = remote_id or generate_remote_id()
+        self._remote_id = remote_id
+        self._certificate = certificate
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
 
@@ -138,6 +139,9 @@ class WebRTCGateway:
 
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
+        if self._running:
+            self.logger.warning("WebRTC Gateway already running, skipping start")
+            return
         self.logger.info("Starting WebRTC Gateway")
         self.logger.debug("Signaling URL: %s", self.signaling_url)
         self.logger.debug("Local WS URL: %s", self.local_ws_url)
@@ -173,11 +177,12 @@ class WebRTCGateway:
         """Run the main loop with reconnection logic."""
         self.logger.debug("WebRTC Gateway _run() loop starting")
         while self._running:
+            should_reconnect = True
             try:
-                await self._connect_to_signaling()
+                should_reconnect = await self._connect_to_signaling()
                 # Connection closed gracefully or with error
                 self._is_connected = False
-                if self._running:
+                if self._running and should_reconnect:
                     self.logger.warning(
                         "Signaling server connection lost. Reconnecting in %ss...",
                         self._current_reconnect_delay,
@@ -191,24 +196,33 @@ class WebRTCGateway:
                         self._current_reconnect_delay,
                     )
 
-            if self._running:
+            if self._running and should_reconnect:
                 await asyncio.sleep(self._current_reconnect_delay)
                 # Exponential backoff with max limit
                 self._current_reconnect_delay = min(
                     self._current_reconnect_delay * 2, self._max_reconnect_delay
                 )
+            elif not should_reconnect:
+                # Connection was replaced by another instance, stop the run loop
+                self.logger.info("Connection replaced, stopping reconnection attempts")
+                self._running = False
+                break
 
-    async def _connect_to_signaling(self) -> None:
-        """Connect to the signaling server."""
+    async def _connect_to_signaling(self) -> bool:
+        """Connect to the signaling server.
+
+        :return: True if reconnection should be attempted, False if connection was replaced.
+        """
         if self._connecting:
             self.logger.warning("Already connecting to signaling server, skipping")
-            return
+            return False  # Don't trigger another reconnect cycle
         self._connecting = True
+        close_code: int | None = None
         self.logger.info("Connecting to signaling server: %s", self.signaling_url)
         try:
             self._signaling_ws = await self.http_session.ws_connect(
                 self.signaling_url,
-                heartbeat=None,
+                heartbeat=30.0,  # Send WebSocket ping every 30s to keep connection alive
             )
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
@@ -216,42 +230,17 @@ class WebRTCGateway:
             self._current_reconnect_delay = self._reconnect_delay
             self.logger.debug("Registration sent, waiting for confirmation...")
 
-            # Message loop
-            self.logger.debug("Entering message loop")
-            async for msg in self._signaling_ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        await self._handle_signaling_message(json.loads(msg.data))
-                    except Exception:
-                        self.logger.exception("Error handling signaling message")
-                elif msg.type == aiohttp.WSMsgType.PING:
-                    # WebSocket ping - autoping should handle this, just log
-                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PING")
-                elif msg.type == aiohttp.WSMsgType.PONG:
-                    # WebSocket pong response - just log
-                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PONG")
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
-                    # Close frame received
-                    self.logger.warning(
-                        "Signaling server sent close frame: code=%s, reason=%s",
-                        msg.data,
-                        msg.extra,
-                    )
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    self.logger.warning("Signaling server closed connection")
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self.logger.error("WebSocket error: %s", self._signaling_ws.exception())
-                    break
-                else:
-                    self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
+            # Run message loop and get close code
+            close_code = await self._signaling_message_loop(self._signaling_ws)
 
+            # Get close code from WebSocket if not already set from CLOSE message
+            if close_code is None:
+                close_code = self._signaling_ws.close_code
             ws_exception = self._signaling_ws.exception()
             self.logger.debug(
                 "Message loop exited - WebSocket closed: %s, close_code: %s, exception: %s",
                 self._signaling_ws.closed,
-                self._signaling_ws.close_code,
+                close_code,
                 ws_exception,
             )
         except TimeoutError:
@@ -265,13 +254,56 @@ class WebRTCGateway:
             self._connecting = False
             self._signaling_ws = None
 
+        # Check if this connection was replaced by another one
+        if close_code == self.CLOSE_CODE_REPLACED:
+            self.logger.info("Connection was replaced by another instance - not reconnecting")
+            return False
+
+        return True
+
+    async def _signaling_message_loop(self, ws: aiohttp.ClientWebSocketResponse) -> int | None:
+        """Process messages from the signaling WebSocket.
+
+        :param ws: The WebSocket connection to process messages from.
+        :return: Close code if connection was closed with a code, None otherwise.
+        """
+        close_code: int | None = None
+        self.logger.debug("Entering message loop")
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    await self._handle_signaling_message(json.loads(msg.data))
+                except Exception:
+                    self.logger.exception("Error handling signaling message")
+            elif msg.type == aiohttp.WSMsgType.PING:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PING")
+            elif msg.type == aiohttp.WSMsgType.PONG:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PONG")
+            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                close_code = msg.data
+                self.logger.warning(
+                    "Signaling server sent close frame: code=%s, reason=%s",
+                    msg.data,
+                    msg.extra,
+                )
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                self.logger.warning("Signaling server closed connection")
+                break
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                self.logger.error("WebSocket error: %s", ws.exception())
+                break
+            else:
+                self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
+        return close_code
+
     async def _register(self) -> None:
         """Register with the signaling server."""
         if self._signaling_ws:
             await self._signaling_ws.send_json(
                 {
                     "type": "register-server",
-                    "remoteId": self.remote_id,
+                    "remoteId": self._remote_id,
                     "iceServers": self.ice_servers,
                 }
             )
@@ -283,10 +315,9 @@ class WebRTCGateway:
         """
         msg_type = message.get("type")
 
-        if msg_type == "ping":
-            if self._signaling_ws:
-                await self._signaling_ws.send_json({"type": "pong"})
-        elif msg_type == "pong":
+        if msg_type in ("ping", "pong"):
+            # Ignore JSON-level ping/pong messages - we use WebSocket protocol-level heartbeat
+            # The signaling server still sends these for backward compatibility with older clients
             pass
         elif msg_type == "registered":
             self._is_connected = True
@@ -332,7 +363,7 @@ class WebRTCGateway:
         config = RTCConfiguration(
             iceServers=[RTCIceServer(**server) for server in session_ice_servers]
         )
-        pc = RTCPeerConnection(configuration=config)
+        pc = create_peer_connection_with_certificate(self._certificate, configuration=config)
         session = WebRTCSession(session_id=session_id, peer_connection=pc)
         self.sessions[session_id] = session
 
@@ -487,14 +518,14 @@ class WebRTCGateway:
             session.forward_to_local_task = asyncio.create_task(self._forward_to_local(session))
             session.forward_from_local_task = asyncio.create_task(self._forward_from_local(session))
 
-            @channel.on("message")  # type: ignore[misc]
+            @channel.on("message")  # type: ignore[untyped-decorator]
             def on_message(message: str) -> None:
                 # Called from aiortc thread, use call_soon_threadsafe
                 # Only queue message if session is still active
                 if session.forward_to_local_task and not session.forward_to_local_task.done():
                     loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
 
-            @channel.on("close")  # type: ignore[misc]
+            @channel.on("close")  # type: ignore[untyped-decorator]
             def on_close() -> None:
                 # Called from aiortc thread, use call_soon_threadsafe to schedule task
                 asyncio.run_coroutine_threadsafe(self._close_session(session.session_id), loop)

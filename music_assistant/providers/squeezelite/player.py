@@ -201,6 +201,10 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        # Clean up any existing multi-client stream
+        if self.multi_client_stream is not None:
+            await self.multi_client_stream.stop()
+            self.multi_client_stream = None
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.stop())
@@ -223,6 +227,11 @@ class SqueezelitePlayer(Player):
         if self.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise InvalidCommand(msg)
+
+        # Clean up any existing multi-client stream before starting a new one
+        if self.multi_client_stream is not None:
+            await self.multi_client_stream.stop()
+            self.multi_client_stream = None
 
         if not self.group_members:
             # Simple, single-player playback

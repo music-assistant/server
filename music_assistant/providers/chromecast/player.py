@@ -7,11 +7,12 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.event import MassEvent
+
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -27,11 +28,7 @@ from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIV
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    MASS_LOGO_ONLINE,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -39,9 +36,12 @@ from .constants import (
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
+    CONF_SENDSPIN_CODEC,
     CONF_SENDSPIN_SYNC_DELAY,
     CONF_USE_MASS_APP,
     CONF_USE_SENDSPIN_MODE,
+    DEFAULT_SENDSPIN_CODEC,
+    DEFAULT_SENDSPIN_SYNC_DELAY,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
     SENDSPIN_CAST_NAMESPACE,
@@ -126,6 +126,7 @@ class ChromecastPlayer(Player):
         uuid_str = player_id.replace("-", "")
         self.sendspin_player_id = f"cast-{uuid_str[:8].lower()}"
         self._last_sent_sync_delay: int | None = None
+        self._last_sent_codec: str | None = None
 
         # Subscribe to sendspin player events for state syncing
         self._on_unload_callbacks.append(
@@ -218,11 +219,13 @@ class ChromecastPlayer(Player):
             # Check if sync delay config changed and resend if needed
             current_sync_delay = int(
                 self.mass.config.get_raw_player_config_value(
-                    self.player_id, CONF_SENDSPIN_SYNC_DELAY, -350
+                    self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
                 )
             )
             if self._last_sent_sync_delay != current_sync_delay:
-                self.mass.create_task(self._send_sendspin_server_url())
+                # Update immediately to prevent duplicate sends from concurrent events
+                self._last_sent_sync_delay = current_sync_delay
+                self.mass.create_task(self._send_sendspin_sync_delay(current_sync_delay))
 
     async def get_config_entries(
         self,
@@ -259,10 +262,31 @@ class ChromecastPlayer(Player):
             label="Sendspin sync delay (ms)",
             description="Static delay in milliseconds to adjust audio synchronization. "
             "Positive values delay playback, negative values advance it. "
-            "Use this to compensate for device-specific audio latency.",
+            "Use this to compensate for device-specific audio latency. "
+            "Changes take effect immediately.",
             required=False,
-            default_value=-300,
+            default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
             range=(-1000, 1000),
+            hidden=not sendspin_available or self.type == PlayerType.GROUP,
+            immediate_apply=True,
+        )
+
+        # Codec config entry (only visible when sendspin provider is available)
+        sendspin_codec_config = ConfigEntry(
+            key=CONF_SENDSPIN_CODEC,
+            type=ConfigEntryType.STRING,
+            label="Sendspin audio codec",
+            description="Audio codec used for the experimental Sendspin mode. "
+            "FLAC offers good compression with lossless quality. "
+            "Opus provides better compression but may have compatibility issues. "
+            "PCM is uncompressed and uses more bandwidth.",
+            required=False,
+            default_value=DEFAULT_SENDSPIN_CODEC,
+            options=[
+                ConfigValueOption("FLAC (lossless, compressed)", "flac"),
+                ConfigValueOption("Opus (lossy, experimental)", "opus"),
+                ConfigValueOption("PCM (lossless, uncompressed)", "pcm"),
+            ],
             hidden=not sendspin_available or self.type == PlayerType.GROUP,
         )
 
@@ -279,7 +303,49 @@ class ChromecastPlayer(Player):
             CONF_ENTRY_SAMPLE_RATES_CAST,
             sendspin_config,
             sendspin_sync_delay_config,
+            sendspin_codec_config,
         ]
+
+    async def on_config_updated(self) -> None:
+        """Handle config updates - resend Sendspin config if needed."""
+        if not self.sendspin_mode_enabled:
+            return
+
+        # Get current config values
+        current_sync_delay = int(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
+            )
+        )
+        current_codec = str(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_SENDSPIN_CODEC, DEFAULT_SENDSPIN_CODEC
+            )
+        )
+
+        sync_delay_changed = self._last_sent_sync_delay != current_sync_delay
+        codec_changed = self._last_sent_codec != current_codec
+
+        if sync_delay_changed or codec_changed:
+            # Store old values for logging before updating state
+            old_codec = self._last_sent_codec
+            # Update immediately to prevent duplicate sends from concurrent events
+            self._last_sent_sync_delay = current_sync_delay
+            self._last_sent_codec = current_codec
+            try:
+                if codec_changed:
+                    # Codec changed - need full reconnection
+                    self.logger.debug(
+                        "Sendspin codec changed (%s -> %s), sending full config",
+                        old_codec,
+                        current_codec,
+                    )
+                    await self._send_sendspin_server_url()
+                else:
+                    # Only sync delay changed, don't reconnect, just send updated delay
+                    await self._send_sendspin_sync_delay(current_sync_delay)
+            except Exception as err:
+                self.logger.warning("Failed to send updated Sendspin config to Chromecast: %s", err)
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
@@ -337,9 +403,7 @@ class ChromecastPlayer(Player):
                     else:
                         self.logger.warning("Sendspin player did not connect, but app is running.")
                 else:
-                    # Fall back to standard app
-                    self.logger.warning("Sendspin app launch failed, falling back to standard app.")
-                    await self._launch_app()
+                    raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
             else:
                 await self._launch_app()
             self._attr_active_source = self.player_id
@@ -378,10 +442,6 @@ class ChromecastPlayer(Player):
         # send queue info to the CC
         media_controller = self.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
-        if media.media_type in (MediaType.RADIO, MediaType.FLOW_STREAM):
-            # in flow/radio mode we want to update the metadata more frequently
-            # so we can show the current track info
-            self._attr_poll_interval = 2
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -429,7 +489,6 @@ class ChromecastPlayer(Player):
             if (now - self.last_poll) >= 60:
                 self.last_poll = now
                 await asyncio.to_thread(self.cc.media_controller.update_status)
-            await self.update_flow_metadata()
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
@@ -443,18 +502,15 @@ class ChromecastPlayer(Player):
             self.status_listener.invalidate()
         self.status_listener = None
 
-    async def update_flow_metadata(self) -> None:
-        """Update the metadata of a cast player running the flow (or radio) stream."""
+    def _on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
         if not self.powered:
-            self._attr_poll_interval = 300
             return
         if not self.cc.media_controller.status.player_is_playing:
             return
         if self.active_cast_group:
             return
         if self.playback_state != PlaybackState.PLAYING:
-            return
-        if self.extra_attributes.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             return
         if not (current_media := self.current_media):
             return
@@ -468,62 +524,68 @@ class ChromecastPlayer(Player):
         ):
             # only update metadata for streams without known duration
             return
-        self._attr_poll_interval = 2
-        media_controller = self.cc.media_controller
-        # update metadata of current item chromecast
-        title = current_media.title or "Music Assistant"
-        artist = current_media.artist or ""
-        album = current_media.album or ""
-        image_url = current_media.image_url or MASS_LOGO_ONLINE
-        flow_meta_checksum = f"{current_media.uri}-{album}-{artist}-{title}-{image_url}"
-        if self.flow_meta_checksum != flow_meta_checksum:
-            # only update if something changed
-            self.flow_meta_checksum = flow_meta_checksum
-            queuedata = {
-                "type": "PLAY",
-                "mediaSessionId": media_controller.status.media_session_id,
-                "customData": {
-                    "metadata": {
-                        "metadataType": 3,
-                        "albumName": album,
-                        "songName": title,
-                        "artist": artist,
-                        "title": title,
-                        "images": [{"url": image_url}],
-                    }
-                },
-            }
-            await asyncio.to_thread(
-                media_controller.send_message, data=queuedata, inc_session_id=True
-            )
 
-        if len(getattr(media_controller.status, "items", [])) < 2:
-            # In flow mode, all queue tracks are sent to the player as continuous stream.
-            # add a special 'command' item to the queue
-            # this allows for on-player next buttons/commands to still work
-            cmd_next_url = self.mass.streams.get_command_url(self.player_id, "next")
-            msg = {
-                "type": "QUEUE_INSERT",
-                "mediaSessionId": media_controller.status.media_session_id,
-                "items": [
-                    {
-                        "media": {
-                            "contentId": cmd_next_url,
-                            "customData": {
-                                "uri": cmd_next_url,
-                                "queue_item_id": cmd_next_url,
+        async def update_flow_metadata() -> None:
+            """Update the metadata of a cast player running the flow (or radio) stream."""
+            media_controller = self.cc.media_controller
+            # update metadata of current item chromecast
+            title = current_media.title or "Music Assistant"
+            artist = current_media.artist or ""
+            album = current_media.album or ""
+            image_url = current_media.image_url or MASS_LOGO_ONLINE
+            flow_meta_checksum = f"{current_media.uri}-{album}-{artist}-{title}-{image_url}"
+            if self.flow_meta_checksum != flow_meta_checksum:
+                # only update if something changed
+                self.flow_meta_checksum = flow_meta_checksum
+                queuedata = {
+                    "type": "PLAY",
+                    "mediaSessionId": media_controller.status.media_session_id,
+                    "customData": {
+                        "metadata": {
+                            "metadataType": 3,
+                            "albumName": album,
+                            "songName": title,
+                            "artist": artist,
+                            "title": title,
+                            "images": [{"url": image_url}],
+                        }
+                    },
+                }
+                await asyncio.to_thread(
+                    media_controller.send_message, data=queuedata, inc_session_id=True
+                )
+
+            if len(getattr(media_controller.status, "items", [])) < 2:
+                # In flow mode, all queue tracks are sent to the player as continuous stream.
+                # add a special 'command' item to the queue
+                # this allows for on-player next buttons/commands to still work
+                cmd_next_url = self.mass.streams.get_command_url(self.player_id, "next")
+                msg = {
+                    "type": "QUEUE_INSERT",
+                    "mediaSessionId": media_controller.status.media_session_id,
+                    "items": [
+                        {
+                            "media": {
+                                "contentId": cmd_next_url,
+                                "customData": {
+                                    "uri": cmd_next_url,
+                                    "queue_item_id": cmd_next_url,
+                                },
+                                "contentType": "audio/flac",
+                                "streamType": STREAM_TYPE_LIVE,
+                                "metadata": {},
                             },
-                            "contentType": "audio/flac",
-                            "streamType": STREAM_TYPE_LIVE,
-                            "metadata": {},
-                        },
-                        "autoplay": True,
-                        "startTime": 0,
-                        "preloadTime": 0,
-                    }
-                ],
-            }
-            await asyncio.to_thread(media_controller.send_message, data=msg, inc_session_id=True)
+                            "autoplay": True,
+                            "startTime": 0,
+                            "preloadTime": 0,
+                        }
+                    ],
+                }
+                await asyncio.to_thread(
+                    media_controller.send_message, data=msg, inc_session_id=True
+                )
+
+        self.mass.create_task(update_flow_metadata())
 
     async def _launch_app(self) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
@@ -809,12 +871,19 @@ class ChromecastPlayer(Player):
         # Get sync delay from config (in milliseconds)
         sync_delay = int(
             self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SENDSPIN_SYNC_DELAY, -350
+                self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
             )
         )
+        # Get codec from config (default to flac)
+        codec = str(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_SENDSPIN_CODEC, DEFAULT_SENDSPIN_CODEC
+            )
+        )
+        codecs = [codec]
 
         def send_message() -> None:
-            # Send custom message to receiver with server URL, player ID, name, sync delay
+            # Send custom message to receiver with server URL, player ID, name, sync delay, codecs
             self.cc.socket_client.send_app_message(
                 SENDSPIN_CAST_NAMESPACE,
                 {
@@ -822,13 +891,32 @@ class ChromecastPlayer(Player):
                     "playerId": self.sendspin_player_id,
                     "playerName": player_name,
                     "syncDelay": sync_delay,
+                    "codecs": codecs,
                 },
             )
 
         self.logger.debug(
-            "Sending Sendspin config to Cast receiver: url=%s, name=%s, syncDelay=%dms",
+            "Sending Sendspin config to Cast receiver: url=%s, name=%s, syncDelay=%dms, codecs=%s",
             server_url,
             player_name,
+            sync_delay,
+            codecs,
+        )
+        await self.mass.loop.run_in_executor(None, send_message)
+        self._last_sent_sync_delay = sync_delay
+        self._last_sent_codec = codec
+
+    async def _send_sendspin_sync_delay(self, sync_delay: int) -> None:
+        """Send only the sync delay update to the Cast receiver (no reconnection)."""
+
+        def send_message() -> None:
+            self.cc.socket_client.send_app_message(
+                SENDSPIN_CAST_NAMESPACE,
+                {"syncDelay": sync_delay},
+            )
+
+        self.logger.debug(
+            "Sending Sendspin sync delay update to Cast receiver: syncDelay=%dms",
             sync_delay,
         )
         await self.mass.loop.run_in_executor(None, send_message)
@@ -872,11 +960,7 @@ class ChromecastPlayer(Player):
         # Sendspin player not connected yet - launch app and connect
         launch_success = await self._launch_sendspin_app()
         if not launch_success:
-            self.logger.error(
-                "Failed to launch Sendspin Cast App, falling back to standard playback"
-            )
-            await self._fallback_to_standard_playback(media)
-            return
+            raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
 
         # Give the app a moment to initialize
         await asyncio.sleep(1)
@@ -885,22 +969,8 @@ class ChromecastPlayer(Player):
         # Wait for the Sendspin player to connect
         sendspin_player = await self._wait_for_sendspin_player()
         if not sendspin_player:
-            self.logger.error(
-                "Failed to establish Sendspin connection, falling back to standard playback"
-            )
-            await self._fallback_to_standard_playback(media)
-            return
+            raise PlayerUnavailableError("Failed to establish Sendspin connection")
 
         # Redirect playback to the Sendspin player
         self.logger.info("Starting playback on Sendspin player %s", sendspin_player.player_id)
         await self.mass.players.play_media(sendspin_player.player_id, media)
-
-    async def _fallback_to_standard_playback(self, media: PlayerMedia) -> None:
-        """Fall back to standard Chromecast playback when Sendspin fails."""
-        await self._launch_app()
-        queuedata = {
-            "type": "LOAD",
-            "media": self._create_cc_media_item(media),
-        }
-        media_controller = self.cc.media_controller
-        await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)

@@ -95,7 +95,7 @@ class AuthenticationManager:
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
 
-        self._has_users = await self.database.get_count("users") > 0
+        self._has_users = await self._has_non_system_users()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -121,7 +121,7 @@ class AuthenticationManager:
             if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
                 prev_version = int(db_row["value"])
             else:
-                prev_version = 0
+                prev_version = DB_SCHEMA_VERSION
         except (KeyError, ValueError, Exception):
             # settings table doesn't exist yet or other error
             prev_version = 0
@@ -157,8 +157,7 @@ class AuthenticationManager:
             )
             """
         )
-
-        # Users table (decoupled from auth providers)
+        # Users table
         await self.database.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -175,7 +174,6 @@ class AuthenticationManager:
             )
             """
         )
-
         # User auth provider links (many-to-many)
         await self.database.execute(
             """
@@ -190,7 +188,6 @@ class AuthenticationManager:
             )
             """
         )
-
         # Auth tokens table
         await self.database.execute(
             """
@@ -207,7 +204,6 @@ class AuthenticationManager:
             )
             """
         )
-
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -260,7 +256,6 @@ class AuthenticationManager:
 
         # Migration to version 4: Make usernames case-insensitive by converting to lowercase
         if from_version < 4:
-            self.logger.info("Converting all usernames to lowercase for case-insensitive auth")
             await self.database.execute("UPDATE users SET username = LOWER(username)")
             await self.database.commit()
 
