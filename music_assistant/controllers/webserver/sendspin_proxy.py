@@ -118,7 +118,19 @@ class SendspinProxyHandler:
             await wsock.close(code=4001, message=b"Invalid or expired token")
             return False
 
+        # Auto-whitelist player for users with player filters
+        client_id = auth_data.get("client_id")
+        if client_id and user.player_filter and client_id not in user.player_filter:
+            self.logger.debug(
+                "Auto-whitelisting Sendspin player %s for user %s", client_id, user.username
+            )
+            new_filter = [*user.player_filter, client_id]
+            await self.webserver.auth.update_user_filters(
+                user, player_filter=new_filter, provider_filter=None
+            )
+
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
+        await wsock.send_str('{"type": "auth_ok"}')
         return True
 
     async def _proxy_messages(

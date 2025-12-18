@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, cast
 
 from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEvent, SendspinServer
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -38,9 +36,6 @@ class SendspinProvider(PlayerProvider):
         self._pending_unregisters = {}
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
-            self.mass.register_api_command(
-                "sendspin/connection_info", self.handle_get_connection_info
-            ),
         ]
 
     async def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
@@ -106,33 +101,3 @@ class SendspinProvider(PlayerProvider):
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
-
-    async def handle_get_connection_info(self, client_id: str) -> dict[str, Any]:
-        """
-        Get sendspin connection info.
-
-        This command auto-whitelists the player for users with player filters enabled,
-        allowing them to use the web player, and returns the WebSocket URL for connecting.
-
-        :param client_id: The sendspin client ID.
-        :return: Dictionary with ws_url for connecting to the sendspin proxy.
-        """
-        if user := get_current_user():
-            if user.player_filter and client_id not in user.player_filter:
-                self.logger.debug(
-                    "Auto-whitelisting Sendspin player %s for user %s",
-                    client_id,
-                    user.username,
-                )
-                new_filter = [*user.player_filter, client_id]
-                await self.mass.webserver.auth.update_user_filters(
-                    user, player_filter=new_filter, provider_filter=None
-                )
-                user.player_filter = new_filter
-
-        base_url = self.mass.webserver.base_url
-        parsed = urlparse(base_url)
-        ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-        ws_url = f"{ws_scheme}://{parsed.netloc}/sendspin"
-
-        return {"ws_url": ws_url}
