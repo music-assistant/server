@@ -26,12 +26,28 @@ jobs:
         uses: actions/setup-python@v6.1.0
         with:
           python-version: "3.12"
-      - name: Install dependencies
+      # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt-packages
+          key: apt-ffmpeg-${{ runner.os }}
+      - name: Install ffmpeg
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip build setuptools
-          pip install . .[test] -r requirements_all.txt
+          # Restore cached .deb files to apt cache (if any)
+          sudo cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          # Save .deb files for next run
+          mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
+      - name: Install uv
+        run: pip install uv
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-3.12-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+      - name: Install dependencies
+        run: uv pip install --system . .[test] -r requirements_all.txt
       - name: Lint/test with pre-commit
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
@@ -51,11 +67,27 @@ jobs:
         uses: actions/setup-python@v6.1.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+      # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt-packages
+          key: apt-ffmpeg-${{ runner.os }}
+      - name: Install ffmpeg
         run: |
-          sudo apt-get update
-          sudo apt-get install ffmpeg
-          python -m pip install --upgrade pip build setuptools
-          pip install .[server] .[test] -r requirements_all.txt
+          # Restore cached .deb files to apt cache (if any)
+          sudo cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          # Save .deb files for next run
+          mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
+      - name: Install uv
+        run: pip install uv
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+      - name: Install dependencies
+        run: uv pip install --system . .[test] -r requirements_all.txt
       - name: Pytest
         run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
