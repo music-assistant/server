@@ -158,6 +158,7 @@ class WebserverController(CoreController):
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
+                hidden=bool(values.get(CONF_ENABLE_SSL, False)) if values else False,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
