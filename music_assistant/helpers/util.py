@@ -308,18 +308,16 @@ async def is_port_in_use(port: int) -> bool:
 
     def _is_port_in_use() -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            # Set SO_REUSEADDR to match asyncio.start_server behavior
+            # This allows binding to ports in TIME_WAIT state
+            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 _sock.bind(("0.0.0.0", port))
             except OSError:
                 return True
         return False
 
-    try:
-        if await check_output(f"lsof -i :{port}"):
-            return True
-    except Exception:
-        # lsof not available (or some other error), fallback to socket check
-        return await asyncio.to_thread(_is_port_in_use)
+    return await asyncio.to_thread(_is_port_in_use)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
