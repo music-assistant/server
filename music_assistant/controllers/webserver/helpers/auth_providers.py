@@ -40,19 +40,34 @@ def normalize_username(username: str) -> str:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 
-async def get_ha_user_role(mass: MusicAssistant, ha_user_id: str) -> UserRole:
+async def get_ha_user_role(
+    mass: MusicAssistant, ha_user_id: str, wait_timeout: float = 30.0
+) -> UserRole:
     """
     Get user role based on Home Assistant admin status.
 
     :param mass: MusicAssistant instance.
     :param ha_user_id: The Home Assistant user ID to check.
+    :param wait_timeout: Maximum time to wait for HA provider to become available (default 30s).
     """
     try:
-        hass_prov = mass.get_provider("hass")
+        # Wait for the HA provider to become available (handles race condition at startup)
+        hass_prov = None
+        wait_interval = 0.5
+        elapsed = 0.0
+        while elapsed < wait_timeout:
+            hass_prov = mass.get_provider("hass")
+            if hass_prov is not None and hass_prov.available:
+                break
+            await asyncio.sleep(wait_interval)
+            elapsed += wait_interval
+            hass_prov = None  # Reset to None for the final check
+
         if hass_prov is None or not hass_prov.available:
             raise RuntimeError("Home Assistant provider not available")
 
-        hass_prov = cast("HomeAssistantProvider", hass_prov)
+        if TYPE_CHECKING:
+            hass_prov = cast("HomeAssistantProvider", hass_prov)
         # Query HA for user list to check admin status
         result = await hass_prov.hass.send_command("config/auth/list")
         if not result:
