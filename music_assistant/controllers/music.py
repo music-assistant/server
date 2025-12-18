@@ -400,12 +400,12 @@ class MusicController(CoreController):
                     if item is not None
                 ][:limit],
                 genres=[
-                item
-                for sublist in zip_longest(*[x.genres for x in results_per_provider])
-                for item in sublist
-                if item is not None
-            ][:limit],
-        )
+                    item
+                    for sublist in zip_longest(*[x.genres for x in results_per_provider])
+                    for item in sublist
+                    if item is not None
+                ][:limit],
+            )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
@@ -2002,8 +2002,6 @@ class MusicController(CoreController):
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
         self.logger.debug("Database cleanup done")
-        # rebuild genre index
-        await self.genres.rebuild_index()
 
     async def _setup_database(self) -> None:
         """Initialize database."""

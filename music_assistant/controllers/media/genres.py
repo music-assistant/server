@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -19,8 +18,6 @@ from music_assistant_models.media_items import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
-
     from music_assistant import MusicAssistant
 
 from music_assistant.constants import (
@@ -108,9 +105,6 @@ class GenresController(MediaControllerBase[Genre]):
         self.mass.register_api_command(
             "music/genres/split", self.split_genre, required_role="admin"
         )
-        # register event listeners
-        self.mass.subscribe(self._on_item_added, EventType.MEDIA_ITEM_ADDED)
-        self.mass.subscribe(self._on_item_added, EventType.MEDIA_ITEM_UPDATED)
         # base query is just the table, aliases are in genre_mappings JSON
         self.base_query = f"SELECT {self.db_table}.* FROM {self.db_table} "
 
@@ -188,141 +182,6 @@ class GenresController(MediaControllerBase[Genre]):
                 }
                 await self.mass.music.database.insert(self.db_table, genre_dict)
             self.logger.info(f"Initialized {len(BASE_GENRES)} base genres")
-
-    async def _on_item_added(self, event: MassEvent) -> None:
-        """Handle event when an item is added to the library."""
-        item = event.data
-        if not hasattr(item, "metadata") or not item.metadata.genres:
-            return
-        # trigger a rebuild of the genre index
-        # we debounce this to prevent too many rebuilds
-        self.mass.call_later(10, self.rebuild_index, task_id="rebuild_genre_index")
-
-    async def rebuild_index(self) -> None:
-        """Background task to rebuild the genre index."""
-        # wait for the database to be ready
-        await asyncio.sleep(5)
-        self.logger.info("Starting background genre index scan...")
-
-        # 1. Build a map of all existing genres and aliases
-        # map: clean_name -> set[genre_id]
-        genre_map: dict[str, set[int]] = {}
-
-        # load all genres
-        for genre in await self.library_items(limit=10000):
-            clean_name = create_safe_string(genre.name, True, True)
-            genre_map.setdefault(clean_name, set()).add(int(genre.item_id))
-            # add aliases from genre_mappings
-            if hasattr(genre, "aliases") and genre.aliases:
-                for alias in genre.aliases:
-                    clean_alias = create_safe_string(alias, True, True)
-                    genre_map.setdefault(clean_alias, set()).add(int(genre.item_id))
-
-        # 2. Scan all media types
-        genre_tracks = await self._scan_media_type(DB_TABLE_TRACKS, genre_map)
-        genre_albums = await self._scan_media_type(DB_TABLE_ALBUMS, genre_map)
-        genre_artists = await self._scan_media_type(DB_TABLE_ARTISTS, genre_map)
-        genre_playlists = await self._scan_media_type(DB_TABLE_PLAYLISTS, genre_map)
-        genre_podcasts = await self._scan_media_type(DB_TABLE_PODCASTS, genre_map)
-        genre_audiobooks = await self._scan_media_type(DB_TABLE_AUDIOBOOKS, genre_map)
-
-        # 3. Update database
-        count = 0
-        # get all unique genre ids
-        all_genre_ids = (
-            set(genre_tracks.keys())
-            | set(genre_albums.keys())
-            | set(genre_artists.keys())
-            | set(genre_playlists.keys())
-            | set(genre_podcasts.keys())
-            | set(genre_audiobooks.keys())
-        )
-
-        for genre_id in all_genre_ids:
-            track_ids = list(genre_tracks.get(genre_id, set()))
-            album_ids = list(genre_albums.get(genre_id, set()))
-            artist_ids = list(genre_artists.get(genre_id, set()))
-            playlist_ids = list(genre_playlists.get(genre_id, set()))
-            podcast_ids = list(genre_podcasts.get(genre_id, set()))
-            audiobook_ids = list(genre_audiobooks.get(genre_id, set()))
-
-            # get existing genre_mappings
-            db_row = await self.mass.music.database.get_row(self.db_table, {"item_id": genre_id})
-            genre_mappings = {}
-            if db_row and db_row["genre_mappings"]:
-                genre_mappings = json_loads(db_row["genre_mappings"])
-
-            # update media type IDs
-            if track_ids:
-                genre_mappings["track_ids"] = track_ids
-            if album_ids:
-                genre_mappings["album_ids"] = album_ids
-            if artist_ids:
-                genre_mappings["artist_ids"] = artist_ids
-            if playlist_ids:
-                genre_mappings["playlist_ids"] = playlist_ids
-            if podcast_ids:
-                genre_mappings["podcast_ids"] = podcast_ids
-            if audiobook_ids:
-                genre_mappings["audiobook_ids"] = audiobook_ids
-
-            await self.mass.music.database.update(
-                self.db_table,
-                {"item_id": genre_id},
-                {"genre_mappings": json_dumps(genre_mappings)},
-            )
-
-            count += 1
-            await asyncio.sleep(0)
-
-        self.logger.info("Finished background genre index scan. Updated %s genres.", count)
-
-    async def _scan_media_type(
-        self, table: str, genre_map: dict[str, set[int]]
-    ) -> dict[int, set[str]]:
-        """Scan a media type table for genres."""
-        genre_items: dict[int, set[str]] = {}
-        query = (
-            f"SELECT item_id, metadata FROM {table} "
-            "WHERE json_extract(metadata, '$.genres') IS NOT NULL"
-        )
-
-        limit = 500
-        offset = 0
-        while True:
-            rows = await self.mass.music.database.get_rows_from_query(
-                query, limit=limit, offset=offset
-            )
-            if not rows:
-                break
-
-            for row in rows:
-                try:
-                    metadata = json_loads(row["metadata"])
-                    if not (genres := metadata.get("genres")):
-                        continue
-                    item_id = str(row["item_id"])
-                    for genre_name in genres:
-                        clean_name = create_safe_string(genre_name, True, True)
-                        if not (genre_ids := genre_map.get(clean_name)):
-                            genre = await self.create(genre_name)
-                            genre_ids = {int(genre.item_id)}
-                            genre_map[clean_name] = genre_ids
-                        for genre_id in genre_ids:
-                            if genre_id not in genre_items:
-                                genre_items[genre_id] = set()
-                            genre_items[genre_id].add(item_id)
-                except Exception as err:
-                    self.logger.warning(
-                        "Error processing item %s from %s for genres: %s",
-                        row["item_id"],
-                        table,
-                        str(err),
-                    )
-
-            offset += limit
-            await asyncio.sleep(0)  # yield to event loop
-        return genre_items
 
     async def resolve_genre(self, raw_genre_string: str) -> Genre:
         """
@@ -446,9 +305,6 @@ class GenresController(MediaControllerBase[Genre]):
 
         await super().remove_item_from_library(db_id, recursive)
 
-        if aliases_to_restore:
-            self.mass.create_task(self.rebuild_index())
-
     async def merge_genres(self, source_genre_ids: list[int], target_genre_id: int) -> None:
         """Merge multiple genres into one."""
         target_genre = await self.get_library_item(target_genre_id)
@@ -486,9 +342,6 @@ class GenresController(MediaControllerBase[Genre]):
             # 4. Delete source genre (without restoring aliases!)
             await self.remove_item_from_library(source_id, restore_aliases=False)
 
-        # Trigger a rescan to update links
-        self.mass.create_task(self.rebuild_index())
-
     async def split_genre(self, genre_id: int, alias: str) -> None:
         """Split a genre by removing an alias and creating a new genre from it."""
         # 1. Remove alias from source genre
@@ -496,9 +349,6 @@ class GenresController(MediaControllerBase[Genre]):
 
         # 2. Create new genre from alias
         await self.create(alias)
-
-        # 3. Trigger a rescan to update links
-        self.mass.create_task(self.rebuild_index())
 
     async def _add_library_item(
         self,
@@ -580,26 +430,34 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Track]:
         """Return tracks for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            track_ids = genre_mappings.get("track_ids", [])
-            if not track_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in track_ids)
-            return await self.mass.music.tracks.library_items(
-                extra_query=f"{DB_TABLE_TRACKS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query tracks that have ANY of these genre names in their metadata.genres array
+        # Use json_each to expand the genres array for searching
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_TRACKS}.*
+            FROM {DB_TABLE_TRACKS},
+            json_each(json_extract({DB_TABLE_TRACKS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_TRACKS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Track.from_dict(self._parse_db_row(row)) for row in rows]
 
     async def genre_albums(
         self,
@@ -609,26 +467,33 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Album]:
         """Return albums for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            album_ids = genre_mappings.get("album_ids", [])
-            if not album_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in album_ids)
-            return await self.mass.music.albums.library_items(
-                extra_query=f"{DB_TABLE_ALBUMS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query albums that have ANY of these genre names in their metadata.genres array
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_ALBUMS}.*
+            FROM {DB_TABLE_ALBUMS},
+            json_each(json_extract({DB_TABLE_ALBUMS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_ALBUMS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Album.from_dict(self._parse_db_row(row)) for row in rows]
 
     async def genre_artists(
         self,
@@ -638,26 +503,33 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Artist]:
         """Return artists for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            artist_ids = genre_mappings.get("artist_ids", [])
-            if not artist_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in artist_ids)
-            return await self.mass.music.artists.library_items(
-                extra_query=f"{DB_TABLE_ARTISTS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query artists that have ANY of these genre names in their metadata.genres array
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_ARTISTS}.*
+            FROM {DB_TABLE_ARTISTS},
+            json_each(json_extract({DB_TABLE_ARTISTS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_ARTISTS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Artist.from_dict(self._parse_db_row(row)) for row in rows]
 
     async def genre_playlists(
         self,
@@ -667,26 +539,33 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Playlist]:
         """Return playlists for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            playlist_ids = genre_mappings.get("playlist_ids", [])
-            if not playlist_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in playlist_ids)
-            return await self.mass.music.playlists.library_items(
-                extra_query=f"{DB_TABLE_PLAYLISTS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query playlists that have ANY of these genre names in their metadata.genres array
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_PLAYLISTS}.*
+            FROM {DB_TABLE_PLAYLISTS},
+            json_each(json_extract({DB_TABLE_PLAYLISTS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_PLAYLISTS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Playlist.from_dict(self._parse_db_row(row)) for row in rows]
 
     async def genre_podcasts(
         self,
@@ -696,26 +575,33 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Podcast]:
         """Return podcasts for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            podcast_ids = genre_mappings.get("podcast_ids", [])
-            if not podcast_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in podcast_ids)
-            return await self.mass.music.podcasts.library_items(
-                extra_query=f"{DB_TABLE_PODCASTS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query podcasts that have ANY of these genre names in their metadata.genres array
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_PODCASTS}.*
+            FROM {DB_TABLE_PODCASTS},
+            json_each(json_extract({DB_TABLE_PODCASTS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_PODCASTS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Podcast.from_dict(self._parse_db_row(row)) for row in rows]
 
     async def genre_audiobooks(
         self,
@@ -725,23 +611,30 @@ class GenresController(MediaControllerBase[Genre]):
         offset: int = 0,
     ) -> list[Audiobook]:
         """Return audiobooks for the given genre."""
-        if provider_instance_id_or_domain == "library":
-            # Get the IDs from the database directly
-            db_row = await self.mass.music.database.get_row(
-                self.db_table, {"item_id": int(item_id)}
-            )
-            if not db_row or not (genre_mappings_raw := db_row["genre_mappings"]):
-                return []
+        if provider_instance_id_or_domain != "library":
+            return []
 
-            genre_mappings = json_loads(genre_mappings_raw)
-            audiobook_ids = genre_mappings.get("audiobook_ids", [])
-            if not audiobook_ids:
-                return []
+        genre = await self.get_library_item(item_id)
 
-            ids_str = ",".join(str(x) for x in audiobook_ids)
-            return await self.mass.music.audiobooks.library_items(
-                extra_query=f"{DB_TABLE_AUDIOBOOKS}.item_id IN ({ids_str})",
-                limit=limit,
-                offset=offset,
-            )
-        return []
+        # Build list of genre names to search for (main name + aliases)
+        genre_names = [genre.name]
+        if hasattr(genre, "aliases") and genre.aliases:
+            genre_names.extend(genre.aliases)
+
+        # Query audiobooks that have ANY of these genre names in their metadata.genres array
+        # Build named parameters for genre names
+        genre_params = {f"genre_{i}": name for i, name in enumerate(genre_names)}
+        placeholders = ",".join(f":{key}" for key in genre_params)
+        query = f"""
+            SELECT DISTINCT {DB_TABLE_AUDIOBOOKS}.*
+            FROM {DB_TABLE_AUDIOBOOKS},
+            json_each(json_extract({DB_TABLE_AUDIOBOOKS}.metadata, '$.genres')) as genre_value
+            WHERE genre_value.value IN ({placeholders})
+            ORDER BY {DB_TABLE_AUDIOBOOKS}.sort_name
+        """
+
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, genre_params, limit=limit, offset=offset
+        )
+
+        return [Audiobook.from_dict(self._parse_db_row(row)) for row in rows]

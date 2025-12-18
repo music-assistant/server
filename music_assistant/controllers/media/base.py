@@ -875,7 +875,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
         join_parts.clear()
 
-    @final
+    # @final
     def _apply_filters(
         self,
         query_parts: list[str],
@@ -949,7 +949,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query
 
-    @final
+    # @final
     @staticmethod
     def _parse_db_row(db_row: Mapping[str, Any]) -> dict[str, Any]:
         """Parse raw db Mapping into a dict."""
