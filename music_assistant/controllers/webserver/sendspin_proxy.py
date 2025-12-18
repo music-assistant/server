@@ -16,9 +16,14 @@ from typing import TYPE_CHECKING
 from aiohttp import WSMsgType, web
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_authenticated_user,
+    is_request_from_ingress,
+)
 
 if TYPE_CHECKING:
     import aiohttp
+    from music_assistant_models.auth import User
 
     from music_assistant.controllers.webserver import WebserverController
 
@@ -55,18 +60,30 @@ class SendspinProxyHandler:
 
         self.logger.debug("Sendspin proxy connection from %s", request.remote)
 
-        try:
-            auth_result = await self._authenticate(wsock)
-            if not auth_result:
+        # Check for ingress authentication (HA handles auth via headers)
+        if is_request_from_ingress(request):
+            user = await get_authenticated_user(request)
+            if not user:
+                self.logger.warning(
+                    "Ingress auth failed for sendspin proxy from %s", request.remote
+                )
+                await wsock.close(code=4001, message=b"Ingress authentication failed")
                 return wsock
-        except TimeoutError:
-            self.logger.warning("Auth timeout for sendspin proxy from %s", request.remote)
-            await wsock.close(code=4001, message=b"Authentication timeout")
-            return wsock
-        except Exception:
-            self.logger.exception("Auth error for sendspin proxy")
-            await wsock.close(code=4001, message=b"Authentication error")
-            return wsock
+            self.logger.debug("Sendspin proxy authenticated via ingress: %s", user.username)
+        else:
+            # Regular auth via first message
+            try:
+                user = await self._authenticate(wsock)
+                if not user:
+                    return wsock
+            except TimeoutError:
+                self.logger.warning("Auth timeout for sendspin proxy from %s", request.remote)
+                await wsock.close(code=4001, message=b"Authentication timeout")
+                return wsock
+            except Exception:
+                self.logger.exception("Auth error for sendspin proxy")
+                await wsock.close(code=4001, message=b"Authentication error")
+                return wsock
 
         try:
             internal_ws = await self.mass.http_session.ws_connect(INTERNAL_SENDSPIN_URL)
@@ -87,38 +104,38 @@ class SendspinProxyHandler:
 
         return wsock
 
-    async def _authenticate(self, wsock: web.WebSocketResponse) -> bool:
+    async def _authenticate(self, wsock: web.WebSocketResponse) -> User | None:
         """Wait for and validate authentication message.
 
         :param wsock: The client WebSocket connection.
-        :return: True if authentication succeeded, False otherwise.
+        :return: The authenticated user, or None if authentication failed.
         """
         async with asyncio.timeout(10):
             msg = await wsock.receive()
 
         if msg.type != WSMsgType.TEXT:
             await wsock.close(code=4001, message=b"Expected text message for auth")
-            return False
+            return None
 
         try:
             auth_data = json.loads(msg.data)
         except json.JSONDecodeError:
             await wsock.close(code=4001, message=b"Invalid JSON in auth message")
-            return False
+            return None
 
         if auth_data.get("type") != "auth":
             await wsock.close(code=4001, message=b"First message must be auth")
-            return False
+            return None
 
         token = auth_data.get("token")
         if not token:
             await wsock.close(code=4001, message=b"Token required in auth message")
-            return False
+            return None
 
         user = await self.webserver.auth.authenticate_with_token(token)
         if not user:
             await wsock.close(code=4001, message=b"Invalid or expired token")
-            return False
+            return None
 
         # Auto-whitelist player for users with player filters
         client_id = auth_data.get("client_id")
@@ -133,7 +150,7 @@ class SendspinProxyHandler:
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')
-        return True
+        return user
 
     async def _proxy_messages(
         self,
