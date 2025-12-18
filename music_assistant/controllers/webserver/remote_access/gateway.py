@@ -38,11 +38,18 @@ class WebRTCSession:
 
     session_id: str
     peer_connection: RTCPeerConnection
-    data_channel: Any = None  # Main API channel (ma-api)
+    # Main API channel (ma-api) - bridges to local MA WebSocket API
+    data_channel: Any = None
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     forward_to_local_task: asyncio.Task[None] | None = None
     forward_from_local_task: asyncio.Task[None] | None = None
+    # Sendspin channel - bridges to internal sendspin server
+    sendspin_channel: Any = None
+    sendspin_ws: Any = None
+    sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
+    sendspin_to_local_task: asyncio.Task[None] | None = None
+    sendspin_from_local_task: asyncio.Task[None] | None = None
 
 
 class WebRTCGateway:
@@ -77,17 +84,16 @@ class WebRTCGateway:
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
-        """Initialize the WebRTC Gateway.
+        """
+        Initialize the WebRTC Gateway.
 
-        :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
+        :param http_session: Shared aiohttp ClientSession for HTTP/WebSocket connections.
         :param remote_id: Remote ID for this server instance.
         :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
-            If provided, this will be called for each client connection to get fresh TURN
-            credentials. If not provided, the static ice_servers will be used.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
@@ -369,8 +375,12 @@ class WebRTCGateway:
 
         @pc.on("datachannel")
         def on_datachannel(channel: Any) -> None:
-            session.data_channel = channel
-            asyncio.create_task(self._setup_data_channel(session))
+            if channel.label == "sendspin":
+                session.sendspin_channel = channel
+                asyncio.create_task(self._setup_sendspin_channel(session))
+            else:
+                session.data_channel = channel
+                asyncio.create_task(self._setup_data_channel(session))
 
         @pc.on("icecandidate")
         async def on_icecandidate(candidate: Any) -> None:
@@ -658,9 +668,115 @@ class WebRTCGateway:
             with contextlib.suppress(asyncio.CancelledError):
                 await session.forward_from_local_task
 
+        # Cancel sendspin forwarding tasks
+        if session.sendspin_to_local_task and not session.sendspin_to_local_task.done():
+            session.sendspin_to_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.sendspin_to_local_task
+
+        if session.sendspin_from_local_task and not session.sendspin_from_local_task.done():
+            session.sendspin_from_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.sendspin_from_local_task
+
         # Close connections
         if session.local_ws and not session.local_ws.closed:
             await session.local_ws.close()
+        if session.sendspin_ws and not session.sendspin_ws.closed:
+            await session.sendspin_ws.close()
         if session.data_channel:
             session.data_channel.close()
+        if session.sendspin_channel:
+            session.sendspin_channel.close()
         await session.peer_connection.close()
+
+    async def _setup_sendspin_channel(self, session: WebRTCSession) -> None:
+        """Set up sendspin data channel and bridge to internal sendspin server.
+
+        :param session: The WebRTC session.
+        """
+        channel = session.sendspin_channel
+        if not channel:
+            return
+
+        try:
+            session.sendspin_ws = await self.http_session.ws_connect("ws://127.0.0.1:8927/sendspin")
+            self.logger.debug("Sendspin channel connected for session %s", session.session_id)
+
+            loop = asyncio.get_event_loop()
+
+            session.sendspin_to_local_task = asyncio.create_task(
+                self._forward_sendspin_to_local(session)
+            )
+            session.sendspin_from_local_task = asyncio.create_task(
+                self._forward_sendspin_from_local(session)
+            )
+
+            @channel.on("message")  # type: ignore[untyped-decorator]
+            def on_message(message: str | bytes) -> None:
+                if session.sendspin_to_local_task and not session.sendspin_to_local_task.done():
+                    loop.call_soon_threadsafe(session.sendspin_queue.put_nowait, message)
+
+            @channel.on("close")  # type: ignore[untyped-decorator]
+            def on_close() -> None:
+                if session.sendspin_ws and not session.sendspin_ws.closed:
+                    asyncio.run_coroutine_threadsafe(session.sendspin_ws.close(), loop)
+
+        except Exception:
+            self.logger.exception(
+                "Failed to connect sendspin channel to internal server for session %s",
+                session.session_id,
+            )
+            # Clean up partial state on failure
+            if session.sendspin_to_local_task:
+                session.sendspin_to_local_task.cancel()
+            if session.sendspin_from_local_task:
+                session.sendspin_from_local_task.cancel()
+            if session.sendspin_ws and not session.sendspin_ws.closed:
+                await session.sendspin_ws.close()
+
+    async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
+        """Forward messages from sendspin DataChannel to internal sendspin server.
+
+        :param session: The WebRTC session.
+        """
+        try:
+            while session.sendspin_ws and not session.sendspin_ws.closed:
+                message = await session.sendspin_queue.get()
+                if session.sendspin_ws and not session.sendspin_ws.closed:
+                    if isinstance(message, bytes):
+                        await session.sendspin_ws.send_bytes(message)
+                    else:
+                        await session.sendspin_ws.send_str(message)
+        except asyncio.CancelledError:
+            self.logger.debug(
+                "Sendspin forward to local task cancelled for session %s",
+                session.session_id,
+            )
+            raise
+        except Exception:
+            self.logger.exception("Error forwarding sendspin to local")
+
+    async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:
+        """Forward messages from internal sendspin server to sendspin DataChannel.
+
+        :param session: The WebRTC session.
+        """
+        if not session.sendspin_ws or session.sendspin_ws.closed:
+            return
+
+        try:
+            async for msg in session.sendspin_ws:
+                if msg.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:
+                    if session.sendspin_channel and session.sendspin_channel.readyState == "open":
+                        session.sendspin_channel.send(msg.data)
+                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                    break
+        except asyncio.CancelledError:
+            self.logger.debug(
+                "Sendspin forward from local task cancelled for session %s",
+                session.session_id,
+            )
+            raise
+        except Exception:
+            self.logger.exception("Error forwarding sendspin from local")

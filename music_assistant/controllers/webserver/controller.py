@@ -56,6 +56,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
+from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ class WebserverController(CoreController):
         self.manifest.icon = "web-box"
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
+        self._sendspin_proxy = SendspinProxyHandler(self)
 
     @property
     def base_url(self) -> str:
@@ -288,6 +290,8 @@ class WebserverController(CoreController):
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
+        # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
+        routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
