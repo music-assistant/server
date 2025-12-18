@@ -1425,6 +1425,9 @@ class Player(ABC):
                 elapsed_time=int(active_queue.elapsed_time),
                 elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
             )
+        elif active_queue:
+            # queue is active but no current item
+            return None
         # return native current media if no group/queue is active
         if self._current_media:
             return PlayerMedia(

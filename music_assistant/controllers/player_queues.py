@@ -119,6 +119,9 @@ class CompareState(TypedDict):
     next_item_id: str | None
     current_item: QueueItem | None
     elapsed_time: int
+    # last_playing_elapsed_time: elapsed time from the last PLAYING state update
+    # used to determine if a track was fully played when transitioning to idle
+    last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
     output_formats: list[str] | None
@@ -1385,6 +1388,8 @@ class PlayerQueuesController(CoreController):
             )
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
+        # also signal update to the player itself so it can update its current_media
+        self.mass.players.trigger_player_update(queue_id)
         # save state
         self.mass.create_task(
             self.mass.cache.set(
@@ -2102,11 +2107,28 @@ class PlayerQueuesController(CoreController):
                 next_item_id=None,
                 current_item=None,
                 elapsed_time=0,
+                last_playing_elapsed_time=0,
                 stream_title=None,
                 codec_type=None,
                 output_formats=None,
             ),
         )
+        # update last_playing_elapsed_time only when the player is actively playing
+        # use corrected_elapsed_time which accounts for time since last update
+        # this preserves the last known elapsed time when transitioning to idle/paused
+        prev_playing_elapsed = prev_state["last_playing_elapsed_time"]
+        prev_item_id = prev_state["current_item_id"]
+        current_item_id = queue.current_item.queue_item_id if queue.current_item else None
+        if queue.state == PlaybackState.PLAYING:
+            current_elapsed = int(queue.corrected_elapsed_time)
+            if current_item_id != prev_item_id:
+                # new track started, reset the elapsed time tracker
+                last_playing_elapsed_time = current_elapsed
+            else:
+                # same track, use the max of current and previous to handle timing issues
+                last_playing_elapsed_time = max(current_elapsed, prev_playing_elapsed)
+        else:
+            last_playing_elapsed_time = prev_playing_elapsed
         new_state = CompareState(
             queue_id=queue_id,
             state=queue.state,
@@ -2114,6 +2136,7 @@ class PlayerQueuesController(CoreController):
             next_item_id=queue.next_item.queue_item_id if queue.next_item else None,
             current_item=queue.current_item,
             elapsed_time=int(queue.elapsed_time),
+            last_playing_elapsed_time=last_playing_elapsed_time,
             stream_title=(
                 queue.current_item.streamdetails.stream_title
                 if queue.current_item and queue.current_item.streamdetails
@@ -2129,6 +2152,8 @@ class PlayerQueuesController(CoreController):
         changed_keys = get_changed_keys(dict(prev_state), dict(new_state))
         with suppress(KeyError):
             changed_keys.remove("next_item_id")
+        with suppress(KeyError):
+            changed_keys.remove("last_playing_elapsed_time")
 
         # store the new state
         if queue.active:
@@ -2159,8 +2184,6 @@ class PlayerQueuesController(CoreController):
 
         if send_update:
             self.signal_update(queue_id)
-            # also signal update to the player itself so it can update its current_media
-            self.mass.players.trigger_player_update(queue_id)
 
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
@@ -2338,16 +2361,30 @@ class PlayerQueuesController(CoreController):
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
         # now determine if the item was fully played before clearing
-        if queue.current_item and (streamdetails := queue.current_item.streamdetails):
-            duration = streamdetails.duration or queue.current_item.duration or 24 * 3600
-        elif queue.current_item:
-            duration = queue.current_item.duration or 24 * 3600
+
+        # For flow mode, check if the last track was fully streamed using the stream log
+        # This is more reliable than elapsed_time which can be reset/incorrect
+        if queue.flow_mode and queue.flow_mode_stream_log:
+            last_log_entry = queue.flow_mode_stream_log[-1]
+            if last_log_entry.seconds_streamed is not None:
+                # The last track finished streaming, safe to clear queue
+                self.mass.create_task(_clear_queue_delayed())
+            return
+
+        # For non-flow mode, use prev_state values since queue state may have been updated/reset
+        prev_item = prev_state["current_item"]
+        if prev_item and (streamdetails := prev_item.streamdetails):
+            duration = streamdetails.duration or prev_item.duration or 24 * 3600
+        elif prev_item:
+            duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
             self.mass.create_task(_clear_queue_delayed())
             return
 
-        seconds_played = int(queue.elapsed_time)
+        # use last_playing_elapsed_time which preserves the elapsed time from when the player
+        # was still playing (before transitioning to idle where elapsed_time may be reset to 0)
+        seconds_played = int(prev_state["last_playing_elapsed_time"])
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
