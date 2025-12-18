@@ -1361,6 +1361,8 @@ class PlayerController(CoreController):
             player.display_name,
         )
         # signal event that a player was added
+        # update state without signaling event first (to ensure all attributes are set correctly)
+        player.update_state(signal_event=False)
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
 
         # register playerqueue for this player

@@ -1021,7 +1021,7 @@ class Player(ABC):
         return self._state
 
     @final
-    def update_state(self, force_update: bool = False) -> None:
+    def update_state(self, force_update: bool = False, signal_event: bool = True) -> None:
         """
         Update the PlayerState with the current state of the player.
 
@@ -1030,6 +1030,7 @@ class Player(ABC):
 
         :param force_update: If True, a state update event will be
         pushed even if the state has not actually changed.
+        :param signal_event: If True, signal the state update event to the PlayerController.
         """
         self.mass.verify_event_loop_thread("player.update_state")
         # clear the dict for the cached properties
@@ -1052,7 +1053,8 @@ class Player(ABC):
         if len(changed_values) == 0 and not force_update:
             return
         # signal the state update to the PlayerController
-        self.mass.players.signal_player_state_update(self, changed_values)
+        if signal_event:
+            self.mass.players.signal_player_state_update(self, changed_values)
 
     @final
     def set_current_media(  # noqa: PLR0913
