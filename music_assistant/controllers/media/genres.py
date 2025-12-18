@@ -412,15 +412,22 @@ class GenresController(MediaControllerBase[Genre]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: Genre,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
-        # For genres, we can return random tracks from this genre
-        # This is a bit complex as we need to join tracks with genres
-        # For now, return empty list or implement a basic query
-        # TODO: Implement radio mode for genres
-        return []
+        """Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Genre to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        # For genres, return random tracks from this genre for radio mode
+        # Get up to 50 random tracks from the genre to use as seed tracks
+        return await self.genre_tracks(
+            item_id=str(item.item_id),
+            provider_instance_id_or_domain=item.provider,
+            limit=50,
+            offset=0,
+        )
 
     async def genre_tracks(
         self,
