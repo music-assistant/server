@@ -289,7 +289,7 @@ class PandoraProvider(MusicProvider):
             stream_metadata=StreamMetadata(
                 title="Pandora Radio",
             ),
-            stream_metadata_update_callback=self._update_stream_metadata,
+            # stream_metadata_update_callback=self._update_stream_metadata,
             stream_metadata_update_interval=5,  # Check every 5 seconds
         )
 
