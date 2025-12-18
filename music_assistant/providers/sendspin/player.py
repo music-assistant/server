@@ -228,9 +228,9 @@ class SendspinPlayer(Player):
             self._attr_volume_muted = player_client.muted
         self._attr_available = True
         self.is_web_player = sendspin_client.name.startswith(
-            "Music Assistant Web ("  # The regular Web Interface
+            "Web ("  # The regular Web Interface
         ) or sendspin_client.name.startswith(
-            "Music Assistant ("  # The PWA App
+            "PWA ("  # The PWA App
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
 
