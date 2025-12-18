@@ -220,11 +220,11 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
     if not hass.connected:
         return ()
     for state in await hass.get_states():
-        if "friendly_name" not in state["attributes"]:
-            # filter out invalid/unavailable players
-            continue
         entity_platform = state["entity_id"].split(".")[0]
-        name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
+        if "friendly_name" not in state["attributes"]:
+            name = state["entity_id"]
+        else:
+            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
 
         if entity_platform in ("switch", "input_boolean"):
             # simple on/off controls are suitable as power and mute controls
