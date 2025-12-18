@@ -175,6 +175,9 @@ def extract_frontend_changes(prs):
                     continue
                 if re.match(r"^[•\-\*]\s*Chore\(deps", stripped_line, re.IGNORECASE):
                     continue
+                # Skip "No changes" entries
+                if re.match(r"^[•\-\*]\s*No changes\s*$", stripped_line, re.IGNORECASE):
+                    continue
 
                 # Add the change
                 frontend_changes.append(stripped_line)

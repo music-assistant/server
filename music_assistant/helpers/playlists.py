@@ -48,7 +48,12 @@ class PlaylistItem:
 
 
 def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
-    """Very simple m3u parser.
+    """Lightweight M3U/M3U8 parser for playlist URL extraction.
+
+    This parser returns a flat list of playlist items with basic metadata.
+    Supports HLS master playlist tags (#EXT-X-STREAM-INF, #EXT-X-KEY) for
+    stream selection and quality sorting, but does not preserve segment-level
+    details or playlist structure.
 
     Based on https://github.com/dvndrsn/M3uParser/blob/master/m3uparser.py
     """
@@ -75,7 +80,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                 length = None
             title = info[1].strip()
         elif line.startswith("#EXT-X-STREAM-INF:"):
-            # HLS stream properties
+            # HLS master playlist variant stream properties (BANDWIDTH, RESOLUTION, etc.)
             # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
             stream_info = {}
             for part in line.replace("#EXT-X-STREAM-INF:", "").split(","):
@@ -84,7 +89,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                 kev_value_parts = part.strip().split("=")
                 stream_info[kev_value_parts[0]] = kev_value_parts[1]
         elif line.startswith("#EXT-X-KEY:"):
-            # Extract encryption key URI if present
+            # Extract encryption key URI from master/media playlist
             # METHOD=NONE means no encryption, so explicitly clear the key
             if "METHOD=NONE" in line:
                 key = None

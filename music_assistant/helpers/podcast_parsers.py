@@ -43,9 +43,8 @@ def parse_podcast(
     *,
     feed_url: str,
     parsed_feed: dict[str, Any],
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     mass_item_id: str | None = None,
 ) -> Podcast:
     """Podcast -> Mass Podcast.
@@ -58,7 +57,7 @@ def parse_podcast(
         item_id=item_id,
         name=parsed_feed.get("title", "NO_TITLE"),
         publisher=publisher,
-        provider=lookup_key,
+        provider=instance_id,
         uri=parsed_feed.get("link"),
         provider_mappings={
             ProviderMapping(
@@ -91,7 +90,7 @@ def parse_podcast(
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=podcast_cover,
-                    provider=lookup_key,
+                    provider=instance_id,
                     remotely_accessible=True,
                 )
             ]
@@ -123,9 +122,8 @@ def parse_podcast_episode(
     prov_podcast_id: str,
     episode_cnt: int,
     podcast_cover: str | None = None,
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     mass_item_id: str | None = None,
 ) -> PodcastEpisode | None:
     """Podcast Episode -> Mass Podcast Episode.
@@ -157,13 +155,13 @@ def parse_podcast_episode(
     episode_id = f"{prov_podcast_id} {guid_or_stream_url}" if mass_item_id is None else mass_item_id
     mass_episode = PodcastEpisode(
         item_id=episode_id,
-        provider=lookup_key,
+        provider=instance_id,
         name=episode_title,
         duration=int(episode_duration),
         position=episode_cnt,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
-            provider=lookup_key,
+            provider=instance_id,
             name=episode_title,
             media_type=MediaType.PODCAST,
         ),
@@ -200,7 +198,7 @@ def parse_podcast_episode(
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=episode_cover,
-                    provider=lookup_key,
+                    provider=instance_id,
                     remotely_accessible=True,
                 )
             ]

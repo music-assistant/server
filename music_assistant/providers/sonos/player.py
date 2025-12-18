@@ -155,7 +155,7 @@ class SonosPlayer(Player):
         )
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
-        self._attr_can_group_with = {self._provider.lookup_key}
+        self._attr_can_group_with = {self._provider.instance_id}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
@@ -385,7 +385,9 @@ class SonosPlayer(Player):
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
 
-        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
+        if (
+            not self.flow_mode and media.source_id and media.queue_item_id
+        ) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -573,7 +575,7 @@ class SonosPlayer(Player):
                     if x.player_id != airplay_player.player_id
                 )
             else:
-                self._attr_can_group_with = {self._provider.lookup_key}
+                self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
             group_parent: SonosPlayer = self.mass.players.get(
@@ -717,6 +719,8 @@ class SonosPlayer(Player):
 
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
+        if self.mass.closing:
+            return
         if self._listen_task and not self._listen_task.done():
             self.logger.debug("Already connected to Sonos player: %s", self.player_id)
             return
@@ -742,7 +746,7 @@ class SonosPlayer(Player):
                     self.logger.exception("Error in Sonos player listener: %s", err)
             finally:
                 self.logger.info("Disconnected from player API")
-                if self.connected:
+                if self.connected and not self.mass.closing:
                     # we didn't explicitly disconnect, try to reconnect
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
@@ -756,6 +760,8 @@ class SonosPlayer(Player):
 
     def reconnect(self, delay: float = 1) -> None:
         """Reconnect the player."""
+        if self.mass.closing:
+            return
         # use a task_id to prevent multiple reconnects
         task_id = f"sonos_reconnect_{self.player_id}"
         self.mass.call_later(delay, self._connect, delay, task_id=task_id)

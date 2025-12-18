@@ -112,6 +112,33 @@
             color: var(--text-secondary);
             font-size: 15px;
         }
+
+        .close-button {
+            display: none;
+            margin-top: 24px;
+            padding: 12px 24px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .close-button:hover {
+            filter: brightness(1.1);
+            transform: translateY(-1px);
+        }
+
+        .close-button:active {
+            transform: translateY(0);
+        }
+
+        .close-button.show {
+            display: inline-block;
+        }
     </style>
 </head>
 <body>
@@ -127,6 +154,7 @@
     <div class="callback-container">
         <h1 id="status">Login Successful!</h1>
         <p id="message">Redirecting...</p>
+        <button class="close-button" id="closeButton" onclick="handleManualClose()">Close Window</button>
     </div>
     <script>
         const statusEl = document.getElementById('status');
@@ -135,22 +163,14 @@
         const redirectUrl = '{REDIRECT_URL}';
         const requiresConsent = {REQUIRES_CONSENT};
 
-        // Detect if running in PWA/standalone mode
-        // iOS Safari sets window.navigator.standalone
-        // Other browsers support display-mode media query
         const isPWA = (window.navigator.standalone === true) ||
                       window.matchMedia('(display-mode: standalone)').matches ||
                       window.matchMedia('(display-mode: minimal-ui)').matches;
 
-        console.log('OAuth callback - isPWA:', isPWA, 'opener:', window.opener !== null);
-
-        // Validate URL to prevent XSS attacks
-        // Note: Server-side validation is the primary security layer
         function isValidRedirectUrl(url) {
             if (!url) return false;
             try {
                 const parsed = new URL(url, window.location.origin);
-                // Allow http, https, and custom mobile app schemes
                 const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
                 return allowedProtocols.includes(parsed.protocol);
             } catch {
@@ -158,63 +178,128 @@
             }
         }
 
+        function attemptAutoClose() {
+            window.close();
+            if (window.self !== window.top) {
+                window.self.close();
+            }
+            if (window.opener) {
+                try {
+                    window.opener.focus();
+                    window.close();
+                } catch (e) {
+                    // Silently fail
+                }
+            }
+        }
+
+        function showManualCloseButton() {
+            const closeButton = document.getElementById('closeButton');
+            if (closeButton) {
+                closeButton.classList.add('show');
+            }
+            messageEl.textContent = 'Authentication successful! You can close this window.';
+        }
+
+        function handleManualClose() {
+            attemptAutoClose();
+            setTimeout(() => {
+                if (window.opener && !window.opener.closed) {
+                    window.blur();
+                }
+                messageEl.textContent = 'Please close this window manually.';
+                statusEl.textContent = 'Ready to Close';
+            }, 500);
+        }
+
         function performRedirect() {
             const isPopup = window.opener !== null;
+            const isRemoteAuth = redirectUrl === 'about:blank';
 
-            // PWA mode: Always use direct redirect since popups don't work properly
-            // The OAuth flow on iOS PWAs opens in Safari, then redirects back to PWA
-            // This means window.opener is always null and localStorage is not shared
+            if (isRemoteAuth) {
+                statusEl.textContent = 'Authentication Successful';
+                messageEl.textContent = 'Closing window...';
+                setTimeout(() => {
+                    attemptAutoClose();
+                    setTimeout(() => {
+                        showManualCloseButton();
+                    }, 300);
+                }, 100);
+                return;
+            }
+
+            // PWA mode: OAuth flow on iOS PWAs opens in Safari, then redirects back to PWA
+            // window.opener is null and localStorage is not shared between contexts
             if (isPWA) {
                 statusEl.textContent = 'Login Complete!';
                 messageEl.textContent = 'Returning to app...';
-
-                // Don't store token in localStorage here - it's already in the redirect URL
-                // The frontend will extract it from the URL query parameter
-                // PWAs on iOS may not share localStorage between Safari and the PWA context
-
-                console.log('PWA mode - redirecting to:', redirectUrl);
-
-                // Navigate to redirect URL (token is already in URL as query param 'code')
                 if (isValidRedirectUrl(redirectUrl)) {
                     window.location.href = redirectUrl;
                 } else {
-                    console.warn('Invalid redirect URL, using fallback:', redirectUrl);
                     window.location.href = '/';
                 }
                 return;
             }
 
             if (isPopup) {
-                // Popup mode - send token to parent and close
-                statusEl.textContent = 'Login Complete!';
-                messageEl.textContent = 'Closing popup...';
+                const isExternalRedirect = redirectUrl && !redirectUrl.startsWith(window.location.origin);
 
-                if (window.opener && !window.opener.closed) {
-                    try {
-                        window.opener.postMessage({
-                            type: 'oauth_success',
-                            token: token,
-                            redirectUrl: redirectUrl
-                        }, window.location.origin);
-                    } catch (e) {
-                        console.error('Failed to send postMessage:', e);
+                if (isExternalRedirect) {
+                    // External redirect - must redirect to complete OAuth flow
+                    statusEl.textContent = 'Authentication Successful';
+                    messageEl.textContent = 'Redirecting...';
+
+                    if (isValidRedirectUrl(redirectUrl)) {
+                        setTimeout(() => {
+                            window.location.href = redirectUrl;
+                        }, 500);
+                    } else {
+                        messageEl.textContent = 'Redirect failed. Please close this window.';
+                        showManualCloseButton();
                     }
+                } else {
+                    // Internal redirect - close popup and post message
+                    statusEl.textContent = 'Login Complete!';
+                    messageEl.textContent = 'Closing popup...';
+
+                    if (window.opener && !window.opener.closed) {
+                        try {
+                            window.opener.postMessage({
+                                type: 'oauth_success',
+                                token: token,
+                                redirectUrl: redirectUrl
+                            }, window.location.origin);
+                        } catch (e) {
+                            // Silently fail
+                        }
+                    }
+
+                    setTimeout(() => {
+                        attemptAutoClose();
+                        setTimeout(() => {
+                            showManualCloseButton();
+                        }, 300);
+                    }, 100);
+                }
+            } else {
+                statusEl.textContent = 'Authentication Successful';
+                messageEl.textContent = 'Redirecting...';
+                localStorage.setItem('auth_token', token);
+
+                if (isValidRedirectUrl(redirectUrl)) {
+                    setTimeout(() => {
+                        window.location.href = redirectUrl;
+                    }, 500);
+                } else {
+                    setTimeout(() => {
+                        messageEl.textContent = 'Redirect failed. Please close this window.';
+                        showManualCloseButton();
+                    }, 1000);
                 }
 
                 setTimeout(() => {
-                    window.close();
-                    setTimeout(() => {
-                        messageEl.textContent = 'Please close this window manually and return to the login page.';
-                    }, 500);
-                }, 1000);
-            } else {
-                // Same window mode - redirect directly
-                localStorage.setItem('auth_token', token);
-                if (isValidRedirectUrl(redirectUrl)) {
-                    window.location.href = redirectUrl;
-                } else {
-                    window.location.href = '/';
-                }
+                    showManualCloseButton();
+                }, 2000);
             }
         }
 
@@ -227,9 +312,7 @@
             window.location.href = '/';
         }
 
-        // Check if consent is required
         if (requiresConsent) {
-            // Show consent banner with domain
             try {
                 const parsed = new URL(redirectUrl);
                 document.getElementById('redirectDomain').textContent = parsed.origin;
@@ -240,7 +323,6 @@
             statusEl.textContent = 'Authorization Required';
             messageEl.textContent = 'Please review the authorization request above.';
         } else {
-            // Trusted domain, proceed with redirect
             performRedirect();
         }
     </script>

@@ -84,10 +84,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
-            # a playlist can only have one provider so simply pick the first one
-            prov_map = next(x for x in library_item.provider_mappings)
-            item_id = prov_map.item_id
-            provider_instance_id_or_domain = prov_map.provider_instance
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
         page = 0
@@ -123,6 +120,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
+        for prov_mapping in playlist.provider_mappings:
+            # when manually creating a playlist, it's always in the library
+            prov_mapping.in_library = True
         # add the new playlist to the library
         return await self.add_item_to_library(playlist, False)
 
@@ -246,7 +246,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         provider_instance_id_or_domain,
                     )
                     continue
-                if item_prov.lookup_key == playlist_prov.lookup_key:
+                if item_prov.instance_id == playlist_prov.instance_id:
                     if item_id not in ids_to_add:
                         ids_to_add.append(item_id)
                     continue
@@ -265,7 +265,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             ):
                 # try to match the track to the playlist provider
                 full_track.provider_mappings.update(
-                    await self.mass.music.tracks.match_provider(playlist_prov, full_track, False)
+                    await self.mass.music.tracks.match_provider(
+                        full_track, playlist_prov, strict=False
+                    )
                 )
 
             # a track can contain multiple versions on the same provider
@@ -282,7 +284,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 track_version_uri = create_uri(
                     MediaType.TRACK,
-                    item_prov.lookup_key,
+                    item_prov.instance_id,
                     track_version.item_id,
                 )
                 if track_version_uri in cur_playlist_track_uris:
@@ -302,7 +304,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         playlist.name,
                     )
                     break
-                if item_prov.lookup_key == playlist_prov.lookup_key:
+                if item_prov.instance_id == playlist_prov.instance_id:
                     if track_version.item_id not in ids_to_add:
                         ids_to_add.append(track_version.item_id)
                     self.logger.info(
@@ -438,13 +440,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: Playlist,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Playlist to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         return [
             x
-            async for x in self.tracks(item_id, provider_instance_id_or_domain)
+            async for x in self.tracks(item.item_id, item.provider)
             # filter out unavailable tracks
             if x.available
         ]
@@ -454,7 +461,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         This is used to link objects of different providers/qualities together.
         """
-        raise NotImplementedError
+        self.logger.debug("Matching providers for playlists is not possible, ignoring request")
 
     def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
         """Refresh playlist tracks by forcing a cache refresh."""

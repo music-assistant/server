@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-import json
 import logging
 import secrets
 from abc import ABC, abstractmethod
@@ -18,6 +16,7 @@ from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -27,7 +26,50 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.providers.hass import HomeAssistantProvider
 
+
+def normalize_username(username: str) -> str:
+    """
+    Normalize username to lowercase for case-insensitive comparison.
+
+    :param username: The username to normalize.
+    :return: Normalized username (lowercase, stripped).
+    """
+    return username.strip().lower()
+
+
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+
+async def get_ha_user_role(mass: MusicAssistant, ha_user_id: str) -> UserRole:
+    """
+    Get user role based on Home Assistant admin status.
+
+    :param mass: MusicAssistant instance.
+    :param ha_user_id: The Home Assistant user ID to check.
+    """
+    try:
+        hass_prov = mass.get_provider("hass")
+        if hass_prov is None or not hass_prov.available:
+            raise RuntimeError("Home Assistant provider not available")
+
+        hass_prov = cast("HomeAssistantProvider", hass_prov)
+        # Query HA for user list to check admin status
+        result = await hass_prov.hass.send_command("config/auth/list")
+        if not result:
+            raise RuntimeError("Failed to retrieve user list from Home Assistant")
+        for ha_user in result:
+            if ha_user.get("id") == ha_user_id:
+                # User is admin if they have "system-admin" in their group_ids
+                group_ids = ha_user.get("group_ids", [])
+                if "system-admin" in group_ids:
+                    LOGGER.debug("HA user %s is admin, granting ADMIN role", ha_user_id)
+                    return UserRole.ADMIN
+                else:
+                    return UserRole.USER
+        raise RuntimeError(f"HA user ID {ha_user_id} not found in user list")
+    except Exception as err:
+        msg = f"Failed to check HA admin status: {err}"
+        raise AuthenticationFailed(msg) from err
 
 
 class LoginRateLimiter:
@@ -280,6 +322,8 @@ class BuiltinLoginProvider(LoginProvider):
         if not username or not password:
             return AuthResult(success=False, error="Username and password required")
 
+        username = normalize_username(username)
+
         # Check rate limit before attempting authentication
         allowed, remaining_delay = await self._rate_limiter.check_rate_limit(username)
         if not allowed:
@@ -416,6 +460,18 @@ class BuiltinLoginProvider(LoginProvider):
 class HomeAssistantOAuthProvider(LoginProvider):
     """Home Assistant OAuth login provider."""
 
+    def __init__(self, mass: MusicAssistant, provider_id: str, config: LoginProviderConfig) -> None:
+        """
+        Initialize Home Assistant OAuth provider.
+
+        :param mass: MusicAssistant instance.
+        :param provider_id: Unique identifier for this provider instance.
+        :param config: Provider-specific configuration.
+        """
+        super().__init__(mass, provider_id, config)
+        # Store OAuth state -> return_url mapping to support concurrent sessions
+        self._oauth_sessions: dict[str, str | None] = {}
+
     @property
     def provider_type(self) -> AuthProviderType:
         """Return the provider type."""
@@ -528,9 +584,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ha_url = inferred_ha_url
 
         state = secrets.token_urlsafe(32)
-        # Store state and return_url for verification and final redirect
-        self._oauth_state = state
-        self._oauth_return_url = return_url
+        # Store return_url keyed by state to support concurrent OAuth sessions
+        # This prevents race conditions when multiple users/sessions login simultaneously
+        self._oauth_sessions[state] = return_url
 
         # Use base_url of callback as client_id (same as HA provider does)
         client_id = base_url(redirect_uri)
@@ -546,51 +602,15 @@ class HomeAssistantOAuthProvider(LoginProvider):
             ),
         )
 
-    def _decode_ha_jwt_token(self, access_token: str) -> tuple[str | None, str | None]:
-        """
-        Decode Home Assistant JWT token to extract user ID and name.
-
-        :param access_token: The JWT access token from Home Assistant.
-        :return: Tuple of (user_id, username) or (None, None) if decoding fails.
-        """
-        try:
-            # JWT tokens have 3 parts separated by dots: header.payload.signature
-            parts = access_token.split(".")
-            if len(parts) >= 2:
-                # Decode the payload (second part)
-                # Add padding if needed (JWT base64 may not be padded)
-                payload = parts[1]
-                payload += "=" * (4 - len(payload) % 4)
-                decoded = base64.urlsafe_b64decode(payload)
-                token_data = json.loads(decoded)
-
-                # Home Assistant JWT tokens use 'iss' as the user ID
-                ha_user_id: str | None = token_data.get("iss")
-
-                if not ha_user_id:
-                    # Fallback to 'sub' if 'iss' is not present
-                    ha_user_id = token_data.get("sub")
-
-                # Try to extract username from token (name, username, or other fields)
-                username = token_data.get("name") or token_data.get("username")
-
-                if ha_user_id:
-                    return str(ha_user_id), username
-                return None, None
-        except Exception as decode_error:
-            self.logger.error("Failed to decode HA JWT token: %s", decode_error)
-
-        return None, None
-
     async def _fetch_ha_user_via_websocket(
         self, ha_url: str, access_token: str
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None]:
         """
         Fetch user information from Home Assistant via WebSocket.
 
         :param ha_url: Home Assistant URL.
         :param access_token: Access token for WebSocket authentication.
-        :return: Tuple of (username, display_name) or (None, None) if fetch fails.
+        :return: Tuple of (user_id, username, display_name) or (None, None, None) if fetch fails.
         """
         ws_url = get_websocket_url(ha_url)
 
@@ -601,18 +621,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 result = await client.send_command("auth/current_user")
 
                 if result:
-                    # Extract username and display name from response
+                    # Extract user_id, username and display name from response
+                    user_id = result.get("id")
                     username = result.get("name") or result.get("username")
                     display_name = result.get("name")
-                    if username:
-                        return username, display_name
+                    if user_id and username:
+                        return user_id, username, display_name
 
                 self.logger.warning("auth/current_user returned no user data")
-                return None, None
+                return None, None, None
 
         except BaseHassClientError as ws_error:
             self.logger.error("Failed to fetch HA user via WebSocket: %s", ws_error)
-            return None, None
+            return None, None, None
 
     async def _get_or_create_user(
         self, username: str, display_name: str | None, ha_user_id: str
@@ -631,6 +652,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         )
         if user:
             return user
+
+        username = normalize_username(username)
 
         # Check if a user with this username already exists (from built-in provider)
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
@@ -651,18 +674,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
             await self.auth_manager.link_user_to_provider(
                 existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
             )
-
-            self.logger.debug("Linked existing user '%s' to Home Assistant provider", username)
             return existing_user
 
         # New HA user - check if self-registration allowed
         if not self.allow_self_registration:
             return None
 
-        # Create new user with USER role
+        # Determine role based on HA admin status
+        role = await get_ha_user_role(self.mass, ha_user_id)
+
+        # Create new user
         user = await self.auth_manager.create_user(
             username=username,
-            role=UserRole.USER,
+            role=role,
             display_name=display_name or username,
         )
 
@@ -681,9 +705,12 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param state: OAuth state parameter.
         :param redirect_uri: The callback URL.
         """
-        # Verify state
-        if not hasattr(self, "_oauth_state") or state != self._oauth_state:
-            return AuthResult(success=False, error="Invalid state parameter")
+        # Verify state and retrieve return_url from session
+        if state not in self._oauth_sessions:
+            return AuthResult(success=False, error="Invalid or expired state parameter")
+
+        # Retrieve and remove the return_url for this session (cleanup)
+        return_url = self._oauth_sessions.pop(state)
 
         # Get the correct HA URL (external URL if running as add-on)
         # This must be the same URL used in get_authorization_url
@@ -713,26 +740,20 @@ class HomeAssistantOAuthProvider(LoginProvider):
             if not access_token:
                 return AuthResult(success=False, error="No access token received from HA")
 
-            # Decode JWT token to get HA user ID
-            ha_user_id, _ = self._decode_ha_jwt_token(access_token)
-            if not ha_user_id:
-                return AuthResult(success=False, error="Failed to decode token")
+            # Fetch user information from HA via WebSocket (includes the real user ID)
+            ha_user_id, username, display_name = await self._fetch_ha_user_via_websocket(
+                ha_url, access_token
+            )
 
-            # Fetch user information from HA via WebSocket
-            username, display_name = await self._fetch_ha_user_via_websocket(ha_url, access_token)
-
-            # If we couldn't get username from WebSocket, fail authentication
-            if not username:
+            # If we couldn't get user info from WebSocket, fail authentication
+            if not ha_user_id or not username:
                 return AuthResult(
                     success=False,
-                    error="Failed to get username from Home Assistant",
+                    error="Failed to get user info from Home Assistant",
                 )
 
             # Get or create user
             user = await self._get_or_create_user(username, display_name, ha_user_id)
-
-            # Get stored return_url from OAuth state
-            return_url = getattr(self, "_oauth_return_url", None)
 
             if not user:
                 return AuthResult(

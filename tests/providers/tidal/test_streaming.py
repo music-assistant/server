@@ -14,7 +14,7 @@ from music_assistant.providers.tidal.streaming import TidalStreamingManager
 def provider_mock() -> Mock:
     """Return a mock provider."""
     provider = Mock()
-    provider.lookup_key = "tidal"
+    provider.domain = "tidal"
     provider.instance_id = "tidal_instance"
     provider.config.get_value.return_value = "HIGH"
     provider.api = AsyncMock()
@@ -73,7 +73,7 @@ async def test_get_stream_details_lossless(
     stream_details = await streaming_manager.get_stream_details("123")
 
     assert stream_details.item_id == "123"
-    assert stream_details.provider == "tidal"
+    assert stream_details.provider == "tidal_instance"
     assert stream_details.audio_format.content_type == ContentType.FLAC
     assert stream_details.audio_format.sample_rate == 44100
     assert stream_details.audio_format.bit_depth == 16

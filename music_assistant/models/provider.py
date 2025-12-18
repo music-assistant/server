@@ -54,12 +54,6 @@ class Provider:
         # should not be overridden in normal circumstances
         return self._supported_features
 
-    @property
-    def lookup_key(self) -> str:
-        """Return instance_id if multi_instance capable or domain otherwise."""
-        # should not be overridden in normal circumstances
-        return self.instance_id if self.manifest.multi_instance else self.domain
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
 
@@ -111,7 +105,8 @@ class Provider:
     def default_name(self) -> str:
         """Return a default friendly name for this provider instance."""
         # create default name based on instance count
-        instances = [x.instance_id for x in self.mass.music.providers if x.domain == self.domain]
+        prov_confs = self.mass.config.get("providers", {}).values()
+        instances = [x["instance_id"] for x in prov_confs if x["domain"] == self.domain]
         if len(instances) <= 1:
             # only one instance (or no instances yet at all) - return provider name
             return self.manifest.name
@@ -152,7 +147,7 @@ class Provider:
             "default_name": self.default_name,
             "instance_name_postfix": self.instance_name_postfix,
             "instance_id": self.instance_id,
-            "lookup_key": self.lookup_key,
+            "lookup_key": self.instance_id,  # include for backwards compatibility
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),

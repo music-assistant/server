@@ -52,6 +52,7 @@ class Webserver:
         static_content: tuple[str, str, str] | None = None,
         ingress_tcp_site_params: tuple[str, int] | None = None,
         app_state: dict[str, Any] | None = None,
+        ssl_context: Any | None = None,
     ) -> None:
         """Async initialize of module.
 
@@ -62,6 +63,7 @@ class Webserver:
         :param static_content: Tuple of (path, directory, name) for static content.
         :param ingress_tcp_site_params: Tuple of (host, port) for ingress TCP site.
         :param app_state: Optional dict of key-value pairs to set on app before starting.
+        :param ssl_context: Optional SSL context for HTTPS support.
         """
         self._base_url = base_url.removesuffix("/")
         self._bind_port = bind_port
@@ -94,7 +96,9 @@ class Webserver:
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip == "0.0.0.0" else bind_ip
         try:
-            self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
+            self._tcp_site = web.TCPSite(
+                self._apprunner, host=host, port=bind_port, ssl_context=ssl_context
+            )
             await self._tcp_site.start()
         except OSError:
             if host is None:
@@ -103,7 +107,9 @@ class Webserver:
             self.logger.error(
                 "Could not bind to %s, will start on all interfaces as fallback!", host
             )
-            self._tcp_site = web.TCPSite(self._apprunner, host=None, port=bind_port)
+            self._tcp_site = web.TCPSite(
+                self._apprunner, host=None, port=bind_port, ssl_context=ssl_context
+            )
             await self._tcp_site.start()
         # start additional ingress TCP site if configured
         # this is only used if we're running in the context of an HA add-on

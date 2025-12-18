@@ -13,9 +13,9 @@ from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConve
 )
 from pydantic import BaseModel
 
+from music_assistant.helpers.hls import HLSMediaPlaylist, HLSMediaPlaylistParser
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
 from music_assistant.providers.nicovideo.helpers import create_audio_format
-from music_assistant.providers.nicovideo.helpers.hls_models import ParsedHLSPlaylist
 
 
 @dataclass
@@ -31,7 +31,7 @@ class NicovideoStreamData:
     """
 
     domand_bid: str
-    parsed_hls_playlist: ParsedHLSPlaylist
+    parsed_hls_playlist: HLSMediaPlaylist
 
 
 class StreamConversionData(BaseModel):
@@ -77,7 +77,7 @@ class NicovideoStreamConverter(NicovideoConverterBase):
         # Do not use album image intentionally
         image = track.image if track else None
 
-        parsed_playlist = ParsedHLSPlaylist.from_text(conversion_data.hls_playlist_text)
+        parsed_playlist = HLSMediaPlaylistParser(conversion_data.hls_playlist_text).parse()
 
         return StreamDetails(
             provider=self.provider.instance_id,
