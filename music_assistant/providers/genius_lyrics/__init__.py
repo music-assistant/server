@@ -28,6 +28,7 @@ from .helpers import clean_song_title, cleanup_lyrics
 
 SUPPORTED_FEATURES = {
     ProviderFeature.TRACK_METADATA,
+    ProviderFeature.LYRICS,
 }
 
 
