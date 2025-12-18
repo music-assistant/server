@@ -38,11 +38,13 @@ class WebRTCSession:
 
     session_id: str
     peer_connection: RTCPeerConnection
+    # Main API channel (ma-api) - bridges to local MA WebSocket API
     data_channel: Any = None
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     forward_to_local_task: asyncio.Task[None] | None = None
     forward_from_local_task: asyncio.Task[None] | None = None
+    # Sendspin channel - bridges to internal sendspin server
     sendspin_channel: Any = None
     sendspin_ws: Any = None
     sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
@@ -725,6 +727,13 @@ class WebRTCGateway:
                 "Failed to connect sendspin channel to internal server for session %s",
                 session.session_id,
             )
+            # Clean up partial state on failure
+            if session.sendspin_to_local_task:
+                session.sendspin_to_local_task.cancel()
+            if session.sendspin_from_local_task:
+                session.sendspin_from_local_task.cancel()
+            if session.sendspin_ws and not session.sendspin_ws.closed:
+                await session.sendspin_ws.close()
 
     async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
         """Forward messages from sendspin DataChannel to internal sendspin server.
@@ -753,6 +762,9 @@ class WebRTCGateway:
 
         :param session: The WebRTC session.
         """
+        if not session.sendspin_ws or session.sendspin_ws.closed:
+            return
+
         try:
             async for msg in session.sendspin_ws:
                 if msg.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:

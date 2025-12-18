@@ -82,6 +82,8 @@ class SendspinProxyHandler:
         finally:
             if not internal_ws.closed:
                 await internal_ws.close()
+            if not wsock.closed:
+                await wsock.close()
 
         return wsock
 
