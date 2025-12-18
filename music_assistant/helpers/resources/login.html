@@ -43,11 +43,6 @@
         .oauth-providers {
             margin-top: 8px;
         }
-
-        .provider-icon {
-            width: 20px;
-            height: 20px;
-        }
     </style>
 </head>
 <body>
@@ -57,7 +52,7 @@
         </div>
 
         <h1>Music Assistant</h1>
-        <p class="subtitle">Sign in to continue</p>
+        <p class="subtitle">External Client Authentication</p>
 
         <div id="error" class="error"></div>
 
@@ -90,20 +85,6 @@
         const urlParams = new URLSearchParams(window.location.search);
         const returnUrl = urlParams.get('return_url');
         const deviceName = urlParams.get('device_name');
-
-        // Validate URL to prevent XSS attacks
-        // Note: Server-side validation is the primary security layer
-        function isValidRedirectUrl(url) {
-            if (!url) return false;
-            try {
-                const parsed = new URL(url, window.location.origin);
-                // Allow http, https, and custom mobile app schemes
-                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
-                return allowedProtocols.includes(parsed.protocol);
-            } catch {
-                return false;
-            }
-        }
 
         // Show error message
         function showError(message) {
@@ -223,7 +204,6 @@
         // Initiate OAuth flow
         async function initiateOAuth(providerId) {
             try {
-                // Include provider_id in callback URL
                 let authorizeUrl = `${API_BASE}/auth/authorize?provider_id=${providerId}`;
 
                 // Pass return_url to authorize endpoint if present
@@ -235,20 +215,8 @@
                 const data = await response.json();
 
                 if (data.authorization_url) {
-                    // Open OAuth flow in popup window
-                    const width = 600;
-                    const height = 700;
-                    const left = (screen.width - width) / 2;
-                    const top = (screen.height - height) / 2;
-                    const popup = window.open(
-                        data.authorization_url,
-                        'oauth_popup',
-                        `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-                    );
-
-                    if (!popup) {
-                        showError('Failed to open popup. Please allow popups for this site.');
-                    }
+                    // Redirect directly to OAuth provider
+                    window.location.href = data.authorization_url;
                 } else {
                     showError('Failed to initiate OAuth flow');
                 }
@@ -256,28 +224,6 @@
                 showError('Network error. Please try again.');
             }
         }
-
-        // Listen for OAuth success messages from popup window
-        window.addEventListener('message', (event) => {
-            // Verify message is from our origin
-            if (event.origin !== window.location.origin) {
-                return;
-            }
-
-            // Check if it's an OAuth success message
-            if (event.data && event.data.type === 'oauth_success' && event.data.token) {
-                // Store token in localStorage
-                localStorage.setItem('auth_token', event.data.token);
-
-                // Redirect to the URL from OAuth callback
-                const redirectUrl = event.data.redirectUrl || `/?token=${encodeURIComponent(event.data.token)}`;
-                if (isValidRedirectUrl(redirectUrl)) {
-                    window.location.href = redirectUrl;
-                } else {
-                    window.location.href = `/?token=${encodeURIComponent(event.data.token)}`;
-                }
-            }
-        });
 
         // Clear error on input
         document.querySelectorAll('input').forEach(input => {

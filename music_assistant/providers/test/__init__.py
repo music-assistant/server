@@ -149,7 +149,7 @@ class TestProvider(MusicProvider):
         artist_idx, album_idx, track_idx = prov_track_id.split("_", 3)
         return Track(
             item_id=prov_track_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test Track {artist_idx} - {album_idx} - {track_idx}",
             duration=60,
             artists=UniqueList([await self.get_artist(artist_idx)]),
@@ -170,7 +170,7 @@ class TestProvider(MusicProvider):
         """Get full artist details by id."""
         return Artist(
             item_id=prov_artist_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test Artist {prov_artist_id}",
             metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART])),
             provider_mappings={
@@ -187,7 +187,7 @@ class TestProvider(MusicProvider):
         artist_idx, album_idx = prov_album_id.split("_", 2)
         return Album(
             item_id=prov_album_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test Album {album_idx}",
             artists=UniqueList([await self.get_artist(artist_idx)]),
             provider_mappings={
@@ -204,7 +204,7 @@ class TestProvider(MusicProvider):
         """Get full podcast details by id."""
         return Podcast(
             item_id=prov_podcast_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test Podcast {prov_podcast_id}",
             metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
             provider_mappings={
@@ -221,7 +221,7 @@ class TestProvider(MusicProvider):
         """Get full audiobook details by id."""
         return Audiobook(
             item_id=prov_audiobook_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test Audiobook {prov_audiobook_id}",
             metadata=MediaItemMetadata(
                 images=UniqueList([DEFAULT_THUMB]),
@@ -305,12 +305,12 @@ class TestProvider(MusicProvider):
         podcast_id, episode_idx = prov_episode_id.split("_", 2)
         return PodcastEpisode(
             item_id=prov_episode_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"Test PodcastEpisode {podcast_id}-{episode_idx}",
             duration=60,
             podcast=ItemMapping(
                 item_id=podcast_id,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=f"Test Podcast {podcast_id}",
                 media_type=MediaType.PODCAST,
                 image=DEFAULT_THUMB,
@@ -332,7 +332,7 @@ class TestProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,

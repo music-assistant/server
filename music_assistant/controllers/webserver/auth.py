@@ -25,7 +25,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
-    CONF_ONBOARD_DONE,
+    DB_TABLE_PLAYLOG,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -40,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantProviderConfig,
     LoginProvider,
     LoginProviderConfig,
+    normalize_username,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -73,6 +74,9 @@ class AuthenticationManager:
         self.database: DatabaseConnection = None  # type: ignore[assignment]
         self.login_providers: dict[str, LoginProvider] = {}
         self.logger = LOGGER
+        # Pending OAuth sessions for remote clients (session_id -> token)
+        self._pending_oauth_sessions: dict[str, str | None] = {}
+        self._has_users: bool = False
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -91,15 +95,7 @@ class AuthenticationManager:
         # Setup login providers based on config
         await self._setup_login_providers(allow_self_registration)
 
-        # Migration: Reset onboard_done if no users exist
-        # This handles existing setups where authentication was optional
-        if self.mass.config.onboard_done and not await self.has_users():
-            self.logger.warning(
-                "Authentication is mandatory but no users exist. "
-                "Resetting onboard_done to redirect to setup."
-            )
-            self.mass.config.set(CONF_ONBOARD_DONE, False)
-            self.mass.config.save(immediate=True)
+        self._has_users = await self._has_non_system_users()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -109,6 +105,11 @@ class AuthenticationManager:
         """Cleanup on exit."""
         if self.database:
             await self.database.close()
+
+    @property
+    def has_users(self) -> bool:
+        """Check if any users exist in the system."""
+        return self._has_users
 
     async def _setup_database(self) -> None:
         """Set up database schema and handle migrations."""
@@ -120,7 +121,7 @@ class AuthenticationManager:
             if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
                 prev_version = int(db_row["value"])
             else:
-                prev_version = 0
+                prev_version = DB_SCHEMA_VERSION
         except (KeyError, ValueError, Exception):
             # settings table doesn't exist yet or other error
             prev_version = 0
@@ -156,8 +157,7 @@ class AuthenticationManager:
             )
             """
         )
-
-        # Users table (decoupled from auth providers)
+        # Users table
         await self.database.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -174,7 +174,6 @@ class AuthenticationManager:
             )
             """
         )
-
         # User auth provider links (many-to-many)
         await self.database.execute(
             """
@@ -189,7 +188,6 @@ class AuthenticationManager:
             )
             """
         )
-
         # Auth tokens table
         await self.database.execute(
             """
@@ -206,7 +204,6 @@ class AuthenticationManager:
             )
             """
         )
-
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -255,6 +252,11 @@ class AuthenticationManager:
                 await self.database.execute(
                     "ALTER TABLE users ADD COLUMN provider_filter json NOT NULL DEFAULT '[]'"
                 )
+            await self.database.commit()
+
+        # Migration to version 4: Make usernames case-insensitive by converting to lowercase
+        if from_version < 4:
+            await self.database.execute("UPDATE users SET username = LOWER(username)")
             await self.database.commit()
 
     async def _setup_login_providers(self, allow_self_registration: bool) -> None:
@@ -330,11 +332,6 @@ class AuthenticationManager:
         elif "homeassistant" in self.login_providers:
             del self.login_providers["homeassistant"]
             self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
-
-    async def has_users(self) -> bool:
-        """Check if any users exist in the system."""
-        count = await self.database.get_count("users")
-        return count > 0
 
     async def authenticate_with_credentials(
         self, provider_id: str, credentials: dict[str, Any]
@@ -435,6 +432,21 @@ class AuthenticationManager:
             provider_filter=json_loads(user_row["provider_filter"]),
         )
 
+    async def get_user_by_username(self, username: str) -> User | None:
+        """
+        Get user by username.
+
+        :param username: The username.
+        :return: User object or None if not found.
+        """
+        username = normalize_username(username)
+
+        user_row = await self.database.get_row("users", {"username": username})
+        if not user_row:
+            return None
+
+        return await self.get_user(user_row["user_id"])
+
     async def get_user_by_provider_link(
         self, provider_type: AuthProviderType, provider_user_id: str
     ) -> User | None:
@@ -477,6 +489,11 @@ class AuthenticationManager:
         :param player_filter: Optional list of player IDs user has access to.
         :param provider_filter: Optional list of provider instance IDs user has access to.
         """
+        normalized_username = normalize_username(username)
+
+        # Check if this is the first non-system user
+        is_first_user = not await self._has_non_system_users()
+
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
         if preferences is None:
@@ -488,7 +505,7 @@ class AuthenticationManager:
 
         user_data = {
             "user_id": user_id,
-            "username": username,
+            "username": normalized_username,
             "role": role.value,
             "enabled": True,
             "created_at": created_at.isoformat(),
@@ -501,9 +518,9 @@ class AuthenticationManager:
 
         await self.database.insert("users", user_data)
 
-        return User(
+        user = User(
             user_id=user_id,
-            username=username,
+            username=normalized_username,
             role=role,
             enabled=True,
             created_at=created_at,
@@ -513,6 +530,39 @@ class AuthenticationManager:
             player_filter=player_filter,
             provider_filter=provider_filter,
         )
+
+        # If this is the first non-system user, migrate playlog entries to them
+        if is_first_user and normalized_username != HOMEASSISTANT_SYSTEM_USER:
+            self._has_users = True
+            await self._migrate_playlog_to_first_user(user_id)
+
+        return user
+
+    async def _has_non_system_users(self) -> bool:
+        """Check if any non-system users exist."""
+        user_rows = await self.database.get_rows("users", limit=10)
+        return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
+
+    async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
+        """
+        Migrate all existing playlog entries to the first user.
+
+        This is called automatically when the first non-system user is created.
+        All existing playlog entries (which have NULL userid) will be updated
+        to belong to this first user.
+
+        :param user_id: The user ID of the first user.
+        """
+        try:
+            # Update all playlog entries with NULL userid to this user
+            await self.mass.music.database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                {"userid": user_id},
+            )
+            await self.mass.music.database.commit()
+            self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
+        except Exception as err:
+            self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def get_homeassistant_system_user(self) -> User:
         """
@@ -527,8 +577,10 @@ class AuthenticationManager:
         display_name = "Home Assistant Integration"
         role = UserRole.USER
 
+        normalized_username = normalize_username(username)
+
         # Try to find existing user by username
-        user_row = await self.database.get_row("users", {"username": username})
+        user_row = await self.database.get_row("users", {"username": normalized_username})
         if user_row:
             # Use get_user to ensure preferences are parsed correctly
             user = await self.get_user(user_row["user_id"])
@@ -584,10 +636,32 @@ class AuthenticationManager:
         """
         Link a user to an authentication provider.
 
+        If a link already exists for this provider/provider_user_id, returns the existing link.
+
         :param user: The user to link.
         :param provider_type: The provider type.
         :param provider_user_id: The user ID from the provider (e.g., password hash, OAuth ID).
         """
+        # Check if a link already exists for this provider/provider_user_id
+        existing_link = await self.database.get_row(
+            "user_auth_providers",
+            {
+                "provider_type": provider_type.value,
+                "provider_user_id": provider_user_id,
+            },
+        )
+
+        if existing_link:
+            # Link already exists - return it
+            return UserAuthProvider(
+                link_id=existing_link["link_id"],
+                user_id=existing_link["user_id"],
+                provider_type=AuthProviderType(existing_link["provider_type"]),
+                provider_user_id=existing_link["provider_user_id"],
+                created_at=datetime.fromisoformat(existing_link["created_at"]),
+            )
+
+        # Create new link
         link_id = secrets.token_urlsafe(32)
         created_at = utc()
         link_data = {
@@ -625,7 +699,8 @@ class AuthenticationManager:
         """
         updates = {}
         if username is not None:
-            updates["username"] = username
+            # Normalize username for case-insensitive authentication
+            updates["username"] = normalize_username(username)
         if display_name is not None:
             updates["display_name"] = display_name
         if avatar_url is not None:
@@ -894,6 +969,142 @@ class AuthenticationManager:
             )
         return providers
 
+    @api_command("auth/login", authenticated=False)
+    async def login(
+        self,
+        username: str | None = None,
+        password: str | None = None,
+        provider_id: str = "builtin",
+        device_name: str | None = None,
+        **extra_credentials: Any,
+    ) -> dict[str, Any]:
+        """Authenticate user with credentials via WebSocket.
+
+        This command allows clients to authenticate over the WebSocket connection
+        using username/password or other provider-specific credentials.
+
+        :param username: Username for authentication (for builtin provider).
+        :param password: Password for authentication (for builtin provider).
+        :param provider_id: The login provider ID (defaults to "builtin").
+        :param device_name: Optional device name for the token (e.g., "iPhone 15", "Desktop PC").
+        :param extra_credentials: Additional provider-specific credentials.
+        :return: Authentication result with access token if successful.
+        """
+        # Build credentials dict from parameters
+        credentials: dict[str, Any] = {}
+        if username is not None:
+            credentials["username"] = username
+        if password is not None:
+            credentials["password"] = password
+        credentials.update(extra_credentials)
+
+        auth_result = await self.authenticate_with_credentials(provider_id, credentials)
+
+        if not auth_result.success:
+            return {
+                "success": False,
+                "error": auth_result.error or "Authentication failed",
+            }
+
+        if not auth_result.user:
+            return {
+                "success": False,
+                "error": "Authentication failed: no user returned",
+            }
+
+        # Create short-lived access token with device name if provided
+        token_name = device_name or f"WebSocket Session - {auth_result.user.username}"
+        token = await self.create_token(
+            auth_result.user,
+            is_long_lived=False,
+            name=token_name,
+        )
+
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": auth_result.user.user_id,
+                "username": auth_result.user.username,
+                "display_name": auth_result.user.display_name,
+                "role": auth_result.user.role.value,
+            },
+        }
+
+    @api_command("auth/providers", authenticated=False)
+    async def get_providers(self) -> list[dict[str, Any]]:
+        """Get list of available authentication providers.
+
+        Returns information about all available login providers including
+        whether they require OAuth redirect flow.
+        """
+        return await self.get_login_providers()
+
+    @api_command("auth/authorization_url", authenticated=False)
+    async def get_auth_url(
+        self, provider_id: str, for_remote_client: bool = False
+    ) -> dict[str, str | None]:
+        """Get OAuth authorization URL for remote authentication.
+
+        For OAuth providers (like Home Assistant), this returns the URL that
+        the user should visit in their browser to authorize the application.
+
+        :param provider_id: The provider ID (e.g., "hass").
+        :param for_remote_client: If True, creates a pending session for remote OAuth flow.
+        :return: Dictionary with authorization_url and session_id (if remote).
+        """
+        # Generate session ID for remote clients
+        session_id = None
+        return_url = None
+
+        if for_remote_client:
+            session_id = secrets.token_urlsafe(32)
+            # Mark session as pending
+            self._pending_oauth_sessions[session_id] = None
+            # Use special return URL that will capture the token
+            return_url = f"urn:ietf:wg:oauth:2.0:oob:auto:{session_id}"
+
+        auth_url = await self.get_authorization_url(provider_id, return_url)
+        if not auth_url:
+            return {
+                "authorization_url": None,
+                "error": "Provider does not support OAuth or does not exist",
+            }
+
+        return {
+            "authorization_url": auth_url,
+            "session_id": session_id,  # Only set for remote clients
+        }
+
+    @api_command("auth/oauth_status", authenticated=False)
+    async def check_oauth_status(self, session_id: str) -> dict[str, Any]:
+        """Check status of pending OAuth authentication.
+
+        Remote clients use this to poll for completion of the OAuth flow.
+
+        :param session_id: The session ID from get_auth_url.
+        :return: Status and token if authentication completed.
+        """
+        if session_id not in self._pending_oauth_sessions:
+            return {
+                "status": "invalid",
+                "error": "Invalid or expired session ID",
+            }
+
+        token = self._pending_oauth_sessions.get(session_id)
+        if token is None:
+            return {
+                "status": "pending",
+                "message": "Waiting for user to complete authentication",
+            }
+
+        # Authentication completed, return token and clean up
+        del self._pending_oauth_sessions[session_id]
+        return {
+            "status": "completed",
+            "access_token": token,
+        }
+
     async def get_authorization_url(
         self, provider_id: str, return_url: str | None = None
     ) -> str | None:
@@ -978,7 +1189,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 3 characters).
+        :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
         :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
@@ -988,8 +1199,8 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 3:
-            raise InvalidDataError("Username must be at least 3 characters")
+        if not username or len(username) < 2:
+            raise InvalidDataError("Username must be at least 2 characters")
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
@@ -1082,7 +1293,7 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
-    async def _update_user_filters(
+    async def update_user_filters(
         self,
         target_user: User,
         player_filter: list[str] | None,
@@ -1138,22 +1349,21 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
+        is_admin = current_user_obj.role == UserRole.ADMIN
         if user_id and user_id != current_user_obj.user_id:
             # Updating another user - requires admin
-            if current_user_obj.role != UserRole.ADMIN:
+            if not is_admin:
                 raise InsufficientPermissions("Admin access required")
             target_user = await self.get_user(user_id)
             if not target_user:
                 raise InvalidDataError("User not found")
-            is_admin_update = True
         else:
             # Updating own profile
             target_user = current_user_obj
-            is_admin_update = False
 
         # Update role (admin only)
         if role:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update user roles")
 
             try:
@@ -1189,17 +1399,15 @@ class AuthenticationManager:
 
         # Update player_filter and provider_filter (admin only)
         if player_filter is not None or provider_filter is not None:
-            if not is_admin_update:
+            if not is_admin:
                 raise InsufficientPermissions("Only admins can update player/provider filters")
-            target_user = await self._update_user_filters(
+            target_user = await self.update_user_filters(
                 target_user, player_filter, provider_filter
             )
 
         # Update password if provided
         if password:
-            await self._update_profile_password(
-                target_user, password, is_admin_update, current_user_obj
-            )
+            await self._update_profile_password(target_user, password, is_admin, current_user_obj)
 
         return target_user
 

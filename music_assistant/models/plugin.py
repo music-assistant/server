@@ -118,6 +118,14 @@ class PluginSource(PlayerSource):
         repr=False,
     )
 
+    # Callback for volume change command: async def callback(volume: int) -> None
+    on_volume: Callable[[int], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
     # Callback for when this source is selected: async def callback() -> None
     on_select: Callable[[], Awaitable[None]] | None = field(
         default=None,

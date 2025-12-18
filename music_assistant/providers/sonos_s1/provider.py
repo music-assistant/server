@@ -57,7 +57,7 @@ class SonosPlayerProvider(PlayerProvider):
         while self._discovery_running:
             await asyncio.sleep(0.5)
         # Clean up subscriptions and connections
-        for sonos_player in self.mass.players.all(provider_filter=self.lookup_key):
+        for sonos_player in self.mass.players.all(provider_filter=self.instance_id):
             sonos_player = cast("SonosPlayer", sonos_player)
             await sonos_player.offline()
         # Stop the async event listener

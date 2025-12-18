@@ -170,7 +170,7 @@ def compare_track(
         if external_id_match is True:
             # we got a 'soft-match' on a secondary external id (like ISRC)
             # but we do a double check on duration
-            if abs(base_item.duration - compare_item.duration) <= 2:
+            if abs(base_item.duration - compare_item.duration) <= 8:
                 return True
 
     # compare name

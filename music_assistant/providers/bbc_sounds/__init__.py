@@ -550,7 +550,7 @@ class BBCSoundsProvider(MusicProvider):
                 return item_list
             sub_menu = self.menu.get(sub_path)
 
-            if sub_menu and isinstance(sub_menu, Container):
+            if sub_menu and sub_path != "listen_live" and isinstance(sub_menu, Container):
                 if sub_menu.sub_items:
                     # We have some sub-items, so let's show those
                     for item in sub_menu.sub_items:
@@ -804,6 +804,3 @@ class BBCSoundsProvider(MusicProvider):
                     self.logger.debug(f"Updated play status: {success}")
                 except exceptions.APIResponseError as err:
                     self.logger.error(f"Error updating play status: {err}")
-        # Cancel now playing task
-        if FEATURES["now_playing"] and not is_playing and self.current_task:
-            self.current_task.cancel()

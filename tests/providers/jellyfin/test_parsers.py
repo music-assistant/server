@@ -3,6 +3,7 @@
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import aiofiles
 import aiohttp
@@ -12,7 +13,16 @@ from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from syrupy.assertion import SnapshotAssertion
 
-from music_assistant.providers.jellyfin.parsers import parse_album, parse_artist, parse_track
+from music_assistant.providers.jellyfin.const import (
+    ITEM_KEY_MEDIA_CODEC,
+    ITEM_KEY_MEDIA_STREAMS,
+)
+from music_assistant.providers.jellyfin.parsers import (
+    audio_format,
+    parse_album,
+    parse_artist,
+    parse_track,
+)
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))
@@ -76,3 +86,39 @@ async def test_parse_tracks(
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"]
     assert snapshot == parsed
+
+
+def test_audio_format_empty_mediastreams() -> None:
+    """Test audio_format handles empty MediaStreams array."""
+    # Track with empty MediaStreams
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_STREAMS: [],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
+
+    # Verify no exception is raised and result has expected attributes
+    assert result is not None
+    assert hasattr(result, "content_type")
+
+
+def test_audio_format_missing_channels() -> None:
+    """Test audio_format applies default when Channels field is missing."""
+    # Track with MediaStreams but missing Channels
+    track: dict[str, Any] = {
+        ITEM_KEY_MEDIA_STREAMS: [
+            {
+                ITEM_KEY_MEDIA_CODEC: "mp3",
+                "SampleRate": 48000,
+                "BitDepth": 16,
+                "BitRate": 320000,
+            }
+        ],
+    }
+    result = audio_format(track)  # type: ignore[arg-type]
+
+    # Verify defaults are applied correctly
+    assert result is not None
+    assert result.channels == 2  # Default stereo
+    assert result.sample_rate == 48000
+    assert result.bit_depth == 16
+    assert result.bit_rate == 320  # AudioFormat converts bps to kbps automatically

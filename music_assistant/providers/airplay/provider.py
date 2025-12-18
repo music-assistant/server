@@ -169,7 +169,7 @@ class AirPlayProvider(PlayerProvider):
         # Get volume from cache
         if not (
             volume := await self.mass.cache.get(
-                key=player_id, provider=self.lookup_key, category=CACHE_CATEGORY_PREV_VOLUME
+                key=player_id, provider=self.instance_id, category=CACHE_CATEGORY_PREV_VOLUME
             )
         ):
             volume = FALLBACK_VOLUME

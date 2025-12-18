@@ -5,8 +5,9 @@
   "name": "YouTube Music",
   "description": "Stream songs and podcasts from YouTube Music.",
   "codeowners": ["@MarvinSchenkel"],
+  "credits": ["[ytmusicapi](https://github.com/sigma67/ytmusicapi)"],
   "requirements": [
-    "ytmusicapi==1.11.2",
+    "ytmusicapi==1.11.3",
     "duration-parser==1.0.1",
     "deno==2.5.6"
   ],

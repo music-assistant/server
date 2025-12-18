@@ -74,7 +74,7 @@ class TidalStreamingManager:
 
         return StreamDetails(
             item_id=track.item_id,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             audio_format=AudioFormat(
                 content_type=content_type,
                 sample_rate=stream_data.get("sampleRate", 44100),

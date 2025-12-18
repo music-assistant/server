@@ -1,14 +1,14 @@
 """
-Player Provider for the Resonate Audio Protocol.
+Player Provider for the Sendspin Audio Protocol.
 
-https://github.com/Resonate-Protocol/spec
+https://github.com/Sendspin-Protocol/spec
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .provider import ResonateProvider
+from .provider import SendspinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -22,7 +22,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ResonateProvider(mass, manifest, config)
+    return SendspinProvider(mass, manifest, config)
 
 
 async def get_config_entries(

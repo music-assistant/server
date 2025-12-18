@@ -26,7 +26,6 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
-CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
@@ -35,7 +34,17 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+AIRPLAY_PRELOAD_SECONDS: Final[int] = (
+    5  # Number of seconds (in PCM) to preload before throttling back
+)
+AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
+    200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
+)
+AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
+    2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
+)
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"

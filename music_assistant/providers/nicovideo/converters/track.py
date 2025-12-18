@@ -59,7 +59,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Create track with available information
         return Track(
             item_id=content.id_,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             name=content.title,
             duration=content.video.duration,
             artists=artists_list,
@@ -103,7 +103,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Create base track with enhanced metadata
         return Track(
             item_id=video.id_,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             name=video.title,
             duration=video.duration,
             artists=artists_list,
@@ -173,7 +173,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Create base track with enhanced metadata
         track = Track(
             item_id=video.id_,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             name=video.title,
             duration=video.duration,
             artists=artists_list,
@@ -293,7 +293,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -354,7 +354,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumbnail_url,
-                        provider=self.provider.lookup_key,
+                        provider=self.provider.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -380,7 +380,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=thumbnail.nhd_url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -391,7 +391,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=thumbnail.large_url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -403,7 +403,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=thumbnail.middle_url,
-                    provider=self.provider.lookup_key,
+                    provider=self.provider.instance_id,
                     remotely_accessible=True,
                 )
             )

@@ -10,6 +10,8 @@ from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 
+from .auth_providers import get_ha_user_role
+
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
@@ -46,22 +48,17 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         user = await mass.webserver.auth.get_user_by_provider_link(
             AuthProviderType.HOME_ASSISTANT, ingress_user_id
         )
-
         if not user:
-            # Security: Ensure at least one user exists (setup should have been completed)
-            if not await mass.webserver.auth.has_users():
-                # No users exist - setup has not been completed
-                # This should not happen as the server redirects to /setup
-                return None
+            user = await mass.webserver.auth.get_user_by_username(ingress_username)
+            if not user:
+                role = await get_ha_user_role(mass, ingress_user_id)
+                user = await mass.webserver.auth.create_user(
+                    username=ingress_username,
+                    role=role,
+                    display_name=ingress_display_name,
+                )
 
-            # Auto-create user for Ingress (they're already authenticated by HA)
-            # Always create with USER role (admin is created during setup)
-            user = await mass.webserver.auth.create_user(
-                username=ingress_username,
-                role=UserRole.USER,
-                display_name=ingress_display_name,
-            )
-            # Link to Home Assistant provider
+            # Link to Home Assistant provider (or create the link if user already existed)
             await mass.webserver.auth.link_user_to_provider(
                 user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
             )

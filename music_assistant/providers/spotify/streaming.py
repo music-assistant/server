@@ -81,27 +81,18 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
+                        if "Unable to read audio file" in line:
+                            # if this happens, we should stop the process to avoid hanging
+                            await librespot_proc.close()
                     else:
                         logger.log(VERBOSE_LOG_LEVEL, "[librespot] %s", line)
 
             librespot_proc.attach_stderr_reader(asyncio.create_task(log_librespot_output()))
+            # yield from librespot's stdout
+            async for chunk in librespot_proc.iter_chunked():
+                yield chunk
 
-            try:
-                # yield from librespot's stdout
-                async for chunk in librespot_proc.iter_chunked():
-                    yield chunk
-
-                if librespot_proc.returncode != 0:
-                    raise AudioError(
-                        f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
-                    )
-
-            except Exception as ex:
-                log_lines_str = "\n".join(log_history)
-                logger.error(
-                    "Librespot streaming error for %s: %s\n%s",
-                    spotify_uri,
-                    ex,
-                    log_lines_str,
+            if librespot_proc.returncode != 0:
+                raise AudioError(
+                    f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
                 )
-                raise AudioError(f"Error streaming from librespot for {spotify_uri}: {ex}") from ex

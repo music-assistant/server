@@ -47,7 +47,7 @@ jobs:
       - name: Verify PR labels and source
         run: |
           LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
-          BRANCH="${{ github.event.pull_request.head.ref }}"
+          BRANCH="$BRANCH"
 
           if [[ "$LABELS" != *"dependencies"* ]]; then
             echo "❌ PR does not have 'dependencies' label"
@@ -61,6 +61,8 @@ jobs:
 
           echo "✅ PR has 'dependencies' label and valid branch name"
 
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
       # IMPORTANT: Checkout the PR's head to validate file changes
       # This is required for the git commands in security check 5
       - name: Checkout PR branch

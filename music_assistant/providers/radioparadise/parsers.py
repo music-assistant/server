@@ -14,14 +14,12 @@ from .constants import RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
 from .helpers import enhance_title_with_upcoming  # noqa: F401
 
 
-def parse_radio(
-    channel_id: str, provider_lookup_key: str, provider_domain: str, instance_id: str
-) -> Radio:
+def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
     """Create a Radio object from cached channel information."""
     channel_info = RADIO_PARADISE_CHANNELS.get(channel_id, {})
 
     radio = Radio(
-        provider=provider_lookup_key,
+        provider=instance_id,
         item_id=channel_id,
         name=channel_info.get("name", "Unknown Radio"),
         provider_mappings={
@@ -40,7 +38,7 @@ def parse_radio(
         icon_url = f"{STATION_ICONS_BASE_URL}/{station_icon}"
         radio.metadata.add_image(
             MediaItemImage(
-                provider=provider_lookup_key,
+                provider=instance_id,
                 type=ImageType.THUMB,
                 path=icon_url,
                 remotely_accessible=True,

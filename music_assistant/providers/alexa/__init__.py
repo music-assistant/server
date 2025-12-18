@@ -18,7 +18,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     ProviderFeature,
 )
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import (
@@ -323,14 +323,34 @@ class AlexaPlayer(Player):
             try:
                 async with session.post(
                     f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
-                    json={"streamUrl": media.uri},
+                    json={
+                        "streamUrl": media.uri,
+                        "title": media.title,
+                        "artist": media.artist,
+                        "album": media.album,
+                        "imageUrl": media.image_url,
+                    },
                     timeout=aiohttp.ClientTimeout(total=10),
                     auth=auth,
                 ) as resp:
-                    await resp.text()
+                    resp_text = await resp.text()
+                    if resp.status < 200 or resp.status >= 300:
+                        msg = (
+                            f"Failed to push URL to MA Alexa API: "
+                            f"Status code: {resp.status}, Response: {resp_text}. "
+                            "Please verify your API connection and configuration"
+                        )
+                        _LOGGER.error(msg)
+                        raise ActionUnavailable(msg)
+            except ActionUnavailable:
+                raise
             except Exception as exc:
-                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
-                return
+                msg = (
+                    "Failed to push URL to MA Alexa API: "
+                    "Please verify your API connection and configuration"
+                )
+                _LOGGER.error("Failed to push URL to MA Alexa API: %s", exc)
+                raise ActionUnavailable(msg)
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
@@ -350,21 +370,10 @@ class AlexaPlayer(Player):
         )
 
         await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
-
-        state = await self.api.get_state()
-        if state:
-            state = state.get("playerInfo", None)
-
-        if state:
-            device_media = state.get("infoText")
-            if device_media:
-                media.title = device_media.get("title")
-                media.artist = device_media.get("subText1")
-                self._attr_current_media = media
-            self._attr_elapsed_time = 0
-            self._attr_elapsed_time_last_updated = time.time()
-            if state.get("playbackState") == "PLAYING":
-                self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_current_media = media
         self.update_state()
 
     async def get_config_entries(

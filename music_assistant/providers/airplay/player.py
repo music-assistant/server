@@ -34,7 +34,6 @@ from .constants import (
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
@@ -106,7 +105,7 @@ class AirPlayPlayer(Player):
             PlayerFeature.VOLUME_SET,
         }
         self._attr_volume_level = initial_volume
-        self._attr_can_group_with = {provider.lookup_key}
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
     @cached_property
@@ -211,21 +210,6 @@ class AirPlayPlayer(Player):
                 label="Device password",
                 description="Some devices require a password to connect/play.",
                 category="airplay",
-            ),
-            ConfigEntry(
-                key=CONF_READ_AHEAD_BUFFER,
-                type=ConfigEntryType.INTEGER,
-                default_value=1000,
-                required=False,
-                label="Audio buffer (ms)",
-                description="Amount of buffer (in milliseconds), "
-                "the player should keep to absorb network throughput jitter. "
-                "Lower values reduce latency but may cause dropouts. "
-                "Recommended: 1000ms for stable playback.",
-                category="airplay",
-                range=(500, 2000),
-                depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(
@@ -476,7 +460,7 @@ class AirPlayPlayer(Player):
         await self.mass.cache.set(
             key=self.player_id,
             data=volume_level,
-            provider=self.provider.lookup_key,
+            provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_VOLUME,
         )
 
@@ -513,7 +497,8 @@ class AirPlayPlayer(Player):
                 if child_player.player_id in player_ids_to_remove:
                     if stream_session:
                         await stream_session.remove_client(child_player)
-                    self._attr_group_members.remove(child_player.player_id)
+                    if child_player.player_id in self._attr_group_members:
+                        self._attr_group_members.remove(child_player.player_id)
 
         # handle additions
         for player_id in player_ids_to_add or []:
@@ -554,6 +539,16 @@ class AirPlayPlayer(Player):
 
         # always update the state after modifying group members
         self.update_state()
+
+    def _on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if not self.stream or not self.stream.running or not self.stream.session:
+            return
+        metadata = self.current_media
+        if not metadata:
+            return
+        progress = int(metadata.corrected_elapsed_time or 0)
+        self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
     def update_volume_from_device(self, volume: int) -> None:
         """Update volume from device feedback."""

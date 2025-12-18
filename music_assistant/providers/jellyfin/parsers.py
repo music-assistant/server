@@ -174,11 +174,17 @@ def parse_artist(
 
 def audio_format(track: JellyTrack) -> AudioFormat:
     """Build an AudioFormat model from a Jellyfin track."""
-    stream = track[ITEM_KEY_MEDIA_STREAMS][0]
-    codec = stream[ITEM_KEY_MEDIA_CODEC]
+    # Defensive: Handle missing or empty MediaStreams array
+    streams = track.get(ITEM_KEY_MEDIA_STREAMS, [])
+    if not streams:
+        return AudioFormat(content_type=ContentType.UNKNOWN)
+
+    stream = streams[0]
+    codec = stream.get(ITEM_KEY_MEDIA_CODEC)
+
     return AudioFormat(
         content_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
-        channels=stream[ITEM_KEY_MEDIA_CHANNELS],
+        channels=stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
         sample_rate=stream.get("SampleRate", 44100),
         bit_rate=stream.get("BitRate"),
         bit_depth=stream.get("BitDepth", 16),

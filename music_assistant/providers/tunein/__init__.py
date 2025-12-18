@@ -182,7 +182,7 @@ class TuneInProvider(MusicProvider):
             preferred_stream = stream_info[0]
             radio = Radio(
                 item_id=details["preset_id"],
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=name,
                 provider_mappings={
                     ProviderMapping(
@@ -202,7 +202,7 @@ class TuneInProvider(MusicProvider):
             # custom url (no stream object present)
             radio = Radio(
                 item_id=details["URL"],
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=name,
                 provider_mappings={
                     ProviderMapping(
@@ -230,7 +230,7 @@ class TuneInProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=img,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -267,7 +267,7 @@ class TuneInProvider(MusicProvider):
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=item_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
@@ -286,7 +286,7 @@ class TuneInProvider(MusicProvider):
             # and the first one is the best quality
             preferred_stream = stream_info[0]
             return StreamDetails(
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=item_id,
                 # set contenttype to unknown so ffmpeg can auto detect it
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
