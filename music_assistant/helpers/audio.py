@@ -50,7 +50,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
 
 from .audio_buffer import AudioBuffer
-from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
@@ -77,7 +76,6 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
-STREAMDETAILS_EXPIRATION: Final[int] = 60 * 15  # 15 minutes
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
@@ -241,6 +239,7 @@ async def get_stream_details(
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails too much in advance as this is expiring data.
     """
+    streamdetails: StreamDetails | None = None
     time_start = time.time()
     LOGGER.debug("Getting streamdetails for %s", queue_item.uri)
     if seek_position and (queue_item.media_type == MediaType.RADIO or not queue_item.duration):
@@ -255,43 +254,62 @@ async def get_stream_details(
         )
     buffer: AudioBuffer | None = None
     if queue_item.streamdetails and (
-        (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
+        (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration) > time.time()
         or ((buffer := queue_item.streamdetails.buffer) and buffer.is_valid(seek_position))
     ):
-        # already got a fresh/unused (or cached) streamdetails
-        # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds
+        # already got a fresh/unused (or unexpired) streamdetails
         streamdetails = queue_item.streamdetails
     else:
+        # need to (re)create streamdetails
         # retrieve streamdetails from provider
+
         media_item = queue_item.media_item
         assert media_item is not None  # for type checking
-        # sort by quality and check item's availability
-        for prov_media in sorted(
-            media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
+        preferred_providers: list[str] = []
+        if (
+            (queue := mass.player_queues.get(queue_item.queue_id))
+            and queue.userid
+            and (playback_user := await mass.webserver.auth.get_user(queue.userid))
+            and playback_user.provider_filter
         ):
-            if not prov_media.available:
-                LOGGER.debug(f"Skipping unavailable {prov_media}")
-                continue
-            # guard that provider is available
-            music_prov = mass.get_provider(prov_media.provider_instance)
-            if TYPE_CHECKING:  # avoid circular import
-                assert isinstance(music_prov, MusicProvider)
-            if not music_prov:
-                LOGGER.debug(f"Skipping {prov_media} - provider not available")
-                continue  # provider not available ?
-            # get streamdetails from provider
-            try:
-                BYPASS_THROTTLER.set(True)
-                streamdetails = await music_prov.get_stream_details(
-                    prov_media.item_id, media_item.media_type
-                )
-            except MusicAssistantError as err:
-                LOGGER.warning(str(err))
-            else:
-                break
-            finally:
-                BYPASS_THROTTLER.set(False)
+            # handle steering into user preferred providerinstance
+            preferred_providers = playback_user.provider_filter
         else:
+            preferred_providers = [x.provider_instance for x in media_item.provider_mappings]
+        for allow_other_provider in (False, True):
+            # sort by quality and check item's availability
+            for prov_media in sorted(
+                media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
+            ):
+                if not prov_media.available:
+                    LOGGER.debug(f"Skipping unavailable {prov_media}")
+                    continue
+                if (
+                    not allow_other_provider
+                    and prov_media.provider_instance not in preferred_providers
+                ):
+                    continue
+                # guard that provider is available
+                music_prov = mass.get_provider(prov_media.provider_instance)
+                if TYPE_CHECKING:  # avoid circular import
+                    assert isinstance(music_prov, MusicProvider)
+                if not music_prov:
+                    LOGGER.debug(f"Skipping {prov_media} - provider not available")
+                    continue  # provider not available ?
+                # get streamdetails from provider
+                try:
+                    BYPASS_THROTTLER.set(True)
+                    streamdetails = await music_prov.get_stream_details(
+                        prov_media.item_id, media_item.media_type
+                    )
+                except MusicAssistantError as err:
+                    LOGGER.warning(str(err))
+                else:
+                    break
+                finally:
+                    BYPASS_THROTTLER.set(False)
+
+        if not streamdetails:
             msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             raise MediaNotFoundError(msg)
 

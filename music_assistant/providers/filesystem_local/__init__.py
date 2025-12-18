@@ -193,6 +193,8 @@ class LocalFileSystemProvider(MusicProvider):
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         music_features = {
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_ARTISTS,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
             *base_features,
@@ -231,38 +233,38 @@ class LocalFileSystemProvider(MusicProvider):
         # so instead we just query the db...
         if media_types is None or MediaType.TRACK in media_types:
             result.tracks = await self.mass.music.tracks._get_library_items_by_query(
-                search=search_query, provider=self.instance_id, limit=limit
+                search=search_query, provider_filter=[self.instance_id], limit=limit
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
             result.albums = await self.mass.music.albums._get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
             result.artists = await self.mass.music.artists._get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
             result.playlists = await self.mass.music.playlists._get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.AUDIOBOOK in media_types:
             result.audiobooks = await self.mass.music.audiobooks._get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PODCAST in media_types:
             result.podcasts = await self.mass.music.podcasts._get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         return result
@@ -320,6 +322,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        if media_type in (MediaType.ARTIST, MediaType.ALBUM):
+            # artists and albums are synced as part of track sync
+            return
         assert self.mass.music.database
         start_time = time.time()
         if self.sync_running:
@@ -362,7 +367,16 @@ class LocalFileSystemProvider(MusicProvider):
                     if ext not in SUPPORTED_EXTENSIONS:
                         # skip unsupported file extension
                         continue
-                    yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    try:
+                        yield FileSystemItem.from_dir_entry(item, self.base_path)
+                    except OSError as err:
+                        # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
+                        # This typically happens with emoji or special unicode characters
+                        self.logger.debug(
+                            "Skipping file %s due to stat error: %s",
+                            item.path,
+                            str(err),
+                        )
 
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""

@@ -97,9 +97,9 @@ class AudibleHelper:
 
         try:
             if cached_book is not None:
-                album = await self._parse_audiobook(cached_book)
+                album = self._parse_audiobook(cached_book)
             else:
-                album = await self._parse_audiobook(audiobook_data)
+                album = self._parse_audiobook(audiobook_data)
             return album, total_processed + 1
         except MediaNotFoundError as exc:
             self.logger.warning(f"Skipping invalid audiobook: {exc}")
@@ -198,7 +198,11 @@ class AudibleHelper:
             )
 
     async def get_audiobook(self, asin: str, use_cache: bool = True) -> Audiobook:
-        """Fetch the audiobook by asin."""
+        """Fetch the full audiobook by asin with all details including chapters.
+
+        This method fetches complete audiobook details including chapters and resume position.
+        Use this when the user requests full details for a specific audiobook.
+        """
         if use_cache:
             cached_book = await self.mass.cache.get(
                 key=asin,
@@ -207,7 +211,10 @@ class AudibleHelper:
                 default=None,
             )
             if cached_book is not None:
-                return await self._parse_audiobook(cached_book)
+                book = self._parse_audiobook(cached_book)
+                # Enrich with chapters and resume position
+                await self._enrich_audiobook(book, asin)
+                return book
         response = await self._call_api(
             f"library/{asin}",
             response_groups="""
@@ -229,7 +236,34 @@ class AudibleHelper:
             category=CACHE_CATEGORY_AUDIOBOOK,
             data=item_data,
         )
-        return await self._parse_audiobook(item_data)
+        book = self._parse_audiobook(item_data)
+        # Enrich with chapters and resume position
+        await self._enrich_audiobook(book, asin)
+        return book
+
+    async def _enrich_audiobook(self, book: Audiobook, asin: str) -> None:
+        """Enrich audiobook with chapters and resume position.
+
+        This makes additional API calls and should only be used for full audiobook details,
+        not during library sync.
+        """
+        # Fetch chapters
+        chapters_data = await self._fetch_chapters(asin=asin)
+        if chapters_data:
+            chapters: list[MediaItemChapter] = [
+                self._parse_chapter_data(chapter, idx) for idx, chapter in enumerate(chapters_data)
+            ]
+            book.metadata.chapters = chapters
+            # Update duration from chapters if available (more accurate)
+            try:
+                duration = sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000
+                if duration > 0:
+                    book.duration = duration
+            except Exception as exc:
+                self.logger.warning(f"Error calculating duration from chapters for {asin}: {exc}")
+
+        # Fetch resume position
+        book.resume_position_ms = await self.get_last_postion(asin=asin)
 
     async def get_stream(self, asin: str) -> StreamDetails:
         """Get stream details for a track (audiobook chapter)."""
@@ -492,8 +526,12 @@ class AudibleHelper:
 
         return MediaItemChapter(position=index, name=chapter_title, start=start, end=start + length)
 
-    async def _parse_audiobook(self, audiobook_data: dict[str, Any] | None) -> Audiobook:
-        """Parse audiobook data from API response."""
+    def _parse_audiobook(self, audiobook_data: dict[str, Any] | None) -> Audiobook:
+        """Parse audiobook data from API response.
+
+        NOTE: This is a pure parser - no API calls allowed here.
+        Chapters and resume position are fetched lazily when needed.
+        """
         if audiobook_data is None:
             self.logger.error("Received None audiobook_data in _parse_audiobook")
             raise MediaNotFoundError("Audiobook data not found")
@@ -505,13 +543,10 @@ class AudibleHelper:
         narrators = self._parse_contributors(audiobook_data.get("narrators"), "Unknown Narrator")
         authors = self._parse_contributors(audiobook_data.get("authors"), "Unknown Author")
 
-        # Get chapters and calculate duration
-        chapters_data = await self._fetch_chapters(asin=asin)
-        try:
-            duration = sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000
-        except Exception as exc:
-            self.logger.warning(f"Error calculating duration for audiobook {asin}: {exc}")
-            duration = 0
+        # Get duration from runtime_length_min (provided by 'media' response group)
+        # Chapters are fetched lazily when streaming, not during library sync
+        runtime_minutes = audiobook_data.get("runtime_length_min", 0)
+        duration = runtime_minutes * 60 if runtime_minutes else 0
 
         # Create audiobook object
         book = Audiobook(
@@ -555,14 +590,9 @@ class AudibleHelper:
         image_path = audiobook_data.get("product_images", {}).get("500")
         book.metadata.images = UniqueList(self._create_images(image_path))
 
-        # Parse chapters
-        chapters: list[MediaItemChapter] = [
-            self._parse_chapter_data(chapter, idx) for idx, chapter in enumerate(chapters_data)
-        ]
-        book.metadata.chapters = chapters
+        # Chapters are not fetched during parsing - they are fetched lazily when streaming
+        # This avoids N+1 API calls during library sync
 
-        # Get resume position
-        book.resume_position_ms = await self.get_last_postion(asin=asin)
         return book
 
     async def deregister(self) -> None:

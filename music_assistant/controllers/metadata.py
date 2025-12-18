@@ -43,7 +43,6 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     VARIOUS_ARTISTS_MBID,
@@ -55,6 +54,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.images import create_collage, get_image_thumb
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -226,7 +226,7 @@ class MetaDataController(CoreController):
     @api_command("metadata/set_default_preferred_language")
     def set_default_preferred_language(self, lang: str) -> None:
         """
-        Set the (default) preferred language.
+        Set the default preferred language.
 
         Reasoning behind this is that the backend can not make a wise choice for the default,
         so relies on some external source that knows better to set this info, like the frontend
@@ -235,6 +235,16 @@ class MetaDataController(CoreController):
         """
         if self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE):
             return  # already set
+        self.set_preferred_language(lang)
+
+    @api_command("metadata/set_preferred_language")
+    def set_preferred_language(self, lang: str) -> None:
+        """
+        Set the preferred language.
+
+        Note that this will not modify any existing metadata,
+        but will be used for future lookups.
+        """
         # prefer exact match
         if lang in LOCALES:
             self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
@@ -385,14 +395,18 @@ class MetaDataController(CoreController):
         size: int = 0,
         prefer_proxy: bool = False,
         image_format: str = "png",
+        prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+            base_url = (
+                self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
+            )
             return (
-                f"{self.mass.streams.base_url}/imageproxy?provider={image.provider}"
+                f"{base_url}/imageproxy?provider={image.provider}"
                 f"&size={size}&fmt={image_format}&path={encoded_url}"
             )
         return image.path
@@ -433,7 +447,7 @@ class MetaDataController(CoreController):
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote_plus(path)
-        with suppress(FileNotFoundError):
+        try:
             image_data = await self.get_thumbnail(
                 path, size=size, provider=provider, image_format=image_format
             )
@@ -444,6 +458,17 @@ class MetaDataController(CoreController):
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
                 content_type=f"image/{image_format}",
             )
+        except Exception as err:
+            # broadly catch all exceptions here to ensure we dont crash the request handler
+            if isinstance(err, FileNotFoundError):
+                self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            else:
+                self.logger.warning(
+                    "Error while fetching image %s: %s",
+                    path,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
         return web.Response(status=404)
 
     async def create_collage_image(
@@ -501,21 +526,22 @@ class MetaDataController(CoreController):
         if TYPE_CHECKING:
             local_provs = cast("set[str]", local_provs)
 
-        # ensure the item is matched to all providers
-        await self.mass.music.artists.match_providers(artist)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         for prov_mapping in sorted(
             artist.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.artists.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -556,23 +582,21 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Album %s", album.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.albums.match_providers(album)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(album.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.albums.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -611,22 +635,21 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Track %s", track.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.tracks.match_providers(track)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.tracks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -741,25 +764,23 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Audiobook %s", audiobook.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.audiobooks.match_providers(audiobook)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.audiobooks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -789,25 +810,23 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Podcast %s", podcast.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.podcasts.match_providers(podcast)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             podcast.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.podcasts.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -919,20 +938,6 @@ class MetaDataController(CoreController):
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
-            await asyncio.sleep(30)
-
-        # Scan for missing album images
-        self.logger.debug("Start lookup for missing album images...")
-        query = (
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-            f"AND (json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') ISNULL "
-            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') = '[]')"
-        )
-        for album in await self.mass.music.albums.library_items(
-            limit=5, order_by="random", extra_query=query
-        ):
-            if album.uri:
-                self.schedule_update_metadata(album.uri)
             await asyncio.sleep(30)
 
         # Force refresh playlist metadata every refresh interval

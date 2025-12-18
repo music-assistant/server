@@ -3,7 +3,9 @@
 import asyncio
 import logging
 import re
+import shutil
 import socket
+from pathlib import Path
 from typing import cast
 
 from bidict import bidict
@@ -29,10 +31,13 @@ from music_assistant.providers.snapcast.constants import (
     CONF_SERVER_TRANSPORT_CODEC,
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
+    CONTROL_SCRIPT,
+    CONTROL_SOCKET_PATH_TEMPLATE,
     DEFAULT_SNAPSERVER_PORT,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.player import SnapCastPlayer
+from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
 
 class SnapCastProvider(PlayerProvider):
@@ -46,6 +51,8 @@ class SnapCastProvider(PlayerProvider):
     _ids_map: bidict[str, str]  # ma_id / snapclient_id
     _use_builtin_server: bool
     _stop_called: bool
+    _controlscript_available: bool
+    _socket_servers: dict[str, SnapcastSocketServer]  # queue_id -> socket server
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -53,6 +60,8 @@ class SnapCastProvider(PlayerProvider):
         logging.getLogger("snapcast").setLevel(self.logger.level)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
+        self._controlscript_available = False
+        self._socket_servers = {}
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
@@ -106,6 +115,10 @@ class SnapCastProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
+        # Stop all socket servers
+        for socket_server in list(self._socket_servers.values()):
+            await socket_server.stop()
+        self._socket_servers.clear()
         for snap_client in self._snapserver.clients:
             player_id = self._get_ma_id(snap_client.identifier)
             if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
@@ -130,6 +143,34 @@ class SnapCastProvider(PlayerProvider):
             self._snapserver_runner.cancel()
             if self._snapserver_started is not None:
                 self._snapserver_started.clear()
+
+    def _setup_controlscript(self) -> bool:
+        """Copy control script to plugin directory (blocking I/O).
+
+        :return: True if successful, False otherwise.
+        """
+        plugin_dir = Path("/usr/share/snapserver/plug-ins")
+        control_dest = plugin_dir / "control.py"
+        logger = self.logger.getChild("snapserver")
+        try:
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            # Clean up existing file
+            control_dest.unlink(missing_ok=True)
+            if not CONTROL_SCRIPT.exists():
+                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
+                return False
+            # Copy the control script to the plugin directory
+            shutil.copy2(CONTROL_SCRIPT, control_dest)
+            # Ensure it's executable
+            control_dest.chmod(0o755)
+            logger.debug("Copied controlscript to: %s", control_dest)
+            return True
+        except (OSError, PermissionError) as err:
+            logger.warning(
+                "Could not copy controlscript (metadata/control disabled): %s",
+                err,
+            )
+            return False
 
     async def _builtin_server_runner(self) -> None:
         """Start running the builtin snapserver."""
@@ -199,6 +240,12 @@ class SnapCastProvider(PlayerProvider):
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
+                        # Copy control script after snapserver starts
+                        # (run in executor to avoid blocking)
+                        loop = asyncio.get_running_loop()
+                        self._controlscript_available = await loop.run_in_executor(
+                            None, self._setup_controlscript
+                        )
 
     def _get_ma_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
@@ -288,3 +335,35 @@ class SnapCastProvider(PlayerProvider):
             self.logger.debug("Snapclient removed %s", player_id)
         else:
             self.logger.warning("Unable to remove snapclient %s: %s", player_id, error_msg)
+
+    async def get_or_create_socket_server(self, queue_id: str) -> str:
+        """Get or create a socket server for the given queue.
+
+        :param queue_id: The queue ID to create a socket server for.
+        :return: The path to the Unix socket.
+        """
+        if queue_id in self._socket_servers:
+            return self._socket_servers[queue_id].socket_path
+
+        socket_path = CONTROL_SOCKET_PATH_TEMPLATE.format(queue_id=queue_id)
+        socket_server = SnapcastSocketServer(
+            mass=self.mass,
+            queue_id=queue_id,
+            socket_path=socket_path,
+            streamserver_ip=str(self.mass.streams.publish_ip),
+            streamserver_port=cast("int", self.mass.streams.publish_port),
+        )
+        await socket_server.start()
+        self._socket_servers[queue_id] = socket_server
+        self.logger.debug("Created socket server for queue %s at %s", queue_id, socket_path)
+        return socket_path
+
+    async def stop_socket_server(self, queue_id: str) -> None:
+        """Stop and remove the socket server for the given queue.
+
+        :param queue_id: The queue ID to stop the socket server for.
+        """
+        if queue_id in self._socket_servers:
+            await self._socket_servers[queue_id].stop()
+            del self._socket_servers[queue_id]
+            self.logger.debug("Stopped socket server for queue %s", queue_id)

@@ -25,7 +25,6 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
-    CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
@@ -84,7 +83,7 @@ class SnapCastPlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
-        self._attr_can_group_with = {self.provider.lookup_key}
+        self._attr_can_group_with = {self.provider.instance_id}
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -348,19 +347,23 @@ class SnapCastPlayer(Player):
         # prefer to reuse existing stream if possible
         if stream := self._get_snapstream(stream_name):
             return stream
-
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
-        if self.provider._use_builtin_server and queue_id:
+        extra_args = ""
+        if (
+            self.provider._use_builtin_server
+            and queue_id
+            and self.provider._controlscript_available
+        ):
+            # Create socket server for control script communication
+            socket_path = await self.provider.get_or_create_socket_server(queue_id)
             extra_args = (
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
-                f"--api-port={self.mass.webserver.publish_port}%20"
+                f"--socket={urllib.parse.quote_plus(socket_path)}%20"
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
-        else:
-            extra_args = ""
 
         attempts = 50
         while attempts:

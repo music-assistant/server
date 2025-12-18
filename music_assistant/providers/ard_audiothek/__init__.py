@@ -381,7 +381,6 @@ class ARDAudiothek(MusicProvider):
                 podcasts += [
                     _parse_podcast(
                         self.domain,
-                        self.lookup_key,
                         self.instance_id,
                         element,
                         element["coreId"],
@@ -476,7 +475,6 @@ class ARDAudiothek(MusicProvider):
 
         return _parse_podcast(
             self.domain,
-            self.lookup_key,
             self.instance_id,
             result,
             prov_podcast_id,
@@ -514,7 +512,6 @@ class ARDAudiothek(MusicProvider):
                     progress = self._get_progress(episode_id)
                     yield _parse_podcast_episode(
                         self.domain,
-                        self.lookup_key,
                         self.instance_id,
                         episode,
                         episode_id,
@@ -535,7 +532,6 @@ class ARDAudiothek(MusicProvider):
         progress = self._get_progress(prov_episode_id)
         return _parse_podcast_episode(
             self.domain,
-            self.lookup_key,
             self.instance_id,
             result,
             result["showId"],
@@ -667,7 +663,6 @@ class ARDAudiothek(MusicProvider):
 
             podcast = _parse_podcast(
                 self.domain,
-                self.lookup_key,
                 self.instance_id,
                 pod,
                 pod["coreId"],
@@ -700,7 +695,6 @@ def _parse_social_media(
 
 def _parse_podcast(
     domain: str,
-    lookup_key: str,
     instance_id: str,
     podcast_query: dict[str, Any],
     podcast_id: str,
@@ -709,7 +703,7 @@ def _parse_podcast(
         name=podcast_query["title"],
         item_id=podcast_id,
         publisher=podcast_query["publicationService"]["title"],
-        provider=lookup_key,
+        provider=instance_id,
         provider_mappings={
             ProviderMapping(
                 item_id=podcast_id,
@@ -767,7 +761,6 @@ def _parse_radio(
 
 def _parse_podcast_episode(
     domain: str,
-    lookup_key: str,
     instance_id: str,
     episode: dict[str, Any],
     podcast_id: str,
@@ -779,10 +772,10 @@ def _parse_podcast_episode(
         name=episode["title"],
         duration=episode["duration"],
         item_id=episode["coreId"],
-        provider=lookup_key,
+        provider=instance_id,
         podcast=ItemMapping(
             item_id=podcast_id,
-            provider=lookup_key,
+            provider=instance_id,
             name=podcast_title,
             media_type=MediaType.PODCAST,
         ),

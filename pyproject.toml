@@ -11,6 +11,9 @@ classifiers = [
 ]
 dependencies = [
   "aiodns>=3.2.0",
+  # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes
+  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
+  "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
   "aiohttp==3.13.2",
@@ -18,6 +21,7 @@ dependencies = [
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
+  "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "cryptography==46.0.3",
@@ -25,12 +29,12 @@ dependencies = [
   "ifaddr==0.2.0",
   "get-mac==0.9.2",
   "mashumaro==3.17",
-  "music-assistant-frontend==2.17.11",
-  "music-assistant-models==1.1.71",
+  "music-assistant-frontend==2.17.47",
+  "music-assistant-models==1.1.83",
   "mutagen==1.47.0",
-  "orjson==3.11.4",
+  "orjson==3.11.5",
   "pillow==11.3.0",
-  "podcastparser==0.6.10",
+  "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
@@ -41,6 +45,7 @@ dependencies = [
   "librosa==0.11.0",
   "gql[all]==4.0.0",
   "aiovban>=0.6.3",
+  "aiortc>=1.6.0",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -51,15 +56,15 @@ version = "0.0.0"
 [project.optional-dependencies]
 test = [
   "codespell==2.4.1",
-  "mypy==1.18.2",
-  "pre-commit==4.3.0",
+  "mypy==1.19.0",
+  "pre-commit==4.5.0",
   "pre-commit-hooks==6.0.0",
   "pytest==8.4.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
   "tomli==2.3.0",
-  "ruff==0.14.6",
+  "ruff==0.14.9",
 ]
 
 [project.scripts]

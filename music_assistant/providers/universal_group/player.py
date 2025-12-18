@@ -74,9 +74,9 @@ class UniversalGroupPlayer(GroupPlayer):
         )
         # allow grouping with all providers, except the ugp provider itself
         self._attr_can_group_with = {
-            x.lookup_key
+            x.instance_id
             for x in self.mass.players.providers
-            if x.lookup_key != self.provider.lookup_key
+            if x.instance_id != self.provider.instance_id
         }
         self._set_attributes()
 

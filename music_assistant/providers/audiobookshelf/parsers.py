@@ -42,9 +42,8 @@ def parse_podcast(
     abs_podcast: AbsLibraryItemExpandedPodcast
     | AbsLibraryItemMinifiedPodcast
     | AbsLibraryItemPodcast,
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     token: str | None,
     base_url: str,
 ) -> MassPodcast:
@@ -57,7 +56,7 @@ def parse_podcast(
         item_id=abs_podcast.id_,
         name=title,
         publisher=abs_podcast.media.metadata.author,
-        provider=lookup_key,
+        provider=instance_id,
         provider_mappings={
             ProviderMapping(
                 item_id=abs_podcast.id_,
@@ -70,7 +69,7 @@ def parse_podcast(
     if token is not None:
         image_url = f"{base_url}/api/items/{abs_podcast.id_}/cover?token={token}"
         mass_podcast.metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=lookup_key)]
+            [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=instance_id)]
         )
     mass_podcast.metadata.explicit = abs_podcast.media.metadata.explicit
     if abs_podcast.media.metadata.language is not None:
@@ -98,9 +97,8 @@ def parse_podcast_episode(
     episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
     fallback_episode_cnt: int | None = None,
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
@@ -153,13 +151,13 @@ def parse_podcast_episode(
             position = fallback_episode_cnt
     mass_episode = MassPodcastEpisode(
         item_id=episode_id,
-        provider=lookup_key,
+        provider=instance_id,
         name=episode.title,
         duration=duration,
         position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
-            provider=lookup_key,
+            provider=instance_id,
             name=episode.title,
             media_type=MediaType.PODCAST,
         ),
@@ -173,7 +171,7 @@ def parse_podcast_episode(
         url_api = f"/api/items/{prov_podcast_id}/cover?token={token}"
         url_cover = f"{base_url}{url_api}"
         mass_episode.metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=url_cover, provider=lookup_key)]
+            [MediaItemImage(type=ImageType.THUMB, path=url_cover, provider=instance_id)]
         )
 
     if media_progress is not None and media_progress.current_time is not None:
@@ -186,9 +184,8 @@ def parse_podcast_episode(
 def parse_audiobook(
     *,
     abs_audiobook: AbsLibraryItemExpandedBook | AbsLibraryItemMinifiedBook,
-    lookup_key: str,
-    domain: str,
     instance_id: str,
+    domain: str,
     token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
@@ -203,7 +200,7 @@ def parse_audiobook(
         title += f" | {subtitle}"
     mass_audiobook = MassAudiobook(
         item_id=abs_audiobook.id_,
-        provider=lookup_key,
+        provider=instance_id,
         name=title,
         duration=int(abs_audiobook.media.duration),
         provider_mappings={
@@ -241,7 +238,7 @@ def parse_audiobook(
         api_url = f"/api/items/{abs_audiobook.id_}/cover?token={token}"
         cover_url = f"{base_url}{api_url}"
         mass_audiobook.metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=lookup_key)]
+            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
 
     # expanded version

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.media_items import Podcast, PodcastEpisode, UniqueList
+from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.media.base import MediaControllerBase
@@ -49,11 +49,21 @@ class PodcastsController(MediaControllerBase[Podcast]):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-        provider: str | None = None,
+        provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[Podcast]:
-        """Get in-database podcasts."""
+        """Get in-database podcasts.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID (single string or list).
+        :param extra_query: Additional SQL query string.
+        :param extra_query_params: Additional query parameters.
+        """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
         result = await self._get_library_items_by_query(
@@ -62,7 +72,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
@@ -77,7 +87,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 search=None,
                 limit=limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
             )
@@ -94,10 +104,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             library_podcast = await self.get_library_item(item_id)
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
-            for provider_mapping in library_podcast.provider_mappings:
-                item_id = provider_mapping.item_id
-                provider_instance_id_or_domain = provider_mapping.provider_instance
-                break
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
         # podcast episodes are not stored in the db/library
         # so we always need to fetch them from the provider
         async for episode in self._get_provider_podcast_episodes(
@@ -216,7 +223,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 DB_TABLE_PLAYLOG,
                 {
                     "item_id": episode.item_id,
-                    "provider": prov.lookup_key,
+                    "provider": prov.instance_id,
                     "media_type": MediaType.PODCAST_EPISODE,
                 },
             )
@@ -236,13 +243,55 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        limit: int = 25,
+        item: Podcast,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Podcast to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         msg = "Dynamic tracks not supported for Podcast MediaItem"
         raise NotImplementedError(msg)
+
+    async def match_provider(
+        self, db_podcast: Podcast, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) podcast.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        self.logger.debug(
+            "Trying to match podcast %s on provider %s",
+            db_podcast.name,
+            provider.name,
+        )
+        matches: list[ProviderMapping] = []
+        search_str = db_podcast.name
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_podcast, search_result_item, strict=strict):
+                continue
+            # we must fetch the full podcast version, search results can be simplified objects
+            prov_podcast = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_podcast(db_podcast, prov_podcast, strict=strict):
+                # 100% match
+                matches.extend(prov_podcast.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Podcast %s on provider %s",
+                db_podcast.name,
+                provider.name,
+            )
+        return matches
 
     async def match_providers(self, db_podcast: Podcast) -> None:
         """Try to find match on all (streaming) providers for the provided (database) podcast.
@@ -251,34 +300,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         if db_podcast.provider != "library":
             return  # Matching only supported for database items
-
-        async def find_prov_match(provider: MusicProvider) -> bool:
-            self.logger.debug(
-                "Trying to match podcast %s on provider %s",
-                db_podcast.name,
-                provider.name,
-            )
-            match_found = False
-            search_str = db_podcast.name
-            search_result = await self.search(search_str, provider.instance_id)
-            for search_result_item in search_result:
-                if not search_result_item.available:
-                    continue
-                if not compare_media_item(db_podcast, search_result_item):
-                    continue
-                # we must fetch the full podcast version, search results can be simplified objects
-                prov_podcast = await self.get_provider_item(
-                    search_result_item.item_id,
-                    search_result_item.provider,
-                    fallback=search_result_item,
-                )
-                if compare_podcast(db_podcast, prov_podcast):
-                    # 100% match, we update the db with the additional provider mapping(s)
-                    match_found = True
-                    for provider_mapping in search_result_item.provider_mappings:
-                        await self.add_provider_mapping(db_podcast.item_id, provider_mapping)
-                        db_podcast.provider_mappings.add(provider_mapping)
-            return match_found
 
         # try to find match on all providers
         cur_provider_domains = {x.provider_domain for x in db_podcast.provider_mappings}
@@ -292,11 +313,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
                 continue
-            if await find_prov_match(provider):
+            if match := await self.match_provider(db_podcast, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_podcast.item_id, match)
                 cur_provider_domains.add(provider.domain)
-            else:
-                self.logger.debug(
-                    "Could not find match for Podcast %s on provider %s",
-                    db_podcast.name,
-                    provider.name,
-                )

@@ -15,7 +15,8 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
     InsufficientPermissions,
@@ -27,8 +28,11 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
+from .helpers.auth_providers import get_ha_user_role
 
 if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
+
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
@@ -48,7 +52,9 @@ class WebsocketClientHandler:
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
-        self._authenticated_user: Any = None  # Will be set after auth command or from Ingress
+        self._authenticated_user: User | None = (
+            None  # Will be set after auth command or from Ingress
+        )
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._is_ingress = is_request_from_ingress(request)
@@ -85,6 +91,12 @@ class WebsocketClientHandler:
         # send server(version) info when client connects
         server_info = self.mass.get_server_info()
         await self._send_message(server_info)
+
+        # Block until onboarding is complete
+        if not self.webserver.auth.has_users and not self._is_ingress:
+            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await wsock.close()
+            return wsock
 
         # For Ingress connections, auto-create/link user and subscribe to events immediately
         # For regular connections, events will be subscribed after successful authentication
@@ -356,21 +368,20 @@ class WebsocketClientHandler:
             )
 
             if not user:
-                # Security: Ensure at least one user exists (setup should have been completed)
-                if not await self.webserver.auth.has_users():
-                    # No users exist - setup has not been completed
-                    # This should not happen as the server redirects to /setup
-                    self._logger.warning("Ingress connection attempted before setup completed")
-                    return
+                # Check if a user with this username already exists
+                user = await self.webserver.auth.get_user_by_username(ingress_username)
 
-                # Auto-create user for Ingress (they're already authenticated by HA)
-                # Always create with USER role (admin is created during setup)
-                user = await self.webserver.auth.create_user(
-                    username=ingress_username,
-                    role=UserRole.USER,
-                    display_name=ingress_display_name,
-                )
-                # Link to Home Assistant provider
+                if not user:
+                    # Auto-create user for Ingress (they're already authenticated by HA)
+                    # Determine role based on HA admin status
+                    role = await get_ha_user_role(self.mass, ingress_user_id)
+                    user = await self.webserver.auth.create_user(
+                        username=ingress_username,
+                        role=role,
+                        display_name=ingress_display_name,
+                    )
+
+                # Link to Home Assistant provider (or create the link if user already existed)
                 await self.webserver.auth.link_user_to_provider(
                     user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
                 )
@@ -389,8 +400,26 @@ class WebsocketClientHandler:
             # Already subscribed
             return
 
-        def handle_event(event: Any) -> None:
-            # event is MassEvent but we use Any to avoid runtime import
+        def handle_event(event: MassEvent) -> None:
+            # filter events for objects the user has no access to
+            if (
+                self._authenticated_user
+                and self._authenticated_user.player_filter
+                and event.event
+                in (
+                    EventType.PLAYER_ADDED,
+                    EventType.PLAYER_REMOVED,
+                    EventType.PLAYER_UPDATED,
+                    EventType.QUEUE_ADDED,
+                    EventType.QUEUE_ITEMS_UPDATED,
+                    EventType.QUEUE_TIME_UPDATED,
+                    EventType.QUEUE_UPDATED,
+                )
+                and event.object_id
+                and event.object_id not in self._authenticated_user.player_filter
+            ):
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)

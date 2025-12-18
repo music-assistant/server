@@ -46,6 +46,7 @@ from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -706,6 +707,12 @@ class Player(ABC):
                 return player.player_id
         return None
 
+    def _on_player_media_updated(self) -> None:  # noqa: B027
+        """Handle callback when the current media of the player is updated."""
+        # optional callback for players that want to be informed when the final
+        # current media is updated (after applying group/sync membership logic).
+        # for instance to update any display information on the physical player.
+
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they
     # are used to perform a very specific function. Overwriting these may
@@ -726,8 +733,8 @@ class Player(ABC):
     @property
     @final
     def provider_id(self) -> str:
-        """Return the provider id of the player."""
-        return self._provider.lookup_key
+        """Return the provider (instance) id of the player."""
+        return self._provider.instance_id
 
     @property
     @final
@@ -1028,7 +1035,11 @@ class Player(ABC):
         # clear the dict for the cached properties
         self._cache.clear()
         # calculate the new state
+        prev_media_checksum = self._get_player_media_checksum()
         changed_values = self.__calculate_state()
+        if prev_media_checksum != self._get_player_media_checksum():
+            # current media changed, call the media updated callback
+            self._on_player_media_updated()
         # ignore some values that are not relevant for the state
         changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
@@ -1195,6 +1206,15 @@ class Player(ABC):
             ),
         ]
 
+    def _get_player_media_checksum(self) -> str:
+        """Return a checksum for the current media."""
+        if not (media := self.current_media):
+            return ""
+        return (
+            f"{media.uri}|{media.title}|{media.source_id}|{media.queue_item_id}|"
+            f"{media.image_url}|{media.duration}|{media.elapsed_time}"
+        )
+
     def __calculate_state(
         self,
     ) -> dict[str, tuple[Any, Any]]:
@@ -1300,6 +1320,13 @@ class Player(ABC):
 
     def __calculate_current_media(self) -> PlayerMedia | None:
         """Calculate the current media for the player."""
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # if an announcement is in progress, return announcement details
+            return PlayerMedia(
+                uri="announcement",
+                media_type=MediaType.ANNOUNCEMENT,
+                title="ANNOUNCEMENT",
+            )
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
@@ -1328,11 +1355,13 @@ class Player(ABC):
             active_queue = self.mass.player_queues.get(self._current_media.source_id)
         if not active_queue and self.active_source:
             active_queue = self.mass.player_queues.get(self.active_source)
+        if not active_queue and self._active_source is None:
+            active_queue = self.mass.player_queues.get(self.player_id)
 
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
-                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="png")
+                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="jpeg")
                 if current_item.image
                 else None
             )
@@ -1345,7 +1374,7 @@ class Player(ABC):
                     media_type=current_item.media_type,
                     title=stream_metadata.title or current_item.name,
                     artist=stream_metadata.artist,
-                    album=stream_metadata.album or current_item.name,
+                    album=stream_metadata.album or stream_metadata.description or current_item.name,
                     image_url=(stream_metadata.image_url or item_image_url),
                     duration=stream_metadata.duration or current_item.duration,
                     source_id=active_queue.queue_id,
@@ -1356,12 +1385,18 @@ class Player(ABC):
                 )
             if media_item := current_item.media_item:
                 # normal media item
+                # we use getattr here to avoid issues with different media item types
+                version = getattr(media_item, "version", None)
+                album = getattr(media_item, "album", None)
+                podcast = getattr(media_item, "podcast", None)
+                metadata = getattr(media_item, "metadata", None)
+                description = getattr(metadata, "description", None) if metadata else None
                 return PlayerMedia(
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
-                    title=media_item.name,
+                    title=f"{media_item.name} ({version})" if version else media_item.name,
                     artist=getattr(media_item, "artist_str", None),
-                    album=album.name if (album := getattr(media_item, "album", None)) else None,
+                    album=album.name if album else podcast.name if podcast else description,
                     # the image format needs to be 500x500 jpeg for maximum player compatibility
                     image_url=self.mass.metadata.get_image_url(
                         current_item.media_item.image, size=500, image_format="jpeg"

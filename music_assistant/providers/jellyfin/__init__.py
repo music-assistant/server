@@ -364,7 +364,7 @@ class JellyfinProvider(MusicProvider):
             artist = Artist(
                 item_id=UNKNOWN_ARTIST_MAPPING.item_id,
                 name=UNKNOWN_ARTIST_MAPPING.name,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 provider_mappings={
                     ProviderMapping(
                         item_id=UNKNOWN_ARTIST_MAPPING.item_id,
@@ -450,7 +450,7 @@ class JellyfinProvider(MusicProvider):
         )
         return StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=audio_format(jellyfin_track),
             stream_type=StreamType.HTTP,
             duration=int(
