@@ -170,7 +170,6 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
-            in_library_only=True,
         )
 
         # Calculate how many more items we need to reach the original limit

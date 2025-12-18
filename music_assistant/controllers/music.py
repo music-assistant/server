@@ -97,7 +97,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 24
+DB_SCHEMA_VERSION: Final[int] = 25
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2166,6 +2166,16 @@ class MusicController(CoreController):
             except Exception as err:
                 if "duplicate column" not in str(err):
                     raise
+
+        if prev_version <= 25:
+            # set in_library=True for local(file)-based providers
+            # these providers always represent the user's actual library
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain IN "
+                "('filesystem_local', 'filesystem_smb', 'plex', "
+                "'jellyfin', 'opensubsonic', 'builtin');"
+            )
 
         # save changes
         await self._database.commit()
