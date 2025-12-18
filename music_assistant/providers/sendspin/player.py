@@ -285,9 +285,9 @@ class SendspinPlayer(Player):
             case MediaCommand.REPEAT_ALL if queue:
                 self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case MediaCommand.SHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
             case MediaCommand.UNSHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
     async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
