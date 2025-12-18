@@ -109,9 +109,9 @@ class WebRTCGateway:
         self.sessions: dict[str, WebRTCSession] = {}
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
-        self._reconnect_delay = 5
-        self._max_reconnect_delay = 60
-        self._current_reconnect_delay = 5
+        self._reconnect_delay = 10  # Wait 10 seconds before reconnecting
+        self._max_reconnect_delay = 300  # Max 5 minutes between reconnects
+        self._current_reconnect_delay = 10
         self._run_task: asyncio.Task[None] | None = None
         self._is_connected = False
         self._connecting = False
@@ -171,13 +171,18 @@ class WebRTCGateway:
             except Exception:
                 self.logger.debug("Error closing signaling WebSocket", exc_info=True)
 
-        # Cancel run task
+        # Cancel run task and wait for it to finish
         if self._run_task and not self._run_task.done():
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._run_task
 
+        # Wait briefly for any in-progress connection to notice _running=False
+        if self._connecting:
+            await asyncio.sleep(0.1)
+
         self._signaling_ws = None
+        self._connecting = False
 
     async def _run(self) -> None:
         """Run the main loop with reconnection logic."""
@@ -228,8 +233,15 @@ class WebRTCGateway:
         try:
             self._signaling_ws = await self.http_session.ws_connect(
                 self.signaling_url,
-                heartbeat=30.0,  # Send WebSocket ping every 30s to keep connection alive
+                heartbeat=35.0,  # Send ping every 35s (slightly above server's 30s interval)
             )
+            # Check if we were stopped while connecting
+            if not self._running:
+                self.logger.debug("Gateway stopped during connection, closing WebSocket")
+                await self._signaling_ws.close()
+                self._signaling_ws = None
+                self._connecting = False
+                return False
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
             await self._register()
