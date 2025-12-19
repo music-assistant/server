@@ -1085,7 +1085,7 @@ class ConfigController:
             self.set(conf_key, prev_config)
             self.save(immediate=True)
             raise
-        # reload succeeded, save new config
+        # reload succeeded; clear last_error and persist the final state
         config.last_error = None
         self.set(conf_key, config.to_raw())
         self.save(immediate=True)
