@@ -630,8 +630,10 @@ class MusicAssistant:
             prov_conf.last_error = str(exc)
             self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
 
-            # auto schedule a retry if the (re)load failed (handled exceptions only)
-            if isinstance(exc, MusicAssistantError) and allow_retry:
+            # auto schedule a retry if the (re)load failed with a handled exception
+            # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
+            will_retry = allow_retry and isinstance(exc, MusicAssistantError)
+            if will_retry:
                 self.call_later(
                     120,
                     self.load_provider,
@@ -639,16 +641,15 @@ class MusicAssistant:
                     allow_retry,
                     task_id=task_id,
                 )
-                LOGGER.warning(
-                    "Error loading provider(instance) %s: %s (will be retried later)",
-                    prov_conf.name or prov_conf.instance_id,
-                    str(exc) or exc.__class__.__name__,
-                    # log full stack trace if verbose logging is enabled
-                    exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
-                )
-                return
-            # raise in all other situations
-            raise
+            LOGGER.warning(
+                "Error loading provider(instance) %s: %s%s",
+                prov_conf.name or prov_conf.instance_id,
+                str(exc) or exc.__class__.__name__,
+                " (will be retried later)" if will_retry else "",
+                # log full stack trace if verbose logging is enabled
+                exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+            )
+            return
 
         # (re)load any dependents if needed
         for dep_prov in self.providers:
