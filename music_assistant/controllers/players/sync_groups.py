@@ -433,7 +433,6 @@ class SyncGroupPlayer(GroupPlayer):
                 former_members not in members_to_sync
             ) and former_members != self.sync_leader.player_id:
                 members_to_remove.append(former_members)
-
         if members_to_sync or members_to_remove:
             await self.sync_leader.set_members(members_to_sync, members_to_remove)
 
