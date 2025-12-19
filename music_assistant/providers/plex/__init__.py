@@ -170,7 +170,13 @@ async def get_config_entries(  # noqa: PLR0915
             plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
             await auth_helper.authenticate(auth_url)
-            if not plex_auth.checkLogin():
+            # Poll checkLogin() as the token may not be immediately available after OAuth callback
+            # The Plex OAuth flow needs time to propagate the token
+            for _ in range(30):  # Poll for up to 30 seconds
+                if plex_auth.checkLogin():
+                    break
+                await asyncio.sleep(1)
+            if not plex_auth.token:
                 msg = "Authentication to MyPlex failed"
                 raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
