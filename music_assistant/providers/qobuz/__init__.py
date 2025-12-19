@@ -456,7 +456,7 @@ class QobuzProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        max_quality = cast("int", self.config.get_value(CONF_QUALITY))
+        max_quality = int(cast("str", self.config.get_value(CONF_QUALITY)) or "27")
         # Quality order from highest to lowest
         quality_order = [27, 7, 6, 5]
         # Only try qualities up to the user's maximum setting
