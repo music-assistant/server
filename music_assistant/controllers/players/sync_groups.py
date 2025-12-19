@@ -529,7 +529,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await other_group.power(False)
         if (
             member.synced_to is not None
-            and member.synced_to != self.sync_leader
+            and self.sync_leader
+            and member.synced_to != self.sync_leader.player_id
             and (synced_to_player := self.mass.players.get(member.synced_to))
             and member.player_id in synced_to_player.group_members
         ):
