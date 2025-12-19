@@ -499,7 +499,7 @@ class SqueezelitePlayer(Player):
                 # but I did not have any good results with that.
                 # Instead just start playback on all players and let the sync logic work out
                 # the delays etc.
-                tg.create_task(sync_client.pause_for(200))
+                tg.create_task(pause_and_unpause(sync_client, 200))
 
     async def _handle_player_cli_event(self, event: SlimEvent) -> None:
         """Process CLI Event."""
@@ -607,7 +607,7 @@ class SqueezelitePlayer(Player):
             # player lagging behind more than MAX_SKIP_AHEAD_MS,
             # we need to correct the sync_master
             self.logger.debug("%s resync: pauseFor %sms", sync_master.name, delta)
-            self.mass.create_task(sync_master.pause_for(delta))
+            self.mass.create_task(pause_and_unpause(sync_master, delta))
         elif avg_diff > 0:
             # handle player lagging behind, fix with skip_ahead
             self.logger.debug("%s resync: skipAhead %sms", self.display_name, delta)
@@ -615,7 +615,7 @@ class SqueezelitePlayer(Player):
         else:
             # handle player is drifting too far ahead, use pause_for to adjust
             self.logger.debug("%s resync: pauseFor %sms", self.display_name, delta)
-            self.mass.create_task(self.client.pause_for(delta))
+            self.mass.create_task(pause_and_unpause(self.client, delta))
 
     async def _set_preset_items(self) -> None:
         """Set the presets for a player."""
@@ -676,6 +676,17 @@ class SqueezelitePlayer(Player):
                 slimplayer := self._provider.slimproto.get_player(member_id)
             ):
                 yield slimplayer
+
+
+async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
+    """Pause player and schedule unpause after specified duration.
+
+    This is used instead of pause_for because WiiM devices
+    don't properly auto-unpause after pause_for interval.
+    """
+    await slim_client.pause()
+    unpause_timestamp = slim_client.jiffies + pause_duration_ms
+    await slim_client.unpause_at(unpause_timestamp)
 
 
 async def _patched_send_strm(  # noqa: PLR0913
