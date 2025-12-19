@@ -1242,7 +1242,7 @@ class StreamsController(CoreController):
             # pad silence while we're waiting for the announcement to be ready
             while announcement_data.empty():
                 yield b"\0" * int(
-                    pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
+                    pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels * 0.1
                 )
                 await asyncio.sleep(0.1)
             # stream announcement
