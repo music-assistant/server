@@ -212,9 +212,13 @@ class SpotifyProvider(MusicProvider):
                 yield audiobook
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve playlists from the provider."""
+        """Retrieve playlists from the provider.
+
+        Note: We use the global session here because playlists like "Daily Mix"
+        are only returned when using the non-dev (global) token.
+        """
         yield await self._get_liked_songs_playlist()
-        async for item in self._get_all_items("me/playlists"):
+        async for item in self._get_all_items("me/playlists", use_global_session=True):
             if item and item["id"]:
                 yield parse_playlist(item, self)
 
@@ -362,7 +366,12 @@ class SpotifyProvider(MusicProvider):
         if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
-        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+        # Use global session for Spotify-owned playlists (e.g., Daily Mix)
+        # as they may not be accessible via the dev token
+        use_global = await self._is_spotify_owned_playlist(prov_playlist_id)
+        playlist_obj = await self._get_data(
+            f"playlists/{prov_playlist_id}", use_global_session=use_global
+        )
         return parse_playlist(playlist_obj, self)
 
     @use_cache()
@@ -570,15 +579,15 @@ class SpotifyProvider(MusicProvider):
             if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
+        # Use global session for liked songs or Spotify-owned playlists (e.g., Daily Mix)
+        use_global = is_liked_songs or await self._is_spotify_owned_playlist(prov_playlist_id)
         # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(
-            uri, limit=1, offset=0, use_global_session=is_liked_songs
-        )
+        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
 
         page_size = 50
         offset = page * page_size
         spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=is_liked_songs
+            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
@@ -865,6 +874,7 @@ class SpotifyProvider(MusicProvider):
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
+            raise
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
@@ -959,6 +969,31 @@ class SpotifyProvider(MusicProvider):
             liked_songs.metadata.add_image(image)
 
         return liked_songs
+
+    @use_cache(86400 * 90)
+    async def _is_spotify_owned_playlist(self, prov_playlist_id: str) -> bool:
+        """Check if a playlist is owned by Spotify.
+
+        Spotify-owned playlists (e.g., Daily Mix, Discover Weekly) are only accessible
+        via the global token, not through developer API tokens.
+
+        :param prov_playlist_id: The Spotify playlist ID.
+        :returns: True if the playlist is owned by Spotify.
+        """
+        if prov_playlist_id == self._get_liked_songs_playlist_id():
+            return False
+        try:
+            # We need to use global session here to actually get the playlist info
+            # because if it's a Spotify-owned playlist, the dev session won't have access
+            playlist_obj = await self._get_data(
+                f"playlists/{prov_playlist_id}",
+                fields="owner.id",
+                use_global_session=True,
+            )
+            owner_id = playlist_obj.get("owner", {}).get("id", "").lower()
+            return bool(owner_id == "spotify")
+        except MediaNotFoundError:
+            return False
 
     async def _add_audiobook_chapters(self, audiobook: Audiobook) -> None:
         """Add chapter metadata to an audiobook from Spotify API data."""

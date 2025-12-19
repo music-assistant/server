@@ -65,6 +65,8 @@ async def _handle_auth_actions(
     if action == CONF_ACTION_AUTH:
         refresh_token = await pkce_auth_flow(mass, cast("str", values["session_id"]), app_var(2))
         values[CONF_REFRESH_TOKEN_GLOBAL] = refresh_token
+        values[CONF_REFRESH_TOKEN_DEV] = None  # Clear dev token on new global auth
+        values[CONF_CLIENT_ID] = None  # Clear client ID on new global auth
 
     elif action == CONF_ACTION_AUTH_DEV:
         custom_client_id = values.get(CONF_CLIENT_ID)
