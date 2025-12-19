@@ -282,6 +282,7 @@ class SqueezelitePlayer(Player):
                         media=media,
                         send_flush=True,
                         auto_play=False,
+                        is_group_playback=True,
                     )
                 )
 
@@ -408,6 +409,7 @@ class SqueezelitePlayer(Player):
         enqueue: bool = False,
         send_flush: bool = True,
         auto_play: bool = False,
+        is_group_playback: bool = False,
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
         metadata = {
@@ -435,6 +437,12 @@ class SqueezelitePlayer(Player):
             # to coordinate a start of multiple synced players
             autostart=auto_play,
         )
+        # TODO: When we implement server clock sync, we can remove the pause here
+        # and rely on unpause_at + HEADROOM in the buffer_ready handler. LMS
+        # also does NOT use an explicit pause. For now, we pause here to avoid
+        # WiiM devices starting playback too early, causing huge initial drift.
+        if is_group_playback:
+            await slimplayer.pause()
         # if queue is set to single track repeat,
         # immediately set this track as the next
         # this prevents race conditions with super short audio clips (on single repeat)
