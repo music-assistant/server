@@ -68,17 +68,14 @@ async def get_authenticated_user(request: web.Request) -> User | None:
                 user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
             )
 
-        # Update user with HA details if missing (HA is source of truth)
-        if not user.display_name or not user.avatar_url:
-            _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-            update_display_name = ha_display_name if not user.display_name else None
-            update_avatar_url = avatar_url if not user.avatar_url else None
-            if update_display_name or update_avatar_url:
-                user = await mass.webserver.auth.update_user(
-                    user,
-                    display_name=update_display_name,
-                    avatar_url=update_avatar_url,
-                )
+        # Update user with HA details if available (HA is source of truth)
+        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+        if ha_display_name or avatar_url:
+            user = await mass.webserver.auth.update_user(
+                user,
+                display_name=ha_display_name,
+                avatar_url=avatar_url,
+            )
 
         # Store in request context
         request[USER_CONTEXT_KEY] = user
