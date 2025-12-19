@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
 
@@ -75,7 +75,8 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         # Fall back to ingress headers if API lookup doesn't return values
         _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
         final_display_name = ha_display_name or ingress_display_name
-        LOGGER.debug(
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
             "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
             "final_display_name=%s, avatar_url=%s",
             user.username,
@@ -90,7 +91,8 @@ async def get_authenticated_user(request: web.Request) -> User | None:
                 display_name=final_display_name,
                 avatar_url=avatar_url,
             )
-            LOGGER.debug(
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
                 "Updated user %s: display_name=%s, avatar_url=%s",
                 user.username,
                 user.display_name,

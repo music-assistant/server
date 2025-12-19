@@ -29,7 +29,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.player_control import PlayerControl
 
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
@@ -545,7 +545,7 @@ class HomeAssistantProvider(PluginProvider):
                             display_name = user.get("name")
                         break
             except Exception as err:
-                self.logger.warning("Failed to get HA user list: %s", err)
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
 
             # Get external URL for building avatar URL
             ha_url: str | None = None
@@ -554,7 +554,7 @@ class HomeAssistantProvider(PluginProvider):
                 if network_urls:
                     ha_url = network_urls.get("external") or network_urls.get("internal")
             except Exception as err:
-                self.logger.warning("Failed to get HA network URLs: %s", err)
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
 
             # Find person linked to this HA user ID for display name and avatar
             try:
@@ -570,9 +570,10 @@ class HomeAssistantProvider(PluginProvider):
                             avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
             except Exception as err:
-                self.logger.warning("Failed to get HA person details: %s", err)
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
 
-            self.logger.debug(
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
                 "get_user_details for %s: username=%s, display_name=%s, avatar_url=%s",
                 ha_user_id,
                 username,
