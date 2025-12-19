@@ -6,6 +6,7 @@ from typing import Any
 
 import aiohttp
 import podcastparser
+from aiohttp.client import ClientError
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -32,7 +33,11 @@ async def get_podcastparser_dict(
     # but, reports on discord show, that also the opposite may be true
     for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
         # raises ClientError on status failure
-        response = await session.get(feed_url, headers=headers, raise_for_status=True)
+        try:
+            response = await session.get(feed_url, headers=headers, raise_for_status=True)
+        except ClientError:
+            continue
+        break
     assert response is not None  # for type checking
     feed_data = await response.read()
     feed_stream = BytesIO(feed_data)
