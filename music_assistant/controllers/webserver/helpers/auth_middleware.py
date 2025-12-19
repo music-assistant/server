@@ -10,7 +10,7 @@ from music_assistant_models.auth import AuthProviderType, User, UserRole
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 
-from .auth_providers import get_ha_user_role
+from .auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -51,16 +51,30 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         if not user:
             user = await mass.webserver.auth.get_user_by_username(ingress_username)
             if not user:
+                # New user - fetch details from HA
+                ha_username, ha_display_name, avatar_url = await get_ha_user_details(
+                    mass, ingress_user_id
+                )
                 role = await get_ha_user_role(mass, ingress_user_id)
                 user = await mass.webserver.auth.create_user(
-                    username=ingress_username,
+                    username=ha_username or ingress_username,
                     role=role,
-                    display_name=ingress_display_name,
+                    display_name=ha_display_name or ingress_display_name,
+                    avatar_url=avatar_url,
                 )
 
             # Link to Home Assistant provider (or create the link if user already existed)
             await mass.webserver.auth.link_user_to_provider(
                 user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+            )
+
+        # Always update user with HA details (HA is source of truth)
+        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+        if ha_display_name or avatar_url:
+            user = await mass.webserver.auth.update_user(
+                user,
+                display_name=ha_display_name,
+                avatar_url=avatar_url,
             )
 
         # Store in request context

@@ -28,7 +28,7 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
-from .helpers.auth_providers import get_ha_user_role
+from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -372,18 +372,31 @@ class WebsocketClientHandler:
                 user = await self.webserver.auth.get_user_by_username(ingress_username)
 
                 if not user:
+                    # New user - fetch details from HA
+                    ha_username, ha_display_name, avatar_url = await get_ha_user_details(
+                        self.mass, ingress_user_id
+                    )
                     # Auto-create user for Ingress (they're already authenticated by HA)
-                    # Determine role based on HA admin status
                     role = await get_ha_user_role(self.mass, ingress_user_id)
                     user = await self.webserver.auth.create_user(
-                        username=ingress_username,
+                        username=ha_username or ingress_username,
                         role=role,
-                        display_name=ingress_display_name,
+                        display_name=ha_display_name or ingress_display_name,
+                        avatar_url=avatar_url,
                     )
 
                 # Link to Home Assistant provider (or create the link if user already existed)
                 await self.webserver.auth.link_user_to_provider(
                     user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+                )
+
+            # Always update user with HA details (HA is source of truth)
+            _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
+            if ha_display_name or avatar_url:
+                user = await self.webserver.auth.update_user(
+                    user,
+                    display_name=ha_display_name,
+                    avatar_url=avatar_url,
                 )
 
             self._authenticated_user = user
