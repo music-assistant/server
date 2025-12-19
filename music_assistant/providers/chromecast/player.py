@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProviderType,
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
@@ -214,7 +215,7 @@ class ChromecastPlayer(Player):
                     or sendspin_player.synced_to
                 )
             else:
-                self._attr_synced_to = None
+                self._attr_synced_to = ""
             self.update_state()
             # Check if sync delay config changed and resend if needed
             current_sync_delay = int(
@@ -237,7 +238,7 @@ class ChromecastPlayer(Player):
 
         # Check if Sendspin provider is available
         sendspin_available = any(
-            prov.domain == "sendspin" for prov in self.mass.get_providers("player")
+            prov.domain == "sendspin" for prov in self.mass.get_providers(ProviderType.PLAYER)
         )
 
         # Sendspin mode config entry
