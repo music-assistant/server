@@ -518,3 +518,61 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_mute and entity_platform == "media_player":
                 player_control.volume_muted = attributes.get("volume_muted")
         self.mass.players.update_player_control(entity_id)
+
+    async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
+        """
+        Get user username, display name and avatar URL from Home Assistant.
+
+        Looks up the user in config/auth/list for username, and the person entity
+        for display name and picture URL.
+
+        :param ha_user_id: Home Assistant user ID.
+        :return: Tuple of (username, display_name, avatar_url) or all None if not found.
+        """
+        try:
+            username: str | None = None
+            display_name: str | None = None
+            avatar_url: str | None = None
+
+            # Get username from config/auth/list (admin endpoint, we have admin access)
+            try:
+                users = await self.hass.send_command("config/auth/list")
+                for user in users or []:
+                    if user.get("id") == ha_user_id:
+                        username = user.get("username")
+                        # Also get name as fallback display name
+                        if not display_name:
+                            display_name = user.get("name")
+                        break
+            except Exception as err:
+                self.logger.debug("Failed to get HA user list: %s", err)
+
+            # Get external URL for building avatar URL
+            ha_url: str | None = None
+            try:
+                network_urls = await self.hass.send_command("network/url")
+                if network_urls:
+                    ha_url = network_urls.get("external") or network_urls.get("internal")
+            except Exception as err:
+                self.logger.debug("Failed to get HA network URLs: %s", err)
+
+            # Find person linked to this HA user ID for display name and avatar
+            try:
+                persons = await self.hass.send_command("person/list")
+                # person/list returns {storage: [...], config: [...]}
+                all_persons = (persons.get("storage") or []) + (persons.get("config") or [])
+                for person in all_persons:
+                    if person.get("user_id") == ha_user_id:
+                        # Person name takes priority for display name
+                        if person_name := person.get("name"):
+                            display_name = person_name
+                        if (person_picture := person.get("picture")) and ha_url:
+                            avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
+                        break
+            except Exception as err:
+                self.logger.debug("Failed to get HA person details: %s", err)
+
+            return username, display_name, avatar_url
+        except Exception as err:
+            self.logger.debug("Failed to get HA user details: %s", err)
+            return None, None, None
