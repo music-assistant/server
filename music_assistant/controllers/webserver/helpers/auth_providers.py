@@ -653,9 +653,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
             async with HomeAssistantClient(ws_url, access_token, self.mass.http_session) as client:
                 # Use the auth/current_user command to get user ID
                 result = await client.send_command("auth/current_user")
-                if result:
-                    return str(result["id"])
-                self.logger.warning("auth/current_user returned no user data")
+                if result and (user_id := result.get("id")):
+                    return str(user_id)
+                self.logger.warning("auth/current_user returned no user data or missing id")
                 return None
         except BaseHassClientError as ws_error:
             self.logger.error("Failed to fetch HA user via WebSocket: %s", ws_error)

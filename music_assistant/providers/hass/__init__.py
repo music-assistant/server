@@ -564,10 +564,10 @@ class HomeAssistantProvider(PluginProvider):
                 for person in all_persons:
                     if person.get("user_id") == ha_user_id:
                         # Person name takes priority for display name
-                        if person.get("name"):
-                            display_name = person["name"]
-                        if person.get("picture") and ha_url:
-                            avatar_url = f"{ha_url.rstrip('/')}{person['picture']}"
+                        if person_name := person.get("name"):
+                            display_name = person_name
+                        if (person_picture := person.get("picture")) and ha_url:
+                            avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
             except Exception as err:
                 self.logger.debug("Failed to get HA person details: %s", err)
