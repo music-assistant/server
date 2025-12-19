@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import logging
@@ -73,8 +74,6 @@ from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    import asyncio
-
     from music_assistant import MusicAssistant
     from music_assistant.models.core_controller import CoreController
 
@@ -1064,20 +1063,31 @@ class ConfigController:
     ) -> CoreConfig:
         """Save CoreController Config values."""
         config = await self.get_core_config(domain)
+        prev_config = config.to_raw()
         changed_keys = config.update(values)
         # validate the new config
         config.validate()
         if not changed_keys:
             # no changes
             return config
-        # try to load the provider first to catch errors before we save it.
-        controller: CoreController = getattr(self.mass, domain)
-        await controller.reload(config)
-        # reload succeeded, save new config
-        config.last_error = None
+        # save the config first before reloading to avoid issues on reload
+        # for example when reloading the webserver we might be cancelled here
         conf_key = f"{CONF_CORE}/{domain}"
         self.set(conf_key, config.to_raw())
-        # return full config, just in case
+        self.save(immediate=True)
+        try:
+            controller: CoreController = getattr(self.mass, domain)
+            await controller.reload(config)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # revert to previous config on error
+            self.set(conf_key, prev_config)
+            self.save(immediate=True)
+            raise
+        # reload succeeded; clear last_error and persist the final state
+        config.last_error = None
+        # return full config
         return await self.get_core_config(domain)
 
     if TYPE_CHECKING:
