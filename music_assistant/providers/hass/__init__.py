@@ -545,7 +545,7 @@ class HomeAssistantProvider(PluginProvider):
                             display_name = user.get("name")
                         break
             except Exception as err:
-                self.logger.debug("Failed to get HA user list: %s", err)
+                self.logger.warning("Failed to get HA user list: %s", err)
 
             # Get external URL for building avatar URL
             ha_url: str | None = None
@@ -554,7 +554,7 @@ class HomeAssistantProvider(PluginProvider):
                 if network_urls:
                     ha_url = network_urls.get("external") or network_urls.get("internal")
             except Exception as err:
-                self.logger.debug("Failed to get HA network URLs: %s", err)
+                self.logger.warning("Failed to get HA network URLs: %s", err)
 
             # Find person linked to this HA user ID for display name and avatar
             try:
@@ -570,9 +570,16 @@ class HomeAssistantProvider(PluginProvider):
                             avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
                         break
             except Exception as err:
-                self.logger.debug("Failed to get HA person details: %s", err)
+                self.logger.warning("Failed to get HA person details: %s", err)
 
+            self.logger.debug(
+                "get_user_details for %s: username=%s, display_name=%s, avatar_url=%s",
+                ha_user_id,
+                username,
+                display_name,
+                avatar_url,
+            )
             return username, display_name, avatar_url
         except Exception as err:
-            self.logger.debug("Failed to get HA user details: %s", err)
+            self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None

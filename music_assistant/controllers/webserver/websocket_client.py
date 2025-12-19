@@ -391,11 +391,13 @@ class WebsocketClientHandler:
                 )
 
             # Update user with HA details if available (HA is source of truth)
+            # Fall back to ingress headers if API lookup doesn't return values
             _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
-            if ha_display_name or avatar_url:
+            final_display_name = ha_display_name or ingress_display_name
+            if final_display_name or avatar_url:
                 user = await self.webserver.auth.update_user(
                     user,
-                    display_name=ha_display_name,
+                    display_name=final_display_name,
                     avatar_url=avatar_url,
                 )
 

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -69,12 +72,29 @@ async def get_authenticated_user(request: web.Request) -> User | None:
             )
 
         # Update user with HA details if available (HA is source of truth)
+        # Fall back to ingress headers if API lookup doesn't return values
         _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-        if ha_display_name or avatar_url:
+        final_display_name = ha_display_name or ingress_display_name
+        LOGGER.debug(
+            "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
+            "final_display_name=%s, avatar_url=%s",
+            user.username,
+            ha_display_name,
+            ingress_display_name,
+            final_display_name,
+            avatar_url,
+        )
+        if final_display_name or avatar_url:
             user = await mass.webserver.auth.update_user(
                 user,
-                display_name=ha_display_name,
+                display_name=final_display_name,
                 avatar_url=avatar_url,
+            )
+            LOGGER.debug(
+                "Updated user %s: display_name=%s, avatar_url=%s",
+                user.username,
+                user.display_name,
+                user.avatar_url,
             )
 
         # Store in request context
