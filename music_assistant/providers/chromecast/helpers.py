@@ -202,7 +202,6 @@ class CastStatusListener:
         self.castplayer.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
-        # Check if the status attribute is available before passing it.
         player_status = self.castplayer.cc.status
         if player_status is None:
             return
