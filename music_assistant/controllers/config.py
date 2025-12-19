@@ -1087,9 +1087,7 @@ class ConfigController:
             raise
         # reload succeeded; clear last_error and persist the final state
         config.last_error = None
-        self.set(conf_key, config.to_raw())
-        self.save(immediate=True)
-        # return full config, just in case
+        # return full config
         return await self.get_core_config(domain)
 
     if TYPE_CHECKING:
