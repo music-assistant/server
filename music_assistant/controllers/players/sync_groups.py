@@ -433,6 +433,7 @@ class SyncGroupPlayer(GroupPlayer):
                 former_members not in members_to_sync
             ) and former_members != self.sync_leader.player_id:
                 members_to_remove.append(former_members)
+
         if members_to_sync or members_to_remove:
             await self.sync_leader.set_members(members_to_sync, members_to_remove)
 
@@ -529,7 +530,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await other_group.power(False)
         if (
             member.synced_to is not None
-            and member.synced_to != self.sync_leader
+            and self.sync_leader
+            and member.synced_to != self.sync_leader.player_id
             and (synced_to_player := self.mass.players.get(member.synced_to))
             and member.player_id in synced_to_player.group_members
         ):
