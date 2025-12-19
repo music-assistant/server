@@ -147,7 +147,7 @@
                     required
                     autocomplete="username"
                     placeholder="Enter your username"
-                    minlength="3"
+                    minlength="2"
                 >
             </div>
 
@@ -242,8 +242,8 @@
             const password = document.getElementById('password').value;
             const confirmPassword = document.getElementById('confirmPassword').value;
 
-            if (username.length < 3) {
-                showError('Username must be at least 3 characters long');
+            if (username.length < 2) {
+                showError('Username must be at least 2 characters long');
                 return;
             }
 
