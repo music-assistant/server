@@ -797,14 +797,13 @@ class PlayerController(CoreController):
             if muted:
                 player.extra_data[ATTR_PREVIOUS_VOLUME] = player.volume_level
                 player.extra_data[ATTR_FAKE_MUTE] = True
-                await self.cmd_volume_set(player_id, 0)
+                await self._handle_cmd_volume_set(player_id, 0)
                 player.update_state()
             else:
-                player._attr_volume_muted = False
                 prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
                 player.extra_data[ATTR_FAKE_MUTE] = False
                 player.update_state()
-                await self.cmd_volume_set(player_id, prev_volume)
+                await self._handle_cmd_volume_set(player_id, prev_volume)
         else:
             # handle external player control
             player_control = self._controls.get(player.mute_control)
@@ -1206,7 +1205,7 @@ class PlayerController(CoreController):
         for player_id in list(player_ids):
             await self.cmd_ungroup(player_id)
 
-    @api_command("players/create_group_player")
+    @api_command("players/create_group_player", required_role="admin")
     async def create_group_player(
         self, provider: str, name: str, members: list[str], dynamic: bool = True
     ) -> Player:
@@ -1233,7 +1232,7 @@ class PlayerController(CoreController):
             f"Provider {provider} does not support creating group players"
         )
 
-    @api_command("players/remove_group_player")
+    @api_command("players/remove_group_player", required_role="admin")
     async def remove_group_player(self, player_id: str) -> None:
         """
         Remove a group player.
@@ -1355,8 +1354,6 @@ class PlayerController(CoreController):
         player.set_config(player_config)
         # call hook after the player is registered and config is set
         await player.on_config_updated()
-        # always call update to fix special attributes like display name, group volume etc.
-        player.update_state()
 
         self.logger.info(
             "Player registered: %s/%s",
@@ -1364,10 +1361,14 @@ class PlayerController(CoreController):
             player.display_name,
         )
         # signal event that a player was added
+        # update state without signaling event first (to ensure all attributes are set correctly)
+        player.update_state(signal_event=False)
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
 
         # register playerqueue for this player
         await self.mass.player_queues.on_player_register(player)
+        # always call update to fix special attributes like display name, group volume etc.
+        player.update_state()
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1385,8 +1386,8 @@ class PlayerController(CoreController):
         """Trigger an update for the given player."""
         if self.mass.closing:
             return
-        player = self.get(player_id, True)
-        assert player is not None  # for type checker
+        if not (player := self.get(player_id)):
+            return
         self.mass.loop.call_soon(player.update_state, force_update)
 
     async def unregister(self, player_id: str, permanent: bool = False) -> None:
@@ -1411,14 +1412,24 @@ class PlayerController(CoreController):
             return
         await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
-        self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
+            # player permanent removal: delete its config
+            # and signal PLAYER_REMOVED event
             self.delete_player_config(player_id)
-        self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+            self.logger.info("Player removed: %s", player.name)
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+        else:
+            # temporary unavailable: mark player as unavailable
+            # note: the player will be re-registered later if it comes back online
+            player.state.available = False
+            self.logger.info("Player unavailable: %s", player.name)
+            self.mass.signal_event(
+                EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
+            )
 
-    @api_command("players/remove")
+    @api_command("players/remove", required_role="admin")
     async def remove(self, player_id: str) -> None:
         """
         Remove a player from a provider.
@@ -1774,8 +1785,26 @@ class PlayerController(CoreController):
         await player.on_config_updated()
         player.update_state()
         # if the PlayerQueue was playing, restart playback
-        # TODO: add property to ConfigEntry if it requires a restart of playback on change
+        # TODO: add restart_stream property to ConfigEntry and use that instead of immediate_apply
+        # to check if we need to restart playback
         if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
+            config_entries = await player.get_config_entries()
+            has_value_changes = False
+            all_immediate_apply = True
+            for key in changed_keys:
+                if not key.startswith("values/"):
+                    continue  # skip root values like "enabled", "name"
+                has_value_changes = True
+                actual_key = key.removeprefix("values/")
+                entry = next((e for e in config_entries if e.key == actual_key), None)
+                if entry is None or not entry.immediate_apply:
+                    all_immediate_apply = False
+                    break
+
+            if has_value_changes and all_immediate_apply:
+                # All changed config entries have immediate_apply=True, so no need to restart
+                # the playback
+                return
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
@@ -1965,7 +1994,7 @@ class PlayerController(CoreController):
                         announcement_volume,
                     )
                     tg.create_task(
-                        self.cmd_volume_set(volume_player.player_id, announcement_volume)
+                        self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
                     )
         # play the announcement
         self.logger.debug(
@@ -1999,7 +2028,7 @@ class PlayerController(CoreController):
         # restore volume
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
-                tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
+                tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
         # either power off the player or resume playing
         if not prev_power:
@@ -2311,8 +2340,12 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support volume control"
             )
 
-        if player.mute_control != PLAYER_CONTROL_NONE and player.volume_muted:
+        if (
+            player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            and player.volume_muted
+        ):
             # if player is muted, we unmute it first
+            # skip this for fake mute since it uses volume to simulate mute
             self.logger.debug(
                 "Unmuting player %s before setting volume",
                 player.display_name,

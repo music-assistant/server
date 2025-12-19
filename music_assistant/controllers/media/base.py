@@ -129,6 +129,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # update existing item
             await self._update_library_item(library_id, item, overwrite=overwrite_existing)
         else:
+            for provider_mapping in item.provider_mappings:
+                if item.item_id == provider_mapping.item_id:
+                    provider_mapping.in_library = True
             # actually add a new item in the library db
             self.mass.music.match_provider_instances(item)
             async with self._db_add_lock:
@@ -703,7 +706,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "available": provider_mapping.available,
                 "audio_format": serialize_to_json(provider_mapping.audio_format),
             }
-            for key in ("url", "details", "in_library"):
+            for key in ("url", "details", "in_library", "is_unique"):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             await self.mass.music.database.upsert(
@@ -878,7 +881,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                "AND provider_mappings.in_library = 1 "
+                f"AND provider_mappings.in_library = 1 "
                 f"AND ({' OR '.join(provider_conditions)})"
             )
 

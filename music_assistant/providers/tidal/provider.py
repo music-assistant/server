@@ -64,6 +64,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.LYRICS,
 }
 
 
