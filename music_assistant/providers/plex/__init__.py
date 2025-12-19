@@ -426,6 +426,10 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
+        # silence urllib3 InsecureRequestWarning when certificate verification is disabled
+        # this is expected when connecting to Plex servers using their wildcard certificates
+        # that don't validate against LAN IP addresses
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
