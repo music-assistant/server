@@ -2206,6 +2206,7 @@ class PlayerQueuesController(CoreController):
                 )
             )
         ):
+            streamdetails.stream_metadata_last_updated = time.time()
             self.mass.create_task(
                 streamdetails.stream_metadata_update_callback(
                     streamdetails, int(queue.corrected_elapsed_time)
