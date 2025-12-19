@@ -671,7 +671,8 @@ class HomeAssistantOAuthProvider(LoginProvider):
         """
         Get or create a user for Home Assistant OAuth authentication.
 
-        Also updates existing users with display_name and avatar_url from HA if missing.
+        Updates existing users with display_name and avatar_url from HA on each OAuth login
+        (HA is considered the source of truth for these fields).
 
         :param username: Username from Home Assistant.
         :param display_name: Display name from Home Assistant.
@@ -684,7 +685,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
             AuthProviderType.HOME_ASSISTANT, ha_user_id
         )
         if user:
-            # Always update user with HA details (HA is source of truth)
+            # Update user with HA details if available (HA is source of truth)
             if display_name or avatar_url:
                 user = await self.auth_manager.update_user(
                     user,
@@ -715,7 +716,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
             )
 
-            # Always update user with HA details (HA is source of truth)
+            # Update user with HA details if available (HA is source of truth)
             if display_name or avatar_url:
                 existing_user = await self.auth_manager.update_user(
                     existing_user,
