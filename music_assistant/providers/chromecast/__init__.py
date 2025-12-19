@@ -23,10 +23,6 @@ SUPPORTED_FEATURES: set[ProviderFeature] = (
 )  # we don't have any special supported features (yet)
 
 # Monkey patch the Media controller here to store the queue items
-# TODO: Refactor this monkey patch into a proper MediaController subclass or wrapper
-# to avoid runtime attribute injection and `# type: ignore` lines.
-# The current approach dynamically adds `current_item_id` and `items` to MediaStatus,
-# which is not represented in pychromecast's type hints.
 _patched_process_media_status_org = MediaController._process_media_status
 
 
