@@ -45,8 +45,8 @@ env:
   BASE_IMAGE_VERSION_NIGHTLY: "1.4.9"
 
 jobs:
-  preflight-checks:
-    name: Run tests and linting before release
+  determine-branch:
+    name: Determine release branch
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
@@ -64,32 +64,26 @@ jobs:
             echo "Using dev branch for $CHANNEL release"
           fi
 
-      - name: Trigger test workflow
-        uses: convictional/trigger-workflow-and-wait@v1.6.5
-        with:
-          owner: ${{ github.repository_owner }}
-          repo: server
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          workflow_file_name: test.yml
-          ref: ${{ steps.branch.outputs.branch }}
-          wait_interval: 10
-          propagate_failure: true
-          trigger_workflow: true
-          wait_workflow: true
+  preflight-checks:
+    name: Run tests and linting before release
+    needs: determine-branch
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.determine-branch.outputs.branch }}
 
   validate-and-build:
     name: Validate version and build Python artifact
     runs-on: ubuntu-latest
-    needs: preflight-checks
+    needs: [determine-branch, preflight-checks]
     outputs:
       version: ${{ inputs.version }}
       is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
       base_image_version: ${{ steps.validate.outputs.base_image_version }}
-      branch: ${{ needs.preflight-checks.outputs.branch }}
+      branch: ${{ needs.determine-branch.outputs.branch }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.preflight-checks.outputs.branch }}
+          ref: ${{ needs.determine-branch.outputs.branch }}
           fetch-depth: 0
 
       - name: Validate version number format

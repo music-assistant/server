@@ -13,6 +13,12 @@ on:
       - stable
       - dev
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to checkout"
+        required: false
+        type: string
 
 jobs:
   lint:
@@ -22,6 +28,8 @@ jobs:
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
         uses: actions/setup-python@v6.1.0
         with:
@@ -63,6 +71,8 @@ jobs:
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6.1.0
         with:
