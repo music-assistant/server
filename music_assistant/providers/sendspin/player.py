@@ -228,9 +228,9 @@ class SendspinPlayer(Player):
             self._attr_volume_muted = player_client.muted
         self._attr_available = True
         self.is_web_player = sendspin_client.name.startswith(
-            "Music Assistant Web ("  # The regular Web Interface
+            "Web ("  # The regular Web Interface
         ) or sendspin_client.name.startswith(
-            "Music Assistant ("  # The PWA App
+            "PWA ("  # The PWA App
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
 
@@ -285,9 +285,9 @@ class SendspinPlayer(Player):
             case MediaCommand.REPEAT_ALL if queue:
                 self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case MediaCommand.SHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
             case MediaCommand.UNSHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
     async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""

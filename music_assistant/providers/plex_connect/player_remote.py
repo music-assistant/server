@@ -429,7 +429,7 @@ class PlexRemoteControlServer:
 
             # Set shuffle if requested
             if shuffle:
-                self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
             # Seek to offset if specified
             if offset > 0:
@@ -591,7 +591,7 @@ class PlexRemoteControlServer:
 
                     # Apply shuffle if requested
                     if shuffle:
-                        self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                        await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
                     # Seek to offset if specified
                     if offset > 0:
@@ -771,7 +771,7 @@ class PlexRemoteControlServer:
                 return web.Response(status=500, text="No player assigned")
 
             # disable shuffle to avoid infinite loop
-            self.provider.mass.player_queues.set_shuffle(player_id, False)
+            await self.provider.mass.player_queues.set_shuffle(player_id, False)
             ma_queue = self.provider.mass.player_queues.get(player_id)
             if not ma_queue:
                 LOGGER.error(f"MA queue not found for player {player_id}")
@@ -904,7 +904,7 @@ class PlexRemoteControlServer:
 
                     # Apply shuffle if requested (Plex may have already shuffled server-side)
                     if shuffle:
-                        self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                        await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
                 else:
                     LOGGER.error("No valid tracks in created play queue")
                     return web.Response(status=500, text="Failed to load tracks from play queue")
@@ -1150,7 +1150,7 @@ class PlexRemoteControlServer:
             if "shuffle" in request.query:
                 # Plex sends shuffle as "0" or "1"
                 shuffle = request.query["shuffle"] == "1"
-                self.provider.mass.player_queues.set_shuffle(self._ma_player_id, shuffle)
+                await self.provider.mass.player_queues.set_shuffle(self._ma_player_id, shuffle)
 
             if "repeat" in request.query:
                 # Plex repeat: 0=off, 1=repeat one, 2=repeat all

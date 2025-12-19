@@ -119,6 +119,9 @@ class CompareState(TypedDict):
     next_item_id: str | None
     current_item: QueueItem | None
     elapsed_time: int
+    # last_playing_elapsed_time: elapsed time from the last PLAYING state update
+    # used to determine if a track was fully played when transitioning to idle
+    last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
     output_formats: list[str] | None
@@ -303,7 +306,7 @@ class PlayerQueuesController(CoreController):
     # Queue commands
 
     @api_command("player_queues/shuffle")
-    def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+    async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
         queue = self._queues[queue_id]
         if queue.shuffle_enabled == shuffle_enabled:
@@ -320,7 +323,7 @@ class PlayerQueuesController(CoreController):
         if not shuffle_enabled:
             # shuffle disabled, try to restore original sort order of the remaining items
             next_items.sort(key=lambda x: x.sort_index, reverse=False)
-        self.load(
+        await self.load(
             queue_id=queue_id,
             queue_items=next_items,
             insert_at_index=next_index,
@@ -517,7 +520,7 @@ class PlayerQueuesController(CoreController):
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.load(
+            await self.load(
                 queue_id,
                 queue_items=queue_items,
                 keep_remaining=False,
@@ -528,7 +531,7 @@ class PlayerQueuesController(CoreController):
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
-            self.load(
+            await self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=insert_at_index,
@@ -536,7 +539,7 @@ class PlayerQueuesController(CoreController):
             )
             return
         if option == QueueOption.REPLACE_NEXT:
-            self.load(
+            await self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=insert_at_index,
@@ -546,7 +549,7 @@ class PlayerQueuesController(CoreController):
             return
         # handle play: replace current loaded/playing index with new item(s)
         if option == QueueOption.PLAY:
-            self.load(
+            await self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=insert_at_index,
@@ -557,7 +560,7 @@ class PlayerQueuesController(CoreController):
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
-            self.load(
+            await self.load(
                 queue_id=queue_id,
                 queue_items=queue_items,
                 insert_at_index=insert_at_index
@@ -1014,7 +1017,7 @@ class PlayerQueuesController(CoreController):
             target_queue.current_item.queue_id = target_queue_id
         self.clear(source_queue_id)
 
-        self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
+        await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
         for item in source_items:
             item.queue_id = target_queue_id
         self.update_items(target_queue_id, source_items)
@@ -1302,7 +1305,7 @@ class PlayerQueuesController(CoreController):
 
     # Main queue manipulation methods
 
-    def load(
+    async def load(
         self,
         queue_id: str,
         queue_items: list[QueueItem],
@@ -1331,7 +1334,7 @@ class PlayerQueuesController(CoreController):
             item.sort_index += insert_at_index + index
         # (re)shuffle the final batch if needed
         if shuffle:
-            next_items = _smart_shuffle(next_items)
+            next_items = await _smart_shuffle(next_items)
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -1385,6 +1388,8 @@ class PlayerQueuesController(CoreController):
             )
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
+        # also signal update to the player itself so it can update its current_media
+        self.mass.players.trigger_player_update(queue_id)
         # save state
         self.mass.create_task(
             self.mass.cache.set(
@@ -1693,7 +1698,7 @@ class PlayerQueuesController(CoreController):
         tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
-        self.load(
+        await self.load(
             queue_id,
             queue_items,
             insert_at_index=len(self._queue_items[queue_id]) + 1,
@@ -2102,11 +2107,28 @@ class PlayerQueuesController(CoreController):
                 next_item_id=None,
                 current_item=None,
                 elapsed_time=0,
+                last_playing_elapsed_time=0,
                 stream_title=None,
                 codec_type=None,
                 output_formats=None,
             ),
         )
+        # update last_playing_elapsed_time only when the player is actively playing
+        # use corrected_elapsed_time which accounts for time since last update
+        # this preserves the last known elapsed time when transitioning to idle/paused
+        prev_playing_elapsed = prev_state["last_playing_elapsed_time"]
+        prev_item_id = prev_state["current_item_id"]
+        current_item_id = queue.current_item.queue_item_id if queue.current_item else None
+        if queue.state == PlaybackState.PLAYING:
+            current_elapsed = int(queue.corrected_elapsed_time)
+            if current_item_id != prev_item_id:
+                # new track started, reset the elapsed time tracker
+                last_playing_elapsed_time = current_elapsed
+            else:
+                # same track, use the max of current and previous to handle timing issues
+                last_playing_elapsed_time = max(current_elapsed, prev_playing_elapsed)
+        else:
+            last_playing_elapsed_time = prev_playing_elapsed
         new_state = CompareState(
             queue_id=queue_id,
             state=queue.state,
@@ -2114,6 +2136,7 @@ class PlayerQueuesController(CoreController):
             next_item_id=queue.next_item.queue_item_id if queue.next_item else None,
             current_item=queue.current_item,
             elapsed_time=int(queue.elapsed_time),
+            last_playing_elapsed_time=last_playing_elapsed_time,
             stream_title=(
                 queue.current_item.streamdetails.stream_title
                 if queue.current_item and queue.current_item.streamdetails
@@ -2129,6 +2152,8 @@ class PlayerQueuesController(CoreController):
         changed_keys = get_changed_keys(dict(prev_state), dict(new_state))
         with suppress(KeyError):
             changed_keys.remove("next_item_id")
+        with suppress(KeyError):
+            changed_keys.remove("last_playing_elapsed_time")
 
         # store the new state
         if queue.active:
@@ -2159,8 +2184,6 @@ class PlayerQueuesController(CoreController):
 
         if send_update:
             self.signal_update(queue_id)
-            # also signal update to the player itself so it can update its current_media
-            self.mass.players.trigger_player_update(queue_id)
 
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
@@ -2338,16 +2361,30 @@ class PlayerQueuesController(CoreController):
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
         # now determine if the item was fully played before clearing
-        if queue.current_item and (streamdetails := queue.current_item.streamdetails):
-            duration = streamdetails.duration or queue.current_item.duration or 24 * 3600
-        elif queue.current_item:
-            duration = queue.current_item.duration or 24 * 3600
+
+        # For flow mode, check if the last track was fully streamed using the stream log
+        # This is more reliable than elapsed_time which can be reset/incorrect
+        if queue.flow_mode and queue.flow_mode_stream_log:
+            last_log_entry = queue.flow_mode_stream_log[-1]
+            if last_log_entry.seconds_streamed is not None:
+                # The last track finished streaming, safe to clear queue
+                self.mass.create_task(_clear_queue_delayed())
+            return
+
+        # For non-flow mode, use prev_state values since queue state may have been updated/reset
+        prev_item = prev_state["current_item"]
+        if prev_item and (streamdetails := prev_item.streamdetails):
+            duration = streamdetails.duration or prev_item.duration or 24 * 3600
+        elif prev_item:
+            duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
             self.mass.create_task(_clear_queue_delayed())
             return
 
-        seconds_played = int(queue.elapsed_time)
+        # use last_playing_elapsed_time which preserves the elapsed time from when the player
+        # was still playing (before transitioning to idle where elapsed_time may be reset to 0)
+        seconds_played = int(prev_state["last_playing_elapsed_time"])
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
@@ -2476,96 +2513,36 @@ class PlayerQueuesController(CoreController):
         )
 
 
-def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
-    """Shuffle queue items with smart spacing rules.
+async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
+    """Shuffle queue items, avoiding identical tracks next to each other.
 
-    This shuffle tries to prevent the same track and artist from appearing
-    too close together. Spacing requirements scale with playlist size:
-    - >1000 items: track spacing 15, artist spacing 10
-    - >500 items: track spacing 10, artist spacing 6
-    - >100 items: track spacing 5, artist spacing 3
-    - <=100 items: track spacing 2, no artist spacing
-
-    This is a best-effort approach - when playing an album where all tracks
-    are from the same artist, artist spacing won't be possible.
+    Best-effort approach to prevent the same track from appearing adjacent.
+    Does a random shuffle first, then makes a limited number of passes to
+    swap adjacent duplicates with a random item further in the list.
 
     :param items: List of queue items to shuffle.
     """
-    if len(items) <= 1:
-        return items
-
-    # Determine spacing based on playlist size
-    num_items = len(items)
-    if num_items > 1000:
-        track_spacing, artist_spacing = 15, 10
-    elif num_items > 500:
-        track_spacing, artist_spacing = 10, 6
-    elif num_items > 100:
-        track_spacing, artist_spacing = 5, 3
-    else:
-        track_spacing, artist_spacing = 2, 0
-
-    # Extract artist from name format "<artist(s)> - <title>"
-    def get_artist(name: str) -> str | None:
-        return name.split(" - ", 1)[0] if " - " in name else None
+    if len(items) <= 2:
+        return random.sample(items, len(items)) if len(items) == 2 else items
 
     # Start with a random shuffle
     shuffled = random.sample(items, len(items))
 
-    # Iteratively fix violations
-    max_attempts = len(items) * 3
-    for _ in range(max_attempts):
-        violation_found = False
-
-        for i in range(1, len(shuffled)):
-            current = shuffled[i]
-            current_artist = get_artist(current.name)
-
-            # Check for track collision
-            has_violation = any(
-                shuffled[j].name == current.name for j in range(max(0, i - track_spacing), i)
-            )
-
-            # Check for artist collision (only if artist_spacing > 0)
-            if not has_violation and artist_spacing and current_artist:
-                has_violation = any(
-                    get_artist(shuffled[j].name) == current_artist
-                    for j in range(max(0, i - artist_spacing), i)
-                )
-
-            if has_violation:
-                violation_found = True
-                # Find best position after current by scoring distance from conflicts
-                best_pos, best_score = i, -1
-                for pos in range(i + 1, len(shuffled)):
-                    track_dist = min(
-                        (
-                            pos - j
-                            for j in range(max(0, pos - track_spacing), pos)
-                            if shuffled[j].name == current.name
-                        ),
-                        default=track_spacing,
-                    )
-                    artist_dist = artist_spacing
-                    if artist_spacing and current_artist:
-                        artist_dist = min(
-                            (
-                                pos - j
-                                for j in range(max(0, pos - artist_spacing), pos)
-                                if get_artist(shuffled[j].name) == current_artist
-                            ),
-                            default=artist_spacing,
-                        )
-                    score = track_dist * 2 + artist_dist
-                    if score > best_score:
-                        best_score, best_pos = score, pos
-
-                if best_pos != i:
-                    item = shuffled.pop(i)
-                    shuffled.insert(best_pos, item)
-                    break
-
-        if not violation_found:
+    # Make a few passes to fix adjacent duplicates
+    max_passes = 3
+    for _ in range(max_passes):
+        swapped = False
+        for i in range(len(shuffled) - 1):
+            if shuffled[i].name == shuffled[i + 1].name:
+                # Found adjacent duplicate - swap with random position at least 2 away
+                swap_candidates = [j for j in range(len(shuffled)) if abs(j - i - 1) >= 2]
+                if swap_candidates:
+                    swap_pos = random.choice(swap_candidates)
+                    shuffled[i + 1], shuffled[swap_pos] = shuffled[swap_pos], shuffled[i + 1]
+                    swapped = True
+        if not swapped:
             break
+        # Yield to event loop between passes
+        await asyncio.sleep(0)
 
     return shuffled

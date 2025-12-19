@@ -37,7 +37,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
-    from hass_client.models import CompressedState, EntityStateEvent
+    from hass_client.models import CompressedState, Device, EntityStateEvent
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -220,11 +220,11 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
     if not hass.connected:
         return ()
     for state in await hass.get_states():
-        if "friendly_name" not in state["attributes"]:
-            # filter out invalid/unavailable players
-            continue
         entity_platform = state["entity_id"].split(".")[0]
-        name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
+        if "friendly_name" not in state["attributes"]:
+            name = state["entity_id"]
+        else:
+            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
 
         if entity_platform in ("switch", "input_boolean"):
             # simple on/off controls are suitable as power and mute controls
@@ -471,6 +471,28 @@ class HomeAssistantProvider(PluginProvider):
             target={"entity_id": entity_id},
             service_data={"value": volume_level},
         )
+
+    async def get_device_by_connection(
+        self,
+        connection_value: str,
+        connection_type: str = "mac",
+    ) -> Device | None:
+        """
+        Get device details from Home Assistant by connection type and value.
+
+        :param connection_value: The connection value (e.g. MAC address).
+        :param connection_type: The connection type (default: 'mac').
+        """
+        devices = await self.hass.get_device_registry()
+        for device in devices:
+            for connection in device.get("connections", []):
+                if (
+                    len(connection) == 2
+                    and connection[0] == connection_type
+                    and connection[1].lower() == connection_value.lower()
+                ):
+                    return device
+        return None
 
     def _update_control_from_state_msg(self, entity_id: str, state: CompressedState) -> None:
         """Update PlayerControl from state(update) message."""
