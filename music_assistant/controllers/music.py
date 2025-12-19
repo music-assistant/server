@@ -328,7 +328,7 @@ class MusicController(CoreController):
             # this way we can avoid returning duplicates in the search results
             all_prov_item_ids = {
                 (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
-                for result in (
+                for items in (
                     library_results.artists,
                     library_results.albums,
                     library_results.tracks,
@@ -336,7 +336,7 @@ class MusicController(CoreController):
                     library_results.audiobooks,
                     library_results.podcasts,
                 )
-                for item in result
+                for item in items
                 for prov_mapping in item.provider_mappings
             }
             # include results from library + all (unique) music providers
@@ -352,52 +352,52 @@ class MusicController(CoreController):
                     for provider_instance in search_providers
                 ],
             )
-            # return result from all providers while keeping index
-            # so the result is sorted as each provider delivered
-            result = SearchResults(
-                artists=[
-                    item
-                    for sublist in zip_longest(*[x.artists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                albums=[
-                    item
-                    for sublist in zip_longest(*[x.albums for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                tracks=[
-                    item
-                    for sublist in zip_longest(*[x.tracks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                playlists=[
-                    item
-                    for sublist in zip_longest(*[x.playlists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                radio=[
-                    item
-                    for sublist in zip_longest(*[x.radio for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                audiobooks=[
-                    item
-                    for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                podcasts=[
-                    item
-                    for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-            )
+        # return result from all providers while keeping index
+        # so the result is sorted as each provider delivered
+        result = SearchResults(
+            artists=[
+                item
+                for sublist in zip_longest(*[x.artists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            albums=[
+                item
+                for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            tracks=[
+                item
+                for sublist in zip_longest(*[x.tracks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            playlists=[
+                item
+                for sublist in zip_longest(*[x.playlists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            radio=[
+                item
+                for sublist in zip_longest(*[x.radio for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            audiobooks=[
+                item
+                for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            podcasts=[
+                item
+                for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+        )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
