@@ -379,8 +379,8 @@ class SpotifyProvider(MusicProvider):
         try:
             playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
             return parse_playlist(playlist_obj, self)
-        except aiohttp.ClientResponseError as err:
-            if err.status == 400 and self.dev_session_active:
+        except MediaNotFoundError:
+            if self.dev_session_active:
                 # Remember that this playlist requires global token
                 await self._set_playlist_requires_global_token(prov_playlist_id)
                 playlist_obj = await self._get_data(
@@ -1183,7 +1183,7 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle 404 not found, convert to MediaNotFoundError
-            if response.status == 404:
+            if response.status in (400, 404):
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)

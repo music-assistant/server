@@ -454,7 +454,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         This is used to link objects of different providers/qualities together.
         """
-        self.logger.debug("Matching providers for playlists is not possible, ignoring request")
+        # playlists can only be matched on the same provider (if not unique)
+        if self.mass.music.match_provider_instances(db_item):
+            await self.add_provider_mappings(db_item.item_id, db_item.provider_mappings)
 
     def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
         """Refresh playlist tracks by forcing a cache refresh."""
