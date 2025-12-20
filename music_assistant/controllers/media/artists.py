@@ -73,7 +73,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
         album_artists_only: bool = False,
+        **kwargs: Any,
     ) -> list[Artist]:
         """Get in-database (album) artists.
 
@@ -86,6 +88,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         :param album_artists_only: Only return artists that have albums.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -103,6 +107,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=library_items_only,
         )
 
     async def tracks(

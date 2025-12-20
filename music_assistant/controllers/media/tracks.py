@@ -167,6 +167,8 @@ class TracksController(MediaControllerBase[Track]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
+        **kwargs: Any,
     ) -> list[Track]:
         """Get in-database tracks.
 
@@ -178,6 +180,8 @@ class TracksController(MediaControllerBase[Track]):
         :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -207,6 +211,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=library_items_only,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -227,6 +232,7 @@ class TracksController(MediaControllerBase[Track]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=library_items_only,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:
@@ -414,7 +420,9 @@ class TracksController(MediaControllerBase[Track]):
             f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {item_id}"
         )
         query = f"{DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.albums._get_library_items_by_query(
+            extra_query_parts=[query], in_library_only=True
+        )
 
     async def match_provider(
         self,

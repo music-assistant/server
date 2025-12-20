@@ -113,7 +113,9 @@ class AlbumsController(MediaControllerBase[Album]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
         album_types: list[AlbumType] | None = None,
+        **kwargs: Any,
     ) -> list[Album]:
         """Get in-database albums.
 
@@ -126,6 +128,8 @@ class AlbumsController(MediaControllerBase[Album]):
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         :param album_types: Filter by album types.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -170,6 +174,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=library_items_only,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -197,6 +202,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=library_items_only,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:

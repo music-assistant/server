@@ -97,7 +97,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 25
+DB_SCHEMA_VERSION: Final[int] = 26
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2170,14 +2170,18 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
-        if prev_version <= 25:
-            # set in_library=True for local(file)-based providers
-            # these providers always represent the user's actual library
+        if prev_version <= 26:
+            # force in_library=True for provider mappings from non-streaming providers
+            # streaming providers will be automatically added to library when synced
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain IN "
-                "('filesystem_local', 'filesystem_smb', 'plex', "
-                "'jellyfin', 'opensubsonic', 'builtin');"
+                "WHERE provider_domain NOT IN "
+                "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
+            )
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type IN "
+                "('radio', 'playlist');"
             )
 
         # save changes
@@ -2589,7 +2593,9 @@ class MusicController(CoreController):
             self.audiobooks,
             self.podcasts,
         ):
-            async for db_item in ctrl.iter_library_items(provider=list(multi_instance_providers)):
+            async for db_item in ctrl.iter_library_items(
+                provider=list(multi_instance_providers), library_items_only=False
+            ):
                 if self.match_provider_instances(db_item):
                     await ctrl.update_item_in_library(db_item.item_id, db_item)
                 # prevent overwhelming the event loop
