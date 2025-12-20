@@ -1059,9 +1059,10 @@ class PlayerQueuesController(CoreController):
                 if queue.enqueued_media_items:
                     # we need to restore the MediaItem objects for the enqueued media items
                     # Items from cache may be dicts that need deserialization
-
                     restored_enqueued_items: list[MediaItemType] = []
-                    cached_items: list[Any] = cast("list[Any]", queue.enqueued_media_items)
+                    cached_items: list[dict[str, Any] | MediaItemType] = cast(
+                        "list[dict[str, Any] | MediaItemType]", queue.enqueued_media_items
+                    )
                     for item in cached_items:
                         if isinstance(item, dict):
                             restored_item = media_from_dict(item)
