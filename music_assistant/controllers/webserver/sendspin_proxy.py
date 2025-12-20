@@ -55,7 +55,7 @@ class SendspinProxyHandler:
         :param request: The incoming HTTP request to upgrade to WebSocket.
         :return: The WebSocket response.
         """
-        wsock = web.WebSocketResponse(heartbeat=55)
+        wsock = web.WebSocketResponse(heartbeat=30)
         await wsock.prepare(request)
 
         self.logger.debug("Sendspin proxy connection from %s", request.remote)

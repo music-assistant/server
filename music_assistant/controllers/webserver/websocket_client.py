@@ -47,7 +47,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
-        self.wsock = web.WebSocketResponse(heartbeat=55)
+        self.wsock = web.WebSocketResponse(heartbeat=30)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
