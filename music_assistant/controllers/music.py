@@ -2178,9 +2178,15 @@ class MusicController(CoreController):
                 "WHERE provider_domain NOT IN "
                 "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
             )
+            # also set in_library=True for all radio items
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE media_type = 'radio';"
+            )
+            # remove invalid playlist provider mappings for playlists which are not in library
+            await self._database.execute(
+                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE media_type = 'playlist' AND in_library = 0;"
             )
 
         # save changes

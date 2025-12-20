@@ -145,12 +145,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise InvalidProviderURI(msg)
             await parse_uri(uri)
         # grab all existing track ids in the playlist so we can check for duplicates
-        playlist_prov_map = next(iter(playlist.provider_mappings))
-        playlist_prov = self.mass.get_provider(playlist_prov_map.provider_instance)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        playlist_prov = self.mass.get_provider(playlist_prov_instance)
         if not playlist_prov or not playlist_prov.available:
-            raise ProviderUnavailableError(
-                f"Provider {playlist_prov_map.provider_instance} is not available"
-            )
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
         playlist_prov = cast("MusicProvider", playlist_prov)
 
         # sets to track existing tracks
@@ -325,7 +324,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return
 
         # actually add the tracks to the playlist on the provider
-        await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, ids_to_add)
+        await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
         # invalidate cache so tracks get refreshed
         self._refresh_playlist_tracks(playlist)
         await self.update_item_in_library(db_playlist_id, playlist)
@@ -346,21 +345,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)
-        for prov_mapping in playlist.provider_mappings:
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider or not isinstance(provider, MusicProvider):
-                self.logger.warning(
-                    "Provider %s is not available or does not support playlist editing",
-                    prov_mapping.provider_domain,
-                )
-                continue
-            if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
-                self.logger.warning(
-                    "Provider %s does not support editing playlists",
-                    prov_mapping.provider_domain,
-                )
-                continue
-            await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        provider = self.mass.get_provider(playlist_prov_instance)
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support editing playlists"
+            raise InvalidDataError(msg)
+        await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
 
         await self.update_item_in_library(db_playlist_id, playlist)
 
