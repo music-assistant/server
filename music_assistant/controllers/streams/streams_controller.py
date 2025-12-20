@@ -426,12 +426,17 @@ class StreamsController(CoreController):
         if not queue_player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
 
+        # work out pcm format based on streamdetails
+        pcm_format = await self._select_pcm_format(
+            player=queue_player,
+            streamdetails=queue_item.streamdetails,
+            smartfades_enabled=True,
+        )
         output_format = await self.get_output_format(
             output_format_str=request.match_info["fmt"],
             player=queue_player,
-            content_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            # always use f32 internally for extra headroom for filters etc
-            content_bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            content_sample_rate=pcm_format.sample_rate,
+            content_bit_depth=pcm_format.bit_depth,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -488,12 +493,6 @@ class StreamsController(CoreController):
             )
             smart_fades_mode = SmartFadesMode.DISABLED
 
-        # work out pcm format based on streamdetails
-        pcm_format = await self._select_pcm_format(
-            player=queue_player,
-            streamdetails=queue_item.streamdetails,
-            smartfades_enabled=True,
-        )
         if smart_fades_mode != SmartFadesMode.DISABLED:
             # crossfade is enabled, use special crossfaded single item stream
             # where the crossfade of the next track is present in the stream of
@@ -1646,9 +1645,43 @@ class StreamsController(CoreController):
                     yield _chunk
                 bytes_written += len(crossfade_data.data)
                 crossfade_data = None
-        next_queue_item: QueueItem | None = None
-        if not self._crossfade_allowed(
-            queue_item, smart_fades_mode=smart_fades_mode, flow_mode=False
+
+        # get next track for crossfade
+        next_queue_item: QueueItem | None
+        try:
+            self.logger.debug(
+                "Preloading NEXT track for crossfade for queue %s",
+                queue.display_name,
+            )
+            next_queue_item = await self.mass.player_queues.load_next_queue_item(
+                queue.queue_id, queue_item.queue_item_id
+            )
+            # set index_in_buffer to prevent our next track is overwritten while preloading
+            if next_queue_item.streamdetails is None:
+                raise InvalidDataError(
+                    f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
+                )
+            queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                queue.queue_id, next_queue_item.queue_item_id
+            )
+            queue_player = self.mass.players.get(queue.queue_id)
+            assert queue_player is not None
+            next_queue_item_pcm_format = await self._select_pcm_format(
+                player=queue_player,
+                streamdetails=next_queue_item.streamdetails,
+                smartfades_enabled=True,
+            )
+        except QueueEmpty:
+            # end of queue reached, no next item
+            next_queue_item = None
+
+        if not next_queue_item or not self._crossfade_allowed(
+            queue_item,
+            smart_fades_mode=smart_fades_mode,
+            flow_mode=False,
+            next_queue_item=next_queue_item,
+            sample_rate=pcm_format.sample_rate,
+            next_sample_rate=next_queue_item_pcm_format.sample_rate,
         ):
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
@@ -1658,30 +1691,7 @@ class StreamsController(CoreController):
             # if crossfade is enabled, save fadeout part in buffer to pickup for next track
             fade_out_data = buffer
             buffer = b""
-            # get next track for crossfade
-            self.logger.debug(
-                "Preloading NEXT track for crossfade for queue %s",
-                queue.display_name,
-            )
             try:
-                next_queue_item = await self.mass.player_queues.load_next_queue_item(
-                    queue.queue_id, queue_item.queue_item_id
-                )
-                # set index_in_buffer to prevent our next track is overwritten while preloading
-                if next_queue_item.streamdetails is None:
-                    raise InvalidDataError(
-                        f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
-                    )
-                queue.index_in_buffer = self.mass.player_queues.index_by_id(
-                    queue.queue_id, next_queue_item.queue_item_id
-                )
-                queue_player = self.mass.players.get(queue.queue_id)
-                assert queue_player is not None
-                next_queue_item_pcm_format = await self._select_pcm_format(
-                    player=queue_player,
-                    streamdetails=next_queue_item.streamdetails,
-                    smartfades_enabled=True,
-                )
                 async for chunk in self.get_queue_item_stream(
                     next_queue_item, next_queue_item_pcm_format
                 ):
@@ -1711,69 +1721,44 @@ class StreamsController(CoreController):
                         pcm_format.sample_rate,
                         queue.display_name,
                     )
-                    resampled_buffer = await resample_pcm_audio(
+                    buffer = await resample_pcm_audio(
                         buffer,
                         next_queue_item_pcm_format,
                         pcm_format,
                     )
-                    if resampled_buffer:
-                        buffer = resampled_buffer
-                    else:
-                        # Resampling failed, error already logged in resample_pcm_audio
-                        # Cannot crossfade safely - yield fade_out_data and raise error
-                        self.logger.error(
-                            "Failed to resample next track for crossfade in queue %s - "
-                            "skipping crossfade",
-                            queue.display_name,
-                        )
-                        yield fade_out_data
-                        bytes_written += len(fade_out_data)
-                        raise AudioError("Failed to resample next track for crossfade")
-                try:
-                    crossfade_bytes = await self._smart_fades_mixer.mix(
-                        fade_in_part=buffer,
-                        fade_out_part=fade_out_data,
-                        fade_in_streamdetails=next_queue_item.streamdetails,
-                        fade_out_streamdetails=streamdetails,
-                        pcm_format=pcm_format,
-                        standard_crossfade_duration=standard_crossfade_duration,
-                        mode=smart_fades_mode,
-                    )
-                    # send half of the crossfade_part (= approx the fadeout part)
-                    split_point = (len(crossfade_bytes) + 1) // 2
-                    crossfade_first = crossfade_bytes[:split_point]
-                    crossfade_second = crossfade_bytes[split_point:]
-                    del crossfade_bytes
-                    bytes_written += len(crossfade_first)
-                    for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
-                        yield _chunk
-                    # store the other half for the next track
-                    # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
-                    # because it was created from the resampled buffer used for mixing.
-                    # BUT fade_in_size represents bytes in NEXT track's original format
-                    # (next_queue_item_pcm_format) because that's how much of the next track
-                    # was consumed during the crossfade. We need both formats to correctly
-                    # handle the crossfade data when the next track starts.
-                    self._crossfade_data[queue_item.queue_id] = CrossfadeData(
-                        data=crossfade_second,
-                        fade_in_size=original_buffer_size,
-                        pcm_format=pcm_format,  # Format of the data (current track)
-                        fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
-                        queue_item_id=next_queue_item.queue_item_id,
-                    )
-                except Exception as err:
-                    self.logger.error(
-                        "Failed to create crossfade for queue %s: %s - "
-                        "falling back to no crossfade",
-                        queue.display_name,
-                        err,
-                    )
-                    # Fallback: just yield the fade_out_data without crossfade
-                    yield fade_out_data
-                    bytes_written += len(fade_out_data)
-                    next_queue_item = None
-            except (QueueEmpty, AudioError):
-                # end of queue reached, next item  skipped or crossfade failed
+                # perform actual (smart fades) crossfade using mixer
+                crossfade_bytes = await self._smart_fades_mixer.mix(
+                    fade_in_part=buffer,
+                    fade_out_part=fade_out_data,
+                    fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
+                    fade_out_streamdetails=streamdetails,
+                    pcm_format=pcm_format,
+                    standard_crossfade_duration=standard_crossfade_duration,
+                    mode=smart_fades_mode,
+                )
+                # send half of the crossfade_part (= approx the fadeout part)
+                split_point = (len(crossfade_bytes) + 1) // 2
+                crossfade_first = crossfade_bytes[:split_point]
+                crossfade_second = crossfade_bytes[split_point:]
+                del crossfade_bytes
+                bytes_written += len(crossfade_first)
+                for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
+                    yield _chunk
+                # store the other half for the next track
+                # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
+                # because it was created from the resampled buffer used for mixing.
+                # BUT fade_in_size represents bytes in NEXT track's original format
+                # (next_queue_item_pcm_format) because that's how much of the next track
+                # was consumed during the crossfade. We need both formats to correctly
+                # handle the crossfade data when the next track starts.
+                self._crossfade_data[queue_item.queue_id] = CrossfadeData(
+                    data=crossfade_second,
+                    fade_in_size=original_buffer_size,
+                    pcm_format=pcm_format,  # Format of the data (current track)
+                    fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
+                    queue_item_id=next_queue_item.queue_item_id,
+                )
+            except AudioError:
                 # no crossfade possible, just yield the fade_out_data
                 next_queue_item = None
                 yield fade_out_data
@@ -1896,7 +1881,7 @@ class StreamsController(CoreController):
         # use highest supported rate within content rate
         output_sample_rate = max(
             (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
-            default=48000,
+            default=48000,  # sane/safe default
         )
         # work out pcm format based on streamdetails
         pcm_format = AudioFormat(
@@ -1908,29 +1893,17 @@ class StreamsController(CoreController):
         )
         if smartfades_enabled:
             pcm_format.channels = 2  # force stereo for crossfading
-            # allows upsample to same sample rate for crossfade
-            # if the device does not support gapless playback with different sample rates
-            if not self.mass.config.get_raw_player_config_value(
-                player.player_id,
-                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.key,
-                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.default_value,
-            ):
-                new_sample_rate = max(
-                    pcm_format.sample_rate,
-                    48000,  # sane/safe default
-                )
-                if new_sample_rate != pcm_format.sample_rate:
-                    self.logger.debug(
-                        "Player does not support crossfade with different sample rates, "
-                        "content will be (HQ) upsampled to %s for crossfade.",
-                        new_sample_rate,
-                    )
-                    pcm_format.sample_rate = new_sample_rate
 
         return pcm_format
 
     def _crossfade_allowed(
-        self, queue_item: QueueItem, smart_fades_mode: SmartFadesMode, flow_mode: bool = False
+        self,
+        queue_item: QueueItem,
+        smart_fades_mode: SmartFadesMode,
+        flow_mode: bool = False,
+        next_queue_item: QueueItem | None = None,
+        sample_rate: int | None = None,
+        next_sample_rate: int | None = None,
     ) -> bool:
         """Get the crossfade config for a queue item."""
         if smart_fades_mode == SmartFadesMode.DISABLED:
@@ -1941,7 +1914,7 @@ class StreamsController(CoreController):
             self.logger.debug("Skipping crossfade: current item is not a track")
             return False
         # check if the next item is part of the same album
-        next_item = self.mass.player_queues.get_next_item(
+        next_item = next_queue_item or self.mass.player_queues.get_next_item(
             queue_item.queue_id, queue_item.queue_item_id
         )
         if not next_item:
@@ -1965,6 +1938,26 @@ class StreamsController(CoreController):
             # because we have no accurate way to determine if the album is gapless or not,
             # for now we just never crossfade between tracks of the same album
             self.logger.debug("Skipping crossfade: next item is part of the same album")
+            return False
+
+        # check if we're allowed to crossfade on different sample rates
+        if (
+            not flow_mode
+            and sample_rate
+            and next_sample_rate
+            and sample_rate != next_sample_rate
+            and not self.mass.config.get_raw_player_config_value(
+                queue_item.queue_id,
+                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.key,
+                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.default_value,
+            )
+        ):
+            self.logger.debug(
+                "Skipping crossfade: player does not support gapless playback "
+                "with different sample rates (%s vs %s)",
+                sample_rate,
+                next_sample_rate,
+            )
             return False
 
         return True
