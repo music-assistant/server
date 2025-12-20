@@ -2180,8 +2180,7 @@ class MusicController(CoreController):
             )
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE media_type IN "
-                "('radio', 'playlist');"
+                "WHERE media_type = 'radio';"
             )
 
         # save changes

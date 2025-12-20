@@ -65,7 +65,8 @@ class TracksController(MediaControllerBase[Track]):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = tracks.item_id AND media_type = 'track') AS provider_mappings,
 
             (SELECT JSON_GROUP_ARRAY(

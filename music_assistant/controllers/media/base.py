@@ -94,7 +94,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
             FROM {self.db_table} """  # noqa: E501
@@ -623,11 +624,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         except MediaNotFoundError:
             # edge case: already deleted / race condition
             return
-        library_item.provider_mappings = {
-            x
-            for x in library_item.provider_mappings
-            if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
-        }
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -647,6 +644,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        library_item.provider_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
+        }
         if library_item.provider_mappings:
             self.logger.debug(
                 "removed provider_mapping %s/%s from item id %s",

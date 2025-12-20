@@ -366,13 +366,28 @@ class SpotifyProvider(MusicProvider):
         if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
-        # Use global session for Spotify-owned playlists (e.g., Daily Mix)
-        # as they may not be accessible via the dev token
-        use_global = await self._is_spotify_owned_playlist(prov_playlist_id)
-        playlist_obj = await self._get_data(
-            f"playlists/{prov_playlist_id}", use_global_session=use_global
-        )
-        return parse_playlist(playlist_obj, self)
+        # Check cache to see if this playlist requires global token
+        use_global = await self._playlist_requires_global_token(prov_playlist_id)
+        if use_global:
+            playlist_obj = await self._get_data(
+                f"playlists/{prov_playlist_id}", use_global_session=True
+            )
+            return parse_playlist(playlist_obj, self)
+
+        # Try with dev token first (if available), fallback to global on 400 error
+        # Some playlists like Spotify-owned (Daily Mix) or Liked Songs only work with global token
+        try:
+            playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+            return parse_playlist(playlist_obj, self)
+        except aiohttp.ClientResponseError as err:
+            if err.status == 400 and self.dev_session_active:
+                # Remember that this playlist requires global token
+                await self._set_playlist_requires_global_token(prov_playlist_id)
+                playlist_obj = await self._get_data(
+                    f"playlists/{prov_playlist_id}", use_global_session=True
+                )
+                return parse_playlist(playlist_obj, self)
+            raise
 
     @use_cache()
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -572,27 +587,32 @@ class SpotifyProvider(MusicProvider):
     @use_cache(2600 * 3)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
-        result: list[Track] = []
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
-        uri = (
-            "me/tracks"
-            if prov_playlist_id == self._get_liked_songs_playlist_id()
-            else f"playlists/{prov_playlist_id}/tracks"
-        )
-        # Use global session for liked songs or Spotify-owned playlists (e.g., Daily Mix)
-        use_global = is_liked_songs or await self._is_spotify_owned_playlist(prov_playlist_id)
-        # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
+        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/tracks"
 
+        # Liked songs always require global session
+        # For other playlists, call get_playlist first to trigger the fallback logic
+        # and populate the cache for which token to use
+        if is_liked_songs:
+            use_global = True
+        else:
+            # This call is cached and will determine/cache if global token is needed
+            await self.get_playlist(prov_playlist_id)
+            use_global = await self._playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+
+        # Get etag for caching
+        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
+
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
-            # use count as position
             track = parse_track(item["track"], self)
             track.position = offset + index
             result.append(track)
@@ -970,30 +990,23 @@ class SpotifyProvider(MusicProvider):
 
         return liked_songs
 
-    @use_cache(86400 * 90)
-    async def _is_spotify_owned_playlist(self, prov_playlist_id: str) -> bool:
-        """Check if a playlist is owned by Spotify.
-
-        Spotify-owned playlists (e.g., Daily Mix, Discover Weekly) are only accessible
-        via the global token, not through developer API tokens.
+    async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
+        """Check if a playlist requires global token (cached).
 
         :param prov_playlist_id: The Spotify playlist ID.
-        :returns: True if the playlist is owned by Spotify.
+        :returns: True if the playlist requires global token.
         """
-        if prov_playlist_id == self._get_liked_songs_playlist_id():
-            return False
-        try:
-            # We need to use global session here to actually get the playlist info
-            # because if it's a Spotify-owned playlist, the dev session won't have access
-            playlist_obj = await self._get_data(
-                f"playlists/{prov_playlist_id}",
-                fields="owner.id",
-                use_global_session=True,
-            )
-            owner_id = playlist_obj.get("owner", {}).get("id", "").lower()
-            return bool(owner_id == "spotify")
-        except MediaNotFoundError:
-            return False
+        cache_key = f"playlist_global_token_{prov_playlist_id}"
+        return bool(await self.mass.cache.get(cache_key, provider=self.instance_id))
+
+    async def _set_playlist_requires_global_token(self, prov_playlist_id: str) -> None:
+        """Mark a playlist as requiring global token in cache.
+
+        :param prov_playlist_id: The Spotify playlist ID.
+        """
+        cache_key = f"playlist_global_token_{prov_playlist_id}"
+        # Cache for 90 days - playlist ownership doesn't change
+        await self.mass.cache.set(cache_key, True, provider=self.instance_id, expiration=86400 * 90)
 
     async def _add_audiobook_chapters(self, audiobook: Audiobook) -> None:
         """Add chapter metadata to an audiobook from Spotify API data."""

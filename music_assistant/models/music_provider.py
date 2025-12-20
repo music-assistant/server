@@ -749,6 +749,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.artists.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -784,6 +786,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.albums.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -819,6 +823,8 @@ class MusicProvider(Provider):
             try:
                 if not library_track:
                     # add item to the library
+                    for prov_map in prov_track.provider_mappings:
+                        prov_map.in_library = True
                     library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
                 elif not self._check_provider_mappings(library_track, prov_track, True):
                     # existing library track but provider mapping doesn't match
@@ -844,6 +850,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.audiobooks.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -893,6 +901,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -932,6 +942,8 @@ class MusicProvider(Provider):
             try:
                 if not library_track:
                     # add item to the library
+                    for prov_map in prov_track.provider_mappings:
+                        prov_map.in_library = True
                     library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
                 elif not self._check_provider_mappings(library_track, prov_track, True):
                     # existing library track but provider mapping doesn't match
@@ -965,6 +977,8 @@ class MusicProvider(Provider):
                     continue
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -996,6 +1010,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
@@ -1033,6 +1049,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
+                    for prov_map in prov_item.provider_mappings:
+                        prov_map.in_library = True
                     library_item = await self.mass.music.radio.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
