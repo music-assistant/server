@@ -44,6 +44,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
+    CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -1892,9 +1893,9 @@ class StreamsController(CoreController):
             ),
         )
         supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
-        # use highest supported rate below content rate
+        # use highest supported rate within content rate
         output_sample_rate = max(
-            (r for r in supported_sample_rates if r < streamdetails.audio_format.sample_rate),
+            (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
             default=48000,
         )
         # work out pcm format based on streamdetails
@@ -1909,7 +1910,11 @@ class StreamsController(CoreController):
             pcm_format.channels = 2  # force stereo for crossfading
             # allows upsample to same sample rate for crossfade
             # if the device does not support gapless playback with different sample rates
-            if PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE not in player.supported_features:
+            if not self.mass.config.get_raw_player_config_value(
+                player.player_id,
+                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.key,
+                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.default_value,
+            ):
                 new_sample_rate = max(
                     pcm_format.sample_rate,
                     48000,  # sane/safe default
@@ -1917,7 +1922,8 @@ class StreamsController(CoreController):
                 if new_sample_rate != pcm_format.sample_rate:
                     self.logger.debug(
                         "Player does not support crossfade with different sample rates, "
-                        "content will be (HQ) upsampled to at least 48kHz for crossfade."
+                        "content will be (HQ) upsampled to %s for crossfade.",
+                        new_sample_rate,
                     )
                     pcm_format.sample_rate = new_sample_rate
 

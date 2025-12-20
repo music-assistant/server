@@ -59,7 +59,6 @@ SUPPORT_DYNAMIC_LEADER = {
 OPTIONAL_FEATURES = {
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
