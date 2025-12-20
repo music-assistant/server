@@ -44,7 +44,6 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
-    CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -489,12 +488,10 @@ class StreamsController(CoreController):
             smart_fades_mode = SmartFadesMode.DISABLED
 
         # work out pcm format based on streamdetails
-        pcm_format = AudioFormat(
-            sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            # always use f32 internally for extra headroom for filters etc
-            content_type=INTERNAL_PCM_FORMAT.content_type,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-            channels=queue_item.streamdetails.audio_format.channels,
+        pcm_format = await self._select_pcm_format(
+            player=queue_player,
+            streamdetails=queue_item.streamdetails,
+            smartfades_enabled=True,
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
             # crossfade is enabled, use special crossfaded single item stream
@@ -1677,11 +1674,12 @@ class StreamsController(CoreController):
                 queue.index_in_buffer = self.mass.player_queues.index_by_id(
                     queue.queue_id, next_queue_item.queue_item_id
                 )
-                next_queue_item_pcm_format = AudioFormat(
-                    content_type=INTERNAL_PCM_FORMAT.content_type,
-                    bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-                    sample_rate=next_queue_item.streamdetails.audio_format.sample_rate,
-                    channels=next_queue_item.streamdetails.audio_format.channels,
+                queue_player = self.mass.players.get(queue.queue_id)
+                assert queue_player is not None
+                next_queue_item_pcm_format = await self._select_pcm_format(
+                    player=queue_player,
+                    streamdetails=next_queue_item.streamdetails,
+                    smartfades_enabled=True,
                 )
                 async for chunk in self.get_queue_item_stream(
                     next_queue_item, next_queue_item_pcm_format
@@ -1880,13 +1878,58 @@ class StreamsController(CoreController):
             channels=2,
         )
 
+    async def _select_pcm_format(
+        self,
+        player: Player,
+        streamdetails: StreamDetails,
+        smartfades_enabled: bool,
+    ) -> AudioFormat:
+        """Parse (player specific) stream internal PCM format."""
+        supported_rates_conf = cast(
+            "list[tuple[str, str]]",
+            await self.mass.config.get_player_config_value(
+                player.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
+            ),
+        )
+        supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
+        # use highest supported rate below content rate
+        output_sample_rate = max(
+            (r for r in supported_sample_rates if r < streamdetails.audio_format.sample_rate),
+            default=48000,
+        )
+        # work out pcm format based on streamdetails
+        pcm_format = AudioFormat(
+            sample_rate=output_sample_rate,
+            # always use f32 internally for extra headroom for filters etc
+            content_type=INTERNAL_PCM_FORMAT.content_type,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
+        if smartfades_enabled:
+            pcm_format.channels = 2  # force stereo for crossfading
+            # allows upsample to same sample rate for crossfade
+            # if the device does not support gapless playback with different sample rates
+            if PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE not in player.supported_features:
+                new_sample_rate = max(
+                    pcm_format.sample_rate,
+                    48000,  # sane/safe default
+                )
+                if new_sample_rate != pcm_format.sample_rate:
+                    self.logger.debug(
+                        "Player does not support crossfade with different sample rates, "
+                        "content will be (HQ) upsampled to at least 48kHz for crossfade."
+                    )
+                    pcm_format.sample_rate = new_sample_rate
+
+        return pcm_format
+
     def _crossfade_allowed(
         self, queue_item: QueueItem, smart_fades_mode: SmartFadesMode, flow_mode: bool = False
     ) -> bool:
         """Get the crossfade config for a queue item."""
         if smart_fades_mode == SmartFadesMode.DISABLED:
             return False
-        if not (queue_player := self.mass.players.get(queue_item.queue_id)):
+        if not (self.mass.players.get(queue_item.queue_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")
@@ -1918,29 +1961,6 @@ class StreamsController(CoreController):
             self.logger.debug("Skipping crossfade: next item is part of the same album")
             return False
 
-        # check if next item sample rate matches
-        if (
-            not flow_mode
-            and next_item.streamdetails
-            and queue_item.streamdetails
-            and next_item.streamdetails.audio_format
-            and queue_item.streamdetails.audio_format
-            and (
-                queue_item.streamdetails.audio_format.sample_rate
-                != next_item.streamdetails.audio_format.sample_rate
-            )
-            and (queue_player := self.mass.players.get(queue_item.queue_id))
-            and not (
-                PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE in queue_player.supported_features
-                or self.mass.config.get_raw_player_config_value(
-                    queue_player.player_id,
-                    CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
-                    CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
-                )
-            )
-        ):
-            self.logger.debug("Skipping crossfade: sample rate mismatch")
-            return False
         return True
 
     async def _periodic_garbage_collection(self) -> None:
