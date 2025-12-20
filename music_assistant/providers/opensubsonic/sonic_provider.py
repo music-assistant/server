@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from asyncio import TaskGroup
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
@@ -778,7 +779,7 @@ class OpenSonicProvider(MusicProvider):
         self.logger.debug("Streaming %s", streamdetails.item_id)
 
         # Use a threading event to signal cancellation to the streamer thread
-        cancelled = asyncio.Event()
+        cancelled = threading.Event()
 
         def _streamer() -> None:
             self.logger.debug("starting stream of item '%s'", streamdetails.item_id)
