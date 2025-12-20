@@ -607,11 +607,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # ignore if the mapping is already present
             if provider_mapping not in library_item.provider_mappings:
                 new_mappings.add(provider_mapping)
-        if new_mappings:
-            library_item.provider_mappings.update(new_mappings)
-            self.mass.music.match_provider_instances(library_item)
-            await self.set_provider_mappings(db_id, library_item.provider_mappings)
-            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        if not new_mappings:
+            return
+        # handle special case where the user wants to merge 2 library items
+        for mapping in new_mappings:
+            if _library_item := await self.get_library_item_by_prov_id(
+                mapping.item_id, mapping.provider_instance
+            ):
+                if _library_item.item_id != library_item.item_id:
+                    # merging items
+                    self.logger.debug(
+                        "merging item id %s into item id %s based on provider mapping %s/%s",
+                        _library_item.item_id,
+                        library_item.item_id,
+                        mapping.provider_instance,
+                        mapping.item_id,
+                    )
+                    await self.remove_item_from_library(_library_item.item_id, recursive=True)
+                    break
+        library_item.provider_mappings.update(new_mappings)
+        self.mass.music.match_provider_instances(library_item)
+        await self.set_provider_mappings(db_id, library_item.provider_mappings)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @final
     async def remove_provider_mapping(
