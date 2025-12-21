@@ -53,4 +53,5 @@ async def test_initial_sync(mass: MusicAssistant) -> None:
     assert albums[0].name == "This Is Christmas"
 
     tracks = await mass.music.tracks.library_items(search="where the bands are")
-    assert tracks[0].name == "Where the Bands Are (2018 Version)"
+    assert tracks[0].name == "Where the Bands Are"
+    assert tracks[0].version == "2018 Version"

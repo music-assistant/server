@@ -22,7 +22,6 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 )
 
 # Source Mapping

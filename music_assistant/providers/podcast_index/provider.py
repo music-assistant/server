@@ -314,7 +314,6 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
 
-    @use_cache(86400)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Get stream details for a podcast episode.

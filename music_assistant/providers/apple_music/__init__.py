@@ -67,7 +67,7 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -762,10 +762,12 @@ class AppleMusicProvider(MusicProvider):
                 attributes.get("name"),
             )
             return None
+        name, version = parse_title_and_version(attributes["name"])
         album = Album(
             item_id=album_id,
             provider=self.domain,
-            name=attributes.get("name"),
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
@@ -848,10 +850,12 @@ class AppleMusicProvider(MusicProvider):
         else:
             track_id = track_obj["id"]
             attributes = {}
+        name, version = parse_title_and_version(attributes.get("name", ""))
         track = Track(
             item_id=track_id,
             provider=self.domain,
-            name=attributes.get("name"),
+            name=name,
+            version=version,
             duration=attributes.get("durationInMillis", 0) / 1000,
             provider_mappings={
                 ProviderMapping(

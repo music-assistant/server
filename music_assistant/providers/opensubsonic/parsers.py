@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
     from libopensonic.media import AlbumID3 as SonicAlbum
@@ -108,10 +109,12 @@ def parse_track(
         for c in sonic_song.contributors:
             metadata.performers.add(c.artist.name)
 
+    name, version = parse_title_and_version(sonic_song.title)
     track = Track(
         item_id=sonic_song.id,
         provider=instance_id,
-        name=sonic_song.title,
+        name=name,
+        version=version,
         album=album,
         duration=sonic_song.duration or 0,
         disc_number=sonic_song.disc_number or 0,
@@ -313,11 +316,13 @@ def parse_album(
     if sonic_album.moods:
         metadata.mood = sonic_album.moods[0]
 
+    name, version = parse_title_and_version(sonic_album.name)
     album = Album(
         item_id=sonic_album.id,
         provider=SUBSONIC_DOMAIN,
         metadata=metadata,
-        name=sonic_album.name,
+        name=name,
+        version=version,
         favorite=bool(sonic_album.starred),
         provider_mappings={
             ProviderMapping(

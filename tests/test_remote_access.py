@@ -265,7 +265,7 @@ async def test_webrtc_gateway_reconnection_logic(mock_certificate: Mock) -> None
     )
 
     # Check initial reconnect delay
-    assert gateway._current_reconnect_delay == 5
+    assert gateway._current_reconnect_delay == 10
 
     # Simulate multiple failed connections (without actually connecting)
     initial_delay = gateway._current_reconnect_delay

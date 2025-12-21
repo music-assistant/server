@@ -47,7 +47,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = audiobooks.item_id AND media_type = 'audiobook') AS provider_mappings,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,
@@ -69,6 +70,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
+        **kwargs: Any,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -80,6 +83,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param provider: Filter by provider instance ID (single string or list).
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -92,6 +97,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=library_items_only,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -107,6 +113,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=library_items_only,
             )
         return result
 

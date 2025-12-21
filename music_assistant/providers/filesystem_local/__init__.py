@@ -1044,7 +1044,9 @@ class LocalFileSystemProvider(MusicProvider):
                 artist_path = foldermatch
             else:
                 # check if we have an existing item to retrieve the artist path
-                async for item in self.mass.music.artists.iter_library_items(search=name):
+                async for item in self.mass.music.artists.iter_library_items(
+                    search=name, provider=self.instance_id
+                ):
                     if not compare_strings(name, item.name):
                         continue
                     for prov_mapping in item.provider_mappings:

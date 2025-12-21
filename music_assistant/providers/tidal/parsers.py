@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import BROWSE_URL, RESOURCES_URL
 
@@ -70,8 +70,10 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
 
 def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     """Parse tidal album object to generic layout."""
-    name = album_obj.get("title", "Unknown Album")
-    version = album_obj.get("version", "") or ""
+    name, version = parse_title_and_version(
+        album_obj.get("title", "Unknown Album"),
+        album_obj.get("version") or None,
+    )
     album_id = str(album_obj.get("id", ""))
 
     album = Album(
@@ -162,7 +164,10 @@ def parse_track(
     lyrics: dict[str, str] | None = None,
 ) -> Track:
     """Parse tidal track object to generic layout."""
-    version = track_obj.get("version", "") or ""
+    name, version = parse_title_and_version(
+        track_obj.get("title", "Unknown"),
+        track_obj.get("version") or None,
+    )
     track_id = str(track_obj.get("id", 0))
     media_metadata = track_obj.get("mediaMetadata") or {}
     tags = media_metadata.get("tags", [])
@@ -170,7 +175,7 @@ def parse_track(
     track = Track(
         item_id=track_id,
         provider=provider.instance_id,
-        name=track_obj.get("title", "Unknown"),
+        name=name,
         version=version,
         duration=track_obj.get("duration", 0),
         provider_mappings={

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.TRACK_METADATA,
+    ProviderFeature.LYRICS,
 }
 
 CONF_API_URL = "api_url"

@@ -94,7 +94,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
             FROM {self.db_table} """  # noqa: E501
@@ -129,9 +130,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # update existing item
             await self._update_library_item(library_id, item, overwrite=overwrite_existing)
         else:
-            for provider_mapping in item.provider_mappings:
-                if item.item_id == provider_mapping.item_id:
-                    provider_mapping.in_library = True
             # actually add a new item in the library db
             self.mass.music.match_provider_instances(item)
             async with self._db_add_lock:
@@ -246,8 +244,23 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
+        **kwargs: Any,
     ) -> list[ItemCls]:
-        """Get in-database items."""
+        """
+        Get in-database albums.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID (single string or list).
+        :param extra_query: Additional SQL query string.
+        :param extra_query_params: Additional query parameters.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
+        """
         return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -257,6 +270,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
+            in_library_only=library_items_only,
         )
 
     async def iter_library_items(
@@ -267,6 +281,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all in-database items."""
         limit: int = 500
@@ -285,6 +300,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_filter=provider_filter,
                 extra_query_parts=[extra_query] if extra_query else None,
                 extra_query_params=extra_query_params,
+                in_library_only=library_items_only,
             )
             for item in next_items:
                 yield item
@@ -361,7 +377,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
         for db_item in await self._get_library_items_by_query(
-            extra_query_parts=[extra_query],
+            extra_query_parts=[extra_query], in_library_only=False
         ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -471,6 +487,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             extra_query_parts=[query],
             extra_query_params=query_params,
+            in_library_only=False,
         )
 
     @final
@@ -590,11 +607,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # ignore if the mapping is already present
             if provider_mapping not in library_item.provider_mappings:
                 new_mappings.add(provider_mapping)
-        if new_mappings:
-            library_item.provider_mappings.update(new_mappings)
-            self.mass.music.match_provider_instances(library_item)
-            await self.set_provider_mappings(db_id, library_item.provider_mappings)
-            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        if not new_mappings:
+            return
+        # handle special case where the user wants to merge 2 library items
+        for mapping in new_mappings:
+            if _library_item := await self.get_library_item_by_prov_id(
+                mapping.item_id, mapping.provider_instance
+            ):
+                if _library_item.item_id != library_item.item_id:
+                    # merging items
+                    self.logger.debug(
+                        "merging item id %s into item id %s based on provider mapping %s/%s",
+                        _library_item.item_id,
+                        library_item.item_id,
+                        mapping.provider_instance,
+                        mapping.item_id,
+                    )
+                    await self.remove_item_from_library(_library_item.item_id, recursive=True)
+                    break
+        library_item.provider_mappings.update(new_mappings)
+        self.mass.music.match_provider_instances(library_item)
+        await self.set_provider_mappings(db_id, library_item.provider_mappings)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @final
     async def remove_provider_mapping(
@@ -607,11 +641,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         except MediaNotFoundError:
             # edge case: already deleted / race condition
             return
-        library_item.provider_mappings = {
-            x
-            for x in library_item.provider_mappings
-            if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
-        }
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -631,6 +661,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        library_item.provider_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
+        }
         if library_item.provider_mappings:
             self.logger.debug(
                 "removed provider_mapping %s/%s from item id %s",
@@ -762,6 +797,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
+        in_library_only: bool = False,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
         query_params = extra_query_params or {}
@@ -777,6 +813,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 favorite=favorite,
                 search=search,
                 provider_filter=provider_filter,
+                in_library_only=in_library_only,
                 limit=limit,
             )
         else:
@@ -788,6 +825,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 favorite=favorite,
                 search=search,
                 provider_filter=provider_filter,
+                in_library_only=in_library_only,
             )
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
@@ -822,6 +860,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None,
         search: str | None,
         provider_filter: list[str] | None,
+        in_library_only: bool,
         limit: int,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -836,6 +875,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             favorite=favorite,
             search=search,
             provider_filter=provider_filter,
+            in_library_only=in_library_only,
         )
 
         # Build the subquery
@@ -864,6 +904,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None,
         search: str | None,
         provider_filter: list[str] | None,
+        in_library_only: bool,
     ) -> None:
         """Apply search, favorite, and provider filters."""
         # handle search
@@ -881,8 +922,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                f"AND provider_mappings.in_library = 1 "
+                f"AND provider_mappings.in_library = {in_library_only} "
                 f"AND ({' OR '.join(provider_conditions)})"
+            )
+        elif in_library_only:
+            join_parts.append(
+                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+                f"AND provider_mappings.media_type = '{self.media_type.value}' "
+                f"AND provider_mappings.in_library = {in_library_only} "
             )
 
     @final

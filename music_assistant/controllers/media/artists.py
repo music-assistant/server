@@ -73,7 +73,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        library_items_only: bool = True,
         album_artists_only: bool = False,
+        **kwargs: Any,
     ) -> list[Artist]:
         """Get in-database (album) artists.
 
@@ -86,6 +88,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param extra_query: Additional SQL query string.
         :param extra_query_params: Additional query parameters.
         :param album_artists_only: Only return artists that have albums.
+        :param library_items_only: If True, only return items that are
+            marked as 'in_library' on any provider mapping.
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -103,6 +107,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=library_items_only,
         )
 
     async def tracks(
@@ -110,8 +115,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
+        provider_filter: str | list[str] | None = None,
     ) -> list[Track]:
         """Return all/top tracks for an artist."""
+        if provider_filter and provider_instance_id_or_domain != "library":
+            raise MusicAssistantError("Cannot use provider_filter with specific provider request")
+        if isinstance(provider_filter, str):
+            provider_filter = [provider_filter]
         # always check if we have a library item for this artist
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
@@ -120,7 +130,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_artist_tracks(library_artist.item_id)
         result: list[Track] = db_items
-        if in_library_only:
+        if in_library_only and not provider_filter:
             # return in-library items only
             return result
         # return all (unique) items from all providers
@@ -129,6 +139,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         unique_providers = self.mass.music.get_unique_providers()
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
+                continue
+            if provider_filter and provider_mapping.provider_instance not in provider_filter:
                 continue
             provider_tracks = await self.get_provider_artist_toptracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
