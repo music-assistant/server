@@ -103,10 +103,13 @@ class PandoraProvider(MusicProvider):
     _csrf_token: str | None = None
     _on_unload_callbacks: list[Callable[[], None]]
     _station_fragments: dict[str, list[dict[str, Any] | None]] = {}
+    _station_track_map: dict[str, list[tuple[int, int]]] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._on_unload_callbacks = []
+        self._station_fragments: dict[str, list[dict[str, Any] | None]] = {}
+        self._served_tracks: dict[str, set[int]] = {}
 
         # Authenticate with Pandora
         username = str(self.config.get_value(CONF_USERNAME))
@@ -289,7 +292,7 @@ class PandoraProvider(MusicProvider):
             stream_metadata=StreamMetadata(
                 title="Pandora Radio",
             ),
-            # stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_callback=self._update_stream_metadata,
             stream_metadata_update_interval=5,  # Check every 5 seconds
         )
 
@@ -339,6 +342,25 @@ class PandoraProvider(MusicProvider):
                 self._station_fragments[station_id].append(None)
             self._station_fragments[station_id][fragment_index] = result
 
+            # Build track mapping (skip curators)
+            if station_id not in self._station_track_map:
+                self._station_track_map[station_id] = []
+
+            tracks = result.get("tracks", [])
+            for track_idx, track in enumerate(tracks):
+                title = track.get("songTitle", "")
+                # Skip curator messages from the mapping
+                if "Curator Message" not in title and "curator message" not in title.lower():
+                    self._station_track_map[station_id].append((fragment_index, track_idx))
+                    self.logger.debug(
+                        "Music track #%d maps to fragment %d, track %d: %s - %s",
+                        len(self._station_track_map[station_id]) - 1,
+                        fragment_index,
+                        track_idx,
+                        track.get("artistName"),
+                        title,
+                    )
+
             return result
 
         except Exception as err:
@@ -367,6 +389,23 @@ class PandoraProvider(MusicProvider):
         except ValueError:
             return web.Response(status=400, text="Invalid track_num")
 
+        # Check if we've already served this track
+        if station_id not in self._served_tracks:
+            self._served_tracks[station_id] = set()
+
+        if track_num in self._served_tracks[station_id]:
+            self.logger.info(
+                "=== TRACK ALREADY SERVED === Track %d already played, skipping to %d",
+                track_num,
+                track_num + 1,
+            )
+            next_request = request.clone(
+                rel_url=request.rel_url.with_query(
+                    station_id=station_id, track_num=str(track_num + 1)
+                )
+            )
+            return await self._handle_stream_request(next_request)
+
         # Calculate which fragment and which track within that fragment
         fragment_idx = track_num // TRACKS_PER_FRAGMENT
         track_idx = track_num % TRACKS_PER_FRAGMENT
@@ -394,6 +433,25 @@ class PandoraProvider(MusicProvider):
                 return web.Response(status=404, text="Track not found in fragment")
 
             track = tracks[track_idx]
+
+            # Mark this track as served before any potential recursion
+            self._served_tracks[station_id].add(track_num)
+
+            # Check if this is a curator message and skip to next track
+            title = track.get("songTitle", "")
+            if "Curator Message" in title or "curator message" in title.lower():
+                self.logger.info(
+                    "=== SKIPPING CURATOR MESSAGE === Moving to track %d",
+                    track_num + 1,
+                )
+                # Recursively call ourselves with the next track number
+                next_request = request.clone(
+                    rel_url=request.rel_url.with_query(
+                        station_id=station_id, track_num=str(track_num + 1)
+                    )
+                )
+                return await self._handle_stream_request(next_request)
+
             audio_url = track.get("audioURL")
 
             if not audio_url:
@@ -440,3 +498,95 @@ class PandoraProvider(MusicProvider):
                     break
 
         return SearchResults(radio=results)
+
+    async def _update_stream_metadata(
+        self, streamdetails: StreamDetails, elapsed_time: int
+    ) -> None:
+        """Update stream metadata based on elapsed playback time."""
+        station_id = streamdetails.item_id
+
+        # Get cached fragments for this station
+        if station_id not in self._station_fragments:
+            return
+
+        # Get only the non-None fragments
+        fragments = [f for f in self._station_fragments[station_id] if f is not None]
+        if not fragments:
+            return
+
+        # Build track list excluding curator messages as they have inaccurate durations
+        # which would throw off our elapsed time calculations
+        all_tracks = []
+        cumulative = 0
+        for fragment in fragments:
+            tracks = fragment.get("tracks", [])
+            for track in tracks:
+                title = track.get("songTitle", "")
+                # Skip curator messages entirely
+                if "Curator Message" in title or "curator message" in title.lower():
+                    continue
+
+                duration = track.get("trackLength", 180)
+                all_tracks.append(
+                    {
+                        "artist": track.get("artistName"),
+                        "title": title,
+                        "duration": duration,
+                        "raw_track": track,
+                    }
+                )
+                cumulative += duration
+
+        self.logger.info(
+            "=== METADATA CALC at elapsed %ds === %d fragments, %d music tracks",
+            elapsed_time,
+            len(fragments),
+            len(all_tracks),
+        )
+
+        # Calculate which track should be playing based on elapsed time
+        cumulative_time = 0
+        current_track = None
+
+        for track_info in all_tracks:
+            track = track_info["raw_track"]
+            track_duration = track_info["duration"]
+
+            if cumulative_time <= elapsed_time < cumulative_time + track_duration:
+                current_track = track
+                self.logger.info(
+                    "  >>> SHOULD BE PLAYING: %s - %s (time window: %d-%d)",
+                    track.get("artistName"),
+                    track.get("songTitle"),
+                    cumulative_time,
+                    cumulative_time + track_duration,
+                )
+                break
+            cumulative_time += track_duration
+
+        # Update metadata if we found the current track
+        if current_track and streamdetails.stream_metadata:
+            # Get album art
+            album_art_url = None
+            if album_art := current_track.get("albumArt"):
+                album_art_url = next(
+                    (art["url"] for art in album_art if art.get("size") == 500),
+                    album_art[-1]["url"] if album_art else None,
+                )
+
+            # Only update if metadata actually changed
+            new_title = current_track.get("songTitle", "Unknown Song")
+            if streamdetails.stream_metadata.title != new_title:
+                self.logger.info(
+                    "=== METADATA CHANGED === %s - %s",
+                    current_track.get("artistName"),
+                    new_title,
+                )
+                streamdetails.stream_metadata.title = new_title
+                streamdetails.stream_metadata.artist = current_track.get(
+                    "artistName", "Unknown Artist"
+                )
+                streamdetails.stream_metadata.album = current_track.get("albumTitle")
+                streamdetails.stream_metadata.image_url = album_art_url
+                streamdetails.stream_metadata.duration = current_track.get("trackLength")
+                streamdetails.stream_metadata.uri = current_track.get("songDetailURL")
