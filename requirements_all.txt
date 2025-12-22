@@ -44,7 +44,7 @@ music-assistant-models==1.1.86
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
 orjson==3.11.5
-pillow==11.3.0
+pillow==12.0.0
 pkce==1.0.3
 plexapi==4.17.2
 podcastparser==0.6.11
