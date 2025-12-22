@@ -1,43 +1,51 @@
-"""Constants for the Pandora provider."""
-
-from __future__ import annotations
+"""Constants for the Pandora music provider."""
 
 # API Endpoints
-API_BASE_URL = "https://www.pandora.com/api/v1"
-LOGIN_ENDPOINT = f"{API_BASE_URL}/auth/login"
-STATIONS_ENDPOINT = f"{API_BASE_URL}/station/getStations"
-PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE_URL}/playlist/getFragment"
+API_BASE = "https://www.pandora.com/api/v1"
+LOGIN_ENDPOINT = f"{API_BASE}/auth/login"
+STATIONS_ENDPOINT = f"{API_BASE}/station/getStations"
+PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE}/playlist/getFragment"
 
-# Error Codes from Pandora API
+# Pandora Error Code Categories
+# Authentication and authorization failures
+AUTH_ERRORS = {12, 13, 1001, 1002, 1003}
+# Missing stations, tracks, or other media
+NOT_FOUND_ERRORS = {4, 5, 1006}
+# Temporary service unavailability
+UNAVAILABLE_ERRORS = {1, 9, 10, 34, 1000}
+
+# Pandora API Error Code Descriptions
 PANDORA_ERROR_CODES = {
-    0: "INVALID_REQUEST",
-    1: "INVALID_PARTNER",
-    2: "LISTENER_NOT_AUTHORIZED",
-    3: "USER_NOT_AUTHORIZED",
-    4: "STATION_DOES_NOT_EXIST",
-    5: "TRACK_NOT_FOUND",
-    9: "PANDORA_NOT_AVAILABLE",
-    10: "SYSTEM_NOT_AVAILABLE",
-    11: "CALL_NOT_ALLOWED",
-    12: "INVALID_USERNAME",
-    13: "INVALID_PASSWORD",
-    14: "DEVICE_NOT_FOUND",
-    15: "PARTNER_NOT_AUTHORIZED",
-    1000: "READ_ONLY_MODE",
-    1001: "INVALID_AUTH_TOKEN",
-    1002: "INVALID_LOGIN",
-    1003: "LISTENER_NOT_AUTHORIZED",
-    1004: "USER_ALREADY_EXISTS",
-    1005: "DEVICE_ALREADY_ASSOCIATED_TO_ACCOUNT",
-    1006: "UPGRADE_DEVICE_MODEL_INVALID",
-    1009: "DEVICE_MODEL_INVALID",
-    1010: "INVALID_SPONSOR",
-    1018: "EXPLICIT_PIN_INCORRECT",
-    1020: "EXPLICIT_PIN_MALFORMED",
-    1023: "DEVICE_DISABLED",
-    1024: "DAILY_TRIAL_LIMIT_REACHED",
-    1025: "INVALID_SPONSOR_USERNAME",
-    1026: "SPONSOR_CANNOT_SKIP_ADS",
-    1027: "INSUFFICIENT_CONNECTIVITY",
-    1034: "GEOLOCATION_REQUIRED",
+    0: "Internal error",
+    1: "Maintenance mode",
+    2: "URL parameter missing method",
+    3: "URL parameter missing auth_token",
+    4: "URL parameter missing partner_id",
+    5: "URL parameter missing user_id",
+    6: "Secure protocol required",
+    7: "Certificate required",
+    8: "Parameter type mismatch",
+    9: "Parameter missing",
+    10: "Parameter value invalid",
+    11: "API version not supported",
+    12: "Invalid username",
+    13: "Invalid password",
+    14: "Listener not authorized",
+    15: "Partner not authorized",
+    1000: "Read only mode",
+    1001: "Invalid auth token",
+    1002: "Invalid partner login",
+    1003: "Listener not authorized",
+    1004: "Partner not authorized",
+    1005: "Station limit reached",
+    1006: "Station does not exist",
+    1009: "Device not found",
+    1010: "Partner not authorized",
+    1011: "Invalid username",
+    1012: "Invalid password",
+    1023: "Device model invalid",
+    1035: "Explicit pin incorrect",
+    1036: "Explicit pin malformed",
+    1037: "Device already associated to account",
+    1039: "Device not found",
 }

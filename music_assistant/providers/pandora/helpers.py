@@ -7,13 +7,14 @@ from typing import Any
 
 import aiohttp
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 
-from .constants import PANDORA_ERROR_CODES
+from .constants import AUTH_ERRORS, NOT_FOUND_ERRORS, UNAVAILABLE_ERRORS
 
 
 def generate_csrf_token() -> str:
@@ -30,29 +31,25 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
         LoginFailed: For authentication errors
         MediaNotFoundError: For missing stations/tracks
         ResourceTemporarilyUnavailable: For service availability issues
-        ProviderUnavailableError: For other API errors
+        InvalidDataError: For other API errors
     """
-    if response_data.get("errorCode") is not None:
-        error_code = response_data["errorCode"]
-        error_string = response_data.get("errorString", "UNKNOWN_ERROR")
-        message = response_data.get("message", "An unknown error occurred")
+    if (error_code := response_data.get("errorCode")) is None:
+        return
 
-        # Map specific error codes to Music Assistant exceptions
-        if error_code in (12, 13, 1002):  # Invalid username/password/login
-            raise LoginFailed(f"Login failed: {message}")
+    message = response_data.get("message", response_data.get("errorString", "Unknown error"))
 
-        if error_code in (4, 5):  # Station/track not found
-            raise MediaNotFoundError(f"Media not found: {message}")
+    # Use the categorized sets for cleaner logic
+    if error_code in AUTH_ERRORS:
+        raise LoginFailed(f"Authentication failed: {message}")
 
-        if error_code in (9, 10):  # Service unavailable
-            raise ResourceTemporarilyUnavailable(f"Service unavailable: {message}")
+    if error_code in NOT_FOUND_ERRORS:
+        raise MediaNotFoundError(f"The requested resource was not found: {message}")
 
-        if error_code in (1001, 1003):  # Auth token issues
-            raise LoginFailed(f"Authentication error: {message}")
+    if error_code in UNAVAILABLE_ERRORS:
+        raise ResourceTemporarilyUnavailable(f"Pandora service issue: {message}")
 
-        # Get error description from our mapping
-        error_desc = PANDORA_ERROR_CODES.get(error_code, error_string)
-        raise ProviderUnavailableError(f"Pandora API error {error_code} ({error_desc}): {message}")
+    # Fallback for any other API error
+    raise InvalidDataError(f"Pandora API Error [{error_code}]: {message}")
 
 
 async def get_csrf_token(session: aiohttp.ClientSession) -> str:
@@ -67,19 +64,22 @@ async def get_csrf_token(session: aiohttp.ClientSession) -> str:
         CSRF token string
 
     Raises:
-        ResourceTemporarilyUnavailable: If network request fails or no token available
+        ProviderUnavailableError: If network request fails
+        ResourceTemporarilyUnavailable: If no token available
     """
     try:
-        async with session.head("https://www.pandora.com/") as response:
+        # Use a more specific timeout for this initial handshake
+        async with session.head(
+            "https://www.pandora.com/",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
             if "csrftoken" in response.cookies:
                 return str(response.cookies["csrftoken"].value)
-    except aiohttp.ClientError as e:
-        raise ResourceTemporarilyUnavailable(f"Failed to get CSRF token from Pandora: {e}") from e
+    except aiohttp.ClientError as err:
+        # Catch network issues at the source and wrap in MA error
+        raise ProviderUnavailableError(f"Network error while reaching Pandora: {err}") from err
 
-    # No token found - service may be unavailable
-    raise ResourceTemporarilyUnavailable(
-        "Pandora did not provide a CSRF token. Service may be unavailable."
-    )
+    raise ResourceTemporarilyUnavailable("Pandora web session failed to provide a CSRF token.")
 
 
 def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[str, str]:
@@ -96,7 +96,15 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         "Content-Type": "application/json;charset=utf-8",
         "X-CsrfToken": csrf_token,
         "Cookie": f"csrftoken={csrf_token}",
-        "User-Agent": "Music Assistant Pandora Provider/1.0",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.pandora.com",
+        "Referer": "https://www.pandora.com/",
     }
 
     if auth_token:
