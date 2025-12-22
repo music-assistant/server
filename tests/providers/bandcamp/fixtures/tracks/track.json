@@ -1,0 +1,31 @@
+{
+  "id": 789,
+  "title": "Test Track",
+  "artist": {
+    "id": 123,
+    "name": "Test Artist",
+    "url": "https://test.bandcamp.com"
+  },
+  "album": {
+    "id": 456,
+    "title": "Test Album",
+    "artist": {
+      "id": 123,
+      "name": "Test Artist",
+      "url": "https://test.bandcamp.com"
+    },
+    "url": "https://test.bandcamp.com/album/test-album",
+    "art_url": "https://f4.bcbits.com/img/a1234567890_16.jpg",
+    "release_date": 1609459200,
+    "about": "Test album description"
+  },
+  "url": "https://test.bandcamp.com/track/test-track",
+  "duration": 300,
+  "track_number": 1,
+  "lyrics": "Test lyrics",
+  "streaming_url": {
+    "mp3-320": "https://example.com/track.mp3",
+    "mp3-128": "https://example.com/track-128.mp3",
+    "mp3-v0": "https://example.com/track-v0.mp3"
+  }
+}

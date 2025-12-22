@@ -1,0 +1,8 @@
+{
+  "id": 123,
+  "name": "Test Artist",
+  "url": "https://test.bandcamp.com",
+  "image_url": "https://f4.bcbits.com/img/a1234567890_16.jpg",
+  "bio": "Test artist bio",
+  "location": "Test City, Test Country"
+}
