@@ -310,11 +310,40 @@ async def test_get_artist_albums_success(provider: BandcampProvider) -> None:
 
 async def test_get_stream_details_success(provider: BandcampProvider) -> None:
     """Test successful stream details retrieval."""
-    mock_track = Mock()
-    mock_track.streaming_url = {"mp3-320": "http://example.com/track.mp3"}
+    # Create mock album and track with proper attributes
+    mock_artist = Mock()
+    mock_artist.id = 123
+    mock_artist.name = "Test Artist"
 
-    with patch.object(provider._client, "get_track", new_callable=AsyncMock) as mock_get_track:
-        mock_get_track.return_value = mock_track
+    mock_track = Mock()
+    mock_track.id = 789
+    mock_track.artist = mock_artist
+    mock_track.title = "Test Track"
+    mock_track.duration = 180
+    mock_track.track_number = 1
+    mock_track.streaming_url = {"mp3-320": "http://example.com/track.mp3"}
+    mock_track.url = "http://example.com/track"
+    mock_track.lyrics = None
+
+    mock_album = Mock()
+    mock_album.id = 456
+    mock_album.title = "Test Album"
+    mock_album.art_url = "http://example.com/art.jpg"
+    mock_album.artist = mock_artist
+    mock_album.tracks = [mock_track]
+
+    with (
+        patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album,
+        patch.object(provider._converters, "track_from_api") as mock_converter,
+    ):
+        mock_get_album.return_value = mock_album
+
+        # Create a mock track with metadata.links containing the streaming URL
+        mock_ma_track = Mock()
+        mock_link = Mock()
+        mock_link.url = "http://example.com/track.mp3"
+        mock_ma_track.metadata.links = {mock_link}
+        mock_converter.return_value = mock_ma_track
 
         result = await provider.get_stream_details("123-456-789", MediaType.TRACK)
 
@@ -325,11 +354,19 @@ async def test_get_stream_details_success(provider: BandcampProvider) -> None:
 
 async def test_get_stream_details_no_streaming_url(provider: BandcampProvider) -> None:
     """Test stream details when no streaming URL is available."""
+    # Create mock album and track with no streaming URL
     mock_track = Mock()
+    mock_track.id = 789
     mock_track.streaming_url = None
 
-    with patch.object(provider._client, "get_track", new_callable=AsyncMock) as mock_get_track:
-        mock_get_track.return_value = mock_track
+    mock_album = Mock()
+    mock_album.id = 456
+    mock_album.title = "Test Album"
+    mock_album.art_url = "http://example.com/art.jpg"
+    mock_album.tracks = [mock_track]
+
+    with patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album:
+        mock_get_album.return_value = mock_album
 
         with pytest.raises(MediaNotFoundError, match="Stream details not available"):
             await provider.get_stream_details("123-456-789", MediaType.TRACK)
