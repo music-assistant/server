@@ -132,15 +132,15 @@ async def test_search_with_identity(provider: BandcampProvider) -> None:
 
     # Create mock objects with proper class names
     class MockSearchResultTrack:
-        def __init__(self):
+        def __init__(self) -> None:
             self.__class__.__name__ = "SearchResultTrack"
 
     class MockSearchResultAlbum:
-        def __init__(self):
+        def __init__(self) -> None:
             self.__class__.__name__ = "SearchResultAlbum"
 
     class MockSearchResultArtist:
-        def __init__(self):
+        def __init__(self) -> None:
             self.__class__.__name__ = "SearchResultArtist"
 
     mock_search_results = [

@@ -31,7 +31,9 @@ class BandcampConverters:
         self.domain = domain
         self.instance_id = instance_id
 
-    def streaming_url_from_api(self, streaming_info: dict) -> tuple[str | None, str | None]:
+    def streaming_url_from_api(
+        self, streaming_info: dict[str, str]
+    ) -> tuple[str | None, int | None]:
         """Parse streaming URL info."""
         # Extract streaming URL with priority: mp3-v0 > mp3-128
         bitrate = None
@@ -158,8 +160,8 @@ class BandcampConverters:
         self,
         track: APITrack,
         album_id: str | int | None = None,
-        album_name: str | None = None,
-        album_image_url: str | None = None,
+        album_name: str = "",
+        album_image_url: str = "",
     ) -> MATrack:
         """Convert a Track object from the API to MA Track format."""
         album_id = album_id or 0
@@ -208,16 +210,22 @@ class BandcampConverters:
             )
 
         streaming_url, _ = self.streaming_url_from_api(track.streaming_url)
-        output.metadata.links = {MediaItemLink(type=LinkType.UNKNOWN, url=streaming_url)}
-        output.metadata.lyrics = track.lyrics
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.LANDSCAPE,
-                path=album_image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        output.metadata.links = {
+            MediaItemLink(
+                type=LinkType.UNKNOWN,
+                url=streaming_url,  # type: ignore[arg-type]
             )
-        )
+        }
+        output.metadata.lyrics = track.lyrics
+        if album_image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.LANDSCAPE,
+                    path=album_image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
         return output
 
     def artist_from_api(self, artist: APIArtist) -> MAArtist:

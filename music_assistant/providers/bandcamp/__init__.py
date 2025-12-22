@@ -130,8 +130,10 @@ class BandcampProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
         identity = self.config.get_value(CONF_IDENTITY)
-        self.search_limit = self.config.get_value(CONF_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
-        self.top_tracks_limit = self.config.get_value(
+        self.search_limit = self.config.get_value(  # type: ignore[assignment]
+            CONF_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT
+        )
+        self.top_tracks_limit = self.config.get_value(  # type: ignore[assignment]
             CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT
         )
 
@@ -159,7 +161,7 @@ class BandcampProvider(MusicProvider):
         if not self._client.identity:
             return results
 
-        if media_types is None:
+        if not media_types:
             return results
 
         try:
@@ -174,19 +176,17 @@ class BandcampProvider(MusicProvider):
         for item in search_results[:limit]:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
-                    # noinspection PyUnresolvedReferences
-                    results.tracks.append(self._converters.track_from_search(item))
-                    # results.tracks.append(
-                    #     await self.get_track(f"{item.artist_id}-{item.album_id or 0}-{item.id}")
-                    # )
+                    results.tracks.append(  # type: ignore[attr-defined]
+                        self._converters.track_from_search(item)
+                    )
                 elif isinstance(item, SearchResultAlbum) and MediaType.ALBUM in media_types:
-                    # noinspection PyUnresolvedReferences
-                    results.albums.append(self._converters.album_from_search(item))
-                    # results.albums.append(await self.get_album(f"{item.artist_id}-{item.id}"))
+                    results.albums.append(  # type: ignore[attr-defined]
+                        self._converters.album_from_search(item)
+                    )
                 elif isinstance(item, SearchResultArtist) and MediaType.ARTIST in media_types:
-                    # noinspection PyUnresolvedReferences
-                    results.artists.append(self._converters.artist_from_search(item))
-                    # results.artists.append(await self.get_artist(item.id))
+                    results.artists.append(  # type: ignore[attr-defined]
+                        self._converters.artist_from_search(item)
+                    )
             except Exception as e:
                 self.logger.warning("Failed to convert search result item: %s", e)
                 continue
@@ -254,7 +254,7 @@ class BandcampProvider(MusicProvider):
             return
 
     @use_cache(CACHE)
-    async def get_artist(self, prov_artist_id: str | int) -> Artist | None:
+    async def get_artist(self, prov_artist_id: str | int) -> Artist:
         """Get full artist details by id."""
         try:
             api_artist = await self._client.get_artist(prov_artist_id)
@@ -264,7 +264,7 @@ class BandcampProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
 
     @use_cache(CACHE)
-    async def get_album(self, prov_album_id: str) -> Album | None:
+    async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         artist_id, album_id, _ = split_id(prov_album_id)
         try:
@@ -275,7 +275,7 @@ class BandcampProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Bandcamp") from error
 
     @use_cache(CACHE)
-    async def get_track(self, prov_track_id: str) -> Track | None:
+    async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         artist_id, album_id, track_id = split_id(prov_track_id)
         if track_id is None:  # artist_id-track_id
@@ -296,8 +296,8 @@ class BandcampProvider(MusicProvider):
                 return self._converters.track_from_api(
                     track=api_track,
                     album_id=api_track.album.id if api_track.album else None,
-                    album_name=api_track.album.title if api_track.album else None,
-                    album_image_url=api_track.album.art_url if api_track.album else None,
+                    album_name=api_track.album.title if api_track.album else "",
+                    album_image_url=api_track.album.art_url if api_track.album else "",
                 )
             else:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
@@ -356,11 +356,11 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
-        tracks = []
+        tracks: list[Track] = []
         try:
             # noinspection PyArgumentList
             albums = await self.get_artist_albums(prov_artist_id)
-            albums.sort(key=lambda _: _.year, reverse=True)
+            albums.sort(key=lambda _: _.year, reverse=True)  # type: ignore[arg-type,return-value]
             for album in albums:
                 # noinspection PyArgumentList
                 tracks.extend(await self.get_album_tracks(album.item_id))
@@ -376,7 +376,7 @@ class BandcampProvider(MusicProvider):
             # noinspection PyArgumentList
             track_ma = await self.get_track(item_id)  # consider _client
             content_type = ContentType.MP3
-            link = next(iter(track_ma.metadata.links))
+            link = next(iter(track_ma.metadata.links))  # type: ignore[arg-type]
             if not link:
                 raise MediaNotFoundError(
                     f"No streaming URL found for track {item_id}. Please report this"
