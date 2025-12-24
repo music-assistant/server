@@ -266,8 +266,6 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if podcast_obj.get("description"):
         podcast.metadata.description = podcast_obj["description"]
 
-    provider.logger.debug(f"Podcast images from Spotify: {podcast_obj.get('images', [])}")
-
     podcast.metadata.images = parse_images(podcast_obj.get("images", []), provider.instance_id)
 
     if "explicit" in podcast_obj:
