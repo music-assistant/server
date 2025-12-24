@@ -103,6 +103,11 @@ class SendspinProvider(PlayerProvider):
 
         :param is_removed: True when the provider is removed from the configuration.
         """
+        # Disconnect all clients before stopping the server
+        for client in list(self.server_api.clients):
+            self.logger.debug("Disconnecting client %s", client.client_id)
+            await client.disconnect(retry_connection=False)
+
         # Stop the Sendspin server
         await self.server_api.close()
 
