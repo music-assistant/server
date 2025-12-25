@@ -46,12 +46,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
-    # ProviderFeature.BROWSE,  # TODO: Consider
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
-    # ProviderFeature.RECOMMENDATIONS,  # TODO: Consider
-    # ProviderFeature.SIMILAR_TRACKS,  # TODO: Consider
 }
 
 CONF_IDENTITY = "identity"
@@ -84,8 +81,8 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Identity token",
             required=False,
-            description="Identity token from Bandcamp cookies for collection access. "
-            "See https://bandcamp.com and extract from browser cookies.",
+            description="Identity token from Bandcamp cookies for account collection access."
+            " Log in https://bandcamp.com and extract identity from browser cookies.",
             value=values.get(CONF_IDENTITY) if values else None,
         ),
         ConfigEntry(
