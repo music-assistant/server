@@ -7,6 +7,7 @@ from contextlib import suppress
 from bandcamp_async_api import (
     BandcampAPIClient,
     BandcampAPIError,
+    BandcampMustBeLoggedInError,
     BandcampNotFoundError,
     SearchResultAlbum,
     SearchResultArtist,
@@ -211,6 +212,9 @@ class BandcampProvider(MusicProvider):
                 yield await self.get_artist(band_id)
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
+        except BandcampMustBeLoggedInError:
+            self.logger.error("Wrong Bandcamp identity token.")
+            return
         except Exception:
             self.logger.exception("Failed to get library artists")
             return
@@ -228,6 +232,9 @@ class BandcampProvider(MusicProvider):
                     # noinspection PyArgumentList
                     yield await self.get_album(f"{item.band_id}-{item.item_id}")
                     await asyncio.sleep(0)  # Yield control to avoid blocking
+        except BandcampMustBeLoggedInError:
+            self.logger.error("Wrong Bandcamp identity token.")
+            return
         except Exception:
             self.logger.exception("Failed to get library albums")
             return
@@ -246,6 +253,9 @@ class BandcampProvider(MusicProvider):
                 for track in tracks:
                     yield track
                     await asyncio.sleep(0)  # Yield control to avoid blocking
+        except BandcampMustBeLoggedInError:
+            self.logger.error("Wrong Bandcamp identity token.")
+            return
         except Exception:
             self.logger.exception("Failed to get library tracks")
             return
