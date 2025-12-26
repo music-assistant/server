@@ -17,12 +17,15 @@ from bandcamp_async_api.models import CollectionType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ContentType,
     MediaType,
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 
 # noinspection PyProtectedMember
 from music_assistant_models.media_items import (
@@ -144,7 +147,7 @@ class BandcampProvider(MusicProvider):
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
-        return False
+        return True
 
     @use_cache(CACHE)
     @throttle_with_retries
@@ -164,12 +167,10 @@ class BandcampProvider(MusicProvider):
 
         try:
             search_results = await self._client.search(search_query)
-        except (BandcampAPIError, BandcampNotFoundError) as e:
-            self.logger.warning("Failed to search Bandcamp: %s", e)
-            return results
-        except Exception as e:
-            self.logger.exception("Unexpected error during Bandcamp search: %s", e)
-            return results
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError("No results for Bandcamp search") from error
+        except BandcampAPIError as error:
+            raise InvalidDataError("Unexpected error during Bandcamp search") from error
 
         for item in search_results[:limit]:
             try:
@@ -185,8 +186,8 @@ class BandcampProvider(MusicProvider):
                     results.artists.append(  # type: ignore[attr-defined]
                         self._converters.artist_from_search(item)
                     )
-            except Exception as e:
-                self.logger.warning("Failed to convert search result item: %s", e)
+            except BandcampAPIError as error:
+                self.logger.warning("Failed to convert search result item: %s", error)
                 continue
 
         return results
@@ -196,7 +197,6 @@ class BandcampProvider(MusicProvider):
         if not self._client.identity:  # library requires identity
             return
 
-        # noinspection PyBroadException
         try:
             collection = await self._client.get_collection_items(CollectionType.COLLECTION)
             band_ids = set()
@@ -204,7 +204,6 @@ class BandcampProvider(MusicProvider):
                 if item.item_type == "band":
                     band_ids.add(item.item_id)
                 elif item.item_type == "album":
-                    # noinspection PyArgumentList
                     band_ids.add(item.band_id)
 
             for band_id in band_ids:
@@ -212,19 +211,19 @@ class BandcampProvider(MusicProvider):
                 yield await self.get_artist(band_id)
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
-        except BandcampMustBeLoggedInError:
-            self.logger.error("Wrong Bandcamp identity token.")
-            return
-        except Exception:
-            self.logger.exception("Failed to get library artists")
-            return
+        except BandcampMustBeLoggedInError as error:
+            self.logger.error("Error getting Bandcamp library artists: Wrong identity token.")
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError("Bandcamp library artists returned no results") from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError("Failed to get library artists") from error
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
-        # noinspection PyBroadException
         try:
             api_collection = await self._client.get_collection_items(CollectionType.COLLECTION)
             for item in api_collection.items:
@@ -232,33 +231,33 @@ class BandcampProvider(MusicProvider):
                     # noinspection PyArgumentList
                     yield await self.get_album(f"{item.band_id}-{item.item_id}")
                     await asyncio.sleep(0)  # Yield control to avoid blocking
-        except BandcampMustBeLoggedInError:
-            self.logger.error("Wrong Bandcamp identity token.")
-            return
-        except Exception:
-            self.logger.exception("Failed to get library albums")
-            return
+        except BandcampMustBeLoggedInError as error:
+            self.logger.error("Error getting Bandcamp library albums: Wrong identity token.")
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError("Bandcamp library albums returned no results") from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError("Failed to get library albums") from error
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
-        # noinspection PyBroadException
         try:
-            # noinspection PyTypeChecker,PyArgumentList
             async for album in self.get_library_albums():
                 # noinspection PyArgumentList
                 tracks = await self.get_album_tracks(album.item_id)
                 for track in tracks:
                     yield track
                     await asyncio.sleep(0)  # Yield control to avoid blocking
-        except BandcampMustBeLoggedInError:
-            self.logger.error("Wrong Bandcamp identity token.")
-            return
-        except Exception:
-            self.logger.exception("Failed to get library tracks")
-            return
+        except BandcampMustBeLoggedInError as error:
+            self.logger.error("Error getting Bandcamp library tracks: Wrong identity token.")
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError("Bandcamp library tracks returned no results") from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError("Failed to get library tracks") from error
 
     @use_cache(CACHE)
     async def get_artist(self, prov_artist_id: str | int) -> Artist:
@@ -266,9 +265,12 @@ class BandcampProvider(MusicProvider):
         try:
             api_artist = await self._client.get_artist(prov_artist_id)
             return self._converters.artist_from_api(api_artist)
-        except Exception as error:
-            self.logger.warning("Failed getting artist: %s", error)
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp artist {prov_artist_id} search returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
 
     @use_cache(CACHE)
     async def get_album(self, prov_album_id: str) -> Album:
@@ -277,9 +279,12 @@ class BandcampProvider(MusicProvider):
         try:
             api_album = await self._client.get_album(artist_id, album_id)
             return self._converters.album_from_api(api_album)
-        except Exception as error:
-            self.logger.warning("Failed getting album: %s", error)
-            raise MediaNotFoundError(f"Album {prov_album_id} not found on Bandcamp") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp album {prov_album_id} search returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get album {prov_album_id}") from error
 
     @use_cache(CACHE)
     async def get_track(self, prov_track_id: str) -> Track:
@@ -308,15 +313,17 @@ class BandcampProvider(MusicProvider):
                 )
             else:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
-        except Exception as error:
-            self.logger.warning("Failed getting track: %s", error)
-            raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp track {prov_track_id} search returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get track {prov_track_id}") from error
 
     @use_cache(CACHE)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         artist_id, album_id, _ = split_id(prov_album_id)
-        # noinspection PyBroadException
         try:
             api_album = await self._client.get_album(artist_id, album_id)
             if api_album.tracks:
@@ -330,16 +337,20 @@ class BandcampProvider(MusicProvider):
                     for track in api_album.tracks
                     if track.streaming_url  # Only include tracks with streaming URLs
                 ]
+
             return []
-        except Exception:
-            self.logger.exception("Failed to get album tracks")
-            return []
+
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp album {prov_album_id} tracks search returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get albums tracks for {prov_album_id}") from error
 
     @use_cache(CACHE)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         albums = []
-        # noinspection PyBroadException
         try:
             api_discography = await self._client.get_artist_discography(prov_artist_id)
             for item in api_discography:
@@ -356,8 +367,14 @@ class BandcampProvider(MusicProvider):
 
                     if album:
                         albums.append(album)
-        except Exception:
-            self.logger.exception("Failed to get artist albums")
+
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp artist {prov_artist_id} albums search returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get albums for artist {prov_artist_id}") from error
+
         return albums
 
     @use_cache(CACHE)
@@ -373,16 +390,25 @@ class BandcampProvider(MusicProvider):
                 tracks.extend(await self.get_album_tracks(album.item_id))
                 if len(tracks) >= self.top_tracks_limit:
                     break
-        except Exception:
-            self.logger.exception("Failed to get artist top tracks")
+
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp artist {prov_artist_id} top tracks search returned no results"
+            ) from error
+
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(
+                f"Failed to get toptracks for artist {prov_artist_id}"
+            ) from error
+
         return tracks[: self.top_tracks_limit]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track."""
         try:
+            # consider _client to avoid caching if the track urls become dynamic
             # noinspection PyArgumentList
-            track_ma = await self.get_track(item_id)  # consider _client
-            content_type = ContentType.MP3
+            track_ma = await self.get_track(item_id)
             link = next(iter(track_ma.metadata.links))  # type: ignore[arg-type]
             if not link:
                 raise MediaNotFoundError(
@@ -398,7 +424,7 @@ class BandcampProvider(MusicProvider):
             return StreamDetails(
                 item_id=item_id,
                 provider=self.instance_id,
-                audio_format=AudioFormat(content_type=content_type),  # , bit_rate=bitrate
+                audio_format=AudioFormat(),
                 stream_type=StreamType.HTTP,
                 media_type=media_type,
                 path=streaming_url,
@@ -406,6 +432,11 @@ class BandcampProvider(MusicProvider):
                 allow_seek=True,
             )
 
-        except Exception as error:
-            self.logger.warning("Failed to get stream details for %s: %s", item_id, error)
-            raise MediaNotFoundError(f"Stream details not available for track {item_id}") from error
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(
+                f"Bandcamp stream details search for {media_type} {item_id} returned no results"
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(
+                f"Stream details not available for {media_type} {item_id}"
+            ) from error
