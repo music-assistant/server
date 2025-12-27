@@ -212,9 +212,13 @@ class SpotifyProvider(MusicProvider):
                 yield audiobook
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve playlists from the provider."""
+        """Retrieve playlists from the provider.
+
+        Note: We use the global session here because playlists like "Daily Mix"
+        are only returned when using the non-dev (global) token.
+        """
         yield await self._get_liked_songs_playlist()
-        async for item in self._get_all_items("me/playlists"):
+        async for item in self._get_all_items("me/playlists", use_global_session=True):
             if item and item["id"]:
                 yield parse_playlist(item, self)
 
@@ -362,8 +366,28 @@ class SpotifyProvider(MusicProvider):
         if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
-        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
-        return parse_playlist(playlist_obj, self)
+        # Check cache to see if this playlist requires global token
+        use_global = await self._playlist_requires_global_token(prov_playlist_id)
+        if use_global:
+            playlist_obj = await self._get_data(
+                f"playlists/{prov_playlist_id}", use_global_session=True
+            )
+            return parse_playlist(playlist_obj, self)
+
+        # Try with dev token first (if available), fallback to global on 400 error
+        # Some playlists like Spotify-owned (Daily Mix) or Liked Songs only work with global token
+        try:
+            playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+            return parse_playlist(playlist_obj, self)
+        except MediaNotFoundError:
+            if self.dev_session_active:
+                # Remember that this playlist requires global token
+                await self._set_playlist_requires_global_token(prov_playlist_id)
+                playlist_obj = await self._get_data(
+                    f"playlists/{prov_playlist_id}", use_global_session=True
+                )
+                return parse_playlist(playlist_obj, self)
+            raise
 
     @use_cache()
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -563,27 +587,32 @@ class SpotifyProvider(MusicProvider):
     @use_cache(2600 * 3)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
-        result: list[Track] = []
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
-        uri = (
-            "me/tracks"
-            if prov_playlist_id == self._get_liked_songs_playlist_id()
-            else f"playlists/{prov_playlist_id}/tracks"
-        )
-        # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(
-            uri, limit=1, offset=0, use_global_session=is_liked_songs
-        )
+        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/tracks"
 
+        # Liked songs always require global session
+        # For other playlists, call get_playlist first to trigger the fallback logic
+        # and populate the cache for which token to use
+        if is_liked_songs:
+            use_global = True
+        else:
+            # This call is cached and will determine/cache if global token is needed
+            await self.get_playlist(prov_playlist_id)
+            use_global = await self._playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+
+        # Get etag for caching
+        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
+
         spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=is_liked_songs
+            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
-            # use count as position
             track = parse_track(item["track"], self)
             track.position = offset + index
             result.append(track)
@@ -865,6 +894,7 @@ class SpotifyProvider(MusicProvider):
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
+            raise
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
@@ -959,6 +989,24 @@ class SpotifyProvider(MusicProvider):
             liked_songs.metadata.add_image(image)
 
         return liked_songs
+
+    async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
+        """Check if a playlist requires global token (cached).
+
+        :param prov_playlist_id: The Spotify playlist ID.
+        :returns: True if the playlist requires global token.
+        """
+        cache_key = f"playlist_global_token_{prov_playlist_id}"
+        return bool(await self.mass.cache.get(cache_key, provider=self.instance_id))
+
+    async def _set_playlist_requires_global_token(self, prov_playlist_id: str) -> None:
+        """Mark a playlist as requiring global token in cache.
+
+        :param prov_playlist_id: The Spotify playlist ID.
+        """
+        cache_key = f"playlist_global_token_{prov_playlist_id}"
+        # Cache for 90 days - playlist ownership doesn't change
+        await self.mass.cache.set(cache_key, True, provider=self.instance_id, expiration=86400 * 90)
 
     async def _add_audiobook_chapters(self, audiobook: Audiobook) -> None:
         """Add chapter metadata to an audiobook from Spotify API data."""
@@ -1135,7 +1183,7 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle 404 not found, convert to MediaNotFoundError
-            if response.status == 404:
+            if response.status in (400, 404):
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)

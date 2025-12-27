@@ -59,7 +59,6 @@ SUPPORT_DYNAMIC_LEADER = {
 OPTIONAL_FEATURES = {
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -529,7 +528,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await other_group.power(False)
         if (
             member.synced_to is not None
-            and member.synced_to != self.sync_leader
+            and self.sync_leader
+            and member.synced_to != self.sync_leader.player_id
             and (synced_to_player := self.mass.players.get(member.synced_to))
             and member.player_id in synced_to_player.group_members
         ):

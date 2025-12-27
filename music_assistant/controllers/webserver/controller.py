@@ -825,7 +825,7 @@ class WebserverController(CoreController):
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
 
-    async def _handle_auth_callback(self, request: web.Request) -> web.Response:  # noqa: PLR0915
+    async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
         try:
             code = request.query.get("code")
@@ -856,22 +856,6 @@ class WebserverController(CoreController):
             # Create token
             device_name = f"OAuth ({provider_id})"
             token = await self.auth.create_token(auth_result.user, device_name)
-
-            if auth_result.return_url and auth_result.return_url.startswith(
-                "urn:ietf:wg:oauth:2.0:oob:auto:"
-            ):
-                session_id = auth_result.return_url.split(":")[-1]
-                if session_id in self.auth._pending_oauth_sessions:
-                    self.auth._pending_oauth_sessions[session_id] = token
-                    oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
-                    async with aiofiles.open(oauth_callback_html_path) as f:
-                        success_html = await f.read()
-
-                    success_html = success_html.replace("{TOKEN}", token)
-                    success_html = success_html.replace("{REDIRECT_URL}", "about:blank")
-                    success_html = success_html.replace("{REQUIRES_CONSENT}", "false")
-
-                    return web.Response(text=success_html, content_type="text/html")
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"

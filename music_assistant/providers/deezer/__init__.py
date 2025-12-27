@@ -47,7 +47,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
@@ -615,11 +615,13 @@ class DeezerProvider(MusicProvider):
 
     def parse_album(self, album: deezer.Album) -> Album:
         """Parse the deezer-python album to a Music Assistant album."""
+        name, version = parse_title_and_version(album.title)
         return Album(
             album_type=self.get_album_type(album),
             item_id=str(album.id),
             provider=self.instance_id,
-            name=album.title,
+            name=name,
+            version=version,
             artists=UniqueList(
                 [
                     ItemMapping(
@@ -703,10 +705,12 @@ class DeezerProvider(MusicProvider):
         else:
             album = None
 
+        name, version = parse_title_and_version(track.title)
         item = Track(
             item_id=str(track.id),
             provider=self.instance_id,
-            name=track.title,
+            name=name,
+            version=version,
             sort_name=self.get_short_title(track),
             duration=track.duration,
             artists=UniqueList([artist]) if artist else UniqueList(),
