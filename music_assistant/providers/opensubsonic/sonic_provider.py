@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from requests import HTTPError
 
 from music_assistant.constants import (
     CONF_PASSWORD,
@@ -365,9 +366,16 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Return the requested Album."""
+        sonic_album: SonicAlbum
+        sonic_info = None
         try:
-            sonic_album: SonicAlbum = await self._run_async(self.conn.get_album, prov_album_id)
-            sonic_info = await self._run_async(self.conn.get_album_info2, aid=prov_album_id)
+            sonic_album = await self._run_async(self.conn.get_album, prov_album_id)
+            try:
+                sonic_info = await self._run_async(self.conn.get_album_info2, aid=prov_album_id)
+            except HTTPError as e:
+                # If the user didn't activate last.fm connection it has 404 response code and must be ignored
+                if e.response.status_code != 404:
+                    raise e
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from e
