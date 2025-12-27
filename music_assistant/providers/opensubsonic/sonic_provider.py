@@ -15,6 +15,7 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
+from mashumaro.exceptions import InvalidFieldValue
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -425,13 +426,20 @@ class OpenSonicProvider(MusicProvider):
                     )
                 },
             )
-
+        sonic_info = None
         try:
-            sonic_artist: SonicArtist = await self._run_async(
-                self.conn.get_artist, artist_id=prov_artist_id
-            )
-            sonic_info = await self._run_async(self.conn.get_artist_info2, aid=prov_artist_id)
-        except (ParameterError, DataNotFoundError) as e:
+            sonic_artist: SonicArtist = await self._run_async(self.conn.get_artist, artist_id=prov_artist_id)
+            try:
+                sonic_info = await self._run_async(self.conn.get_artist_info2, aid=prov_artist_id)
+            except HTTPError as e:
+                if e.response.status_code != 404:
+                    # If the user didn't activate last.fm connection it has 404 response code and it must be ignored
+                    raise e
+            except KeyError as e:
+                if e.args[0] != "":
+                    # If the user didn't activate last.fm connection it has an empty tuple and it must be ignored
+                    raise e
+        except (ParameterError, DataNotFoundError, Exception) as e:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from e
         return parse_artist(self.instance_id, sonic_artist, sonic_info)
@@ -457,11 +465,14 @@ class OpenSonicProvider(MusicProvider):
         if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
             return []
 
-        try:
-            sonic_artist: SonicArtist = await self._run_async(self.conn.get_artist, prov_artist_id)
-        except (ParameterError, DataNotFoundError) as e:
-            msg = f"Album {prov_artist_id} not found"
-            raise MediaNotFoundError(msg) from e
+        sonic_artist: Artist = await self.get_artist(prov_artist_id=prov_artist_id)
+        # try:
+        #     sonic_artist: SonicArtist = await self._run_async(self.conn.get_artist, prov_artist_id)
+        # except (ParameterError, DataNotFoundError) as e:
+        #     msg = f"Album {prov_artist_id} not found"
+        #     raise MediaNotFoundError(msg) from e
+        # except InvalidFieldValue as e:
+        #
         albums = []
         if sonic_artist.album:
             for entry in sonic_artist.album:
