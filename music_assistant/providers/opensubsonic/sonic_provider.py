@@ -182,7 +182,6 @@ class OpenSonicProvider(MusicProvider):
     def _set_loudness(self, item: SonicItem) -> None:
         if item.replay_gain and item.replay_gain.track_gain is not None:
             # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
-            # Formula: Loudness = -18 - Gain (ReplayGain 2.0 uses -18 LUFS reference)
             track_loudness = -18 - item.replay_gain.track_gain
             album_loudness = (
                 -18 - item.replay_gain.album_gain
