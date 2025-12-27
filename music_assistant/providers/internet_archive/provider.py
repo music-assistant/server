@@ -681,7 +681,7 @@ class InternetArchiveProvider(MusicProvider):
         return albums
 
     @use_cache(expiration=86400 * 7)  # Cache for 1 week
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """
         Get top tracks for a specific artist.
 

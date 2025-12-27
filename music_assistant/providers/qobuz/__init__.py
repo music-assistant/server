@@ -351,7 +351,7 @@ class QobuzProvider(MusicProvider):
         ]
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
             "artist/get",

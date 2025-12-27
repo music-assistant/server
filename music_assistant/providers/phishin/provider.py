@@ -197,7 +197,7 @@ class PhishInProvider(MusicProvider):
             raise ProviderUnavailableError(f"Artist albums error: {err}") from err
 
     @use_cache(expiration=2592000)  # 30 days - Top tracks won't change that often as its voted on
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")

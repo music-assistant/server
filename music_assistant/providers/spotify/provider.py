@@ -630,7 +630,7 @@ class SpotifyProvider(MusicProvider):
         ]
 
     @use_cache(86400 * 14)  # 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         artist = await self.get_artist(prov_artist_id)
         endpoint = f"artists/{prov_artist_id}/top-tracks"

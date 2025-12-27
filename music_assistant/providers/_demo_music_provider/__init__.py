@@ -327,7 +327,7 @@ class MyDemoMusicprovider(MusicProvider):
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
 
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
         """Get a list of most popular tracks for the given artist."""
         # Get a list of most popular tracks for the given artist.
         # Mandatory only if you reported ARTIST_TOPTRACKS in the supported_features.

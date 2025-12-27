@@ -48,7 +48,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
     @override
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get newest 50 tracks of an artist."""
         return await self.service_manager.video.get_user_videos(
             prov_artist_id,

@@ -349,7 +349,7 @@ class DeezerProvider(MusicProvider):
         return [self.parse_album(album=album) async for album in await artist.get_albums()]
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 50 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
         return [

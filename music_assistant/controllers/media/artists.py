@@ -234,7 +234,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
-            return await prov.get_artist_toptracks(item_id)
+            return await prov.get_artist_top_tracks(item_id)
         # fallback implementation using the library db
         if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
             item_id,

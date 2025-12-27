@@ -1118,7 +1118,7 @@ class PlexProvider(MusicProvider):
         return []
 
     @use_cache(3600 * 3)  # Cache for 3 hours
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for the given artist using Plex artist radio/station."""
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             return []

@@ -210,7 +210,7 @@ async def test_get_artist_toptracks_delegates_to_media(provider: TidalProvider) 
     with patch.object(provider.media, "get_artist_toptracks", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = []
 
-        await provider.get_artist_toptracks("123")
+        await provider.get_artist_top_tracks("123")
 
         mock_get.assert_called_with("123")
 

@@ -548,7 +548,7 @@ class AppleMusicProvider(MusicProvider):
         return albums
 
     @use_cache(3600 * 24 * 7)  # cache for 7 days
-    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/view/top-songs"
         try:

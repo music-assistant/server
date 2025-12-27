@@ -173,7 +173,7 @@ class TidalProvider(MusicProvider):
         return await self.media.get_artist_albums(prov_artist_id)
 
     @use_cache(3600 * 24 * 7)
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
 

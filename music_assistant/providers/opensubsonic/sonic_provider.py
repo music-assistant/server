@@ -567,7 +567,7 @@ class OpenSonicProvider(MusicProvider):
             result.append(track)
         return result
 
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""
         # We have seen top tracks requested for the UNKNOWN_ARTIST ID, protect against that
         if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):

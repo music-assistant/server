@@ -336,7 +336,7 @@ class SoundcloudMusicProvider(MusicProvider):
         return result
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 500) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 500)
 

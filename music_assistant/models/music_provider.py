@@ -130,7 +130,7 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_TOPTRACKS.

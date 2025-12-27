@@ -457,7 +457,7 @@ class YoutubeMusicProvider(MusicProvider):
         return []
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
-    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+    async def get_artist_top_tracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
