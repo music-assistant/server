@@ -9,7 +9,7 @@
   "requirements": [
     "snapcast==2.3.7",
     "bidict==0.23.1",
-    "websocket-client==1.8.0"
+    "websocket-client==1.9.0"
   ],
   "documentation": "https://music-assistant.io/player-support/snapcast/",
   "multi_instance": false,
