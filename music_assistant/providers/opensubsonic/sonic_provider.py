@@ -180,13 +180,20 @@ class OpenSonicProvider(MusicProvider):
         return await asyncio.to_thread(call, *args, **kwargs)
 
     def _set_loudness(self, item: SonicItem) -> None:
-        if item.replay_gain and item.replay_gain.track_gain:
+        if item.replay_gain and item.replay_gain.track_gain is not None:
+            # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
+            track_loudness = -18 - item.replay_gain.track_gain
+            album_loudness = (
+                -18 - item.replay_gain.album_gain
+                if item.replay_gain.album_gain is not None
+                else None
+            )
             self.mass.create_task(
                 self.mass.music.set_loudness(
                     item.id,
                     self.instance_id,
-                    item.replay_gain.track_gain,
-                    item.replay_gain.album_gain,
+                    track_loudness,
+                    album_loudness,
                 )
             )
 

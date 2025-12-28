@@ -6,6 +6,6 @@
   "codeowners": ["@medievalapple"],
   "credits": ["[python-rokuecp](https://github.com/ctalkington/python-rokuecp)"],
   "requirements": ["async-upnp-client==0.46.0","rokuecp==0.19.5"],
-  "documentation": "https://music-assistant.io/player-support/roku-media-assistant/",
+  "documentation": "https://music-assistant.io/player-support/roku/",
   "stage": "beta"
 }

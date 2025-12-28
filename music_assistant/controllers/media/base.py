@@ -244,23 +244,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        library_items_only: bool = True,
-        **kwargs: Any,
     ) -> list[ItemCls]:
-        """
-        Get in-database albums.
-
-        :param favorite: Filter by favorite status.
-        :param search: Filter by search query.
-        :param limit: Maximum number of items to return.
-        :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
-        :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
-        :param library_items_only: If True, only return items that are
-            marked as 'in_library' on any provider mapping.
-        """
+        """Get in-database items."""
         return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -270,7 +255,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
-            in_library_only=library_items_only,
         )
 
     async def iter_library_items(
@@ -281,7 +265,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        library_items_only: bool = True,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all in-database items."""
         limit: int = 500
@@ -300,7 +283,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_filter=provider_filter,
                 extra_query_parts=[extra_query] if extra_query else None,
                 extra_query_params=extra_query_params,
-                in_library_only=library_items_only,
             )
             for item in next_items:
                 yield item
@@ -377,7 +359,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
         for db_item in await self._get_library_items_by_query(
-            extra_query_parts=[extra_query], in_library_only=False
+            extra_query_parts=[extra_query],
         ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -487,7 +469,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             extra_query_parts=[query],
             extra_query_params=query_params,
-            in_library_only=False,
         )
 
     @final
@@ -797,7 +778,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
-        in_library_only: bool = False,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
         query_params = extra_query_params or {}
@@ -813,7 +793,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 favorite=favorite,
                 search=search,
                 provider_filter=provider_filter,
-                in_library_only=in_library_only,
                 limit=limit,
             )
         else:
@@ -825,7 +804,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 favorite=favorite,
                 search=search,
                 provider_filter=provider_filter,
-                in_library_only=in_library_only,
             )
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
@@ -860,7 +838,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None,
         search: str | None,
         provider_filter: list[str] | None,
-        in_library_only: bool,
         limit: int,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -875,7 +852,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             favorite=favorite,
             search=search,
             provider_filter=provider_filter,
-            in_library_only=in_library_only,
         )
 
         # Build the subquery
@@ -904,7 +880,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         favorite: bool | None,
         search: str | None,
         provider_filter: list[str] | None,
-        in_library_only: bool,
     ) -> None:
         """Apply search, favorite, and provider filters."""
         # handle search
@@ -922,14 +897,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
                 f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                f"AND provider_mappings.in_library = {in_library_only} "
+                f"AND provider_mappings.in_library = 1 "
                 f"AND ({' OR '.join(provider_conditions)})"
-            )
-        elif in_library_only:
-            join_parts.append(
-                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
-                f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                f"AND provider_mappings.in_library = {in_library_only} "
             )
 
     @final
