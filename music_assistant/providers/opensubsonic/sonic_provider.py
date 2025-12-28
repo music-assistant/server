@@ -466,13 +466,7 @@ class OpenSonicProvider(MusicProvider):
             return []
 
         sonic_artist: Artist = await self.get_artist(prov_artist_id=prov_artist_id)
-        # try:
-        #     sonic_artist: SonicArtist = await self._run_async(self.conn.get_artist, prov_artist_id)
-        # except (ParameterError, DataNotFoundError) as e:
-        #     msg = f"Album {prov_artist_id} not found"
-        #     raise MediaNotFoundError(msg) from e
-        # except InvalidFieldValue as e:
-        #
+        
         albums = []
         if sonic_artist.album:
             for entry in sonic_artist.album:
