@@ -544,6 +544,8 @@ class SendspinPlayer(Player):
 
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
+        if not self.available:
+            return
         current_media = self.current_media
         if current_media is None:
             return
