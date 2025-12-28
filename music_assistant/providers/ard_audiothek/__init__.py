@@ -291,6 +291,7 @@ class ARDAudiothek(MusicProvider):
 
     async def _update_progress(self) -> None:
         if not self.user_id:
+            self.remote_progress = {}
             return
 
         async with await self.get_client() as session:
