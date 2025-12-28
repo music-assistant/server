@@ -9,16 +9,19 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout, web
 from music_assistant_models.enums import (
     EventType,
+    PlayerFeature,
     PlayerType,
     QueueOption,
     RepeatMode,
 )
+from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from plexapi.playqueue import PlayQueue
 
 from .gdm import PlexGDMAdvertiser
@@ -359,12 +362,23 @@ class PlexRemoteControlServer:
 
         LOGGER.debug("Ungrouping player %s before starting playback from Plex", player.display_name)
         # Use set_members directly on the group to bypass static member check
-        if player.active_group and (group := self.provider.mass.players.get(player.active_group)):
-            await group.set_members(player_ids_to_remove=[player_id])
-        elif player.synced_to and (sync_leader := self.provider.mass.players.get(player.synced_to)):
-            await sync_leader.set_members(player_ids_to_remove=[player_id])
-        elif player.group_members:
-            await player.set_members(player_ids_to_remove=player.group_members)
+        if (
+            player.active_group
+            and (group := self.provider.mass.players.get(player.active_group))
+            and group.supports_feature(PlayerFeature.SET_MEMBERS)
+        ):
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await group.set_members(player_ids_to_remove=[player_id])
+        elif (
+            player.synced_to
+            and (sync_leader := self.provider.mass.players.get(player.synced_to))
+            and sync_leader.supports_feature(PlayerFeature.SET_MEMBERS)
+        ):
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await sync_leader.set_members(player_ids_to_remove=[player_id])
+        elif player.group_members and player.supports_feature(PlayerFeature.SET_MEMBERS):
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await player.set_members(player_ids_to_remove=player.group_members)
 
     async def handle_play_media(self, request: web.Request) -> web.Response:
         """
