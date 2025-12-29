@@ -45,9 +45,11 @@ def parse_images(
     if not filtered_images:
         return UniqueList([])
 
-    # Spotify orders images from largest to smallest (640x640, 300x300, 64x64)
-    # Select the largest (highest quality) image - the first one
-    best_image = filtered_images[0]
+    # Spotify images come in various sizes (typically 640x640, 300x300, 64x64)
+    # Find the largest image available
+    best_image = max(
+        filtered_images, key=lambda img: img.get("height", 0), default=filtered_images[0]
+    )
 
     return UniqueList(
         [
