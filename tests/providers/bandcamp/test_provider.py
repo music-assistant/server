@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from bandcamp_async_api import BandcampAPIError, BandcampNotFoundError
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.bandcamp import BandcampProvider
@@ -124,7 +124,7 @@ async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock
 
 async def test_is_streaming_provider(provider: BandcampProvider) -> None:
     """Test that Bandcamp is not a streaming provider."""
-    assert provider.is_streaming_provider is False
+    assert provider.is_streaming_provider is True
 
 
 async def test_search_with_identity(provider: BandcampProvider) -> None:
@@ -184,12 +184,11 @@ async def test_search_without_identity(provider: BandcampProvider) -> None:
 
 async def test_search_api_error(provider: BandcampProvider) -> None:
     """Test search handles API errors gracefully."""
-    with patch.object(provider._client, "search", side_effect=BandcampAPIError("API Error")):
-        results = await provider.search("test query", [MediaType.TRACK])
-
-        assert len(results.tracks) == 0
-        assert len(results.albums) == 0
-        assert len(results.artists) == 0
+    with (
+        patch.object(provider._client, "search", side_effect=BandcampAPIError("API Error")),
+        pytest.raises(InvalidDataError, match="Unexpected error during Bandcamp search"),
+    ):
+        await provider.search("test query", [MediaType.TRACK])
 
 
 async def test_get_artist_success(provider: BandcampProvider) -> None:
@@ -216,7 +215,7 @@ async def test_get_artist_not_found(provider: BandcampProvider) -> None:
         patch.object(
             provider._client, "get_artist", side_effect=BandcampNotFoundError("Not found")
         ),
-        pytest.raises(MediaNotFoundError, match="Artist 123 not found on Bandcamp"),
+        pytest.raises(MediaNotFoundError, match=r"Bandcamp artist 123 search returned no results"),
     ):
         await provider.get_artist("123")
 
@@ -262,7 +261,9 @@ async def test_get_track_not_found(provider: BandcampProvider) -> None:
     """Test track retrieval when not found."""
     with (
         patch.object(provider._client, "get_album", side_effect=BandcampNotFoundError("Not found")),
-        pytest.raises(MediaNotFoundError, match="Track 123-456-789 not found on Bandcamp"),
+        pytest.raises(
+            MediaNotFoundError, match=r"Bandcamp track 123-456-789 search returned no results"
+        ),
     ):
         await provider.get_track("123-456-789")
 
@@ -354,21 +355,17 @@ async def test_get_stream_details_success(provider: BandcampProvider) -> None:
 
 async def test_get_stream_details_no_streaming_url(provider: BandcampProvider) -> None:
     """Test stream details when no streaming URL is available."""
-    # Create mock album and track with no streaming URL
+    # Mock the get_track method directly to return a track with no streaming URLs
     mock_track = Mock()
-    mock_track.id = 789
-    mock_track.streaming_url = None
+    mock_track.metadata.links = []  # Empty links list means no streaming URL
 
-    mock_album = Mock()
-    mock_album.id = 456
-    mock_album.title = "Test Album"
-    mock_album.art_url = "http://example.com/art.jpg"
-    mock_album.tracks = [mock_track]
+    with patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track:
+        mock_get_track.return_value = mock_track
 
-    with patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album:
-        mock_get_album.return_value = mock_album
-
-        with pytest.raises(MediaNotFoundError, match="Stream details not available"):
+        with pytest.raises(
+            MediaNotFoundError,
+            match=r"No streaming links found for track 123-456-789. Please report this",
+        ):
             await provider.get_stream_details("123-456-789", MediaType.TRACK)
 
 

@@ -409,7 +409,12 @@ class BandcampProvider(MusicProvider):
             # consider _client to avoid caching if the track urls become dynamic
             # noinspection PyArgumentList
             track_ma = await self.get_track(item_id)
-            link = next(iter(track_ma.metadata.links))  # type: ignore[arg-type]
+            if not track_ma.metadata.links:
+                raise MediaNotFoundError(
+                    f"No streaming links found for track {item_id}. Please report this"
+                )
+
+            link = next(iter(track_ma.metadata.links))
             if not link:
                 raise MediaNotFoundError(
                     f"No streaming URL found for track {item_id}. Please report this"
