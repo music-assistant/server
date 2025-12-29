@@ -21,6 +21,8 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.util import parse_title_and_version
+
 from .const import (
     DOMAIN,
     ITEM_KEY_ALBUM,
@@ -65,10 +67,12 @@ def parse_album(
 ) -> Album:
     """Parse a Jellyfin Album response to an Album model object."""
     album_id = jellyfin_album[ITEM_KEY_ID]
+    name, version = parse_title_and_version(jellyfin_album[ITEM_KEY_NAME])
     album = Album(
         item_id=album_id,
         provider=DOMAIN,
-        name=jellyfin_album[ITEM_KEY_NAME],
+        name=name,
+        version=version,
         provider_mappings={
             ProviderMapping(
                 item_id=str(album_id),
@@ -195,12 +199,13 @@ def parse_track(
     logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
 ) -> Track:
     """Parse a Jellyfin Track response to a Track model object."""
-    available = False
     available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
+    name, version = parse_title_and_version(jellyfin_track[ITEM_KEY_NAME])
     track = Track(
         item_id=jellyfin_track[ITEM_KEY_ID],
         provider=instance_id,
-        name=jellyfin_track[ITEM_KEY_NAME],
+        name=name,
+        version=version,
         provider_mappings={
             ProviderMapping(
                 item_id=jellyfin_track[ITEM_KEY_ID],

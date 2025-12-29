@@ -47,7 +47,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = audiobooks.item_id AND media_type = 'audiobook') AS provider_mappings,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,

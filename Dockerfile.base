@@ -229,16 +229,6 @@ RUN ldconfig && ffmpeg -version && ffprobe -version
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
-# JEMalloc for more efficient memory management
-# Dynamically set the correct path based on architecture
-ARG TARGETARCH
-RUN set -x \
-    && if [ "$TARGETARCH" = "arm64" ]; then \
-        echo "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2" > /etc/ld.so.preload; \
-    else \
-        echo "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2" > /etc/ld.so.preload; \
-    fi
-
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root
 RUN chmod -R 777 /tmp

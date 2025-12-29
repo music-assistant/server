@@ -1361,6 +1361,8 @@ class PlayerController(CoreController):
             player.display_name,
         )
         # signal event that a player was added
+        # update state without signaling event first (to ensure all attributes are set correctly)
+        player.update_state(signal_event=False)
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
 
         # register playerqueue for this player
@@ -1410,12 +1412,22 @@ class PlayerController(CoreController):
             return
         await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
-        self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
+            # player permanent removal: delete its config
+            # and signal PLAYER_REMOVED event
             self.delete_player_config(player_id)
-        self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+            self.logger.info("Player removed: %s", player.name)
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+        else:
+            # temporary unavailable: mark player as unavailable
+            # note: the player will be re-registered later if it comes back online
+            player.state.available = False
+            self.logger.info("Player unavailable: %s", player.name)
+            self.mass.signal_event(
+                EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
+            )
 
     @api_command("players/remove", required_role="admin")
     async def remove(self, player_id: str) -> None:

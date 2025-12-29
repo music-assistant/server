@@ -26,6 +26,7 @@ from music_assistant.providers.audible.audible_helper import (
     audible_get_auth_info,
     cached_authenticator_from_file,
     check_file_exists,
+    refresh_access_token_compat,
     remove_file,
 )
 
@@ -125,11 +126,24 @@ async def get_config_entries(
         post_login_url = str(values.get(CONF_POST_LOGIN_URL))
         storage_path = mass.storage_path
 
-        auth = await audible_custom_login(code_verifier, post_login_url, serial, locale)
-        auth_file_path = os.path.join(storage_path, f"audible_auth_{uuid4().hex}.json")
-        await asyncio.to_thread(auth.to_file, auth_file_path)
-        values[CONF_AUTH_FILE] = auth_file_path
-        auth_required = False
+        try:
+            auth = await audible_custom_login(code_verifier, post_login_url, serial, locale)
+
+            # Verify signing auth was obtained (critical for stability)
+            if not (auth.adp_token and auth.device_private_key):
+                raise LoginFailed(
+                    "Registration succeeded but signing keys were not obtained. "
+                    "This may cause authentication issues. Please try again."
+                )
+
+            auth_file_path = os.path.join(storage_path, f"audible_auth_{uuid4().hex}.json")
+            await asyncio.to_thread(auth.to_file, auth_file_path)
+            values[CONF_AUTH_FILE] = auth_file_path
+            auth_required = False
+        except LoginFailed:
+            raise
+        except Exception as e:
+            raise LoginFailed(f"Verification failed: {e}") from e
 
     return (
         ConfigEntry(
@@ -247,11 +261,40 @@ class Audibleprovider(MusicProvider):
             else:
                 self.logger.debug("Using cached authenticator")
 
+            # Check if we have signing auth (preferred, stable - not affected by API changes)
+            has_signing_auth = auth.adp_token and auth.device_private_key
+            if has_signing_auth:
+                self.logger.debug("Using signing auth (stable RSA-signed requests)")
+            else:
+                self.logger.debug("Signing auth not available, using bearer auth")
+
+            # Handle token refresh if needed
             if auth.access_token_expired:
                 self.logger.debug("Access token expired, refreshing")
-                await asyncio.to_thread(auth.refresh_access_token)
-                await asyncio.to_thread(auth.to_file, self.auth_file)
-                self._AUTH_CACHE[self.instance_id] = auth
+                try:
+                    # Use compatible refresh that handles new API token format
+                    if auth.refresh_token and auth.locale:
+                        refresh_data = await refresh_access_token_compat(
+                            refresh_token=auth.refresh_token,
+                            domain=auth.locale.domain,
+                            http_session=self.mass.http_session,
+                            with_username=auth.with_username or False,
+                        )
+                        auth._update_attrs(**refresh_data)
+                        await asyncio.to_thread(auth.to_file, self.auth_file)
+                        self._AUTH_CACHE[self.instance_id] = auth
+                        self.logger.debug("Token refreshed successfully")
+                    else:
+                        self.logger.warning("Cannot refresh: missing refresh_token or locale")
+                except Exception as refresh_error:
+                    self.logger.warning(f"Token refresh failed: {refresh_error}")
+                    if not has_signing_auth:
+                        # Only fail if we don't have signing auth as fallback
+                        raise LoginFailed(
+                            "Token refresh failed and signing auth not available. "
+                            "Please re-authenticate with Audible."
+                        ) from refresh_error
+                    # Continue with signing auth
 
             self._client = audible.AsyncClient(auth)
 
@@ -265,9 +308,11 @@ class Audibleprovider(MusicProvider):
 
             self.logger.info("Successfully authenticated with Audible.")
 
+        except LoginFailed:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to authenticate with Audible: {e}")
-            raise LoginFailed("Failed to authenticate with Audible.")
+            raise LoginFailed(f"Failed to authenticate with Audible: {e}") from e
 
     @property
     def is_streaming_provider(self) -> bool:

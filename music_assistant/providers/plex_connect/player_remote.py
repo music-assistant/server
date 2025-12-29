@@ -429,7 +429,7 @@ class PlexRemoteControlServer:
 
             # Set shuffle if requested
             if shuffle:
-                self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
             # Seek to offset if specified
             if offset > 0:
@@ -591,7 +591,7 @@ class PlexRemoteControlServer:
 
                     # Apply shuffle if requested
                     if shuffle:
-                        self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                        await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
                     # Seek to offset if specified
                     if offset > 0:
@@ -771,7 +771,7 @@ class PlexRemoteControlServer:
                 return web.Response(status=500, text="No player assigned")
 
             # disable shuffle to avoid infinite loop
-            self.provider.mass.player_queues.set_shuffle(player_id, False)
+            await self.provider.mass.player_queues.set_shuffle(player_id, False)
             ma_queue = self.provider.mass.player_queues.get(player_id)
             if not ma_queue:
                 LOGGER.error(f"MA queue not found for player {player_id}")
@@ -904,7 +904,7 @@ class PlexRemoteControlServer:
 
                     # Apply shuffle if requested (Plex may have already shuffled server-side)
                     if shuffle:
-                        self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                        await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
                 else:
                     LOGGER.error("No valid tracks in created play queue")
                     return web.Response(status=500, text="Failed to load tracks from play queue")
@@ -1014,18 +1014,15 @@ class PlexRemoteControlServer:
         self._updating_from_plex = True
         try:
             if self._ma_player_id:
-                # Step forward 30 seconds
-                player = self.provider.mass.players.get(self._ma_player_id)
                 queue = self.provider.mass.player_queues.get(self._ma_player_id)
-                if player and player.corrected_elapsed_time is not None:
-                    max_duration = player.corrected_elapsed_time + 30
-                    if queue and queue.current_item and queue.current_item.media_item:
-                        max_duration = min(
-                            player.corrected_elapsed_time + 30,
-                            queue.current_item.media_item.duration
-                            or (player.corrected_elapsed_time + 30),
-                        )
-                    await self.provider.mass.players.cmd_seek(self._ma_player_id, int(max_duration))
+                if queue:
+                    # Step forward 30 seconds
+                    new_position = queue.corrected_elapsed_time + 30
+                    if queue.current_item and queue.current_item.media_item:
+                        # Don't seek past the track duration
+                        max_duration = queue.current_item.media_item.duration or new_position
+                        new_position = min(new_position, max_duration)
+                    await self.provider.mass.players.cmd_seek(self._ma_player_id, int(new_position))
                     # Wait briefly for player state to update
                     await asyncio.sleep(0.1)
             await self._broadcast_timeline()
@@ -1038,10 +1035,10 @@ class PlexRemoteControlServer:
         self._updating_from_plex = True
         try:
             if self._ma_player_id:
-                # Step back 10 seconds
-                player = self.provider.mass.players.get(self._ma_player_id)
-                if player and player.corrected_elapsed_time is not None:
-                    new_position = max(0, player.corrected_elapsed_time - 10)
+                queue = self.provider.mass.player_queues.get(self._ma_player_id)
+                if queue:
+                    # Step back 10 seconds
+                    new_position = max(0, queue.corrected_elapsed_time - 10)
                     await self.provider.mass.players.cmd_seek(self._ma_player_id, int(new_position))
                     # Wait briefly for player state to update
                     await asyncio.sleep(0.1)
@@ -1150,7 +1147,7 @@ class PlexRemoteControlServer:
             if "shuffle" in request.query:
                 # Plex sends shuffle as "0" or "1"
                 shuffle = request.query["shuffle"] == "1"
-                self.provider.mass.player_queues.set_shuffle(self._ma_player_id, shuffle)
+                await self.provider.mass.player_queues.set_shuffle(self._ma_player_id, shuffle)
 
             if "repeat" in request.query:
                 # Plex repeat: 0=off, 1=repeat one, 2=repeat all
@@ -1389,11 +1386,7 @@ class PlexRemoteControlServer:
             duration = round(track.duration * 1000) if track.duration else 0
 
             # Current playback time in milliseconds
-            time = (
-                round(player.corrected_elapsed_time * 1000)
-                if player and player.corrected_elapsed_time is not None
-                else 0
-            )
+            time = round(queue.corrected_elapsed_time * 1000)
 
             # Build timeline attributes
             attrs = self._build_timeline_attributes(
@@ -1409,12 +1402,8 @@ class PlexRemoteControlServer:
                     f'shuffle="{shuffle}" repeat="{repeat}" controllable="{controllable}"/>'
                 )
         else:
-            # No current track - use actual state
-            time = (
-                round(player.corrected_elapsed_time * 1000)
-                if player and player.corrected_elapsed_time is not None
-                else 0
-            )
+            # No current track - send stopped state with time=0
+            time = 0
             music_timeline = (
                 f'<Timeline state="{state}" time="{time}" type="music" volume="{volume}" '
                 f'shuffle="{shuffle}" repeat="{repeat}" controllable="{controllable}"/>'
@@ -1672,12 +1661,8 @@ class PlexRemoteControlServer:
             else:
                 plex_state = "stopped"
 
-            # Get position in milliseconds
-            position_ms = (
-                round(player.corrected_elapsed_time * 1000)
-                if player.corrected_elapsed_time is not None
-                else 0
-            )
+            # Get position and duration in milliseconds
+            position_ms = round(queue.corrected_elapsed_time * 1000)
             duration_ms = round(track.duration * 1000) if track.duration else 0
 
             # Get play queue info if available

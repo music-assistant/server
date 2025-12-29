@@ -74,6 +74,10 @@ async def get_image_thumb(
     if not size and image_format.encode() in img_data:
         return img_data
 
+    image_format = image_format.upper()
+    if image_format == "JPG":
+        image_format = "JPEG"
+
     def _create_image() -> bytes:
         data = BytesIO()
         try:

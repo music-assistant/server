@@ -97,7 +97,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 25
+DB_SCHEMA_VERSION: Final[int] = 26
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -181,7 +181,10 @@ class MusicController(CoreController):
         ):
             await self.cleanup_provider(removed_provider)
         # schedule cleanup task for matching provider instances
-        last_scan = cast("int", self.config.get_value(LAST_PROVIDER_INSTANCE_SCAN, 0))
+        last_scan = cast(
+            "int",
+            self.mass.config.get_raw_core_config_value(self.domain, LAST_PROVIDER_INSTANCE_SCAN, 0),
+        )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
 
@@ -325,7 +328,7 @@ class MusicController(CoreController):
             # this way we can avoid returning duplicates in the search results
             all_prov_item_ids = {
                 (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
-                for result in (
+                for items in (
                     library_results.artists,
                     library_results.albums,
                     library_results.tracks,
@@ -333,7 +336,7 @@ class MusicController(CoreController):
                     library_results.audiobooks,
                     library_results.podcasts,
                 )
-                for item in result
+                for item in items
                 for prov_mapping in item.provider_mappings
             }
             # include results from library + all (unique) music providers
@@ -349,52 +352,52 @@ class MusicController(CoreController):
                     for provider_instance in search_providers
                 ],
             )
-            # return result from all providers while keeping index
-            # so the result is sorted as each provider delivered
-            result = SearchResults(
-                artists=[
-                    item
-                    for sublist in zip_longest(*[x.artists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                albums=[
-                    item
-                    for sublist in zip_longest(*[x.albums for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                tracks=[
-                    item
-                    for sublist in zip_longest(*[x.tracks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                playlists=[
-                    item
-                    for sublist in zip_longest(*[x.playlists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                radio=[
-                    item
-                    for sublist in zip_longest(*[x.radio for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                audiobooks=[
-                    item
-                    for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                podcasts=[
-                    item
-                    for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-            )
+        # return result from all providers while keeping index
+        # so the result is sorted as each provider delivered
+        result = SearchResults(
+            artists=[
+                item
+                for sublist in zip_longest(*[x.artists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            albums=[
+                item
+                for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            tracks=[
+                item
+                for sublist in zip_longest(*[x.tracks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            playlists=[
+                item
+                for sublist in zip_longest(*[x.playlists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            radio=[
+                item
+                for sublist in zip_longest(*[x.radio for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            audiobooks=[
+                item
+                for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            podcasts=[
+                item
+                for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+        )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
@@ -821,7 +824,7 @@ class MusicController(CoreController):
         # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
@@ -841,7 +844,7 @@ class MusicController(CoreController):
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
@@ -2167,14 +2170,23 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
-        if prev_version <= 25:
-            # set in_library=True for local(file)-based providers
-            # these providers always represent the user's actual library
+        if prev_version <= 26:
+            # force in_library=True for provider mappings from non-streaming providers
+            # streaming providers will be automatically added to library when synced
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain IN "
-                "('filesystem_local', 'filesystem_smb', 'plex', "
-                "'jellyfin', 'opensubsonic', 'builtin');"
+                "WHERE provider_domain NOT IN "
+                "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
+            )
+            # also set in_library=True for all radio items
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type = 'radio';"
+            )
+            # remove invalid playlist provider mappings for playlists which are not in library
+            await self._database.execute(
+                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE media_type = 'playlist' AND in_library = 0;"
             )
 
         # save changes

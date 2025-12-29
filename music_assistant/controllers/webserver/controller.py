@@ -56,6 +56,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
+from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ class WebserverController(CoreController):
         self.manifest.icon = "web-box"
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
+        self._sendspin_proxy = SendspinProxyHandler(self)
 
     @property
     def base_url(self) -> str:
@@ -158,6 +160,7 @@ class WebserverController(CoreController):
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
+                hidden=bool(values.get(CONF_ENABLE_SSL, False)) if values else False,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
@@ -287,6 +290,8 @@ class WebserverController(CoreController):
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
+        # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
+        routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
@@ -820,7 +825,7 @@ class WebserverController(CoreController):
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
 
-    async def _handle_auth_callback(self, request: web.Request) -> web.Response:  # noqa: PLR0915
+    async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
         try:
             code = request.query.get("code")
@@ -851,22 +856,6 @@ class WebserverController(CoreController):
             # Create token
             device_name = f"OAuth ({provider_id})"
             token = await self.auth.create_token(auth_result.user, device_name)
-
-            if auth_result.return_url and auth_result.return_url.startswith(
-                "urn:ietf:wg:oauth:2.0:oob:auto:"
-            ):
-                session_id = auth_result.return_url.split(":")[-1]
-                if session_id in self.auth._pending_oauth_sessions:
-                    self.auth._pending_oauth_sessions[session_id] = token
-                    oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
-                    async with aiofiles.open(oauth_callback_html_path) as f:
-                        success_html = await f.read()
-
-                    success_html = success_html.replace("{TOKEN}", token)
-                    success_html = success_html.replace("{REDIRECT_URL}", "about:blank")
-                    success_html = success_html.replace("{REQUIRES_CONSENT}", "false")
-
-                    return web.Response(text=success_html, content_type="text/html")
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"

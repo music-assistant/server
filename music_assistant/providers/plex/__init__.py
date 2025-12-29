@@ -168,9 +168,22 @@ async def get_config_entries(  # noqa: PLR0915
         values[CONF_AUTH_TOKEN] = None
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
             plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
+            # Generate the PIN/code by calling the Plex API
+            await asyncio.to_thread(plex_auth._getCode)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
             await auth_helper.authenticate(auth_url)
-            if not plex_auth.checkLogin():
+            # After OAuth callback completes, Plex's backend needs time to propagate the token
+            # Use exponential backoff to check if token is ready
+            for attempt in range(10):  # Max 10 attempts (~10 seconds total)
+                if await asyncio.to_thread(plex_auth.checkLogin):
+                    break
+                # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s, etc
+                await asyncio.sleep(0.1 * (2**attempt))
+            else:
+                # token still not available
+                msg = "Authentication to MyPlex failed: token not received"
+                raise LoginFailed(msg)
+            if not plex_auth.token:
                 msg = "Authentication to MyPlex failed"
                 raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
@@ -426,6 +439,10 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
+        # silence urllib3 InsecureRequestWarning when certificate verification is disabled
+        # this is expected when connecting to Plex servers using their wildcard certificates
+        # that don't validate against LAN IP addresses
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
