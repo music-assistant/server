@@ -1377,7 +1377,8 @@ class PlayerQueuesController(CoreController):
         """Get queue item by index or item_id."""
         if item_id_or_index is None:
             return None
-        queue_items = self._queue_items[queue_id]
+        if (queue_items := self._queue_items.get(queue_id)) is None:
+            return None
         if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
             return queue_items[item_id_or_index]
         if isinstance(item_id_or_index, str):
