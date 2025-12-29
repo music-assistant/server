@@ -11,14 +11,17 @@ import os
 import re
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from os import PathLike
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import audible
 import audible.register
 from audible import AsyncClient
+
+if TYPE_CHECKING:
+    from aiohttp import ClientSession
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -41,14 +44,77 @@ CACHE_CATEGORY_CHAPTERS = 2
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
 
+async def refresh_access_token_compat(
+    refresh_token: str, domain: str, http_session: ClientSession, with_username: bool = False
+) -> dict[str, Any]:
+    """Refresh tokens with compatibility for new Audible API format.
+
+    The Audible API changed from returning 'access_token' to 'actor_access_token'.
+    This function handles both formats for backward compatibility.
+
+    :param refresh_token: The refresh token obtained after device registration.
+    :param domain: The top level domain (e.g., com, de).
+    :param http_session: The HTTP client session to use for requests.
+    :param with_username: If True, use audible domain instead of amazon.
+    :return: Dict with access_token and expires timestamp.
+    """
+    logger = logging.getLogger("audible_helper")
+
+    body = {
+        "app_name": "Audible",
+        "app_version": "3.56.2",
+        "source_token": refresh_token,
+        "requested_token_type": "access_token",
+        "source_token_type": "refresh_token",
+    }
+
+    target_domain = "audible" if with_username else "amazon"
+    url = f"https://api.{target_domain}.{domain}/auth/token"
+
+    async with http_session.post(url, data=body) as resp:
+        resp.raise_for_status()
+        resp_dict = await resp.json()
+
+    expires_in_sec = int(resp_dict.get("expires_in", 3600))
+    expires = (datetime.now(UTC) + timedelta(seconds=expires_in_sec)).timestamp()
+
+    # Handle new format (actor_access_token) or fall back to legacy (access_token)
+    access_token = resp_dict.get("actor_access_token") or resp_dict.get("access_token")
+
+    if not access_token:
+        logger.error("Token refresh response missing both actor_access_token and access_token")
+        raise LoginFailed("Token refresh failed: no access token in response")
+
+    logger.debug(
+        "Token refreshed successfully using %s format",
+        "new (actor)" if "actor_access_token" in resp_dict else "legacy",
+    )
+
+    return {"access_token": access_token, "expires": expires}
+
+
 async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
-    """Get an authenticator from file with caching to avoid repeated file reads."""
+    """Get an authenticator from file with caching and signing auth validation.
+
+    :param path: Path to the authenticator JSON file.
+    :return: The cached or loaded Authenticator instance.
+    """
     logger = logging.getLogger("audible_helper")
     if path in _AUTH_CACHE:
         return _AUTH_CACHE[path]
 
     logger.debug("Loading authenticator from file %s and caching it", path)
     auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+
+    # Verify signing auth is available (not affected by API changes)
+    if auth.adp_token and auth.device_private_key:
+        logger.debug("Signing auth available - using stable RSA-signed requests")
+    else:
+        logger.warning(
+            "Signing auth not available - only bearer auth will work. "
+            "Consider re-authenticating for more stable auth."
+        )
+
     _AUTH_CACHE[path] = auth
     return auth
 
@@ -637,30 +703,38 @@ async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
 async def audible_custom_login(
     code_verifier: str, response_url: str, serial: str, locale: str
 ) -> audible.Authenticator:
-    """
-    Complete the authentication using the code_verifier, response_url, and serial asynchronously.
+    """Complete the authentication using the code_verifier, response_url, and serial.
 
-    Args:
-        code_verifier: The code verifier string used in OAuth flow
-        response_url: The response URL containing the authorization code
-        serial: The device serial number
-        locale: The locale string
-    Returns:
-        Audible Authenticator object
-    Raises:
-        LoginFailed: If authorization code is not found in the URL
+    :param code_verifier: The code verifier string used in OAuth flow.
+    :param response_url: The response URL containing the authorization code.
+    :param serial: The device serial number.
+    :param locale: The locale string.
+    :return: Audible Authenticator object.
+    :raises LoginFailed: If authorization code is not found in the URL.
     """
+    logger = logging.getLogger("audible_helper")
     auth = audible.Authenticator()
     auth.locale = audible.localization.Locale(locale)
 
     response_url_parsed = urlparse(response_url)
     parsed_qs = parse_qs(response_url_parsed.query)
 
-    authorization_codes = parsed_qs.get("openid.oa2.authorization_code")
-    if not authorization_codes:
-        raise LoginFailed("Authorization code not found in the provided URL.")
+    # Try multiple parameter names for authorization code
+    # Audible may use different parameter names depending on the flow
+    authorization_code = None
+    for param_name in ["openid.oa2.authorization_code", "authorization_code", "code"]:
+        if codes := parsed_qs.get(param_name):
+            authorization_code = codes[0]
+            logger.debug("Found authorization code in parameter: %s", param_name)
+            break
 
-    authorization_code = authorization_codes[0]
+    if not authorization_code:
+        available_params = list(parsed_qs.keys())
+        raise LoginFailed(
+            f"Authorization code not found in URL. "
+            f"Expected 'openid.oa2.authorization_code' but found parameters: {available_params}"
+        )
+
     registration_data = await asyncio.to_thread(
         audible.register.register,
         authorization_code=authorization_code,
@@ -669,6 +743,13 @@ async def audible_custom_login(
         serial=serial,
     )
     auth._update_attrs(**registration_data)
+
+    # Log what auth methods are available after registration
+    if auth.adp_token and auth.device_private_key:
+        logger.info("Registration successful with signing auth (stable)")
+    else:
+        logger.warning("Registration successful but signing auth not available")
+
     return auth
 
 
