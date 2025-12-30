@@ -58,16 +58,16 @@ class TracksController(MediaControllerBase[Track]):
             tracks.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = tracks.item_id AND media_type = 'track') AS provider_mappings,
+                'item_id', track_pm.provider_item_id,
+                    'provider_domain', track_pm.provider_domain,
+                        'provider_instance', track_pm.provider_instance,
+                        'available', track_pm.available,
+                        'audio_format', json(track_pm.audio_format),
+                        'url', track_pm.url,
+                        'details', track_pm.details,
+                        'in_library', track_pm.in_library,
+                        'is_unique', track_pm.is_unique
+                )) FROM provider_mappings track_pm WHERE track_pm.item_id = tracks.item_id AND track_pm.media_type = 'track') AS provider_mappings,
 
             (SELECT JSON_GROUP_ARRAY(
                 json_object(

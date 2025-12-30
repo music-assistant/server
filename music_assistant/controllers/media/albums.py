@@ -50,16 +50,16 @@ class AlbumsController(MediaControllerBase[Album]):
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = albums.item_id AND media_type = 'album') AS provider_mappings,
+                'item_id', album_pm.provider_item_id,
+                    'provider_domain', album_pm.provider_domain,
+                        'provider_instance', album_pm.provider_instance,
+                        'available', album_pm.available,
+                        'audio_format', json(album_pm.audio_format),
+                        'url', album_pm.url,
+                        'details', album_pm.details,
+                        'in_library', album_pm.in_library,
+                        'is_unique', album_pm.is_unique
+                )) FROM provider_mappings album_pm WHERE album_pm.item_id = albums.item_id AND album_pm.media_type = 'album') AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', artists.item_id,

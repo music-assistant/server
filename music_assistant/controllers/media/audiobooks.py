@@ -40,16 +40,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             audiobooks.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = audiobooks.item_id AND media_type = 'audiobook') AS provider_mappings,
+                'item_id', audiobook_pm.provider_item_id,
+                    'provider_domain', audiobook_pm.provider_domain,
+                        'provider_instance', audiobook_pm.provider_instance,
+                        'available', audiobook_pm.available,
+                        'audio_format', json(audiobook_pm.audio_format),
+                        'url', audiobook_pm.url,
+                        'details', audiobook_pm.details,
+                        'in_library', audiobook_pm.in_library,
+                        'is_unique', audiobook_pm.is_unique
+                )) FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = audiobooks.item_id AND audiobook_pm.media_type = 'audiobook') AS provider_mappings,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
