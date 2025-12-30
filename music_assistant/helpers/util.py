@@ -210,13 +210,13 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
             if should_ignore:
                 continue
 
-            # Check if this is a version part
+            # Check if this part is a version
             for version_str in VERSION_PARTS:
-                if version_str not in clean_part:
-                    continue
-                version = clean_part
-                title = title.replace(title_part, "").strip()
-                return (title, version)
+                if version_str in clean_part:
+                    # Preserve original casing for output
+                    version = title_part.strip("()[]- ").strip()
+                    title = title.replace(title_part, "").strip()
+                    return title, version
     return title, version
 
 
