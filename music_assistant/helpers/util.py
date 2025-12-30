@@ -99,7 +99,7 @@ IGNORE_TITLE_PARTS = (
 )
 WITH_TITLE_WORDS = (
     # words that, when following "with", indicate this is part of the song title
-    # not a featuring credit. Example: "(I'm Gonna Stay With You)" vs "(with John Doe)"
+    # not a featuring credit.
     "intro",
     "outro",
     "spoken",
