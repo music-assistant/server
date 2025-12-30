@@ -177,15 +177,7 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
             # Extract the content without brackets/dashes for checking
-            clean_part = (
-                title_part.replace("(", "")
-                .replace(")", "")
-                .replace("[", "")
-                .replace("]", "")
-                .replace("-", "")
-                .strip()
-                .lower()
-            )
+            clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
             # Check if this should be ignored (featuring/explicit parts)
             should_ignore = False
