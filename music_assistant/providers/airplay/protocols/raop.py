@@ -158,7 +158,7 @@ class RaopStream(AirPlayProtocol):
             raise PlayerCommandFailed("Pairing process not started")
 
         self.is_pairing = False
-        _, _stderr = await self._cli_proc.communicate(input=f"{pin}\n".encode(), timeout=10)
+        _, _stderr = await self._cli_proc.communicate(input=f"{pin}\n".encode(), timeout_seconds=10)
         for line in _stderr.decode().splitlines():
             self.player.logger.debug(line)
             for error in ("device did not respond", "can't authentify", "pin failed"):

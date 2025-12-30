@@ -65,7 +65,7 @@ async def async_aiohttp_proxy_stream(
     stream: aiohttp.StreamReader,
     content_type: str | None,
     buffer_size: int = 102400,
-    timeout: int = 10,
+    timeout_seconds: int = 10,
 ) -> web.StreamResponse:
     """Stream a stream to aiohttp web response."""
     response = web.StreamResponse()
@@ -76,7 +76,7 @@ async def async_aiohttp_proxy_stream(
     # Suppressing something went wrong fetching data, closed connection
     with suppress(TimeoutError, aiohttp.ClientError):
         while not mass.closing:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(timeout_seconds):
                 data = await stream.read(buffer_size)
 
             if not data:

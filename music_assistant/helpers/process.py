@@ -236,7 +236,7 @@ class AsyncProcess:
     async def communicate(
         self,
         input: bytes | None = None,  # noqa: A002
-        timeout: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[bytes, bytes]:
         """Communicate with the process and return stdout and stderr."""
         if self.closed:
@@ -245,7 +245,7 @@ class AsyncProcess:
         await self._stderr_lock.acquire()
         await self._stdout_lock.acquire()
         assert self.proc is not None  # for type checking
-        stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
+        stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout_seconds)
         return (stdout, stderr)
 
     async def close(self) -> None:
@@ -316,9 +316,9 @@ class AsyncProcess:
             self._returncode = await self.proc.wait()
         return self._returncode
 
-    async def wait_with_timeout(self, timeout: int) -> int:
+    async def wait_with_timeout(self, timeout_seconds: int) -> int:
         """Wait for the process and return the returncode with a timeout."""
-        return await asyncio.wait_for(self.wait(), timeout)
+        return await asyncio.wait_for(self.wait(), timeout_seconds)
 
     def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
         """Attach a stderr reader task to this process."""

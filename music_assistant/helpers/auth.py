@@ -58,27 +58,27 @@ class AuthenticationHelper:
         self.mass.webserver.unregister_dynamic_route(self._cb_path, self._method)
         return None
 
-    async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
+    async def authenticate(self, auth_url: str, timeout_seconds: int = 60) -> dict[str, str]:
         """
         Start the auth process and return any query params if received on the callback.
 
         Params:
         - url: The URL the user needs to open for authentication.
-        - timeout: duration in seconds helpers waits for callback (default: 60).
+        - timeout_: duration in seconds helpers waits for callback (default: 60).
         """
         self.send_url(auth_url)
         LOGGER.debug("Waiting for authentication callback on %s", self.callback_url)
-        return await self.wait_for_callback(timeout)
+        return await self.wait_for_callback(timeout_seconds)
 
     def send_url(self, auth_url: str) -> None:
         """Send the user to the given URL to authenticate (or fill in a code)."""
         # redirect the user in the frontend to the auth url
         self.mass.signal_event(EventType.AUTH_SESSION, self.session_id, auth_url)
 
-    async def wait_for_callback(self, timeout: int = 60) -> dict[str, str]:
+    async def wait_for_callback(self, timeout_seconds: int = 60) -> dict[str, str]:
         """Wait for the external party to call the callback and return any query strings."""
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(timeout_seconds):
                 return await self._callback_response.get()
         except TimeoutError as err:
             raise LoginFailed("Timeout while waiting for authentication callback") from err

@@ -1721,7 +1721,7 @@ class PlayerController(CoreController):
         self,
         player: Player,
         wanted_state: PlaybackState,
-        timeout: float = 60.0,
+        timeout_seconds: float = 60.0,
         minimal_time: float = 0,
     ) -> None:
         """Wait for the given player to reach the given state."""
@@ -1730,7 +1730,7 @@ class PlayerController(CoreController):
             "Waiting for player %s to reach state %s", player.display_name, wanted_state
         )
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(timeout_seconds):
                 while player.playback_state != wanted_state:
                     await asyncio.sleep(0.1)
 
@@ -1739,7 +1739,7 @@ class PlayerController(CoreController):
                 "Player %s did not reach state %s within the timeout of %s seconds",
                 player.display_name,
                 wanted_state,
-                timeout,
+                timeout_seconds,
             )
         elapsed_time = round(time.time() - start_timestamp, 2)
         if elapsed_time < minimal_time:
@@ -2019,7 +2019,7 @@ class PlayerController(CoreController):
         await self.wait_for_state(
             player,
             PlaybackState.IDLE,
-            timeout=announcement.duration + 10,
+            timeout_seconds=announcement.duration + 10,
             minimal_time=float(announcement.duration) + 2,
         )
         self.logger.debug(

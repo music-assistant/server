@@ -100,7 +100,7 @@ class FFMpeg(AsyncProcess):
     async def communicate(
         self,
         input: bytes | None = None,  # noqa: A002
-        timeout: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[bytes, bytes]:
         """Override communicate to avoid blocking."""
         if self._stdin_feeder_task:
@@ -117,7 +117,7 @@ class FFMpeg(AsyncProcess):
                 self._stderr_reader_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await self._stderr_reader_task
-        return await super().communicate(input, timeout)
+        return await super().communicate(input, timeout_seconds)
 
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""

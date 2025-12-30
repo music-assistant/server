@@ -922,10 +922,10 @@ class ChromecastPlayer(Player):
         await self.mass.loop.run_in_executor(None, send_message)
         self._last_sent_sync_delay = sync_delay
 
-    async def _wait_for_sendspin_player(self, timeout: float = 15.0) -> Player | None:
+    async def _wait_for_sendspin_player(self, timeout_seconds: float = 15.0) -> Player | None:
         """Wait for the Sendspin player to connect and become available."""
         start_time = time.time()
-        while (time.time() - start_time) < timeout:
+        while (time.time() - start_time) < timeout_seconds:
             if sendspin_player := self.mass.players.get(self.sendspin_player_id):
                 if sendspin_player.available:
                     self.logger.debug(

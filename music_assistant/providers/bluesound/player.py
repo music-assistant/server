@@ -405,10 +405,10 @@ class BluesoundPlayer(Player):
         self._set_polling_dynamic()
         self.update_state()
 
-    async def _get_bluesound_sources(self, timeout: float | None = None) -> None:
+    async def _get_bluesound_sources(self, timeout_seconds: float | None = None) -> None:
         """Resolve Bluesound presets and inputs to MA PlayerSource.
 
-        :param timeout: The timeout for getting inputs and presets.
+        :param timeout_seconds: The timeout for getting inputs and presets.
         """
 
         def _preset_to_ma_source(preset: Preset):
@@ -431,8 +431,8 @@ class BluesoundPlayer(Player):
                 can_next_previous=False,
             )
 
-        presets = await self.client.presets(timeout=timeout)
-        inputs = await self.client.inputs(timeout=timeout)
+        presets = await self.client.presets(timeout=timeout_seconds)
+        inputs = await self.client.inputs(timeout=timeout_seconds)
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
         return [_preset_to_ma_source(preset) for preset in presets] + inputs_as_sources
 
