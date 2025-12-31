@@ -100,32 +100,11 @@ IGNORE_TITLE_PARTS = (
 WITH_TITLE_WORDS = (
     # words that, when following "with", indicate this is part of the song title
     # not a featuring credit.
-    "intro",
-    "outro",
-    "spoken",
-    "interlude",
-    "passage",
-    "section",
-    "reprise",
-    "coda",
-    "orchestra",
-    "strings",
-    "brass",
-    "horns",
-    "choir",
-    "piano",
-    "acoustic",
-    "unplugged",
-    "feeling",
-    "expression",
-    "passion",
-    "love",
-    "devotion",
+    "someone",
+    "the",
+    "u",
     "you",
-    "me",
-    "us",
-    "them",
-    "friends",
+    "no",
 )
 
 
