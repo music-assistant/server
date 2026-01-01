@@ -166,6 +166,20 @@ class AudioTags:
                 # but with 2 mb ids so they should be treated as 2 artists
                 # example: John Travolta & Olivia Newton John on the Grease album
                 return split_artists(tag, allow_extra_splitters=True)
+
+            # Check if we have evidence of a SINGLE artist (should NOT split)
+            has_single_mb_id = len(self.musicbrainz_artistids) == 1
+            artists_plural = self.tags.get("artists", "")
+            has_single_in_artists_tag = artists_plural and TAG_SPLITTER not in artists_plural
+
+            if has_single_mb_id or has_single_in_artists_tag:
+                # Single artist confirmed by either single MB ID or ARTISTS tag without semicolons
+                # Return as-is without splitting to avoid incorrectly splitting artist names
+                # containing "with", "featuring", etc.
+                # Example: "Jerk With a Bomb" should not be split into "Jerk" and "a Bomb"
+                return (tag,)
+
+            # No evidence of single artist, proceed with splitting
             return split_artists(tag)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
@@ -203,6 +217,20 @@ class AudioTags:
                 # but with 2 mb ids so they should be treated as 2 artists
                 # example: John Travolta & Olivia Newton John on the Grease album
                 return split_artists(tag, allow_extra_splitters=True)
+
+            # Check if we have evidence of a SINGLE album artist (should NOT split)
+            has_single_mb_id = len(self.musicbrainz_albumartistids) == 1
+            albumartists_plural = self.tags.get("albumartists", "")
+            has_single_in_albumartists_tag = (
+                albumartists_plural and TAG_SPLITTER not in albumartists_plural
+            )
+
+            if has_single_mb_id or has_single_in_albumartists_tag:
+                # Single album artist confirmed by either single MB ID or ALBUMARTISTS tag
+                # without semicolons. Return as-is without splitting.
+                return (tag,)
+
+            # No evidence of single artist, proceed with splitting
             return split_artists(tag)
         return ()
 
