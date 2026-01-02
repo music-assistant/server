@@ -92,7 +92,7 @@ class MusicCastPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,
+            # PlayerFeature.PAUSE, # let MA handle this
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
