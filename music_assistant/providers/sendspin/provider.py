@@ -123,6 +123,3 @@ class SendspinProvider(PlayerProvider):
         for cb in self.unregister_cbs:
             cb()
         self.unregister_cbs = []
-        for player in self.players:
-            self.logger.debug("Unloading player %s", player.name)
-            await self.mass.players.unregister(player.player_id)
