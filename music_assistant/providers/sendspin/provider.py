@@ -111,7 +111,7 @@ class SendspinProvider(PlayerProvider):
             disconnect_tasks.append(client.disconnect(retry_connection=False))
         if disconnect_tasks:
             results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            for client, result in zip(clients, results):
+            for client, result in zip(clients, results, strict=True):
                 if isinstance(result, Exception):
                     self.logger.warning(
                         "Error disconnecting client %s: %s", client.client_id, result
