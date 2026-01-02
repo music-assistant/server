@@ -97,6 +97,15 @@ IGNORE_TITLE_PARTS = (
     "with ",
     "explicit",
 )
+WITH_TITLE_WORDS = (
+    # words that, when following "with", indicate this is part of the song title
+    # not a featuring credit.
+    "someone",
+    "the",
+    "u",
+    "you",
+    "no",
+)
 
 
 def filename_from_string(string: str) -> str:
@@ -146,23 +155,39 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     version = track_version or ""
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
+            # Extract the content without brackets/dashes for checking
+            clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
+
+            # Check if this should be ignored (featuring/explicit parts)
+            should_ignore = False
             for ignore_str in IGNORE_TITLE_PARTS:
-                if ignore_str in title_part.lower():
+                if clean_part.startswith(ignore_str):
+                    # Special handling for "with " - check if followed by title words
+                    if ignore_str == "with ":
+                        # Extract the word after "with "
+                        after_with = (
+                            clean_part[len("with ") :].split()[0]
+                            if len(clean_part) > len("with ")
+                            else ""
+                        )
+                        if after_with in WITH_TITLE_WORDS:
+                            # This is part of the title (e.g., "with you"), don't ignore
+                            break
+                    # Remove this part from the title
                     title = title.replace(title_part, "").strip()
-                    continue
+                    should_ignore = True
+                    break
+
+            if should_ignore:
+                continue
+
+            # Check if this part is a version
             for version_str in VERSION_PARTS:
-                if version_str not in title_part.lower():
-                    continue
-                version = (
-                    title_part.replace("(", "")
-                    .replace(")", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace("-", "")
-                    .strip()
-                )
-                title = title.replace(title_part, "").strip()
-                return (title, version)
+                if version_str in clean_part:
+                    # Preserve original casing for output
+                    version = title_part.strip("()[]- ").strip()
+                    title = title.replace(title_part, "").strip()
+                    return title, version
     return title, version
 
 
