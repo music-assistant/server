@@ -103,12 +103,23 @@ class SendspinProvider(PlayerProvider):
 
         :param is_removed: True when the provider is removed from the configuration.
         """
+        # Disconnect all clients before stopping the server
+        clients = list(self.server_api.clients)
+        disconnect_tasks = []
+        for client in clients:
+            self.logger.debug("Disconnecting client %s", client.client_id)
+            disconnect_tasks.append(client.disconnect(retry_connection=False))
+        if disconnect_tasks:
+            results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+            for client, result in zip(clients, results, strict=True):
+                if isinstance(result, Exception):
+                    self.logger.warning(
+                        "Error disconnecting client %s: %s", client.client_id, result
+                    )
+
         # Stop the Sendspin server
         await self.server_api.close()
 
         for cb in self.unregister_cbs:
             cb()
         self.unregister_cbs = []
-        for player in self.players:
-            self.logger.debug("Unloading player %s", player.name)
-            await self.mass.players.unregister(player.player_id)
