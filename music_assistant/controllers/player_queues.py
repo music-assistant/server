@@ -1040,7 +1040,8 @@ class PlayerQueuesController(CoreController):
     async def on_player_register(self, player: Player) -> None:
         """Register PlayerQueue for given player/queue id."""
         queue_id = player.player_id
-        queue = None
+        queue: PlayerQueue | None = None
+        queue_items: list[QueueItem] = []
         # try to restore previous state
         if prev_state := await self.mass.cache.get(
             key=queue_id,
@@ -1055,7 +1056,20 @@ class PlayerQueuesController(CoreController):
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
                 )
-                queue_items = [QueueItem.from_cache(x) for x in prev_items]
+                queue_items = []
+                for idx, item_data in enumerate(prev_items):
+                    qi = QueueItem.from_cache(item_data)
+                    if not qi.media_item:
+                        # Skip items with missing media_item - this can happen if
+                        # MA was killed during shutdown while cache was being written
+                        self.logger.debug(
+                            "Skipping queue item %s (index %d) restored from cache "
+                            "without media_item",
+                            qi.name,
+                            idx,
+                        )
+                        continue
+                    queue_items.append(qi)
                 if queue.enqueued_media_items:
                     # we need to restore the MediaItem objects for the enqueued media items
                     # Items from cache may be dicts that need deserialization
@@ -1076,6 +1090,9 @@ class PlayerQueuesController(CoreController):
                     player.display_name,
                     str(err),
                 )
+                # Reset to clean state on failure
+                queue = None
+                queue_items = []
         if queue is None:
             queue = PlayerQueue(
                 queue_id=queue_id,
@@ -1085,7 +1102,6 @@ class PlayerQueuesController(CoreController):
                 dont_stop_the_music_enabled=False,
                 items=0,
             )
-            queue_items = []
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
@@ -1390,11 +1406,14 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         if items_changed:
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
-            # save items in cache
+            # save items in cache - only cache items with valid media_item
+            cache_data = [
+                x.to_cache() for x in self._queue_items[queue_id] if x.media_item is not None
+            ]
             self.mass.create_task(
                 self.mass.cache.set(
                     key=queue_id,
-                    data=[x.to_cache() for x in self._queue_items[queue_id]],
+                    data=cache_data,
                     provider=self.domain,
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                 )
