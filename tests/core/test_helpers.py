@@ -37,6 +37,11 @@ def test_version_extract() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "SuperSong"
     assert version == ""
+    # Version keywords in main title should NOT be stripped (only in parentheses)
+    test_str = "Great live unplugged song"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Great live unplugged song"
+    assert version == ""
     test_str = "I Do (featuring Sonny of P.O.D.) (Album Version)"
     title, version = util.parse_title_and_version(test_str)
     assert title == "I Do"
