@@ -12,7 +12,7 @@ aiomusiccast==0.15.0
 aiortc>=1.6.0
 aiorun==2025.1.1
 aiosendspin==1.1.4
-aioslimproto==3.1.2
+aioslimproto==3.1.4
 aiosonos==0.1.9
 aiosqlite==0.21.0
 aiovban>=0.6.3
@@ -45,7 +45,7 @@ music-assistant-models==1.1.86
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
 orjson==3.11.5
-pillow==11.3.0
+pillow==12.0.0
 pkce==1.0.3
 plexapi==4.17.2
 podcastparser==0.6.11

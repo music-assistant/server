@@ -18,7 +18,6 @@ from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,
     avt_next,
-    avt_pause,
     avt_play,
     avt_previous,
     avt_set_url,
@@ -92,7 +91,7 @@ class MusicCastPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,
+            PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
@@ -469,7 +468,9 @@ class MusicCastPlayer(Player):
     async def pause(self) -> None:
         """Pause command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_pause(self.mass.http_session, self.physical_device)
+            # if we are controlled by MA, i.e. upnp, send a stop, since
+            # pause appears to be unreliable/ not working
+            await avt_stop(self.mass.http_session, self.physical_device)
         else:
             await self._cmd_run(self.zone_device.pause)
 

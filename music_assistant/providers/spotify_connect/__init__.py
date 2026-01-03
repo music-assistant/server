@@ -169,6 +169,12 @@ class SpotifyConnectProvider(PluginProvider):
         self._librespot_started = asyncio.Event()
         self.named_pipe = f"/tmp/{self.instance_id}"  # noqa: S108
         connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
+        self.logger.debug(
+            "Init plugin with name '%s' for player '%s' with instance id '%s'",
+            self.name,
+            self._default_player_id,
+            self.instance_id,
+        )
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.name,
@@ -626,13 +632,13 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.warning("Error parsing Spotify username from line: %s - %s", line, err)
             return
-        self.logger.debug(line)
+        self.logger.debug("[%s] %s", self.name, line)
 
     async def _librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
-        self.logger.info("Starting Spotify Connect background daemon")
-        os.environ["MASS_CALLBACK"] = f"{self.mass.streams.base_url}/{self.instance_id}"
+        self.logger.info("Starting Spotify Connect background daemon [%s]", self.name)
+        env = {"MASS_CALLBACK": f"{self.mass.streams.base_url}/{self.instance_id}"}
         await check_output("rm", "-f", self.named_pipe)
         await asyncio.sleep(0.1)
         await check_output("mkfifo", self.named_pipe)
@@ -673,7 +679,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "--emit-sink-events",
             ]
             self._librespot_proc = librespot = AsyncProcess(
-                args, stdout=False, stderr=True, name=f"librespot[{self.name}]"
+                args, stdout=False, stderr=True, name=f"librespot[{self.name}]", env=env
             )
             await librespot.start()
 
@@ -701,7 +707,7 @@ class SpotifyConnectProvider(PluginProvider):
     async def _handle_custom_webservice(self, request: Request) -> Response:  # noqa: PLR0915
         """Handle incoming requests on the custom webservice."""
         json_data = await request.json()
-        self.logger.debug("Received metadata on webservice: \n%s", json_data)
+        self.logger.debug("Received metadata on webservice [%s]: \n%s", self.name, json_data)
 
         event_name = json_data.get("event")
 
@@ -762,7 +768,11 @@ class SpotifyConnectProvider(PluginProvider):
             target_player_id = self._get_target_player_id()
             if target_player_id:
                 # initiate playback by selecting this source on the target player
-                self.logger.info("Starting Spotify Connect playback on player %s", target_player_id)
+                self.logger.info(
+                    "Starting Spotify Connect playback [%s] on player %s",
+                    self.instance_id,
+                    target_player_id,
+                )
                 self._active_player_id = target_player_id
                 self.mass.create_task(
                     self.mass.players.select_source(target_player_id, self.instance_id)

@@ -33,6 +33,7 @@ from music_assistant.constants import (
     API_SCHEMA_VERSION,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONF_ZEROCONF_INTERFACES,
     CONFIGURABLE_CORE_CONTROLLERS,
     MASS_LOGGER_NAME,
     MIN_SCHEMA_VERSION,
@@ -143,14 +144,22 @@ class MusicAssistant:
         self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
-        # create shared zeroconf instance
-        # TODO: enumerate interfaces and enable IPv6 support
-        self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
-        # load all available providers from manifest files
-        await self.__load_provider_manifests()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
+        # create shared zeroconf instance
+        # TODO: enumerate interfaces and enable IPv6 support
+        zeroconf_interfaces = self.config.get_raw_core_config_value(
+            "streams", CONF_ZEROCONF_INTERFACES, "default"
+        )
+        self.aiozc = AsyncZeroconf(
+            ip_version=IPVersion.V4Only,
+            interfaces=InterfaceChoice.All
+            if zeroconf_interfaces == "all"
+            else InterfaceChoice.Default,
+        )
+        # load all available providers from manifest files
+        await self.__load_provider_manifests()
         # setup/migrate storage
         await self._setup_storage()
         LOGGER.info(
