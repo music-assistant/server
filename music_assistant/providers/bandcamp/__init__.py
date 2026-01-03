@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from typing import cast
 
 from bandcamp_async_api import (
     BandcampAPIClient,
@@ -26,8 +27,6 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
 )
-
-# noinspection PyProtectedMember
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -78,7 +77,6 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # noinspection PyTypeChecker
     return (
         ConfigEntry(
             key=CONF_IDENTITY,
@@ -131,11 +129,11 @@ class BandcampProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
         identity = self.config.get_value(CONF_IDENTITY)
-        self.search_limit = self.config.get_value(  # type: ignore[assignment]
-            CONF_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT
+        self.search_limit = cast(
+            "int", self.config.get_value(CONF_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
         )
-        self.top_tracks_limit = self.config.get_value(  # type: ignore[assignment]
-            CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT
+        self.top_tracks_limit = cast(
+            "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )
 
         # Initialize the new async API client
@@ -175,17 +173,11 @@ class BandcampProvider(MusicProvider):
         for item in search_results[:limit]:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
-                    results.tracks.append(  # type: ignore[attr-defined]
-                        self._converters.track_from_search(item)
-                    )
+                    results.tracks = [*results.tracks, self._converters.track_from_search(item)]
                 elif isinstance(item, SearchResultAlbum) and MediaType.ALBUM in media_types:
-                    results.albums.append(  # type: ignore[attr-defined]
-                        self._converters.album_from_search(item)
-                    )
+                    results.albums = [*results.albums, self._converters.album_from_search(item)]
                 elif isinstance(item, SearchResultArtist) and MediaType.ARTIST in media_types:
-                    results.artists.append(  # type: ignore[attr-defined]
-                        self._converters.artist_from_search(item)
-                    )
+                    results.artists = [*results.artists, self._converters.artist_from_search(item)]
             except BandcampAPIError as error:
                 self.logger.warning("Failed to convert search result item: %s", error)
                 continue
@@ -207,7 +199,6 @@ class BandcampProvider(MusicProvider):
                     band_ids.add(item.band_id)
 
             for band_id in band_ids:
-                # noinspection PyArgumentList
                 yield await self.get_artist(band_id)
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
@@ -228,7 +219,6 @@ class BandcampProvider(MusicProvider):
             api_collection = await self._client.get_collection_items(CollectionType.COLLECTION)
             for item in api_collection.items:
                 if item.item_type == "album":
-                    # noinspection PyArgumentList
                     yield await self.get_album(f"{item.band_id}-{item.item_id}")
                     await asyncio.sleep(0)  # Yield control to avoid blocking
         except BandcampMustBeLoggedInError as error:
@@ -246,7 +236,6 @@ class BandcampProvider(MusicProvider):
 
         try:
             async for album in self.get_library_albums():
-                # noinspection PyArgumentList
                 tracks = await self.get_album_tracks(album.item_id)
                 for track in tracks:
                     yield track
@@ -358,11 +347,9 @@ class BandcampProvider(MusicProvider):
                     album = None
 
                     with suppress(MediaNotFoundError):
-                        # noinspection PyArgumentList
                         album = await self.get_album(f"{item['band_id']}-{item['item_id']}")
 
                     with suppress(MediaNotFoundError):
-                        # noinspection PyArgumentList
                         album = album or await self.get_album(f"{prov_artist_id}-{item['item_id']}")
 
                     if album:
@@ -382,11 +369,9 @@ class BandcampProvider(MusicProvider):
         """Get top tracks of an artist."""
         tracks: list[Track] = []
         try:
-            # noinspection PyArgumentList
             albums = await self.get_artist_albums(prov_artist_id)
-            albums.sort(key=lambda _: _.year, reverse=True)  # type: ignore[arg-type,return-value]
+            albums.sort(key=lambda album: (album.year is None, album.year or 0), reverse=True)
             for album in albums:
-                # noinspection PyArgumentList
                 tracks.extend(await self.get_album_tracks(album.item_id))
                 if len(tracks) >= self.top_tracks_limit:
                     break
@@ -407,7 +392,6 @@ class BandcampProvider(MusicProvider):
         """Return the content details for the given track."""
         try:
             # consider _client to avoid caching if the track urls become dynamic
-            # noinspection PyArgumentList
             track_ma = await self.get_track(item_id)
             if not track_ma.metadata.links:
                 raise MediaNotFoundError(

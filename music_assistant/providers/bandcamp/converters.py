@@ -210,12 +210,13 @@ class BandcampConverters:
             )
 
         streaming_url, _ = self.streaming_url_from_api(track.streaming_url)
-        output.metadata.links = {
-            MediaItemLink(
-                type=LinkType.UNKNOWN,
-                url=streaming_url,  # type: ignore[arg-type]
-            )
-        }
+        if streaming_url:
+            output.metadata.links = {
+                MediaItemLink(
+                    type=LinkType.UNKNOWN,
+                    url=streaming_url,
+                )
+            }
         output.metadata.lyrics = track.lyrics
         if album_image_url:
             output.metadata.add_image(
