@@ -84,7 +84,7 @@ from .constants import (
     CONF_USERNAME,
     CONF_VERIFY_SSL,
     AbsBrowseItemsBookTranslationKey,
-    AbsBrowseItemsPodcast,
+    AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
 )
 from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard
@@ -1035,10 +1035,13 @@ for more details.
     def _browse_root(self, append_mediatype_suffix: bool = True) -> Sequence[BrowseFolder]:
         items = []
 
-        def _get_folder(path: str, lib_id: str, lib_name: str) -> BrowseFolder:
+        def _get_folder(
+            path: str, lib_id: str, lib_name: str, translation_key: str | None = None
+        ) -> BrowseFolder:
             return BrowseFolder(
                 item_id=lib_id,
-                name=lib_name,  # user define, no translation
+                name=lib_name,
+                translation_key=translation_key,  # if given, <name>: <translation> in frontend
                 provider=self.instance_id,
                 path=f"{self.instance_id}://{path}",
             )
@@ -1047,20 +1050,23 @@ for more details.
             self._log_no_libraries()
             return []
 
+        translation_key: str | None
         for lib_id, lib in self.libraries.audiobooks.items():
             path = f"{AbsBrowsePaths.LIBRARIES_BOOK} {lib_id}"
+            translation_key = None
             if append_mediatype_suffix:
-                name = f"{lib.name} ({AbsBrowseItemsBookTranslationKey.AUDIOBOOKS})"
-            else:
-                name = lib.name
-            items.append(_get_folder(path, lib_id, name))
+                translation_key = AbsBrowseItemsBookTranslationKey.AUDIOBOOKS
+            items.append(
+                _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
+            )
         for lib_id, lib in self.libraries.podcasts.items():
             path = f"{AbsBrowsePaths.LIBRARIES_PODCAST} {lib_id}"
+            translation_key = None
             if append_mediatype_suffix:
-                name = f"{lib.name} ({AbsBrowseItemsPodcast.PODCASTS})"
-            else:
-                name = lib.name
-            items.append(_get_folder(path, lib_id, name))
+                translation_key = AbsBrowseItemsPodcastTranslationKey.PODCASTS
+            items.append(
+                _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
+            )
         return items
 
     async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemType]:

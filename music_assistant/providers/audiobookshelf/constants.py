@@ -47,10 +47,10 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     AUDIOBOOKS = "audiobooks"
 
 
-class AbsBrowseItemsPodcast(StrEnum):
+class AbsBrowseItemsPodcastTranslationKey(StrEnum):
     """Folder names in browse view for podcasts."""
 
-    PODCASTS = "Podcasts"
+    PODCASTS = "podcasts"
 
 
 ABS_BROWSE_ITEMS_TO_PATH: dict[str, str] = {
