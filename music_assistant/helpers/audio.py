@@ -736,7 +736,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
         return (cache[0], StreamType(cache[1]))
     stream_type = StreamType.HTTP
     resolved_url = url
-    timeout = ClientTimeout(total=0, connect=10, sock_read=5)
+    timeout = ClientTimeout(total=None, connect=10, sock_read=5)
     try:
         async with mass.http_session_no_ssl.get(
             url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
@@ -788,7 +788,7 @@ async def get_icy_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
     async with mass.http_session_no_ssl.get(
         url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
@@ -837,7 +837,7 @@ async def get_hls_substream(
     url: str,
 ) -> PlaylistItem:
     """Select the (highest quality) HLS substream for given HLS playlist/URL."""
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
     async with mass.http_session_no_ssl.get(
@@ -897,7 +897,7 @@ async def get_http_stream(
             seek_supported = resp.headers.get("Accept-Ranges") == "bytes"
     # headers
     headers = {**HTTP_HEADERS}
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
     skip_bytes = 0
     if seek_position and streamdetails.size:
         assert streamdetails.duration is not None  # for type checking
