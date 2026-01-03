@@ -175,8 +175,6 @@ class TracksController(MediaControllerBase[Track]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
