@@ -60,8 +60,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         """
-        extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -72,10 +70,12 @@ class PodcastsController(MediaControllerBase[Podcast]):
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
-            extra_query_parts = [
+            extra_query_parts: list[str] = [
                 "WHERE podcasts.publisher LIKE :search",
             ]
-            extra_query_params["search"] = f"%{search}%"
+            extra_query_params: dict[str, Any] = {
+                "search": f"%{search}%",
+            }
             return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
