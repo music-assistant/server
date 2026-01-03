@@ -242,10 +242,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
-        """Get in-database items."""
+        """
+        Get the library items for this mediatype.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID (single string or list).
+        """
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -253,8 +260,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            extra_query_parts=[extra_query] if extra_query else None,
-            extra_query_params=extra_query_params,
         )
 
     async def iter_library_items(

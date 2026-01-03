@@ -71,8 +71,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
         album_artists_only: bool = False,
     ) -> list[Artist]:
         """Get in-database (album) artists.
@@ -83,12 +81,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         :param album_artists_only: Only return artists that have albums.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
         if album_artists_only:
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
@@ -257,7 +253,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all tracks for an artist in the library/db."""
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
         query = f"tracks.item_id in ({subquery})"
-        return await self.mass.music.tracks.library_items(extra_query=query)
+        return await self.mass.music.tracks.get_library_items_by_query(extra_query_parts=[query])
 
     async def get_provider_artist_albums(
         self,
@@ -293,7 +289,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all in-library albums for an artist."""
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
         query = f"albums.item_id in ({subquery})"
-        return await self.mass.music.albums.library_items(extra_query=query)
+        return await self.mass.music.albums.get_library_items_by_query(extra_query_parts=[query])
 
     async def _add_library_item(
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
