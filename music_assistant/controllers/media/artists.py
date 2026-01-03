@@ -94,7 +94,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
             )
-        return await self._get_library_items_by_query(
+        return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -245,7 +245,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {artist_id}"
             )
             query = f"tracks.item_id in ({subquery})"
-            return await self.mass.music.tracks._get_library_items_by_query(
+            return await self.mass.music.tracks.get_library_items_by_query(
                 extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []
@@ -281,7 +281,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {artist_id}"
             )
             query = f"albums.item_id in ({subquery})"
-            return await self.mass.music.albums._get_library_items_by_query(
+            return await self.mass.music.albums.get_library_items_by_query(
                 extra_query_parts=[query], provider_filter=[provider_instance_id_or_domain]
             )
         return []

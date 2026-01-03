@@ -161,7 +161,7 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             artist_table_joined = True
             extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -189,7 +189,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
-            for album in await self._get_library_items_by_query(
+            for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
@@ -360,7 +360,7 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        return await self.mass.music.tracks._get_library_items_by_query(
+        return await self.mass.music.tracks.get_library_items_by_query(
             extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
         )
 

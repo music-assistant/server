@@ -198,7 +198,7 @@ class TracksController(MediaControllerBase[Track]):
                 "AND artists.search_name LIKE :search_artist"
             )
             extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -219,7 +219,7 @@ class TracksController(MediaControllerBase[Track]):
             )
             extra_query_params["search_artist"] = f"%{artist_search_str}%"
             existing_uris = {item.uri for item in result}
-            for _track in await self._get_library_items_by_query(
+            for _track in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,
@@ -415,7 +415,7 @@ class TracksController(MediaControllerBase[Track]):
             f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {item_id}"
         )
         query = f"{DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.albums.get_library_items_by_query(extra_query_parts=[query])
 
     async def match_provider(
         self,

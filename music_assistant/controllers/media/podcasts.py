@@ -66,7 +66,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -82,7 +82,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "WHERE podcasts.publisher LIKE :search",
             ]
             extra_query_params["search"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,

@@ -166,7 +166,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # search by (exact) name match
         query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
-        for db_item in await self._get_library_items_by_query(
+        for db_item in await self.get_library_items_by_query(
             extra_query_parts=[query], extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
@@ -246,7 +246,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
         """Get in-database items."""
-        return await self._get_library_items_by_query(
+        return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -274,7 +274,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         else:
             provider_filter = None
         while True:
-            next_items = await self._get_library_items_by_query(
+            next_items = await self.get_library_items_by_query(
                 favorite=favorite,
                 search=search,
                 limit=limit,
@@ -358,7 +358,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
         extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
-        for db_item in await self._get_library_items_by_query(
+        for db_item in await self.get_library_items_by_query(
             extra_query_parts=[extra_query],
         ):
             return db_item
@@ -414,7 +414,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
             external_id_str = f'%"{external_id}"%'
-        for item in await self._get_library_items_by_query(
+        for item in await self.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"external_id_str": external_id_str},
         ):
@@ -464,7 +464,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["item_id"] = provider_item_id
         subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"
         query = f"WHERE {self.db_table}.item_id IN ({subquery})"
-        return await self._get_library_items_by_query(
+        return await self.get_library_items_by_query(
             limit=limit,
             offset=offset,
             extra_query_parts=[query],
@@ -767,7 +767,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
 
     @final
-    async def _get_library_items_by_query(
+    async def get_library_items_by_query(
         self,
         favorite: bool | None = None,
         search: str | None = None,
