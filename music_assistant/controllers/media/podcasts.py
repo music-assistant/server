@@ -50,8 +50,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -61,28 +59,24 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            extra_query_parts=extra_query_parts,
-            extra_query_params=extra_query_params,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
-            extra_query_parts = [
+            extra_query_parts: list[str] = [
                 "WHERE podcasts.publisher LIKE :search",
             ]
-            extra_query_params["search"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            extra_query_params: dict[str, Any] = {
+                "search": f"%{search}%",
+            }
+            return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,

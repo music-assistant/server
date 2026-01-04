@@ -68,8 +68,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -79,12 +77,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
-        result = await self._get_library_items_by_query(
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -100,7 +96,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "WHERE audiobooks.authors LIKE :search or audiobooks.narrators LIKE :search",
             ]
             extra_query_params["search"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,

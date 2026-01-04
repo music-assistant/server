@@ -232,37 +232,37 @@ class LocalFileSystemProvider(MusicProvider):
         # searching the filesystem is slow and unreliable,
         # so instead we just query the db...
         if media_types is None or MediaType.TRACK in media_types:
-            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
+            result.tracks = await self.mass.music.tracks.get_library_items_by_query(
                 search=search_query, provider_filter=[self.instance_id], limit=limit
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
-            result.albums = await self.mass.music.albums._get_library_items_by_query(
+            result.albums = await self.mass.music.albums.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
-            result.artists = await self.mass.music.artists._get_library_items_by_query(
+            result.artists = await self.mass.music.artists.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+            result.playlists = await self.mass.music.playlists.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.AUDIOBOOK in media_types:
-            result.audiobooks = await self.mass.music.audiobooks._get_library_items_by_query(
+            result.audiobooks = await self.mass.music.audiobooks.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PODCAST in media_types:
-            result.podcasts = await self.mass.music.podcasts._get_library_items_by_query(
+            result.podcasts = await self.mass.music.podcasts.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,

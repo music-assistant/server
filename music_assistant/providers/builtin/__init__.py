@@ -554,8 +554,11 @@ class BuiltinProvider(MusicProvider):
 
     @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
-        for random_album in await self.mass.music.albums.library_items(
-            limit=1, order_by="random", extra_query="album_type != 'single'"
+        for random_album in await self.mass.music.albums.get_library_items_by_query(
+            limit=1,
+            order_by="random",
+            extra_query_parts=["album_type != :excluded_album_type"],
+            extra_query_params={"excluded_album_type": "single"},
         ):
             tracks = await self.mass.music.albums.tracks(
                 random_album.item_id, random_album.provider
