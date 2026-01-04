@@ -84,7 +84,7 @@ async def get_config_entries(
             label="Identity token",
             required=False,
             description="Identity token from Bandcamp cookies for account collection access."
-            " Log in https://bandcamp.com and extract identity from browser cookies.",
+            " Log in https://bandcamp.com and extract browser cookie named 'identity'.",
             value=values.get(CONF_IDENTITY) if values else None,
         ),
         ConfigEntry(
