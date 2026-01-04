@@ -19,6 +19,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -113,6 +114,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -207,6 +209,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -269,6 +272,7 @@
 # ---
 # name: test_parse_artists[ash]
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -384,6 +388,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 272,
     'external_ids': list([
@@ -487,6 +492,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 577,
     'external_ids': list([
@@ -570,6 +576,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 246,
     'external_ids': list([
@@ -688,6 +695,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 224,
     'external_ids': list([
