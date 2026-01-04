@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
 import struct
 import time
 from collections.abc import AsyncGenerator
+from functools import partial
 from io import BytesIO
 from typing import TYPE_CHECKING, Final, cast
 
@@ -323,6 +323,12 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
+            # Set up metadata monitoring callback for HLS radio streams
+            if stream_type == StreamType.HLS:
+                streamdetails.stream_metadata_update_callback = partial(
+                    _update_hls_radio_metadata, mass, resolved_url
+                )
+                streamdetails.stream_metadata_update_interval = 5
         # handle volume normalization details
         if result := await mass.music.get_loudness(
             streamdetails.item_id,
@@ -537,12 +543,6 @@ async def get_media_stream(
         substream = await get_hls_substream(mass, streamdetails.path)
         audio_source = substream.path
         if streamdetails.media_type == MediaType.RADIO:
-            # Start background task to monitor HLS playlist for metadata updates
-            if "hls_monitor_task" not in streamdetails.data:
-                monitor_task = mass.create_task(
-                    _monitor_hls_radio_metadata(mass, streamdetails.path, streamdetails)
-                )
-                streamdetails.data["hls_monitor_task"] = monitor_task
             # HLS streams (especially the BBC) struggle when they're played directly
             # with ffmpeg, where they just stop after some minutes,
             # so we tell ffmpeg to loop around in this case.
@@ -626,15 +626,6 @@ async def get_media_stream(
         logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
         raise AudioError(f"Error while streaming: {err}") from err
     finally:
-        # Cancel HLS metadata monitoring task if it exists
-        if "hls_monitor_task" in streamdetails.data:
-            monitor_task = streamdetails.data["hls_monitor_task"]
-            if not monitor_task.done():
-                monitor_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await monitor_task
-            del streamdetails.data["hls_monitor_task"]
-
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
         # determine how many seconds we've received
@@ -870,95 +861,87 @@ def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     return metadata
 
 
-async def _monitor_hls_radio_metadata(
+async def _update_hls_radio_metadata(
     mass: MusicAssistant,
     playlist_url: str,
     streamdetails: StreamDetails,
+    elapsed_time: int,  # noqa: ARG001
 ) -> None:
     """
-    Monitor HLS playlist for metadata updates in radio streams.
+    Update HLS radio stream metadata by fetching the playlist.
 
-    Periodically fetches the HLS playlist and extracts metadata from EXTINF lines.
-    Updates streamdetails.stream_title when metadata changes.
+    Fetches the HLS playlist and extracts metadata from EXTINF lines.
 
     :param mass: MusicAssistant instance
     :param playlist_url: URL to the HLS master playlist
     :param streamdetails: StreamDetails object to update with metadata
+    :param elapsed_time: Current playback position in seconds (unused for live radio)
     """
-    last_metadata = ""
-    check_interval = 15  # Check every 15 seconds
-
     try:
-        # Get the actual media playlist URL (not the master playlist)
-        try:
-            substream = await get_hls_substream(mass, playlist_url)
-            media_playlist_url = substream.path
-        except Exception as err:
-            LOGGER.warning(
-                "Failed to resolve HLS substream for metadata monitoring: %s",
-                err,
-            )
-            return
-
-        while True:
+        # Get the actual media playlist URL from cache or resolve it
+        # We cache the media_playlist_url in streamdetails.data to avoid re-resolving
+        if streamdetails.data is None:
+            streamdetails.data = {}
+        media_playlist_url = streamdetails.data.get("hls_media_playlist_url")
+        if not media_playlist_url:
             try:
-                # Fetch the media playlist
-                timeout = ClientTimeout(total=0, connect=10, sock_read=30)
-                async with mass.http_session_no_ssl.get(
-                    media_playlist_url, timeout=timeout
-                ) as resp:
-                    resp.raise_for_status()
-                    playlist_content = await resp.text()
-
-                # Parse the playlist and look for EXTINF metadata
-                # The most recent segment usually has the current metadata
-                lines = playlist_content.strip().split("\n")
-                for line in reversed(lines):
-                    if line.startswith("#EXTINF:"):
-                        # Extract metadata from EXTINF line
-                        metadata = parse_extinf_metadata(line)
-
-                        # Build stream title from title and artist
-                        title = metadata.get("title", "")
-                        artist = metadata.get("artist", "")
-
-                        if title or artist:
-                            # Format as "Artist - Title"
-                            if artist and title:
-                                stream_title = f"{artist} - {title}"
-                            elif title:
-                                stream_title = title
-                            else:
-                                stream_title = artist
-
-                            # Clean the stream title
-                            cleaned_title = clean_stream_title(stream_title)
-
-                            # Only update if changed
-                            if cleaned_title != last_metadata and cleaned_title:
-                                LOGGER.log(
-                                    VERBOSE_LOG_LEVEL,
-                                    "HLS Radio metadata updated: %s",
-                                    cleaned_title,
-                                )
-                                streamdetails.stream_title = cleaned_title
-                                last_metadata = cleaned_title
-
-                        # Only check the most recent EXTINF
-                        break
-
+                substream = await get_hls_substream(mass, playlist_url)
+                media_playlist_url = substream.path
+                streamdetails.data["hls_media_playlist_url"] = media_playlist_url
             except Exception as err:
-                LOGGER.debug(
-                    "Error fetching HLS metadata (will retry): %s",
+                LOGGER.warning(
+                    "Failed to resolve HLS substream for metadata monitoring: %s",
                     err,
                 )
+                return
 
-            # Wait before next check
-            await asyncio.sleep(check_interval)
+        # Fetch the media playlist
+        timeout = ClientTimeout(total=0, connect=10, sock_read=30)
+        async with mass.http_session_no_ssl.get(media_playlist_url, timeout=timeout) as resp:
+            resp.raise_for_status()
+            playlist_content = await resp.text()
 
-    except asyncio.CancelledError:
-        LOGGER.debug("HLS metadata monitoring cancelled for %s", playlist_url)
-        raise
+        # Parse the playlist and look for EXTINF metadata
+        # The most recent segment usually has the current metadata
+        lines = playlist_content.strip().split("\n")
+        for line in reversed(lines):
+            if line.startswith("#EXTINF:"):
+                # Extract metadata from EXTINF line
+                metadata = parse_extinf_metadata(line)
+
+                # Build stream title from title and artist
+                title = metadata.get("title", "")
+                artist = metadata.get("artist", "")
+
+                if title or artist:
+                    # Format as "Artist - Title"
+                    if artist and title:
+                        stream_title = f"{artist} - {title}"
+                    elif title:
+                        stream_title = title
+                    else:
+                        stream_title = artist
+
+                    # Clean the stream title
+                    cleaned_title = clean_stream_title(stream_title)
+
+                    # Only update if changed
+                    if cleaned_title != streamdetails.stream_title and cleaned_title:
+                        LOGGER.log(
+                            VERBOSE_LOG_LEVEL,
+                            "HLS Radio metadata updated: %s",
+                            cleaned_title,
+                        )
+                        streamdetails.stream_title = cleaned_title
+
+                # Only check the most recent EXTINF
+                break
+
+    except Exception as err:
+        LOGGER.debug(
+            "Error fetching HLS metadata: %s",
+            err,
+        )
 
 
 async def get_hls_substream(
