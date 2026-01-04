@@ -567,7 +567,7 @@ class PlexProvider(MusicProvider):
         )
 
     async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
-        if library_items := await self.mass.music.artists._get_library_items_by_query(
+        if library_items := await self.mass.music.artists.get_library_items_by_query(
             search=artist_name, provider_filter=[self.instance_id]
         ):
             return ItemMapping.from_item(library_items[0])

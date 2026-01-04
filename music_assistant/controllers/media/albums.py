@@ -112,8 +112,6 @@ class AlbumsController(MediaControllerBase[Album]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
         album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """Get in-database albums.
@@ -124,12 +122,10 @@ class AlbumsController(MediaControllerBase[Album]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         :param album_types: Filter by album types.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
         # optional album type filter
@@ -161,7 +157,7 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             artist_table_joined = True
             extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -189,7 +185,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
-            for album in await self._get_library_items_by_query(
+            for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
@@ -360,8 +356,10 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        return await self.mass.music.tracks._get_library_items_by_query(
-            extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
+        db_id = int(item_id)  # ensure integer
+        return await self.mass.music.tracks.get_library_items_by_query(
+            extra_query_parts=["WHERE album_tracks.album_id = :album_id"],
+            extra_query_params={"album_id": db_id},
         )
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
