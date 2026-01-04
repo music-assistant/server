@@ -23,6 +23,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_artist, compare_strings, create_safe_string
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 
 if TYPE_CHECKING:
@@ -324,6 +325,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -367,6 +369,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)

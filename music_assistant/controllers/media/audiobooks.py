@@ -15,6 +15,7 @@ from music_assistant.helpers.compare import (
     create_safe_string,
     loose_compare_strings,
 )
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
@@ -148,6 +149,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "duration": item.duration,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -187,6 +189,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table
