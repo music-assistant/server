@@ -406,12 +406,16 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for a track."""
+        db_id = int(item_id)  # ensure integer
         subquery = (
             f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
-            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {item_id}"
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = :track_id"
         )
         query = f"{DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        return await self.mass.music.albums.get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.albums.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"track_id": db_id},
+        )
 
     async def match_provider(
         self,

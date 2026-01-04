@@ -268,8 +268,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all in-database items."""
         limit: int = 500
@@ -286,8 +284,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 offset=offset,
                 order_by=order_by,
                 provider_filter=provider_filter,
-                extra_query_parts=[extra_query] if extra_query else None,
-                extra_query_params=extra_query_params,
             )
             for item in next_items:
                 yield item
@@ -362,9 +358,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
-        extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
+        extra_query = f"WHERE {self.db_table}.item_id = :item_id"
         for db_item in await self.get_library_items_by_query(
             extra_query_parts=[extra_query],
+            extra_query_params={"item_id": db_id},
         ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -897,12 +894,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # Apply the provider filter
         if provider_filter:
             provider_conditions = []
-            for prov in provider_filter:
-                provider_conditions.append(f"provider_mappings.provider_instance = '{prov}'")
+            for idx, prov in enumerate(provider_filter):
+                param_name = f"provider_filter_{idx}"
+                provider_conditions.append(f"provider_mappings.provider_instance = :{param_name}")
+                query_params[param_name] = prov
+            query_params["provider_media_type"] = self.media_type.value
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
-                f"AND provider_mappings.media_type = '{self.media_type.value}' "
-                f"AND provider_mappings.in_library = 1 "
+                "AND provider_mappings.media_type = :provider_media_type "
+                "AND provider_mappings.in_library = 1 "
                 f"AND ({' OR '.join(provider_conditions)})"
             )
 
