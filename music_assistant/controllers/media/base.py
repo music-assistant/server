@@ -943,7 +943,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_row_dict["provider"] = "library"
         db_row_dict["favorite"] = bool(db_row_dict["favorite"])
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
-        db_row_dict["date_added"] = datetime.fromtimestamp(db_row_dict["timestamp_added"])
+        db_row_dict["date_added"] = datetime.fromtimestamp(
+            db_row_dict["timestamp_added"]
+        ).isoformat()
 
         for key in JSON_KEYS:
             if key not in db_row_dict:
