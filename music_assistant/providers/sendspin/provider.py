@@ -40,42 +40,48 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
         ]
 
-    async def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
+    def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
         self.logger.debug("Received SendspinEvent: %s", event)
         match event:
             case ClientAddedEvent(client_id):
-                # Wait for any pending unregister to complete before registering
-                # This prevents a race condition where a slow unregister removes
-                # a newly registered player after a quick reconnect
-                if pending_event := self._pending_unregisters.get(client_id):
-                    self.logger.debug(
-                        "Waiting for pending unregister of %s before registering", client_id
-                    )
-                    await pending_event.wait()
-                player = SendspinPlayer(self, client_id)
-                self.logger.debug("Client %s connected", client_id)
-                if player.device_info.manufacturer == "ESPHome" and (
-                    hass := self.mass.get_provider("hass")
-                ):
-                    # Try to get device name from Home Assistant for ESPHome devices
-                    hass = cast("HomeAssistantProvider", hass)
-                    if hass_device := await hass.get_device_by_connection(client_id):
-                        player._attr_name = (
-                            hass_device["name_by_user"] or hass_device["name"] or player.name
-                        )
-                await self.mass.players.register(player)
+                self.mass.create_task(self._handle_client_added(client_id))
             case ClientRemovedEvent(client_id):
-                self.logger.debug("Client %s disconnected", client_id)
-                unregister_event = asyncio.Event()
-                self._pending_unregisters[client_id] = unregister_event
-                try:
-                    await self.mass.players.unregister(client_id)
-                finally:
-                    self._pending_unregisters.pop(client_id, None)
-                    unregister_event.set()
+                self.mass.create_task(self._handle_client_removed(client_id))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
+
+    async def _handle_client_added(self, client_id: str) -> None:
+        """Handle client added event asynchronously."""
+        # Wait for any pending unregister to complete before registering
+        # This prevents a race condition where a slow unregister removes
+        # a newly registered player after a quick reconnect
+        if pending_event := self._pending_unregisters.get(client_id):
+            self.logger.debug("Waiting for pending unregister of %s before registering", client_id)
+            await pending_event.wait()
+        player = SendspinPlayer(self, client_id)
+        self.logger.debug("Client %s connected", client_id)
+        if player.device_info.manufacturer == "ESPHome" and (
+            hass := self.mass.get_provider("hass")
+        ):
+            # Try to get device name from Home Assistant for ESPHome devices
+            hass = cast("HomeAssistantProvider", hass)
+            if hass_device := await hass.get_device_by_connection(client_id):
+                player._attr_name = (
+                    hass_device["name_by_user"] or hass_device["name"] or player.name
+                )
+        await self.mass.players.register(player)
+
+    async def _handle_client_removed(self, client_id: str) -> None:
+        """Handle client removed event asynchronously."""
+        self.logger.debug("Client %s disconnected", client_id)
+        unregister_event = asyncio.Event()
+        self._pending_unregisters[client_id] = unregister_event
+        try:
+            await self.mass.players.unregister(client_id)
+        finally:
+            self._pending_unregisters.pop(client_id, None)
+            unregister_event.set()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -92,7 +98,7 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.start_server(
             port=8927,
             host=self.mass.streams.bind_ip,
-            advertise_host=cast("str", self.mass.streams.publish_ip),
+            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
         )
 
     async def unload(self, is_removed: bool = False) -> None:
