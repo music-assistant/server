@@ -22,6 +22,7 @@ class FileSystemItem:
     - is_dir: Boolean if item is directory (not file).
     - checksum: Checksum for this path (usually last modified time) None for dir.
     - file_size : File size in number of bytes or None if unknown (or not a file).
+    - created_at: File creation timestamp (Unix epoch) or None for directories.
     """
 
     filename: str
@@ -30,6 +31,7 @@ class FileSystemItem:
     is_dir: bool
     checksum: str | None = None
     file_size: int | None = None
+    created_at: int | None = None  # file creation timestamp (Unix epoch)
 
     @property
     def ext(self) -> str | None:
@@ -78,6 +80,9 @@ class FileSystemItem:
         # This can raise OSError for files with invalid encoding (e.g., emojis on SMB mounts)
         # Let the caller handle the exception
         stat = entry.stat(follow_symlinks=False)
+        # st_birthtime is available on macOS/Windows, st_ctime on Linux
+        # (on Linux st_ctime is metadata change time, not creation time)
+        created_at = int(getattr(stat, "st_birthtime", stat.st_ctime))
         return cls(
             filename=entry.name,
             relative_path=get_relative_path(base_path, entry.path),
@@ -85,6 +90,7 @@ class FileSystemItem:
             is_dir=False,
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
+            created_at=created_at,
         )
 
 
