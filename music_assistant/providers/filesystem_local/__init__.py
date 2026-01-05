@@ -94,7 +94,7 @@ from .constants import (
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
-    IsChapterFile,
+    IsChapterFileError,
 )
 from .helpers import (
     IGNORE_DIRS,
@@ -450,7 +450,7 @@ class LocalFileSystemProvider(MusicProvider):
                 async def process_audiobook() -> None:
                     try:
                         audiobook = await self._parse_audiobook(item, tags)
-                    except IsChapterFile:
+                    except IsChapterFileError:
                         return
                     # add/update audiobook to db
                     # note that filesystem items are always overwriting existing info
@@ -1136,7 +1136,7 @@ class LocalFileSystemProvider(MusicProvider):
         # or a folder with multiple files (each file being a chapter)
         # we only scrape all tags from the first file in the folder
         if tags.track and tags.track > 1:
-            raise IsChapterFile
+            raise IsChapterFileError
         # in case of a multi-file audiobook, the title is the chapter name
         # and the album is the actual audiobook name
         # so we prefer the album name as the audiobook name

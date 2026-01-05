@@ -52,7 +52,7 @@ from music_assistant.helpers.util import clean_stream_title, remove_file
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
-from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from .playlists import IsHLSPlaylistError, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
 
@@ -765,7 +765,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
                         # unfold first url of playlist
                         return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
-            except IsHLSPlaylist:
+            except IsHLSPlaylistError:
                 stream_type = StreamType.HLS
 
     except Exception as err:

@@ -26,7 +26,7 @@ HLS_CONTENT_TYPES = (
 )
 
 
-class IsHLSPlaylist(InvalidDataError):
+class IsHLSPlaylistError(InvalidDataError):
     """The playlist from an HLS stream and should not be parsed."""
 
 
@@ -179,7 +179,7 @@ async def fetch_playlist(
     if (
         raise_on_hls and "#EXT-X-VERSION:" in playlist_data
     ) or "#EXT-X-STREAM-INF:" in playlist_data:
-        raise IsHLSPlaylist
+        raise IsHLSPlaylistError
 
     if urlparse(url).path.endswith("pls") or "[playlist]" in playlist_data:
         playlist = parse_pls(playlist_data)

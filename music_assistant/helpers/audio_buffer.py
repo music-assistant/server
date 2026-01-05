@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 DEFAULT_MAX_BUFFER_SIZE_SECONDS: int = 60 * 8  # 8 minutes
 
 
-class AudioBufferEOF(Exception):
+class AudioBufferEOFError(Exception):
     """Exception raised when the audio buffer reaches end-of-file."""
 
 
@@ -175,7 +175,7 @@ class AudioBuffer:
             Bytes containing one second of audio data
 
         Raises:
-            AudioBufferEOF: If EOF is reached before chunk is available
+            AudioBufferEOFError: If EOF is reached before chunk is available
             AudioError: If chunk has been discarded
             Exception: Any exception that occurred in the producer task
         """
@@ -202,7 +202,7 @@ class AudioBuffer:
                 if self._producer_error:
                     raise self._producer_error
                 if self._eof_received:
-                    raise AudioBufferEOF
+                    raise AudioBufferEOFError
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
 
@@ -240,7 +240,7 @@ class AudioBuffer:
             try:
                 yield await self.get(chunk_number=chunk_number)
                 chunk_number += 1
-            except AudioBufferEOF:
+            except AudioBufferEOFError:
                 break  # EOF reached
 
     async def clear(self, cancel_inactivity_task: bool = True) -> None:

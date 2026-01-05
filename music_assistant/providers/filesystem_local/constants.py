@@ -173,7 +173,7 @@ SUPPORTED_FEATURES = {
 }
 
 
-class IsChapterFile(Exception):
+class IsChapterFileError(Exception):
     """Exception to indicate that a file is part of a multi-part media (e.g. audiobook chapter)."""
 
 
