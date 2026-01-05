@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.sendspin_proxy")
-INTERNAL_SENDSPIN_URL = "ws://127.0.0.1:8927/sendspin"
 
 
 class SendspinProxyHandler:
@@ -42,6 +41,17 @@ class SendspinProxyHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.logger = LOGGER
+
+    @property
+    def internal_sendspin_url(self) -> str:
+        """Return the internal sendspin URL based on stream bind IP.
+
+        :return: The WebSocket URL for connecting to the internal Sendspin server.
+        """
+        stream_bind_ip = (
+            "127.0.0.1" if self.mass.streams.bind_ip == "0.0.0.0" else self.mass.streams.bind_ip
+        )
+        return f"ws://{stream_bind_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
@@ -86,7 +96,7 @@ class SendspinProxyHandler:
                 return wsock
 
         try:
-            internal_ws = await self.mass.http_session.ws_connect(INTERNAL_SENDSPIN_URL)
+            internal_ws = await self.mass.http_session.ws_connect(self.internal_sendspin_url)
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")
