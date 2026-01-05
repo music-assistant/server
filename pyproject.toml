@@ -197,7 +197,7 @@ ignore = [
   "TRY003", # Just annoying, not really useful
   "TRY400", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
-  "ISC001", # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",
@@ -216,7 +216,6 @@ ignore = [
   "PTH120",
   "PTH123",
   "PYI034",
-  "PYI036",
   "G004",
   "PGH003",
   "DTZ005",
@@ -224,7 +223,6 @@ ignore = [
   "S105",
   "S106",
   "SLF001",
-  "SIM113",
   "SIM102",
   "PERF401",
   "PERF402",
