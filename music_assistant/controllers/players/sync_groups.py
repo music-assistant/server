@@ -125,8 +125,7 @@ class SyncGroupPlayer(GroupPlayer):
         """Return the current playback state of the player."""
         if self.powered:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
-        else:
-            return PlaybackState.IDLE
+        return PlaybackState.IDLE
 
     @cached_property
     def flow_mode(self) -> bool:
@@ -177,10 +176,9 @@ class SyncGroupPlayer(GroupPlayer):
         """
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
-        elif self.is_dynamic:
+        if self.is_dynamic:
             return {self.provider.instance_id}
-        else:
-            return set()
+        return set()
 
     async def get_config_entries(
         self,

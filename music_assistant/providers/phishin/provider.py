@@ -496,21 +496,21 @@ class PhishInProvider(MusicProvider):
                 if len(playlists) >= 50:
                     break
             return playlists
-        elif subpath == "years":
+        if subpath == "years":
             return await self._browse_years(path, subsubpath)
-        elif subpath == "recent":
+        if subpath == "recent":
             return await self._browse_recent()
-        elif subpath == "random":
+        if subpath == "random":
             return await self._browse_random()
-        elif subpath == "today":
+        if subpath == "today":
             return await self._browse_today()
-        elif subpath == "venues":
+        if subpath == "venues":
             return await self._browse_venues(path, subsubpath)
-        elif subpath == "tags":
+        if subpath == "tags":
             return await self._browse_tags(path, subsubpath)
-        elif subpath == "top_shows":
+        if subpath == "top_shows":
             return await self._browse_top_shows()
-        elif subpath == "top_tracks":
+        if subpath == "top_tracks":
             return await self._browse_top_tracks()
 
         return []
@@ -780,10 +780,9 @@ class PhishInProvider(MusicProvider):
             tag_slug, content_type = subsubpath.split("/", 1)
             if content_type == "shows":
                 return await self._get_shows_for_tag(tag_slug)
-            elif content_type == "tracks":
+            if content_type == "tracks":
                 return await self._get_tracks_for_tag(tag_slug)
-            else:
-                return []
+            return []
 
     @use_cache(expiration=86400)  # 24 hours - Tag associations could change as new shows are tagged
     async def _get_tracks_for_tag(self, tag_slug: str) -> list[BrowseFolder | Album | Track]:

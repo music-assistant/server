@@ -2040,7 +2040,7 @@ class PlayerController(CoreController):
             # nothing to do anymore, player was not previously powered
             # and does not support power control
             return
-        elif prev_synced_to:
+        if prev_synced_to:
             self.logger.debug(
                 "Announcement to player %s - syncing back to %s...",
                 player.display_name,

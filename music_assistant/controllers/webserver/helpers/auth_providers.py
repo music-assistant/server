@@ -113,8 +113,7 @@ async def get_ha_user_role(
                 if "system-admin" in group_ids:
                     LOGGER.debug("HA user %s is admin, granting ADMIN role", ha_user_id)
                     return UserRole.ADMIN
-                else:
-                    return UserRole.USER
+                return UserRole.USER
         raise RuntimeError(f"HA user ID {ha_user_id} not found in user list")
     except Exception as err:
         msg = f"Failed to check HA admin status: {err}"

@@ -481,7 +481,7 @@ class SpotifyProvider(MusicProvider):
             position_ms = resume_point.get("resume_position_ms", 0)
             return fully_played, position_ms
 
-        elif media_type == MediaType.AUDIOBOOK:
+        if media_type == MediaType.AUDIOBOOK:
             if not self.audiobooks_supported:
                 raise NotImplementedError("Audiobook support is disabled")
             if not self.audiobook_progress_sync_enabled:

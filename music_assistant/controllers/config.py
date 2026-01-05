@@ -750,55 +750,54 @@ class ConfigController:
         """
         if raw_conf := self.get(f"{CONF_PLAYER_DSP}/{player_id}"):
             return DSPConfig.from_dict(raw_conf)
-        else:
-            # return default DSP config
-            dsp_config = DSPConfig()
+        # return default DSP config
+        dsp_config = DSPConfig()
 
-            deprecated_eq_bass = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_BASS, 0
-            )
-            deprecated_eq_mid = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_MID, 0
-            )
-            deprecated_eq_treble = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_TREBLE, 0
-            )
-            if deprecated_eq_bass != 0 or deprecated_eq_mid != 0 or deprecated_eq_treble != 0:
-                # the user previously used the now deprecated EQ settings:
-                # add a tone control filter with the old values, reset the deprecated values and
-                # save this as the new DSP config
-                # TODO: remove this in a future release
-                dsp_config.enabled = True
-                dsp_config.filters.append(
-                    ToneControlFilter(
-                        enabled=True,
-                        bass_level=float(deprecated_eq_bass)
-                        if isinstance(deprecated_eq_bass, (int, float, str))
-                        else 0.0,
-                        mid_level=float(deprecated_eq_mid)
-                        if isinstance(deprecated_eq_mid, (int, float, str))
-                        else 0.0,
-                        treble_level=float(deprecated_eq_treble)
-                        if isinstance(deprecated_eq_treble, (int, float, str))
-                        else 0.0,
-                    )
+        deprecated_eq_bass = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_BASS, 0
+        )
+        deprecated_eq_mid = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_MID, 0
+        )
+        deprecated_eq_treble = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_TREBLE, 0
+        )
+        if deprecated_eq_bass != 0 or deprecated_eq_mid != 0 or deprecated_eq_treble != 0:
+            # the user previously used the now deprecated EQ settings:
+            # add a tone control filter with the old values, reset the deprecated values and
+            # save this as the new DSP config
+            # TODO: remove this in a future release
+            dsp_config.enabled = True
+            dsp_config.filters.append(
+                ToneControlFilter(
+                    enabled=True,
+                    bass_level=float(deprecated_eq_bass)
+                    if isinstance(deprecated_eq_bass, (int, float, str))
+                    else 0.0,
+                    mid_level=float(deprecated_eq_mid)
+                    if isinstance(deprecated_eq_mid, (int, float, str))
+                    else 0.0,
+                    treble_level=float(deprecated_eq_treble)
+                    if isinstance(deprecated_eq_treble, (int, float, str))
+                    else 0.0,
                 )
+            )
 
-                deprecated_eq_keys = [
-                    CONF_DEPRECATED_EQ_BASS,
-                    CONF_DEPRECATED_EQ_MID,
-                    CONF_DEPRECATED_EQ_TREBLE,
-                ]
-                for key in deprecated_eq_keys:
-                    if self.mass.config.get_raw_player_config_value(player_id, key, 0) != 0:
-                        self.mass.config.set_raw_player_config_value(player_id, key, 0)
+            deprecated_eq_keys = [
+                CONF_DEPRECATED_EQ_BASS,
+                CONF_DEPRECATED_EQ_MID,
+                CONF_DEPRECATED_EQ_TREBLE,
+            ]
+            for key in deprecated_eq_keys:
+                if self.mass.config.get_raw_player_config_value(player_id, key, 0) != 0:
+                    self.mass.config.set_raw_player_config_value(player_id, key, 0)
 
-                self.set(f"{CONF_PLAYER_DSP}/{player_id}", dsp_config.to_dict())
-            else:
-                # The DSP config does not do anything by default, so we disable it
-                dsp_config.enabled = False
+            self.set(f"{CONF_PLAYER_DSP}/{player_id}", dsp_config.to_dict())
+        else:
+            # The DSP config does not do anything by default, so we disable it
+            dsp_config.enabled = False
 
-            return dsp_config
+        return dsp_config
 
     @api_command("config/players/dsp/save", required_role="admin")
     async def save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:

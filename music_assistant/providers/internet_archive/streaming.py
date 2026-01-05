@@ -29,15 +29,13 @@ class InternetArchiveStreaming:
         """Get streamdetails for a track or audiobook."""
         if "#" in item_id:
             return self._get_single_file_stream(item_id, {}, media_type)
-        else:
-            audio_files = await self.provider.client.get_audio_files(item_id)
-            if not audio_files:
-                raise MediaNotFoundError(f"No audio files found for {item_id}")
+        audio_files = await self.provider.client.get_audio_files(item_id)
+        if not audio_files:
+            raise MediaNotFoundError(f"No audio files found for {item_id}")
 
-            if media_type == MediaType.AUDIOBOOK and len(audio_files) > 1:
-                return await self._get_multi_file_audiobook_stream(item_id, audio_files)
-            else:
-                return self._get_single_file_stream(item_id, audio_files[0], media_type)
+        if media_type == MediaType.AUDIOBOOK and len(audio_files) > 1:
+            return await self._get_multi_file_audiobook_stream(item_id, audio_files)
+        return self._get_single_file_stream(item_id, audio_files[0], media_type)
 
     async def _get_multi_file_audiobook_stream(
         self, item_id: str, audio_files: list[dict[str, Any]]

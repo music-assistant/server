@@ -345,39 +345,38 @@ class TidalPageParser:
                 )
                 type_counts[MediaType.PLAYLIST] += 1
                 return media_item
-            elif item_type == "PLAYLIST":
+            if item_type == "PLAYLIST":
                 media_item = parse_playlist(self.provider, item)
                 type_counts[MediaType.PLAYLIST] += 1
                 return media_item
-            elif item_type == "ALBUM":
+            if item_type == "ALBUM":
                 media_item = parse_album(self.provider, item)
                 type_counts[MediaType.ALBUM] += 1
                 return media_item
-            elif item_type == "TRACK":
+            if item_type == "TRACK":
                 media_item = parse_track(self.provider, item)
                 type_counts[MediaType.TRACK] += 1
                 return media_item
-            elif item_type == "ARTIST":
+            if item_type == "ARTIST":
                 media_item = parse_artist(self.provider, item)
                 type_counts[MediaType.ARTIST] += 1
                 return media_item
-            else:
-                # Last resort - try to infer from structure for unlabeled items
-                if "uuid" in item:
-                    media_item = parse_playlist(self.provider, item)
-                    type_counts[MediaType.PLAYLIST] += 1
-                    return media_item
-                elif "id" in item and "title" in item and "duration" in item:
-                    media_item = parse_track(self.provider, item)
-                    type_counts[MediaType.TRACK] += 1
-                    return media_item
-                elif "id" in item and "title" in item and "numberOfTracks" in item:
-                    media_item = parse_album(self.provider, item)
-                    type_counts[MediaType.ALBUM] += 1
-                    return media_item
+            # Last resort - try to infer from structure for unlabeled items
+            if "uuid" in item:
+                media_item = parse_playlist(self.provider, item)
+                type_counts[MediaType.PLAYLIST] += 1
+                return media_item
+            if "id" in item and "title" in item and "duration" in item:
+                media_item = parse_track(self.provider, item)
+                type_counts[MediaType.TRACK] += 1
+                return media_item
+            if "id" in item and "title" in item and "numberOfTracks" in item:
+                media_item = parse_album(self.provider, item)
+                type_counts[MediaType.ALBUM] += 1
+                return media_item
 
-                self.logger.warning("Unknown item type, could not parse: %s", item)
-                return None
+            self.logger.warning("Unknown item type, could not parse: %s", item)
+            return None
 
         except (KeyError, ValueError, TypeError) as err:
             self.logger.debug("Error parsing %s item: %s", item_type, err)

@@ -617,8 +617,7 @@ class SonosPlayer(Player):
                 self._attr_current_media = airplay_player.current_media
                 # return early as we dont need further info
                 return
-            else:
-                self._attr_active_source = SOURCE_AIRPLAY
+            self._attr_active_source = SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION
             and active_service != MusicService.MUSIC_ASSISTANT

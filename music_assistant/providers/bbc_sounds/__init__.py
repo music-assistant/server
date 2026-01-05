@@ -308,8 +308,7 @@ class BBCSoundsProvider(MusicProvider):
         self.logger.debug(f"Getting stream details for {item_id} ({media_type})")
         if media_type in [MediaType.PODCAST_EPISODE, MediaType.TRACK]:
             return await self._get_playable_stream_details(item_id, media_type)
-        else:
-            return await self._get_station_stream_details(item_id)
+        return await self._get_station_stream_details(item_id)
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
@@ -465,8 +464,7 @@ class BBCSoundsProvider(MusicProvider):
                 for obj in [await self._render_browse_item(item) for item in category.sub_items]
                 if obj is not None
             ]
-        else:
-            return []
+        return []
 
     async def _get_collection(
         self, pid: str
@@ -480,16 +478,14 @@ class BBCSoundsProvider(MusicProvider):
                 ]
                 if obj
             ]
-        else:
-            return []
+        return []
 
     async def _get_menu(
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         if self.client.auth.is_logged_in and await self.client.auth.is_uk_listener:
             return await self._get_full_menu(path_parts=path_parts)
-        else:
-            return await self._get_slim_menu(path_parts=path_parts)
+        return await self._get_slim_menu(path_parts=path_parts)
 
     async def _get_full_menu(
         self, path_parts: list[str] | None = None
@@ -563,8 +559,7 @@ class BBCSoundsProvider(MusicProvider):
             (BrowseFolder | Track | Podcast | PodcastEpisode | RecommendationFolder | Radio),
         ):
             return new_item
-        else:
-            return None
+        return None
 
     async def _get_subpath_menu(
         self, sub_path: str
@@ -626,7 +621,7 @@ class BBCSoundsProvider(MusicProvider):
                     if new_folder:
                         items.append(new_folder)
             return items
-        elif sub_sub_path:
+        if sub_sub_path:
             # Date listings for a station
             date_folders = [
                 BrowseFolder(
@@ -662,25 +657,24 @@ class BBCSoundsProvider(MusicProvider):
                     ]
                 )
             return date_folders
-        else:
-            return [
-                BrowseFolder(
-                    item_id=station.item_id,
-                    provider=self.domain,
-                    name=station.name,
-                    path="/".join([*path_parts, station.item_id]),
-                    image=(
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=station.metadata.images[0].path,
-                            provider=self.domain,
-                        )
-                        if station.metadata.images
-                        else None
-                    ),
-                )
-                for station in await self._station_list(include_local=show_local)
-            ]
+        return [
+            BrowseFolder(
+                item_id=station.item_id,
+                provider=self.domain,
+                name=station.name,
+                path="/".join([*path_parts, station.item_id]),
+                image=(
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=station.metadata.images[0].path,
+                        provider=self.domain,
+                    )
+                    if station.metadata.images
+                    else None
+                ),
+            )
+            for station in await self._station_list(include_local=show_local)
+        ]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -702,18 +696,17 @@ class BBCSoundsProvider(MusicProvider):
 
         if sub_path == "":
             return await self._get_menu()
-        elif sub_path == "categories" and sub_sub_path:
+        if sub_path == "categories" and sub_sub_path:
             return await self._get_category(sub_sub_path)
-        elif sub_path == "collections" and sub_sub_path:
+        if sub_path == "collections" and sub_sub_path:
             return await self._get_collection(sub_sub_path)
-        elif sub_path != "stations":
+        if sub_path != "stations":
             return await self._get_subpath_menu(sub_path)
-        elif sub_path == "stations":
+        if sub_path == "stations":
             return await self._get_station_schedule_menu(
                 self.show_local_stations, path_parts, sub_sub_path, sub_sub_sub_path
             )
-        else:
-            return []
+        return []
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5

@@ -92,7 +92,6 @@ async def discover_local_servers() -> tuple[str, int] | tuple[None, None]:
             local_server_ip = entry.get("from")[0]
             local_server_port = data.get("Port")
             return local_server_ip, local_server_port
-        else:
-            return None, None
+        return None, None
 
     return await asyncio.to_thread(_discover_local_servers)
