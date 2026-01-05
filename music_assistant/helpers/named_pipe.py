@@ -6,6 +6,7 @@ import asyncio
 import os
 import stat
 from contextlib import suppress
+from pathlib import Path
 
 
 class AsyncNamedPipeWriter:
@@ -32,7 +33,7 @@ class AsyncNamedPipeWriter:
                 os.mkfifo(self._pipe_path)
             except FileExistsError:
                 # Check if existing file is actually a named pipe
-                file_stat = os.stat(self._pipe_path)
+                file_stat = Path(self._pipe_path).stat()
                 if not stat.S_ISFIFO(file_stat.st_mode):
                     # Not a FIFO - remove and recreate
                     os.remove(self._pipe_path)

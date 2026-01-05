@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from music_assistant.helpers.compare import compare_strings
 
@@ -55,7 +56,7 @@ class FileSystemItem:
     @property
     def parent_name(self) -> str:
         """Return parent name of this item."""
-        return os.path.basename(self.parent_path)
+        return Path(self.parent_path).name
 
     @property
     def relative_parent_path(self) -> str:
