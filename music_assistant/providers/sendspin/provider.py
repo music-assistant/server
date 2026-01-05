@@ -92,7 +92,7 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.start_server(
             port=8927,
             host=self.mass.streams.bind_ip,
-            advertise_host=cast("str", self.mass.streams.publish_ip),
+            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
         )
 
     async def unload(self, is_removed: bool = False) -> None:
