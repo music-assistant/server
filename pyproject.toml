@@ -16,7 +16,7 @@ dependencies = [
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.2",
+  "aiohttp==3.13.3",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
