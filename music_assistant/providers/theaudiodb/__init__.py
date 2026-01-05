@@ -207,14 +207,14 @@ class AudioDbMetadataProvider(MetadataProvider):
                             continue
                     elif not compare_strings(track_artist.name, item["strArtist"]):
                         continue
-                    if (  # noqa: SIM114
+                    if (
                         track.album
                         and (mb_rgid := track.album.get_external_id(ExternalID.MB_RELEASEGROUP))
                         # AudioDb swapped MB Album ID and ReleaseGroup ID ?!
                         and mb_rgid != item["strMusicBrainzAlbumID"]
                     ):
                         continue
-                    elif track.album and not compare_strings(
+                    if track.album and not compare_strings(
                         track.album.name, item["strAlbum"], strict=False
                     ):
                         continue
