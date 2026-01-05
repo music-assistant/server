@@ -85,6 +85,7 @@ class RemoteAccessManager:
         await self.stop()
         for unload_cb in self._on_unload_callbacks:
             unload_cb()
+        self._on_unload_callbacks.clear()
 
     async def _schedule_start(self) -> None:
         """Schedule a debounced gateway start, cancelling any existing connection first."""
