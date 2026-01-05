@@ -342,6 +342,10 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # manually added (multi provider) playlist removal
             key = CONF_KEY_PLAYLISTS
+            # also delete the playlist file if it exists
+            playlist_file = os.path.join(self._playlists_dir, prov_item_id)
+            if await asyncio.to_thread(os.path.isfile, playlist_file):
+                await asyncio.to_thread(os.remove, playlist_file)
         else:
             return False
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
