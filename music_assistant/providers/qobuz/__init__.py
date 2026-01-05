@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import time
 from contextlib import suppress
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import client_exceptions
@@ -646,7 +647,7 @@ class QobuzProvider(MusicProvider):
             album.metadata.label = album_obj["label"]["name"]
         if released_at := album_obj.get("released_at"):
             with suppress(ValueError):
-                album.year = datetime.datetime.fromtimestamp(released_at).year
+                album.year = datetime.datetime.fromtimestamp(released_at, tz=UTC).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):

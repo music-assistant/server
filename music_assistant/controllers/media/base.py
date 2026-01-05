@@ -7,7 +7,7 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
@@ -944,7 +944,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_row_dict["favorite"] = bool(db_row_dict["favorite"])
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
         db_row_dict["date_added"] = datetime.fromtimestamp(
-            db_row_dict["timestamp_added"]
+            db_row_dict["timestamp_added"], tz=UTC
         ).isoformat()
 
         for key in JSON_KEYS:

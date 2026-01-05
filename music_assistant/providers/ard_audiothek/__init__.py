@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from gql import Client
@@ -250,7 +250,7 @@ class ARDAudiothek(MusicProvider):
         self.token = self.config.get_value(CONF_TOKEN_BEARER)
         self.user_id = self.config.get_value(CONF_USERID)
         self.token_expire = datetime.fromtimestamp(
-            float(str(self.config.get_value(CONF_EXPIRY_TIME)))
+            float(str(self.config.get_value(CONF_EXPIRY_TIME))), tz=UTC
         )
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
