@@ -6,7 +6,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ServerDisconnectedError
+from aiohttp.client_exceptions import ClientError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -187,7 +187,11 @@ class MusicCastPlayer(Player):
                 _xml_media_info = await avt_get_media_info(
                     self.mass.http_session, self.physical_device
                 )
-            except ServerDisconnectedError:
+            except ClientError:
+                # this is regularly called, we can ignore a failing update
+                self.logger.debug("Acquiring media info failed, trying again in 5s.")
+                if self.upnp_update_helper is not None:
+                    self.upnp_update_helper.last_poll = now
                 return
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
 
@@ -424,7 +428,7 @@ class MusicCastPlayer(Player):
             except (MusicCastConnectionException, MusicCastGroupException):
                 await self._set_player_unavailable()
                 return
-            except ServerDisconnectedError:
+            except ClientError:
                 return
             await self.set_dynamic_attributes()
 
