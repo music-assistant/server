@@ -6,7 +6,6 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ServerDisconnectedError
 from aiohttp.client_exceptions import ClientError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -429,7 +428,7 @@ class MusicCastPlayer(Player):
             except (MusicCastConnectionException, MusicCastGroupException):
                 await self._set_player_unavailable()
                 return
-            except ServerDisconnectedError:
+            except ClientError:
                 return
             await self.set_dynamic_attributes()
 
