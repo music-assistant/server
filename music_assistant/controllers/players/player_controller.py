@@ -385,10 +385,11 @@ class PlayerController(CoreController):
         if len(matches) > 1:
             player_ids = [p.player_id for p in matches]
             self.logger.warning(
-                "Multiple players found with name '%s': %s - returning first match. "
-                "Consider using player_id for unambiguous lookups.",
+                "Multiple players found with name '%s': %s - returning first match (%s). "
+                "Consider using the players/get API with player_id instead for unambiguous lookups.",
                 name,
                 player_ids,
+                matches[0].player_id,
             )
 
         return matches[0]
