@@ -378,7 +378,8 @@ class PlayerController(CoreController):
             self.logger.warning(
                 "players/get_by_name: Multiple players found with name '%s': %s - "
                 "returning first match (%s). "
-                "Consider using the players/get API with player_id instead for unambiguous lookups.",
+                "Consider using the players/get API with player_id instead "
+                "for unambiguous lookups.",
                 name,
                 player_ids,
                 matches[0].player_id,
