@@ -355,29 +355,20 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
-        Matches against both the player's name and display_name.
-        First attempts exact match, then falls back to case-insensitive match.
+        Performs case-insensitive matching against both the player's name and display_name.
         If multiple players match, logs a warning and returns the first match.
 
         :param name: Name of the player.
         :return: Player object or None. Returns first match if multiple players have the same name.
         """
-        # Normalize search term
         name_normalized = name.strip().lower()
         matches: list[Player] = []
 
-        # First try exact match on name and display_name
         for player in self._players.values():
-            if player.name == name or player.display_name == name:
+            if (
+                player.name and player.name.strip().lower() == name_normalized
+            ) or player.display_name.strip().lower() == name_normalized:
                 matches.append(player)
-
-        # Fall back to case-insensitive match if no exact matches
-        if not matches:
-            for player in self._players.values():
-                if (
-                    player.name and player.name.strip().lower() == name_normalized
-                ) or player.display_name.strip().lower() == name_normalized:
-                    matches.append(player)
 
         if not matches:
             return None
