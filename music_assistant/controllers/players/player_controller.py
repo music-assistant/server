@@ -357,26 +357,41 @@ class PlayerController(CoreController):
 
         Matches against both the player's name and display_name.
         First attempts exact match, then falls back to case-insensitive match.
+        If multiple players match, logs a warning and returns the first match.
 
         :param name: Name of the player.
-        :return: Player object or None.
+        :return: Player object or None. Returns first match if multiple players have the same name.
         """
         # Normalize search term
         name_normalized = name.strip().lower()
+        matches: list[Player] = []
 
         # First try exact match on name and display_name
         for player in self._players.values():
             if player.name == name or player.display_name == name:
-                return player
+                matches.append(player)
 
-        # Fall back to case-insensitive match
-        for player in self._players.values():
-            if (
-                player.name and player.name.strip().lower() == name_normalized
-            ) or player.display_name.strip().lower() == name_normalized:
-                return player
+        # Fall back to case-insensitive match if no exact matches
+        if not matches:
+            for player in self._players.values():
+                if (
+                    player.name and player.name.strip().lower() == name_normalized
+                ) or player.display_name.strip().lower() == name_normalized:
+                    matches.append(player)
 
-        return None
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            player_ids = [p.player_id for p in matches]
+            self.logger.warning(
+                "Multiple players found with name '%s': %s - returning first match. "
+                "Consider using player_id for unambiguous lookups.",
+                name,
+                player_ids,
+            )
+
+        return matches[0]
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
