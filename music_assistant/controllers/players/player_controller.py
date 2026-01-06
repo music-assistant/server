@@ -355,10 +355,28 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
+        Matches against both the player's name and display_name.
+        First attempts exact match, then falls back to case-insensitive match.
+
         :param name: Name of the player.
         :return: Player object or None.
         """
-        return next((x for x in self._players.values() if x.name == name), None)
+        # Normalize search term
+        name_normalized = name.strip().lower()
+
+        # First try exact match on name and display_name
+        for player in self._players.values():
+            if player.name == name or player.display_name == name:
+                return player
+
+        # Fall back to case-insensitive match
+        for player in self._players.values():
+            if (
+                player.name and player.name.strip().lower() == name_normalized
+            ) or player.display_name.strip().lower() == name_normalized:
+                return player
+
+        return None
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
