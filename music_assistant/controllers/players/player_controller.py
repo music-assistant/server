@@ -359,7 +359,7 @@ class PlayerController(CoreController):
         If multiple players match, logs a warning and returns the first match.
 
         :param name: Name of the player.
-        :return: Player object or None. Returns first match if multiple players have the same name.
+        :return: Player object or None.
         """
         name_normalized = name.strip().lower()
         matches: list[Player] = []
