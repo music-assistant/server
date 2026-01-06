@@ -783,7 +783,12 @@ class PlayerQueuesController(CoreController):
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
-        await self.play_index(queue_id, max(current_index - 1, 0), debounce=True)
+        next_index = int(current_index)
+        # restart current track if current track has played longer than 4
+        # otherwise skip to previous track
+        if self._queues[queue_id].elapsed_time < 5:
+            next_index = max(current_index - 1, 0)
+        await self.play_index(queue_id, next_index, debounce=True)
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:

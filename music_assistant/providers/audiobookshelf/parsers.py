@@ -89,6 +89,8 @@ def parse_podcast(
     elif isinstance(abs_podcast, AbsLibraryItemMinifiedPodcast):
         mass_podcast.total_episodes = abs_podcast.media.num_episodes
 
+    mass_podcast.date_added = datetime.fromtimestamp(abs_podcast.added_at / 1000)
+
     return mass_podcast
 
 
@@ -264,5 +266,7 @@ def parse_audiobook(
     if media_progress is not None and media_progress.current_time is not None:
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
+
+    mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000)
 
     return mass_audiobook

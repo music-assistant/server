@@ -976,8 +976,8 @@ class MetaDataController(CoreController):
             f"AND (json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
-        for artist in await self.mass.music.artists.library_items(
-            limit=5, order_by="random", extra_query=query
+        for artist in await self.mass.music.artists.get_library_items_by_query(
+            limit=5, order_by="random", extra_query_parts=[query]
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
@@ -990,8 +990,8 @@ class MetaDataController(CoreController):
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
         )
-        for playlist in await self.mass.music.playlists.library_items(
-            limit=5, order_by="random", extra_query=query
+        for playlist in await self.mass.music.playlists.get_library_items_by_query(
+            limit=5, order_by="random", extra_query_parts=[query]
         ):
             if playlist.uri:
                 self.schedule_update_metadata(playlist.uri)

@@ -497,7 +497,7 @@ class DeezerProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0
-        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+        timeout = ClientTimeout(total=None, connect=30, sock_read=600)
         headers: dict[str, str] = {}
         # if seek_position and streamdetails.size:
         #     chunk_count = ceil(streamdetails.size / 2048)
