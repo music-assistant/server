@@ -35,7 +35,7 @@ class Provider:
         self.config = config
         self._supported_features = supported_features or set()
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
-        self.logger = mass_logger.getChild(self.domain)
+        self.logger = mass_logger.getChild(self.instance_id)
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
