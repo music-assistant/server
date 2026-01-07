@@ -143,8 +143,24 @@ class PandoraProvider(MusicProvider):
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
-                self._auth_expires_at = time.time() + AUTH_TOKEN_LIFETIME
-                self.logger.info("Successfully authenticated with Pandora")
+
+                # Check if Pandora provides explicit token expiry
+                # (they may return expiresIn, expires_in, or similar fields)
+                expires_in = response_data.get("expiresIn") or response_data.get("expires_in")
+                if expires_in:
+                    self._auth_expires_at = time.time() + int(expires_in)
+                    self.logger.info(
+                        "Successfully authenticated with Pandora (expires in %s seconds)",
+                        expires_in,
+                    )
+                else:
+                    # Pandora doesn't provide expiry, use conservative estimate
+                    self._auth_expires_at = time.time() + AUTH_TOKEN_LIFETIME
+                    self.logger.info(
+                        "Successfully authenticated with Pandora "
+                        "(using %s minute token lifetime)",
+                        AUTH_TOKEN_LIFETIME // 60,
+                    )
 
         except aiohttp.ClientError as err:
             self.logger.exception("Network error during authentication")
