@@ -127,6 +127,8 @@ class WiimPlayer(Player):
             volume_level
         )  # update the player state in the player manager
 
+        self._update_ma_state_from_sdk_cache()
+
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
@@ -136,6 +138,8 @@ class WiimPlayer(Player):
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
         await self.device.async_set_mute(muted)
+
+        self._update_ma_state_from_sdk_cache()
 
     async def play(self) -> None:
         """Play command."""
@@ -153,6 +157,8 @@ class WiimPlayer(Player):
         logger.info("Received PLAY command on player %s", self.display_name)
         await self.device.async_play()
 
+        self._update_ma_state_from_sdk_cache()
+
     async def stop(self) -> None:
         """Stop command."""
         # MANDATORY
@@ -169,6 +175,8 @@ class WiimPlayer(Player):
         logger.info("Received STOP command on player %s", self.display_name)
         await self.device.async_stop()
 
+        self._update_ma_state_from_sdk_cache()
+
     async def pause(self) -> None:
         """Pause command."""
         # OPTIONAL - required only if you specified PlayerFeature.PAUSE
@@ -181,6 +189,8 @@ class WiimPlayer(Player):
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
         await self.device.async_pause()
+
+        self._update_ma_state_from_sdk_cache()
 
     async def next_track(self) -> None:
         """Next command."""
@@ -243,6 +253,8 @@ class WiimPlayer(Player):
         )
 
         await self.device.async_play(uri=media.uri)
+
+        self._update_ma_state_from_sdk_cache()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
