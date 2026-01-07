@@ -179,7 +179,7 @@ class WiimProvider(PlayerProvider):
             upnp_device,
             session=session,
             http_api_endpoint=http_api,
-            ha_host_ip="192.168.1.124",
+            ha_host_ip=self.mass.webserver.publish_ip,
             polling_interval=60,
         )
 
