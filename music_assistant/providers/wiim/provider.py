@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientSession, TCPConnector
 from wiim import WiimApiEndpoint, WiimController, WiimDevice
 from wiim.discovery import verify_wiim_device
 from zeroconf import ServiceStateChange
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -51,6 +52,57 @@ class WiimProvider(PlayerProvider):
         # or any other logic that needs to run after the provider is fully loaded.
         self.logger.info("WiimProvider loaded")
 
+        manual_ip_config: list[str] = cast(
+            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        )
+
+        for ip_address in manual_ip_config:
+            stripped_ip_address = ip_address.strip()
+            potential_locations = [
+                # f"http://{stripped_ip_address}:{get_port_from_zeroconf(info)}/description.xml",
+                f"http://{stripped_ip_address}/description.xml",
+                f"http://{stripped_ip_address}:49152/description.xml",
+            ]
+
+            upnp_device = None
+            for location in potential_locations:
+                # Use the verify_wiim_device function from discovery.py to check
+                # if this is a WiiM device
+                upnp_device = await verify_wiim_device(location, self._attr_session)
+                if upnp_device:
+                    break
+
+            if not upnp_device:
+                return
+
+            player_id = upnp_device.udn
+
+            if not player_id:
+                return  # guard, we need a player_id to work with
+
+            http_api = WiimApiEndpoint(
+                protocol="https", port=443, endpoint=stripped_ip_address, session=self._attr_session
+            )
+
+            wiim_dev = WiimDevice(
+                upnp_device,
+                session=self._attr_session,
+                http_api_endpoint=http_api,
+                ha_host_ip=self.mass.webserver.publish_ip,
+                polling_interval=60,
+            )
+
+            await self.wiim_controller.add_device(wiim_dev)
+
+            player = WiimPlayer(provider=self, player_id=player_id, device=wiim_dev)
+
+            init_success = await wiim_dev.async_init_services_and_subscribe()
+
+            if not init_success:
+                self.logger.warning("Failed to initialize WiiM device %s", "Something")
+
+            await self.mass.players.register(player)
+
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -91,26 +143,37 @@ class WiimProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-        # MANDATORY IF YOU WANT TO USE MDNS DISCOVERY
-        # OPTIONAL if you dont use mdns for discovery of players
-        # If you specify a mdns service type in the manifest.json, this method will be called
-        # automatically on mdns changes for the specified service type.
-
-        # If no mdns service type is specified, this method is omitted and you
-        # can completely remove it from your provider implementation.
-
         if not info:
             return  # guard
 
-        # NOTE: If you do not use mdns for discovery of players on the network,
-        # you must implement your own discovery mechanism and logic to add new players
-        # and update them on state changes when needed.
-        # Below is a bit of example implementation but we advise to look at existing
-        # player providers for more inspiration.
-        name = name.split("@", 1)[1] if "@" in name else name
-        player_id = info.decoded_properties["uuid"]  # this is just an example!
+        cur_address = get_primary_ip_address_from_zeroconf(info)
+
+        if cur_address is None:
+            return
+
+        potential_locations = [
+            f"http://{cur_address}:{get_port_from_zeroconf(info)}/description.xml",
+            f"http://{cur_address}/description.xml",
+            f"http://{cur_address}:49152/description.xml",
+        ]
+
+        upnp_device = None
+        for location in potential_locations:
+            # Use the verify_wiim_device function from discovery.py to check
+            # if this is a WiiM device
+            upnp_device = await verify_wiim_device(location, self._attr_session)
+            if upnp_device:
+                break
+
+        if not upnp_device:
+            return
+
+        player_id = upnp_device.udn
+
         if not player_id:
             return  # guard, we need a player_id to work with
+
+        name = name.split("@", 1)[1] if "@" in name else name
 
         # handle removed player
         if state_change == ServiceStateChange.Removed:
@@ -120,8 +183,6 @@ class WiimProvider(PlayerProvider):
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
             return
-
-        cur_address = get_primary_ip_address_from_zeroconf(info)
 
         # handle update for existing device
         # (state change is either updated or added)
@@ -149,35 +210,13 @@ class WiimProvider(PlayerProvider):
         # your own connection logic will probably be implemented here where
         # you connect to the player etc. using your device/provider specific library.
 
-        potential_locations = [
-            f"http://{cur_address}:{get_port_from_zeroconf(info)}/description.xml",
-            f"http://{cur_address}/description.xml",
-            f"http://{cur_address}:49152/description.xml",
-        ]
-
-        session = self._attr_session
-
-        if cur_address is None:
-            return
-
-        upnp_device = None
-        for location in potential_locations:
-            # Use the verify_wiim_device function from discovery.py to check
-            # if this is a WiiM device
-            upnp_device = await verify_wiim_device(location, session)
-            if upnp_device:
-                break
-
-        if not upnp_device:
-            return
-
         http_api = WiimApiEndpoint(
-            protocol="https", port=443, endpoint=cur_address, session=session
+            protocol="https", port=443, endpoint=cur_address, session=self._attr_session
         )
 
         wiim_dev = WiimDevice(
             upnp_device,
-            session=session,
+            session=self._attr_session,
             http_api_endpoint=http_api,
             ha_host_ip=self.mass.webserver.publish_ip,
             polling_interval=60,

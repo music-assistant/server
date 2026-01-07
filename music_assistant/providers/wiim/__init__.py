@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+
 from .provider import WiimProvider
 
 if TYPE_CHECKING:
@@ -51,4 +53,4 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return ()
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
