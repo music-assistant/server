@@ -458,13 +458,20 @@ class SqueezelitePlayer(Player):
 
     def _handle_player_heartbeat(self) -> None:
         """Process SlimClient elapsed_time update."""
-        if self.client.state == SlimPlayerState.STOPPED:
+        if self.client.state in (SlimPlayerState.STOPPED, SlimPlayerState.PAUSED):
             # ignore server heartbeats when stopped
+            # Some players keep sending heartbeat with increasing elapsed time
+            # even when paused (e.g. WiiM)
             return
         # elapsed time change on the player will be auto picked up
         # by the player manager.
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+        self.logger.debug(
+            "Squeezelite player heartbeat: state %s, elapsed_time=%s",
+            self.client.state,
+            self._attr_elapsed_time,
+        )
 
         # handle sync
         if self.synced_to:

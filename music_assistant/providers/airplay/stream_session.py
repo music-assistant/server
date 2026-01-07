@@ -65,6 +65,8 @@ class AirPlayStreamSession:
         # because we reuse an existing stream session for new play_media requests,
         # we need to track when the last stream was started
         self.last_stream_started: float = 0.0
+        self.total_pause_time: float = 0.0
+        self.last_paused: float | None = None
         self._clients_ready = asyncio.Event()
         self._first_chunk_received = asyncio.Event()
 
@@ -206,6 +208,8 @@ class AirPlayStreamSession:
             old_audio_source_task.cancel()
             self._audio_source_task = new_audio_source_task
         self.last_stream_started = time.time() + self.wait_start
+        self.total_pause_time = 0.0
+        self.last_paused = None
         for sync_client in self.sync_clients:
             sync_client.set_state_from_stream(state=None, elapsed_time=0)
         # ensure we cleanly wait for the old audio source task to finish
