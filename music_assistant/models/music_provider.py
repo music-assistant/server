@@ -200,7 +200,7 @@ class MusicProvider(Provider):
         self,
         prov_playlist_id: str,
         page: int = 0,
-    ) -> list[Track | Radio]:
+    ) -> list[Track]:
         """Get all playlist tracks for given playlist id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
@@ -1168,7 +1168,7 @@ class MusicProvider(Provider):
     async def iter_playlist_tracks(
         self,
         prov_playlist_id: str,
-    ) -> AsyncGenerator[Track | Radio, None]:
+    ) -> AsyncGenerator[Track, None]:
         """Iterate playlist tracks for the given provider playlist id."""
         page = 0
         while True:

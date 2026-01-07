@@ -355,15 +355,20 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(
+    async def get_playlist_tracks(  # type: ignore[override]
         self, prov_playlist_id: str, page: int = 0
     ) -> list[Track | Radio]:
-        """Get playlist tracks."""
+        """Get playlist tracks.
+
+        Builtin provider supports both Track and Radio items in playlists.
+        Overrides base class to return list[Track | Radio] instead of list[Track].
+        """
         if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            return await self._get_builtin_playlist_tracks(prov_playlist_id)
+            # Builtin playlists only contain tracks, not radio items
+            return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         # user created universal playlist
         result: list[Track | Radio] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)

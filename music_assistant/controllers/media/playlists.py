@@ -187,9 +187,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     if track.uri is not None:
                         unwrapped_uris.append(track.uri)
             elif media_type == MediaType.PLAYLIST:
-                async for track in self.tracks(item_id, provider_instance_id_or_domain):
-                    if track.uri is not None:
-                        unwrapped_uris.append(track.uri)
+                async for item in self.tracks(item_id, provider_instance_id_or_domain):
+                    if item.uri is not None:
+                        unwrapped_uris.append(item.uri)
             elif media_type in (MediaType.TRACK, MediaType.RADIO):
                 unwrapped_uris.append(uri)
             else:
@@ -449,7 +449,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
-            return await provider.get_playlist_tracks(item_id, page=page)
+            # Base provider interface returns list[Track], but builtin provider
+            # can return list[Track | Radio] (covariant override)
+            return await provider.get_playlist_tracks(item_id, page=page)  # type: ignore[return-value]
 
     async def radio_mode_base_tracks(
         self,
@@ -465,8 +467,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return [
             x
             async for x in self.tracks(item.item_id, item.provider)
-            # filter out unavailable tracks
-            if x.available
+            # filter out unavailable tracks and radio items
+            if isinstance(x, Track) and x.available
         ]
 
     async def match_providers(self, db_item: Playlist) -> None:
