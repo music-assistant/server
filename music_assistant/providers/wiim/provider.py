@@ -19,6 +19,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from .player import WiimPlayer
 
 if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpDevice
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -79,28 +80,7 @@ class WiimProvider(PlayerProvider):
             if not player_id:
                 return  # guard, we need a player_id to work with
 
-            http_api = WiimApiEndpoint(
-                protocol="https", port=443, endpoint=stripped_ip_address, session=self._attr_session
-            )
-
-            wiim_dev = WiimDevice(
-                upnp_device,
-                session=self._attr_session,
-                http_api_endpoint=http_api,
-                ha_host_ip=self.mass.webserver.publish_ip,
-                polling_interval=60,
-            )
-
-            await self.wiim_controller.add_device(wiim_dev)
-
-            player = WiimPlayer(provider=self, player_id=player_id, device=wiim_dev)
-
-            init_success = await wiim_dev.async_init_services_and_subscribe()
-
-            if not init_success:
-                self.logger.warning("Failed to initialize WiiM device %s", "Something")
-
-            await self.mass.players.register(player)
+            await self.try_add_player(player_id, stripped_ip_address, "Unknown", upnp_device)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -172,8 +152,6 @@ class WiimProvider(PlayerProvider):
         if not player_id:
             return  # guard, we need a player_id to work with
 
-        name = name.split("@", 1)[1] if "@" in name else name
-
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
@@ -209,8 +187,14 @@ class WiimProvider(PlayerProvider):
         # your own connection logic will probably be implemented here where
         # you connect to the player etc. using your device/provider specific library.
 
+        await self.try_add_player(player_id, cur_address, name, upnp_device)
+
+    async def try_add_player(
+        self, player_id: str, ip_address: str, name: str, upnp_device: UpnpDevice
+    ) -> None:
+        """Try to add a device."""
         http_api = WiimApiEndpoint(
-            protocol="https", port=443, endpoint=cur_address, session=self._attr_session
+            protocol="https", port=443, endpoint=ip_address, session=self._attr_session
         )
 
         wiim_dev = WiimDevice(
