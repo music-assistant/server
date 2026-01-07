@@ -46,7 +46,6 @@ dependencies = [
   "gql[all]==4.0.0",
   "aiovban>=0.6.3",
   "aiortc>=1.6.0",
-  "wiim>=0.0.6",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}

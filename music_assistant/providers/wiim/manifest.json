@@ -4,7 +4,7 @@
   "name": "WiiM",
   "description": "Stream music to WiiM devices.",
   "codeowners": ["@davidanthoff"],
-  "requirements": [],
+  "requirements": ["wiim==0.0.6"],
   "documentation": "https://music-assistant.io/player-support/demo/",
   "mdns_discovery": ["_linkplay._tcp.local."]
 }
