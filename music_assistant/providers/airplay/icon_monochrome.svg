@@ -48,25 +48,9 @@
     .bar-alt{fill:#E5A00D;}
   ]]></style>
 
-  <!-- Background -->
-  
-
-  <!-- Left vertical bars (MA style) -->
-  
-  
-  
-  
-
-  <!-- Center: Plex chevron as a diagonal bar (matching Plex angle) -->
-  
-
-  <!-- Right diagonal slashes (MA style) -->
-  
-  
-  
 <metadata
    id="metadata7"><rdf:RDF><cc:Work
-       rdf:about=""><dc:title>Plex × Music Assistant</dc:title></cc:Work></rdf:RDF></metadata><image
+       rdf:about=""><dc:title>AirPlay Audio × Music Assistant</dc:title></cc:Work></rdf:RDF></metadata><image
    width="85.333336"
    height="85.333336"
    preserveAspectRatio="none"
