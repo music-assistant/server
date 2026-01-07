@@ -12,7 +12,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Playlist, Radio, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
@@ -81,7 +81,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[Track | Radio, None]:
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
@@ -190,11 +190,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 async for track in self.tracks(item_id, provider_instance_id_or_domain):
                     if track.uri is not None:
                         unwrapped_uris.append(track.uri)
-            elif media_type == MediaType.TRACK:
+            elif media_type in (MediaType.TRACK, MediaType.RADIO):
                 unwrapped_uris.append(uri)
             else:
                 self.logger.warning(
-                    "Not adding %s to playlist %s - not a track", uri, playlist.name
+                    "Not adding %s to playlist %s - media type not supported in playlists",
+                    uri,
+                    playlist.name,
                 )
                 continue
 
@@ -427,7 +429,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
-    ) -> list[Track]:
+    ) -> list[Track | Radio]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):

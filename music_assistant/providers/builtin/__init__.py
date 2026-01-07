@@ -355,7 +355,9 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[Track | Radio]:
         """Get playlist tracks."""
         if page > 0:
             # paging not supported, we always return the whole list at once
@@ -363,7 +365,7 @@ class BuiltinProvider(MusicProvider):
         if prov_playlist_id in BUILTIN_PLAYLISTS:
             return await self._get_builtin_playlist_tracks(prov_playlist_id)
         # user created universal playlist
-        result: list[Track] = []
+        result: list[Track | Radio] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
@@ -379,9 +381,13 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                assert isinstance(track, Track)
-                track.position = index
-                result.append(track)
+                if isinstance(track, (Track, Radio)):
+                    track.position = index
+                    result.append(track)
+                else:
+                    self.logger.warning(
+                        "Unsupported media type in playlist %s: %s", prov_playlist_id, type(track)
+                    )
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
                     "Skipping %s in playlist %s: %s", uri, prov_playlist_id, str(err)
