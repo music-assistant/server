@@ -37,28 +37,28 @@ class AbsBrowsePaths(StrEnum):
     AUDIOBOOKS = "b"
 
 
-class AbsBrowseItemsBook(StrEnum):
-    """Folder names in browse view for books."""
+class AbsBrowseItemsBookTranslationKey(StrEnum):
+    """translation keys in browse view for books."""
 
-    AUTHORS = "Authors"
-    NARRATORS = "Narrators"
-    SERIES = "Series"
-    COLLECTIONS = "Collections"
-    AUDIOBOOKS = "Audiobooks"
+    AUTHORS = "authors"
+    NARRATORS = "narrators"
+    SERIES = "series_plural"
+    COLLECTIONS = "collections"
+    AUDIOBOOKS = "audiobooks"
 
 
-class AbsBrowseItemsPodcast(StrEnum):
+class AbsBrowseItemsPodcastTranslationKey(StrEnum):
     """Folder names in browse view for podcasts."""
 
-    PODCASTS = "Podcasts"
+    PODCASTS = "podcasts"
 
 
 ABS_BROWSE_ITEMS_TO_PATH: dict[str, str] = {
-    AbsBrowseItemsBook.AUTHORS: AbsBrowsePaths.AUTHORS,
-    AbsBrowseItemsBook.NARRATORS: AbsBrowsePaths.NARRATORS,
-    AbsBrowseItemsBook.SERIES: AbsBrowsePaths.SERIES,
-    AbsBrowseItemsBook.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
-    AbsBrowseItemsBook.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
+    AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
+    AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
+    AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
+    AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
+    AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
 }
 
 ABS_SHELF_ID_ICONS: dict[str, str] = {
@@ -72,4 +72,19 @@ ABS_SHELF_ID_ICONS: dict[str, str] = {
     AbsShelfId.NEWEST_AUTHORS: "mdi-plus-box-multiple-outline",
     AbsShelfId.NEWEST_EPISODES: "mdi-plus-box-multiple-outline",
     AbsShelfId.DISCOVER: "mdi-magnify",
+}
+
+# for some keys there already is a good MA variant
+# note: recommendation keys are in a subdict
+ABS_SHELF_ID_TRANSLATION_KEY: dict[str, str] = {
+    AbsShelfId.LISTEN_AGAIN: "listen_again",
+    AbsShelfId.CONTINUE_LISTENING: "in_progress_items",
+    AbsShelfId.CONTINUE_SERIES: "in_progress_series",
+    AbsShelfId.RECOMMENDED: "recommended",
+    AbsShelfId.RECENTLY_ADDED: "recently_added",
+    AbsShelfId.EPISODES_RECENTLY_ADDED: "episodes_recently_added",
+    AbsShelfId.RECENT_SERIES: "recent_series",
+    AbsShelfId.NEWEST_AUTHORS: "newest_authors",
+    AbsShelfId.NEWEST_EPISODES: "newest_episodes",
+    AbsShelfId.DISCOVER: "discover",
 }

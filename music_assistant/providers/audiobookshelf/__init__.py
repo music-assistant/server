@@ -72,6 +72,7 @@ from music_assistant.providers.audiobookshelf.parsers import (
 from .constants import (
     ABS_BROWSE_ITEMS_TO_PATH,
     ABS_SHELF_ID_ICONS,
+    ABS_SHELF_ID_TRANSLATION_KEY,
     AIOHTTP_TIMEOUT,
     CACHE_CATEGORY_LIBRARIES,
     CACHE_KEY_LIBRARIES,
@@ -82,8 +83,8 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    AbsBrowseItemsBook,
-    AbsBrowseItemsPodcast,
+    AbsBrowseItemsBookTranslationKey,
+    AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
 )
 from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard
@@ -709,12 +710,14 @@ for more details.
             # newest-episodes
             # etc
             name = f"{shelf_id.capitalize().replace('-', ' ')}"
+            if ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id):
+                name = ""  # use translation key if available
             folders.append(
                 RecommendationFolder(
                     item_id=f"{shelf_id}",
                     name=name,
                     icon=ABS_SHELF_ID_ICONS.get(shelf_id),
-                    # translation_key=shelf.id_,
+                    translation_key=ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id),
                     items=UniqueList(recommendation_items),
                     provider=self.instance_id,
                 )
@@ -726,17 +729,10 @@ for more details.
         # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
         # Podcast libs do not have filter folders, so always the root folders.
         browse_items: list[MediaItemType | BrowseFolder] = []
+        translation_key = "libraries"
         if len(self.libraries.audiobooks) <= 1:
-            browse_names = [
-                x.name for x in self.libraries.audiobooks.values()
-            ]  # single name (or no name)
-            if len(self.libraries.podcasts) == 1:
-                browse_names.extend(
-                    [x.name for x in self.libraries.podcasts.values()]
-                )  # single name again
-            else:
-                browse_names.append("Podcasts")
-            browse_name = " & ".join(browse_names)
+            if len(self.libraries.podcasts) == 0:
+                translation_key = "library"
 
             # audiobooklibs are first, and we have at max 1 audiobook lib
             _browse_root = self._browse_root(append_mediatype_suffix=False)
@@ -749,15 +745,14 @@ for more details.
                 # add podcast roots
                 browse_items.extend(_browse_root[1:])
         else:
-            browse_name = "Your libraries"
-
             browse_items = list(self._browse_root())
+
         folders.append(
             RecommendationFolder(
                 item_id="browse",
-                name=browse_name,
+                name="",  # use translation key
                 icon="mdi-bookshelf",
-                # translation_key=shelf.id_,
+                translation_key=translation_key,
                 items=UniqueList(browse_items),
                 provider=self.instance_id,
             )
@@ -1040,10 +1035,13 @@ for more details.
     def _browse_root(self, append_mediatype_suffix: bool = True) -> Sequence[BrowseFolder]:
         items = []
 
-        def _get_folder(path: str, lib_id: str, lib_name: str) -> BrowseFolder:
+        def _get_folder(
+            path: str, lib_id: str, lib_name: str, translation_key: str | None = None
+        ) -> BrowseFolder:
             return BrowseFolder(
                 item_id=lib_id,
                 name=lib_name,
+                translation_key=translation_key,  # if given, <name>: <translation> in frontend
                 provider=self.instance_id,
                 path=f"{self.instance_id}://{path}",
             )
@@ -1052,20 +1050,23 @@ for more details.
             self._log_no_libraries()
             return []
 
+        translation_key: str | None
         for lib_id, lib in self.libraries.audiobooks.items():
             path = f"{AbsBrowsePaths.LIBRARIES_BOOK} {lib_id}"
+            translation_key = None
             if append_mediatype_suffix:
-                name = f"{lib.name} ({AbsBrowseItemsBook.AUDIOBOOKS})"
-            else:
-                name = lib.name
-            items.append(_get_folder(path, lib_id, name))
+                translation_key = AbsBrowseItemsBookTranslationKey.AUDIOBOOKS
+            items.append(
+                _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
+            )
         for lib_id, lib in self.libraries.podcasts.items():
             path = f"{AbsBrowsePaths.LIBRARIES_PODCAST} {lib_id}"
+            translation_key = None
             if append_mediatype_suffix:
-                name = f"{lib.name} ({AbsBrowseItemsPodcast.PODCASTS})"
-            else:
-                name = lib.name
-            items.append(_get_folder(path, lib_id, name))
+                translation_key = AbsBrowseItemsPodcastTranslationKey.PODCASTS
+            items.append(
+                _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
+            )
         return items
 
     async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemType]:
@@ -1085,12 +1086,13 @@ for more details.
 
     def _browse_lib_audiobooks(self, current_path: str) -> Sequence[BrowseFolder]:
         items = []
-        for item_name in AbsBrowseItemsBook:
-            path = current_path + "/" + ABS_BROWSE_ITEMS_TO_PATH[item_name]
+        for translation_key in AbsBrowseItemsBookTranslationKey:
+            path = current_path + "/" + ABS_BROWSE_ITEMS_TO_PATH[translation_key]
             items.append(
                 BrowseFolder(
-                    item_id=item_name.lower(),
-                    name=item_name,
+                    item_id=translation_key.lower(),
+                    name="",  # use translation key
+                    translation_key=translation_key,
                     provider=self.instance_id,
                     path=path,
                 )
@@ -1200,7 +1202,9 @@ for more details.
             items.append(
                 BrowseFolder(
                     item_id=series.id_,
-                    name=f"{series.name} ({AbsBrowseItemsBook.SERIES})",
+                    # frontend does <name>: <translation>
+                    name=series.name,
+                    translation_key="series_singular",
                     provider=self.instance_id,
                     path=path,
                 )
