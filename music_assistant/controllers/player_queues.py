@@ -54,6 +54,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
+    Radio,
     Track,
     UniqueList,
     media_from_dict,
@@ -1551,9 +1552,11 @@ class PlayerQueuesController(CoreController):
             result.append(album_track)
         return result
 
-    async def get_playlist_tracks(self, playlist: Playlist, start_item: str | None) -> list[Track]:
+    async def get_playlist_tracks(
+        self, playlist: Playlist, start_item: str | None
+    ) -> list[Track | Radio]:
         """Return tracks for given playlist, based on user preference."""
-        result: list[Track] = []
+        result: list[Track | Radio] = []
         start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",
