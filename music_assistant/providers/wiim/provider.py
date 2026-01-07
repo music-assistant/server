@@ -59,9 +59,8 @@ class WiimProvider(PlayerProvider):
         for ip_address in manual_ip_config:
             stripped_ip_address = ip_address.strip()
             potential_locations = [
-                # f"http://{stripped_ip_address}:{get_port_from_zeroconf(info)}/description.xml",
-                f"http://{stripped_ip_address}/description.xml",
                 f"http://{stripped_ip_address}:49152/description.xml",
+                f"http://{stripped_ip_address}/description.xml",
             ]
 
             upnp_device = None
