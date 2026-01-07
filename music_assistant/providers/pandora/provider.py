@@ -81,7 +81,6 @@ class PandoraProvider(MusicProvider):
     _user_id: str | None = None
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
-    _auth_time: float = 0  # Track when we last authenticated for diagnostics
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -138,7 +137,6 @@ class PandoraProvider(MusicProvider):
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
-                self._auth_time = time.time()
                 self.logger.debug("Successfully authenticated with Pandora")
 
         except aiohttp.ClientError as err:
@@ -162,14 +160,7 @@ class PandoraProvider(MusicProvider):
             ) as response:
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
-                    # Auth token expired - log how long it lasted
-                    time_since_auth = time.time() - self._auth_time
-                    self.logger.debug(
-                        "Pandora auth token expired after %.1f minutes, re-authenticating...",
-                        time_since_auth / 60,
-                    )
-
-                    # Re-authenticate and retry once
+                    # Auth token expired, re-authenticate and retry once
                     username = str(self.config.get_value(CONF_USERNAME))
                     password = str(self.config.get_value(CONF_PASSWORD))
                     await self._authenticate(username, password)
