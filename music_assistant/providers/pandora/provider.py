@@ -45,11 +45,6 @@ from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-# Pandora doesn't provide explicit token expiry, so we'll re-authenticate after 50 minutes
-# to ensure the token stays valid during long listening sessions
-AUTH_TOKEN_LIFETIME = 50 * 60  # 50 minutes in seconds
-AUTH_REFRESH_BUFFER = 5 * 60  # Re-authenticate 5 minutes before expiry
-
 
 class PandoraStationSession:
     """Manages streaming state for a single Pandora station."""
@@ -85,8 +80,8 @@ class PandoraProvider(MusicProvider):
     _auth_token: str | None = None
     _user_id: str | None = None
     _csrf_token: str | None = None
-    _auth_expires_at: float = 0
     _sessions: dict[str, PandoraStationSession]
+    _auth_time: float = 0  # Track when we last authenticated for diagnostics
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -143,24 +138,8 @@ class PandoraProvider(MusicProvider):
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
-
-                # Check if Pandora provides explicit token expiry
-                # (they may return expiresIn, expires_in, or similar fields)
-                expires_in = response_data.get("expiresIn") or response_data.get("expires_in")
-                if expires_in:
-                    self._auth_expires_at = time.time() + int(expires_in)
-                    self.logger.info(
-                        "Successfully authenticated with Pandora (expires in %s seconds)",
-                        expires_in,
-                    )
-                else:
-                    # Pandora doesn't provide expiry, use conservative estimate
-                    self._auth_expires_at = time.time() + AUTH_TOKEN_LIFETIME
-                    self.logger.info(
-                        "Successfully authenticated with Pandora "
-                        "(using %s minute token lifetime)",
-                        AUTH_TOKEN_LIFETIME // 60,
-                    )
+                self._auth_time = time.time()
+                self.logger.info("Successfully authenticated with Pandora")
 
         except aiohttp.ClientError as err:
             self.logger.exception("Network error during authentication")
@@ -168,30 +147,12 @@ class PandoraProvider(MusicProvider):
                 "Unable to connect to Pandora for authentication"
             ) from err
 
-    async def ensure_valid_auth(self) -> None:
-        """Ensure we have a valid authentication token, re-authenticate if needed."""
-        if not self._auth_token or not self._csrf_token:
-            # No token at all, need to authenticate
-            username = str(self.config.get_value(CONF_USERNAME))
-            password = str(self.config.get_value(CONF_PASSWORD))
-            await self._authenticate(username, password)
-            return
-
-        # Check if token is about to expire or already expired
-        if self._auth_expires_at <= time.time() + AUTH_REFRESH_BUFFER:
-            self.logger.info(
-                "Pandora auth token expired or about to expire, re-authenticating..."
-            )
-            username = str(self.config.get_value(CONF_USERNAME))
-            password = str(self.config.get_value(CONF_PASSWORD))
-            await self._authenticate(username, password)
-
     async def _api_request(
         self, method: str, url: str, data: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Make an API request to Pandora."""
-        # Ensure we have a valid auth token before making the request
-        await self.ensure_valid_auth()
+        if not self._csrf_token or not self._auth_token:
+            raise LoginFailed("Not authenticated with Pandora")
 
         headers = create_auth_headers(self._csrf_token, self._auth_token)
 
@@ -201,10 +162,17 @@ class PandoraProvider(MusicProvider):
             ) as response:
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
-                    # Auth token expired, force re-authentication and retry once
-                    self.logger.warning("Received 401, forcing re-authentication")
-                    self._auth_expires_at = 0  # Force re-auth
-                    await self.ensure_valid_auth()
+                    # Auth token expired - log how long it lasted
+                    time_since_auth = time.time() - self._auth_time
+                    self.logger.warning(
+                        "Pandora auth token expired after %.1f minutes, re-authenticating...",
+                        time_since_auth / 60,
+                    )
+
+                    # Re-authenticate and retry once
+                    username = str(self.config.get_value(CONF_USERNAME))
+                    password = str(self.config.get_value(CONF_PASSWORD))
+                    await self._authenticate(username, password)
 
                     # Retry request with new token
                     headers = create_auth_headers(self._csrf_token, self._auth_token)
