@@ -192,7 +192,7 @@ class PandoraProvider(MusicProvider):
                 if response.status >= 400:
                     raise InvalidDataError(f"Pandora API error: HTTP {response.status}")
 
-                result: dict[str, Any] = await response.json()
+                result = await response.json()
                 handle_pandora_error(result)
                 return result
 
