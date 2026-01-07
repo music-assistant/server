@@ -139,7 +139,7 @@ class PandoraProvider(MusicProvider):
 
                 self._user_id = response_data.get("listenerId")
                 self._auth_time = time.time()
-                self.logger.info("Successfully authenticated with Pandora")
+                self.logger.debug("Successfully authenticated with Pandora")
 
         except aiohttp.ClientError as err:
             self.logger.exception("Network error during authentication")
@@ -164,7 +164,7 @@ class PandoraProvider(MusicProvider):
                 if response.status == 401:
                     # Auth token expired - log how long it lasted
                     time_since_auth = time.time() - self._auth_time
-                    self.logger.warning(
+                    self.logger.debug(
                         "Pandora auth token expired after %.1f minutes, re-authenticating...",
                         time_since_auth / 60,
                     )
