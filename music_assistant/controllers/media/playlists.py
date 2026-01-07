@@ -235,8 +235,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
-            if provider_instance_id_or_domain != "library" and playlist_prov.domain == "builtin":
+            # for radio items, we always add the URI directly to builtin playlists
+            if playlist_prov.domain == "builtin" and (
+                media_type == MediaType.RADIO or provider_instance_id_or_domain != "library"
+            ):
                 # note: we try not to add library uri's to the builtin playlists
+                # (except for radio items, which must use URIs)
                 # so we can survive db rebuilds
                 if uri not in ids_to_add:
                     ids_to_add.append(uri)
