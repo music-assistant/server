@@ -137,7 +137,7 @@ class PandoraProvider(MusicProvider):
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
-                self.logger.debug("Successfully authenticated with Pandora")
+                self.logger.info("Successfully authenticated with Pandora")
 
         except aiohttp.ClientError as err:
             self.logger.exception("Network error during authentication")
