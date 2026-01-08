@@ -32,25 +32,13 @@ class WiimProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is initialized in Music Assistant.
-        # you can use this to do any async initialization of the provider,
-        # such as loading configuration, setting up connections, etc.
         self.logger.info("Initializing WiimProvider with config: %s", self.config)
 
-        self._attr_session = ClientSession(connector=TCPConnector(ssl=False))
-        self.wiim_controller = WiimController(self._attr_session)
+        self.wiim_session = ClientSession(connector=TCPConnector(ssl=False))
+        self.wiim_controller = WiimController(self.wiim_session)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
         self.logger.info("WiimProvider loaded")
 
         manual_ip_config: list[str] = cast(
@@ -68,7 +56,7 @@ class WiimProvider(PlayerProvider):
             for location in potential_locations:
                 # Use the verify_wiim_device function from discovery.py to check
                 # if this is a WiiM device
-                upnp_device = await verify_wiim_device(location, self._attr_session)
+                upnp_device = await verify_wiim_device(location, self.wiim_session)
                 if upnp_device:
                     break
 
@@ -89,34 +77,11 @@ class WiimProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is unloaded from Music Assistant.
-        # this means also when the provider is getting reloaded
         for player in self.players:
             # if you have any cleanup logic for the players, you can do that here.
             # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
-
-    def on_player_enabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets enabled."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # you want to do something special when a player is enabled.
-
-    def on_player_disabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets disabled."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # you want to do something special when a player is disabled.
-        # e.g. you can stop polling the player or disconnect from it.
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        # OPTIONAL - required only if you specified ProviderFeature.REMOVE_PLAYER
-        # this is used to actually remove a player.
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -140,7 +105,7 @@ class WiimProvider(PlayerProvider):
         for location in potential_locations:
             # Use the verify_wiim_device function from discovery.py to check
             # if this is a WiiM device
-            upnp_device = await verify_wiim_device(location, self._attr_session)
+            upnp_device = await verify_wiim_device(location, self.wiim_session)
             if upnp_device:
                 break
 
@@ -194,12 +159,12 @@ class WiimProvider(PlayerProvider):
     ) -> None:
         """Try to add a device."""
         http_api = WiimApiEndpoint(
-            protocol="https", port=443, endpoint=ip_address, session=self._attr_session
+            protocol="https", port=443, endpoint=ip_address, session=self.wiim_session
         )
 
         wiim_dev = WiimDevice(
             upnp_device,
-            session=self._attr_session,
+            session=self.wiim_session,
             http_api_endpoint=http_api,
             ha_host_ip=self.mass.webserver.publish_ip,
             polling_interval=60,

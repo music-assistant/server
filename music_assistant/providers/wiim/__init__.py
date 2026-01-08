@@ -22,10 +22,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {
-    # MANDATORY
-    # this constant should contain a set of provider-level features
-    # that your provider supports or an empty set if none.
-    # see the ProviderFeature enum for all available features
     ProviderFeature.SYNC_PLAYERS,
 }
 
@@ -34,9 +30,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # setup is called when the user wants to setup a new provider instance.
-    # you are free to do any preflight checks here and but you must return
-    # an instance of your provider.
     return WiimProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 

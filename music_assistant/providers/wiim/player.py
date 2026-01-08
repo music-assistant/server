@@ -137,9 +137,6 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        # OPTIONAL - required only if you specified PlayerFeature.SET_MEMBERS
-        # This method is optional and should be implemented if the player supports
-        # syncing/grouping with other players.
         self.logger.info("Player %s set members", self.name)
 
         if player_ids_to_add:
