@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing
 from typing import TYPE_CHECKING, cast
 
+from didl_lite import didl_lite
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
@@ -125,7 +126,17 @@ class WiimPlayer(Player):
 
         # self._attr_current_media = media
 
-        await self.device.async_play(uri=media.uri)
+        items = [
+            didl_lite.AudioItem(
+                id="0",
+                parent_id="0",
+                title=media.title,
+                restricted="1",
+            ),
+        ]
+        didl_string = didl_lite.to_xml_string(*items).decode("utf-8")
+
+        await self.device.async_play(uri=media.uri, metadata=didl_string)
 
         self._update_ma_state_from_sdk_cache()
 

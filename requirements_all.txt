@@ -55,6 +55,7 @@ pycares==4.11.0
 PyChromecast==14.0.9
 pycryptodome==3.23.0
 pylast==6.0.0
+python-didl-lite==1.5.0
 python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pytz==2025.2
