@@ -45,8 +45,12 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
 
+    _mdns_lock: asyncio.Lock
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._mdns_lock = asyncio.Lock()
+
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
         self.dacp_id = dacp_id = f"{randrange(2**64):X}"
@@ -88,22 +92,27 @@ class AirPlayProvider(PlayerProvider):
             display_name = info.name.split(".")[0]
         else:
             return
-        player_id = f"ap{raw_id.lower()}"
-        # handle removed player
-        if state_change == ServiceStateChange.Removed:
-            if _player := self.mass.players.get(player_id):
-                # the player has become unavailable
-                self.logger.debug("Player offline: %s", _player.display_name)
-                await self.mass.players.unregister(player_id)
-            return
-        # handle update for existing device
-        assert info is not None  # type guard
-        player: AirPlayPlayer | None
-        if player := cast("AirPlayPlayer | None", self.mass.players.get(player_id)):
-            # update the latest discovery info for existing player
-            player.set_discovery_info(info, display_name)
-            return
-        await self._setup_player(player_id, display_name, info)
+
+        # We are going to process this event, ensure that they're processed in-sequence
+        # so as to avoid creating duplicate players and instead ensuring that one is
+        # created and then updated by subsequent state changes
+        async with self._mdns_lock:
+            player_id = f"ap{raw_id.lower()}"
+            # handle removed player
+            if state_change == ServiceStateChange.Removed:
+                if _player := self.mass.players.get(player_id):
+                    # the player has become unavailable
+                    self.logger.debug("Player offline: %s", _player.display_name)
+                    await self.mass.players.unregister(player_id)
+                return
+            # handle update for existing device
+            assert info is not None  # type guard
+            player: AirPlayPlayer | None
+            if player := cast("AirPlayPlayer | None", self.mass.players.get(player_id)):
+                # update the latest discovery info for existing player
+                player.set_discovery_info(info, display_name)
+                return
+            await self._setup_player(player_id, display_name, info)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
