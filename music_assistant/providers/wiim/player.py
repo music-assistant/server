@@ -46,6 +46,7 @@ class WiimPlayer(Player):
 
         device.rendering_control_event_callback = self._handle_sdk_rendering_control_event
         device.av_transport_event_callback = self._handle_sdk_av_transport_event
+        device.play_queue_event_callback = self._handle_sdk_play_queue_event
 
     def _handle_sdk_av_transport_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
@@ -53,6 +54,11 @@ class WiimPlayer(Player):
         self._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_rendering_control_event(
+        self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
+    ) -> None:
+        self._update_ma_state_from_sdk_cache()
+
+    def _handle_sdk_play_queue_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
     ) -> None:
         self._update_ma_state_from_sdk_cache()
