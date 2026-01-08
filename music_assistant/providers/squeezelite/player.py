@@ -369,6 +369,7 @@ class SqueezelitePlayer(Player):
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
         self._attr_powered = self.client.powered
+        old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
         self._attr_volume_muted = self.client.muted
@@ -377,8 +378,13 @@ class SqueezelitePlayer(Player):
             ip_address=self.client.device_address,
             manufacturer=self.client.device_type,
         )
-        self._attr_elapsed_time = self.client.elapsed_seconds
-        self._attr_elapsed_time_last_updated = time.time()
+        if (
+            old_state != PlaybackState.PLAYING
+            and self._attr_playback_state == PlaybackState.PLAYING
+        ):
+            # Invalidate elapsed time interpolation to avoid jumps when resuming from pause/stop
+            # We need this because some players (e.g. WiiM) keep sending increasing elapsed time
+            self._attr_elapsed_time_last_updated = time.time()
         # Update current media if available
         if self.client.current_media and (metadata := self.client.current_media.metadata):
             self._attr_current_media = PlayerMedia(
@@ -458,24 +464,24 @@ class SqueezelitePlayer(Player):
 
     def _handle_player_heartbeat(self) -> None:
         """Process SlimClient elapsed_time update."""
-        if self.client.state in (SlimPlayerState.STOPPED, SlimPlayerState.PAUSED):
+        # if self.client.state in (SlimPlayerState.STOPPED, SlimPlayerState.PAUSED):
+        if self.playback_state != PlaybackState.PLAYING:
             # ignore server heartbeats when stopped
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)
             return
         # elapsed time change on the player will be auto picked up
         # by the player manager.
-        self._attr_elapsed_time = self.client.elapsed_seconds
+        self._attr_elapsed_time = self.client._elapsed_milliseconds / 1000
         self._attr_elapsed_time_last_updated = time.time()
-        self.logger.debug(
-            "Squeezelite player heartbeat: state %s, elapsed_time=%s",
-            self.client.state,
-            self._attr_elapsed_time,
-        )
 
         # handle sync
         if self.synced_to:
             self._handle_sync()
+
+        # update state to notify player queue controller of elapsed time change
+        # this is critical for flow mode to correctly transition between tracks
+        self.update_state()
 
     async def _handle_buffer_ready(self) -> None:
         """
