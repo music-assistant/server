@@ -238,21 +238,17 @@ class WiimPlayer(Player):
             #         )
             #         self._attr_active_source = "Wifi"
 
-            # # Current Track Info / Media Metadata
-            # if self.device.current_track_info:
-            #     self._attr_current_media = PlayerMedia(
-            #         uri=self.device.current_track_info.get("uri") or "",
-            #         media_type=MediaType.UNKNOWN,
-            #         title=self.device.current_track_info.get("title"),
-            #         artist=self.device.current_track_info.get("artist"),
-            #         album=self.device.current_track_info.get("album"),
-            #         image_url=self.device.current_track_info.get("albumArtURI"),
-            #         duration=self.device.current_track_duration,
-            #         elapsed_time=self.device.current_position,
-            #         # elapsed_time_last_updated=utcnow(),
-            #     )
-            # else:
-            #     self._attr_current_media = None
+            # Current Track Info / Media Metadata
+            if self.device.current_track_info and (
+                self.device.current_track_info.get("title") != "Music Assistant"
+            ):
+                self.set_current_media(
+                    uri=self.device.current_track_info.get("uri") or "",
+                    title=self.device.current_track_info.get("title"),
+                    artist=self.device.current_track_info.get("artist"),
+                    album=self.device.current_track_info.get("album"),
+                    image_url=self.device.current_track_info.get("album_art_uri"),
+                )
 
         elif group_info and group_info.get("role") == "follower":
             self._attr_group_members.clear()
