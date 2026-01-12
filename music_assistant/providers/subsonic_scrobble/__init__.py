@@ -1,6 +1,5 @@
 """Allows scrobbling of tracks back to the Subsonic media server."""
 
-import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -122,15 +121,6 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         return None, item_id
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
-            try:
-                self.logger.info("scrobble play now event")
-                prov.conn.scrobble(item_id, submission=False)
-                self.logger.debug("track %s marked as 'now playing'", uri)
-                self.currently_playing = uri
-            except Exception as err:
-                self.logger.exception(err)
-
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
         if not self._is_scrobblable_media_type(media_type):
             return
@@ -140,19 +130,15 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         if not prov:
             return
 
-        # the opensubsonic library is not async friendly,
-        # so we need to run it in a executor thread
-        await asyncio.to_thread(handler, prov, item_id, report.uri)
+        try:
+            self.logger.info("scrobble play now event")
+            await prov.conn.scrobble(item_id, submission=False)
+            self.logger.debug("track %s marked as 'now playing'", report.uri)
+            self.currently_playing = report.uri
+        except Exception as err:
+            self.logger.exception(err)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
-            try:
-                prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
-                self.logger.debug("track %s marked as 'played'", uri)
-                self.last_scrobbled = uri
-            except Exception as err:
-                self.logger.exception(err)
-
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
         if not self._is_scrobblable_media_type(media_type):
             return
@@ -162,9 +148,12 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         if not prov:
             return
 
-        # the opensubsonic library is not async friendly,
-        # so we need to run it in a executor thread
-        await asyncio.to_thread(handler, prov, item_id, report.uri)
+        try:
+            await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
+            self.logger.debug("track %s marked as 'played'", report.uri)
+            self.last_scrobbled = report.uri
+        except Exception as err:
+            self.logger.exception(err)
 
 
 async def get_config_entries(
