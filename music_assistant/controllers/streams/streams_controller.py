@@ -590,7 +590,6 @@ class StreamsController(CoreController):
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
-        # make sure to start the stream with a fresh log
         queue.flow_mode_stream_log = []
 
         # select the highest possible PCM settings for this player
