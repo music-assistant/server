@@ -590,6 +590,9 @@ class StreamsController(CoreController):
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
+        # make sure to start the stream with a fresh log
+        queue.flow_mode_stream_log = []
+
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(queue_player)
 
@@ -1152,12 +1155,6 @@ class StreamsController(CoreController):
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
-
-            # Cap seconds_streamed to the actual remaining track duration to avoid overflow
-            # when there's extra silence or padding in the source
-            if queue_track.duration:
-                max_streamable = queue_track.duration - queue_track.streamdetails.seek_position
-                seconds_streamed = min(seconds_streamed, max_streamable)
 
             queue_track.streamdetails.seconds_streamed = seconds_streamed
             queue_track.streamdetails.duration = int(
