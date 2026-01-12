@@ -1013,6 +1013,7 @@ class StreamsController(CoreController):
                     "No Streamdetails known for queue item %s",
                     queue_track.queue_item_id,
                 )
+
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",
                 queue_track.streamdetails.uri,
@@ -1166,13 +1167,13 @@ class StreamsController(CoreController):
             )
             play_log_entry.seconds_streamed = seconds_streamed
             play_log_entry.duration = queue_track.streamdetails.duration
+            total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.streamdetails.uri,
                 queue_track.name,
                 queue.display_name,
             )
-            total_bytes_sent += bytes_written
         #### HANDLE END OF QUEUE FLOW STREAM
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:

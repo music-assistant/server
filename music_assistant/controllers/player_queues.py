@@ -59,7 +59,7 @@ from music_assistant_models.media_items import (
     media_from_dict,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.player_queue import PlayerQueue, QueueTimeUpdate
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
@@ -2216,10 +2216,7 @@ class PlayerQueuesController(CoreController):
                 self.mass.signal_event(
                     EventType.QUEUE_TIME_UPDATED,
                     object_id=queue_id,
-                    data=QueueTimeUpdate(
-                        elapsed_time=queue.elapsed_time,
-                        elapsed_time_last_updated=queue.elapsed_time_last_updated,
-                    ),
+                    data=queue.elapsed_time,
                 )
                 # also signal update to the player itself so it can update its current_media
                 self.mass.players.trigger_player_update(queue_id)
