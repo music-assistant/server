@@ -2111,7 +2111,6 @@ class PlayerQueuesController(CoreController):
                 and current_item.streamdetails.seek_position
             ):
                 elapsed_time += current_item.streamdetails.seek_position
-
             queue.elapsed_time = elapsed_time
             queue.elapsed_time_last_updated = time.time()
 
@@ -2302,7 +2301,6 @@ class PlayerQueuesController(CoreController):
     ) -> tuple[int | None, int]:
         """Calculate current queue index and current track elapsed time when flow mode is active."""
         elapsed_time_queue_total = player.corrected_elapsed_time or 0
-
         if queue.current_index is None and not queue.flow_mode_stream_log:
             return queue.current_index, int(queue.elapsed_time)
 
@@ -2341,7 +2339,6 @@ class PlayerQueuesController(CoreController):
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, int(queue.elapsed_time)
-
         return queue_index, int(track_time)
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:

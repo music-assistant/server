@@ -1013,7 +1013,12 @@ class StreamsController(CoreController):
                     "No Streamdetails known for queue item %s",
                     queue_track.queue_item_id,
                 )
-
+            self.logger.debug(
+                "Start Streaming queue track: %s (%s) for queue %s",
+                queue_track.streamdetails.uri,
+                queue_track.name,
+                queue.display_name,
+            )
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
@@ -1155,13 +1160,18 @@ class StreamsController(CoreController):
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
-
             queue_track.streamdetails.seconds_streamed = seconds_streamed
             queue_track.streamdetails.duration = int(
                 queue_track.streamdetails.seek_position + seconds_streamed
             )
             play_log_entry.seconds_streamed = seconds_streamed
             play_log_entry.duration = queue_track.streamdetails.duration
+            self.logger.debug(
+                "Finished Streaming queue track: %s (%s) on queue %s",
+                queue_track.streamdetails.uri,
+                queue_track.name,
+                queue.display_name,
+            )
             total_bytes_sent += bytes_written
         #### HANDLE END OF QUEUE FLOW STREAM
         # end of queue flow: make sure we yield the last_fadeout_part
