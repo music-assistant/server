@@ -216,10 +216,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # parse uri for further processing
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
 
-            # radio items can only be added to builtin playlists
-            if media_type == MediaType.RADIO and playlist_prov.domain != "builtin":
+            # non-track items can only be added to builtin playlists
+            if media_type != MediaType.TRACK and playlist_prov.domain != "builtin":
                 self.logger.warning(
-                    "Not adding %s to playlist %s - radio only supported in builtin playlists",
+                    "Not adding %s to playlist %s - only supported in builtin playlists",
                     uri,
                     playlist.name,
                 )
