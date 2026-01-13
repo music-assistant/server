@@ -245,7 +245,7 @@ class SqueezelitePlayer(Player):
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
             sample_rate=96000,
-            bit_depth=24,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=2,
         )
 
