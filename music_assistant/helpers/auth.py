@@ -64,7 +64,7 @@ class AuthenticationHelper:
 
         Params:
         - url: The URL the user needs to open for authentication.
-        - timeout_: duration in seconds helpers waits for callback (default: 60).
+        - timeout_seconds: duration in seconds helpers waits for callback (default: 60).
         """
         self.send_url(auth_url)
         LOGGER.debug("Waiting for authentication callback on %s", self.callback_url)
