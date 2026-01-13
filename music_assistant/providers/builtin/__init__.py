@@ -24,11 +24,13 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
+    Audiobook,
     AudioFormat,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
     Playlist,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     Track,
@@ -357,11 +359,11 @@ class BuiltinProvider(MusicProvider):
 
     async def get_playlist_tracks(  # type: ignore[override]
         self, prov_playlist_id: str, page: int = 0
-    ) -> list[Track | Radio]:
+    ) -> list[Track | Radio | PodcastEpisode | Audiobook]:
         """Get playlist tracks.
 
-        Builtin provider supports both Track and Radio items in playlists.
-        Overrides base class to return list[Track | Radio] instead of list[Track].
+        Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
+        Overrides base class to return extended union type instead of list[Track].
         """
         if page > 0:
             # paging not supported, we always return the whole list at once
@@ -370,7 +372,7 @@ class BuiltinProvider(MusicProvider):
             # Builtin playlists only contain tracks, not radio items
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         # user created universal playlist
-        result: list[Track | Radio] = []
+        result: list[Track | Radio | PodcastEpisode | Audiobook] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
@@ -386,7 +388,7 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                if isinstance(track, (Track, Radio)):
+                if isinstance(track, (Track, Radio, PodcastEpisode, Audiobook)):
                     track.position = index
                     result.append(track)
                 else:

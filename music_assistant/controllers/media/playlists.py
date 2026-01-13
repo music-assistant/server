@@ -31,7 +31,12 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant import MusicAssistant
+
+# Type alias for items that can be added to playlists
+PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -87,7 +92,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-    ) -> AsyncGenerator[Track | Radio, None]:
+    ) -> AsyncGenerator[PlaylistItem, None]:
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
@@ -250,7 +255,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         # Get the full item from library to access provider mappings
                         full_item = await self.mass.music.get_item_by_uri(uri)
                         # Type check for supported media items with provider mappings
-                        if isinstance(full_item, (Radio, Audiobook, PodcastEpisode)):
+                        # Use all non-Track types from PlaylistItem
+                        if isinstance(full_item, (Radio, PodcastEpisode, Audiobook)):
                             # Use the first available provider mapping
                             for prov_mapping in full_item.provider_mappings:
                                 if not prov_mapping.available:
@@ -497,7 +503,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
-    ) -> list[Track | Radio]:
+    ) -> list[PlaylistItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):

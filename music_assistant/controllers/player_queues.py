@@ -86,6 +86,8 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
 
+# Type alias for items that can be in playlists (must match playlists.py)
+PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
@@ -1554,9 +1556,9 @@ class PlayerQueuesController(CoreController):
 
     async def get_playlist_tracks(
         self, playlist: Playlist, start_item: str | None
-    ) -> list[Track | Radio]:
+    ) -> list[PlaylistItem]:
         """Return tracks for given playlist, based on user preference."""
-        result: list[Track | Radio] = []
+        result: list[PlaylistItem] = []
         start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",
