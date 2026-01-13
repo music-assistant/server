@@ -236,30 +236,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # Radio items: convert library URIs to provider URIs to survive DB rebuilds
-                if media_type == MediaType.RADIO:
-                    # For library radio URIs, we need to resolve to the actual provider URI
-                    # (which contains the real stream URL, e.g., builtin://radio/https://stream...)
+                # Non-track items: convert library URIs to provider URIs to survive DB rebuilds
+                if media_type != MediaType.TRACK:
+                    # For library URIs, we need to resolve to the actual provider URI
+                    # (which contains the real stream URL for radio, episode URL for podcasts, etc.)
                     if provider_instance_id_or_domain == "library":
-                        # Get the full radio item from library to access provider mappings
-                        full_radio = await self.mass.music.radio.get(
-                            item_id,
-                            provider_instance_id_or_domain,
-                        )
-                        # Use the first available provider mapping (usually builtin)
-                        for radio_prov_mapping in full_radio.provider_mappings:
-                            if not radio_prov_mapping.available:
+                        # Get the full item from library to access provider mappings
+                        full_item = await self.mass.music.get_item_by_uri(uri)
+                        # Use the first available provider mapping
+                        for prov_mapping in full_item.provider_mappings:
+                            if not prov_mapping.available:
                                 continue
-                            radio_prov = self.mass.get_provider(
-                                radio_prov_mapping.provider_instance
-                            )
-                            if not radio_prov:
+                            item_prov = self.mass.get_provider(prov_mapping.provider_instance)
+                            if not item_prov:
                                 continue
                             # Create provider URI from the mapping
                             provider_uri = create_uri(
-                                MediaType.RADIO,
-                                radio_prov.instance_id,
-                                radio_prov_mapping.item_id,
+                                media_type,
+                                item_prov.instance_id,
+                                prov_mapping.item_id,
                             )
                             if provider_uri not in ids_to_add:
                                 ids_to_add.append(provider_uri)
