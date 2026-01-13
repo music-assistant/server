@@ -243,33 +243,41 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     if provider_instance_id_or_domain == "library":
                         # Get the full item from library to access provider mappings
                         full_item = await self.mass.music.get_item_by_uri(uri)
-                        # Use the first available provider mapping
-                        for prov_mapping in full_item.provider_mappings:
-                            if not prov_mapping.available:
-                                continue
-                            item_prov = self.mass.get_provider(prov_mapping.provider_instance)
-                            if not item_prov:
-                                continue
-                            # Create provider URI from the mapping
-                            provider_uri = create_uri(
-                                media_type,
-                                item_prov.instance_id,
-                                prov_mapping.item_id,
-                            )
-                            if provider_uri not in ids_to_add:
-                                ids_to_add.append(provider_uri)
-                            self.logger.info(
-                                "Adding %s to playlist %s",
-                                provider_uri,
-                                playlist.name,
-                            )
-                            break
-                        else:
+                        # Ensure we have a proper media item with provider mappings
+                        if not hasattr(full_item, "provider_mappings"):
                             self.logger.warning(
-                                "Can't add %s to playlist %s - no available provider mapping",
+                                "Can't add %s to playlist %s - item has no provider mappings",
                                 uri,
                                 playlist.name,
                             )
+                        else:
+                            # Use the first available provider mapping
+                            for prov_mapping in full_item.provider_mappings:  # type: ignore[attr-defined]
+                                if not prov_mapping.available:
+                                    continue
+                                item_prov = self.mass.get_provider(prov_mapping.provider_instance)
+                                if not item_prov:
+                                    continue
+                                # Create provider URI from the mapping
+                                provider_uri = create_uri(
+                                    media_type,
+                                    item_prov.instance_id,
+                                    prov_mapping.item_id,
+                                )
+                                if provider_uri not in ids_to_add:
+                                    ids_to_add.append(provider_uri)
+                                self.logger.info(
+                                    "Adding %s to playlist %s",
+                                    provider_uri,
+                                    playlist.name,
+                                )
+                                break
+                            else:
+                                self.logger.warning(
+                                    "Can't add %s to playlist %s - no available provider mapping",
+                                    uri,
+                                    playlist.name,
+                                )
                     else:
                         # Already a provider URI, add directly
                         if uri not in ids_to_add:
