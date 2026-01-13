@@ -236,16 +236,54 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # Radio items must always be added by URI (even library URIs) because
-                # they can't go through the track-matching logic below
+                # Radio items: convert library URIs to provider URIs to survive DB rebuilds
                 if media_type == MediaType.RADIO:
-                    if uri not in ids_to_add:
-                        ids_to_add.append(uri)
-                    self.logger.info(
-                        "Adding %s to playlist %s",
-                        uri,
-                        playlist.name,
-                    )
+                    # For library radio URIs, we need to resolve to the actual provider URI
+                    # (which contains the real stream URL, e.g., builtin://radio/https://stream...)
+                    if provider_instance_id_or_domain == "library":
+                        # Get the full radio item from library to access provider mappings
+                        full_radio = await self.mass.music.radio.get(
+                            item_id,
+                            provider_instance_id_or_domain,
+                        )
+                        # Use the first available provider mapping (usually builtin)
+                        for radio_prov_mapping in full_radio.provider_mappings:
+                            if not radio_prov_mapping.available:
+                                continue
+                            radio_prov = self.mass.get_provider(
+                                radio_prov_mapping.provider_instance
+                            )
+                            if not radio_prov:
+                                continue
+                            # Create provider URI from the mapping
+                            provider_uri = create_uri(
+                                MediaType.RADIO,
+                                radio_prov.instance_id,
+                                radio_prov_mapping.item_id,
+                            )
+                            if provider_uri not in ids_to_add:
+                                ids_to_add.append(provider_uri)
+                            self.logger.info(
+                                "Adding %s to playlist %s",
+                                provider_uri,
+                                playlist.name,
+                            )
+                            break
+                        else:
+                            self.logger.warning(
+                                "Can't add %s to playlist %s - no available provider mapping",
+                                uri,
+                                playlist.name,
+                            )
+                    else:
+                        # Already a provider URI, add directly
+                        if uri not in ids_to_add:
+                            ids_to_add.append(uri)
+                        self.logger.info(
+                            "Adding %s to playlist %s",
+                            uri,
+                            playlist.name,
+                        )
                     continue
                 # For tracks: only add non-library URIs directly (they're portable)
                 # Library track URIs fall through to matching logic below to find provider URIs
