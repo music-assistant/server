@@ -18,7 +18,6 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ContentType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -35,6 +34,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
+    INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
@@ -243,9 +243,9 @@ class SqueezelitePlayer(Player):
         # this is a syncgroup, we need to handle this with a multi client stream
         # Use a fixed 96kHz/24-bit format for syncgroup playback
         master_audio_format = AudioFormat(
-            content_type=ContentType.PCM_S24LE,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
             sample_rate=96000,
-            bit_depth=24,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=2,
         )
 
