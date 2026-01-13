@@ -7,34 +7,87 @@ on:
   push:
     branches:
       - dev
+  pull_request_target:
+    types: [labeled]
+    branches:
+      - dev
 
 jobs:
   backport:
     name: Backport PRs with 'backport-to-stable' label to stable
     runs-on: ubuntu-latest
-    if: github.event.commits[0].distinct == true
+    if: |
+      (github.event_name == 'push' && github.event.commits[0].distinct == true) ||
+      (github.event_name == 'pull_request_target')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Needed for full git history
 
+      - name: Determine workflow trigger and context
+        id: trigger
+        uses: actions/github-script@v8
+        with:
+          script: |
+            // Determine if this is a push or label event
+            const isPushEvent = context.eventName === 'push';
+            const isLabelEvent = context.eventName === 'pull_request_target';
+
+            core.setOutput('is_push_event', isPushEvent);
+            core.setOutput('is_label_event', isLabelEvent);
+
+            // Early exit for wrong label in label events
+            if (isLabelEvent) {
+              const labelName = context.payload.label?.name;
+              if (labelName !== 'backport-to-stable') {
+                console.log(`Label '${labelName}' is not backport-to-stable, skipping`);
+                process.exit(0);
+              }
+            }
+
       - name: Get merged PR info
         id: prinfo
         uses: actions/github-script@v8
         with:
           script: |
-            const pr = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'closed',
-              base: 'dev',
-              sort: 'updated',
-              direction: 'desc',
-              per_page: 10
-            });
-            const merged = pr.data.find(p => p.merge_commit_sha === context.payload.head_commit.id);
-            if (!merged) return core.setFailed('No merged PR found for this commit.');
+            const isPushEvent = '${{ steps.trigger.outputs.is_push_event }}' === 'true';
+            const isLabelEvent = '${{ steps.trigger.outputs.is_label_event }}' === 'true';
+
+            let merged;
+
+            if (isPushEvent) {
+              // Existing logic: Find PR from commit
+              const pr = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'closed',
+                base: 'dev',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 10
+              });
+              merged = pr.data.find(p => p.merge_commit_sha === context.payload.head_commit.id);
+              if (!merged) return core.setFailed('No merged PR found for this commit.');
+            } else if (isLabelEvent) {
+              // New logic: Get PR from label event context
+              const pr = context.payload.pull_request;
+
+              // Verify PR is merged (exit gracefully if not)
+              if (!pr.merged_at) {
+                console.log('PR is not merged yet, skipping backport');
+                process.exit(0);
+              }
+
+              // Fetch full PR details to get merge commit SHA
+              const fullPR = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+              merged = fullPR.data;
+            }
+
             core.setOutput('pr_number', merged.number);
             core.setOutput('pr_title', merged.title);
             core.setOutput('pr_labels', merged.labels.map(l => l.name).join(','));
@@ -118,10 +171,19 @@ jobs:
       - name: Cherry-pick commit
         if: steps.checklabel.outputs.should_backport == 'true'
         run: |
-          git cherry-pick ${{ steps.prinfo.outputs.merge_commit_sha }} || {
+          # Check if commit is already in the branch to avoid redundant cherry-picks
+          if git log --format=%H | grep -q "^${{ steps.prinfo.outputs.merge_commit_sha }}$"; then
+            echo "Commit ${{ steps.prinfo.outputs.merge_commit_sha }} already exists in backport branch, skipping cherry-pick"
+            exit 0
+          fi
+
+          # Try cherry-pick with --empty=drop to handle redundant commits gracefully
+          if git cherry-pick --empty=drop ${{ steps.prinfo.outputs.merge_commit_sha }}; then
+            echo "Cherry-pick successful"
+          else
             echo 'Cherry-pick failed, please resolve conflicts manually.'
             exit 1
-          }
+          fi
 
       - name: Push backport branch
         if: steps.checklabel.outputs.should_backport == 'true'

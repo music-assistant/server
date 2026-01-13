@@ -195,12 +195,16 @@ class PandoraProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        self.logger.debug("Fetching Pandora stations")
-
-        response = await self._api_request("POST", STATIONS_ENDPOINT, data={})
+        response = await self._api_request(
+            "POST",
+            STATIONS_ENDPOINT,
+            data={
+                "pageSize": 250,
+            },
+        )
 
         stations = response.get("stations", [])
-        self.logger.debug("Found %d Pandora stations", len(stations))
+        self.logger.debug("Retrieved %d stations from Pandora", len(stations))
 
         for station in stations:
             station_image = None
