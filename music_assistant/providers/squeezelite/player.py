@@ -471,7 +471,7 @@ class SqueezelitePlayer(Player):
             return
         # elapsed time change on the player will be auto picked up
         # by the player manager.
-        self._attr_elapsed_time = self.client._elapsed_milliseconds / 1000
+        self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
 
         # handle sync
