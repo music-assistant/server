@@ -59,6 +59,10 @@ class SendspinProvider(PlayerProvider):
         if pending_event := self._pending_unregisters.get(client_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", client_id)
             await pending_event.wait()
+        # Check if client still exists (may have disconnected while waiting)
+        if self.server_api.get_client(client_id) is None:
+            self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
+            return
         player = SendspinPlayer(self, client_id)
         self.logger.debug("Client %s connected", client_id)
         if player.device_info.manufacturer == "ESPHome" and (
