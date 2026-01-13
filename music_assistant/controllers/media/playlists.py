@@ -513,7 +513,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return [
             x
             async for x in self.tracks(item.item_id, item.provider)
-            # filter out unavailable tracks and radio items
+            # filter out unavailable items
             if isinstance(x, Track) and x.available
         ]
 
