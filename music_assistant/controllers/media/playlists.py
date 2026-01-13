@@ -12,7 +12,13 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist, Radio, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    Playlist,
+    PodcastEpisode,
+    Radio,
+    Track,
+)
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
@@ -243,16 +249,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     if provider_instance_id_or_domain == "library":
                         # Get the full item from library to access provider mappings
                         full_item = await self.mass.music.get_item_by_uri(uri)
-                        # Ensure we have a proper media item with provider mappings
-                        if not hasattr(full_item, "provider_mappings"):
-                            self.logger.warning(
-                                "Can't add %s to playlist %s - item has no provider mappings",
-                                uri,
-                                playlist.name,
-                            )
-                        else:
+                        # Type check for supported media items with provider mappings
+                        if isinstance(full_item, (Radio, Audiobook, PodcastEpisode)):
                             # Use the first available provider mapping
-                            for prov_mapping in full_item.provider_mappings:  # type: ignore[attr-defined]
+                            for prov_mapping in full_item.provider_mappings:
                                 if not prov_mapping.available:
                                     continue
                                 item_prov = self.mass.get_provider(prov_mapping.provider_instance)
@@ -278,6 +278,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
                                     uri,
                                     playlist.name,
                                 )
+                        else:
+                            self.logger.warning(
+                                "Can't add %s to playlist %s - unsupported media type",
+                                uri,
+                                playlist.name,
+                            )
                     else:
                         # Already a provider URI, add directly
                         if uri not in ids_to_add:
