@@ -235,21 +235,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
-            # for radio items, we always add the URI directly to builtin playlists
-            if playlist_prov.domain == "builtin" and (
-                media_type == MediaType.RADIO or provider_instance_id_or_domain != "library"
-            ):
-                # note: we try not to add library uri's to the builtin playlists
-                # (except for radio items, which must use URIs)
-                # so we can survive db rebuilds
-                if uri not in ids_to_add:
-                    ids_to_add.append(uri)
-                self.logger.info(
-                    "Adding %s to playlist %s",
-                    uri,
-                    playlist.name,
-                )
-                continue
+            if playlist_prov.domain == "builtin":
+                # Radio items must always be added by URI (even library URIs) because
+                # they can't go through the track-matching logic below
+                if media_type == MediaType.RADIO:
+                    if uri not in ids_to_add:
+                        ids_to_add.append(uri)
+                    self.logger.info(
+                        "Adding %s to playlist %s",
+                        uri,
+                        playlist.name,
+                    )
+                    continue
+                # For tracks: only add non-library URIs directly (they're portable)
+                # Library track URIs fall through to matching logic below to find provider URIs
+                if provider_instance_id_or_domain != "library":
+                    if uri not in ids_to_add:
+                        ids_to_add.append(uri)
+                    self.logger.info(
+                        "Adding %s to playlist %s",
+                        uri,
+                        playlist.name,
+                    )
+                    continue
 
             # if target playlist is an exact provider match, we can add it
             if provider_instance_id_or_domain != "library":
