@@ -213,8 +213,6 @@ class RadiothekProvider(MusicProvider):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize provider state."""
         super().__init__(*args, **kwargs)
-
-        super().__init__(*args, **kwargs)
         self._bundle: dict[str, Any] | None = None
         self._media_dir = Path(__file__).parent / "media"
 
