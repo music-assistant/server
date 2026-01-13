@@ -118,10 +118,7 @@ class RemoteAccessManager:
         mode = "optimized" if self._using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
-        stream_bind_ip = (
-            "127.0.0.1" if self.mass.streams.bind_ip == "0.0.0.0" else self.mass.streams.bind_ip
-        )
-        sendspin_url = f"ws://{stream_bind_ip}:8927/sendspin"
+        sendspin_url = f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
 
         self.gateway = WebRTCGateway(
             http_session=self.mass.http_session,

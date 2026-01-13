@@ -17,6 +17,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
@@ -383,7 +384,7 @@ async def get_folder_size(folderpath: str) -> float:
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
                 _fp = os.path.join(dirpath, _file)
-                total_size += os.path.getsize(_fp)
+                total_size += Path(_fp).stat().st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)

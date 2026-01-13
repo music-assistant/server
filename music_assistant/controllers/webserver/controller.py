@@ -372,8 +372,7 @@ class WebserverController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self.remote_access.is_running:
-            await self.remote_access.close()
+        await self.remote_access.close()
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()

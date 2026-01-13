@@ -16,7 +16,7 @@ dependencies = [
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.2",
+  "aiohttp==3.13.3",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
@@ -29,7 +29,7 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.17",
-  "music-assistant-frontend==2.17.63",
+  "music-assistant-frontend==2.17.67",
   "music-assistant-models==1.1.88",
   "mutagen==1.47.0",
   "orjson==3.11.5",
@@ -59,7 +59,7 @@ test = [
   "mypy==1.19.1",
   "pre-commit==4.5.0",
   "pre-commit-hooks==6.0.0",
-  "pytest==8.4.2",
+  "pytest==9.0.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
@@ -197,7 +197,7 @@ ignore = [
   "TRY003", # Just annoying, not really useful
   "TRY400", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
-  "ISC001", # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",
@@ -216,7 +216,6 @@ ignore = [
   "PTH120",
   "PTH123",
   "PYI034",
-  "PYI036",
   "G004",
   "PGH003",
   "DTZ005",
@@ -224,7 +223,6 @@ ignore = [
   "S105",
   "S106",
   "SLF001",
-  "SIM113",
   "SIM102",
   "PERF401",
   "PERF402",
@@ -247,13 +245,11 @@ ignore = [
   "RET507",
   "RUF006",
   "TRY300",
-  "PTH107",
   "S608",
   "N818",
   "S307",
   "B007",
   "ANN204",
-  "PTH202",
   "ASYNC109",
   "ASYNC110",
 ]

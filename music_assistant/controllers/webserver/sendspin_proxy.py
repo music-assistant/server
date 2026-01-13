@@ -48,10 +48,7 @@ class SendspinProxyHandler:
 
         :return: The WebSocket URL for connecting to the internal Sendspin server.
         """
-        stream_bind_ip = (
-            "127.0.0.1" if self.mass.streams.bind_ip == "0.0.0.0" else self.mass.streams.bind_ip
-        )
-        return f"ws://{stream_bind_ip}:8927/sendspin"
+        return f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
