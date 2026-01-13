@@ -5,7 +5,7 @@
   "description": "Support for Roku's running Media Assistant.",
   "codeowners": ["@medievalapple"],
   "credits": ["[python-rokuecp](https://github.com/ctalkington/python-rokuecp)"],
-  "requirements": ["async-upnp-client==0.46.0","rokuecp==0.19.5"],
+  "requirements": ["async-upnp-client==0.46.2","rokuecp==0.19.5"],
   "documentation": "https://music-assistant.io/player-support/roku/",
   "stage": "beta"
 }

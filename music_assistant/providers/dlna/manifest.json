@@ -8,7 +8,7 @@
   "credits": [
     "[Asyncio UPnP Client library by Steven Looman](https://github.com/StevenLooman/async_upnp_client)"
   ],
-  "requirements": ["async-upnp-client==0.46.0"],
+  "requirements": ["async-upnp-client==0.46.2"],
   "documentation": "https://music-assistant.io/player-support/dlna/",
   "multi_instance": false,
   "builtin": false,
