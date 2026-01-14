@@ -390,7 +390,7 @@ class BuiltinProvider(MusicProvider):
                         item_id, provider_instance_id_or_domain
                     )
                 if isinstance(track, get_args(PlaylistItem)):
-                    track = cast("PlaylistItem", track)
+                    track = cast("PlaylistItem", track)  # type: ignore[assignment]
                     track.position = index
                     result.append(track)
                 else:
