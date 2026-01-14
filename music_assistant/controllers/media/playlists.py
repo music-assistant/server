@@ -257,7 +257,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         # Exclude Track since it has separate logic below (quality sorting, etc.)
                         if isinstance(full_item, PLAYLIST_NON_TRACK_ITEM_CLASSES):
                             # Use the first available provider mapping
-                            for prov_mapping in full_item.provider_mappings:
+                            for prov_mapping in full_item.provider_mappings:  # type: ignore[union-attr]
                                 if not prov_mapping.available:
                                     continue
                                 item_prov = self.mass.get_provider(prov_mapping.provider_instance)
