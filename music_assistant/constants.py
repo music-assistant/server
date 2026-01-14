@@ -22,6 +22,9 @@ APPLICATION_NAME: Final = "Music Assistant"
 # Type alias for items that can be added to playlists
 PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
 
+# Type alias for non-track playlist items (for cases where Track needs separate handling)
+PlaylistNonTrackItem = Radio | PodcastEpisode | Audiobook
+
 # Corresponding MediaType enum values (must match PlaylistItem types above)
 PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.TRACK,
@@ -33,7 +36,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # Class types for isinstance checks (must match PlaylistItem types above)
 PLAYLIST_ITEM_CLASSES: Final[tuple[type, ...]] = (Track, Radio, PodcastEpisode, Audiobook)
 
-# Non-track playlist item classes (for cases where Track needs separate handling)
+# Non-track playlist item classes (must match PlaylistNonTrackItem types above)
 PLAYLIST_NON_TRACK_ITEM_CLASSES: Final[tuple[type, ...]] = (Radio, PodcastEpisode, Audiobook)
 
 

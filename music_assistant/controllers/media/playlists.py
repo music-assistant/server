@@ -22,6 +22,7 @@ from music_assistant.constants import (
     PLAYLIST_MEDIA_TYPES,
     PLAYLIST_NON_TRACK_ITEM_CLASSES,
     PlaylistItem,
+    PlaylistNonTrackItem,
 )
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -256,8 +257,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         # Type check for supported media items with provider mappings
                         # Exclude Track since it has separate logic below (quality sorting, etc.)
                         if isinstance(full_item, PLAYLIST_NON_TRACK_ITEM_CLASSES):
+                            full_item = cast("PlaylistNonTrackItem", full_item)
                             # Use the first available provider mapping
-                            for prov_mapping in full_item.provider_mappings:  # type: ignore[union-attr]
+                            for prov_mapping in full_item.provider_mappings:
                                 if not prov_mapping.available:
                                     continue
                                 item_prov = self.mass.get_provider(prov_mapping.provider_instance)
