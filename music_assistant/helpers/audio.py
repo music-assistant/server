@@ -326,7 +326,7 @@ async def get_stream_details(
             # Set up metadata monitoring callback for HLS radio streams
             if stream_type == StreamType.HLS:
                 streamdetails.stream_metadata_update_callback = partial(
-                    _update_hls_radio_metadata, mass, resolved_url
+                    _update_hls_radio_metadata, mass
                 )
                 streamdetails.stream_metadata_update_interval = 5
         # handle volume normalization details
@@ -863,7 +863,6 @@ def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
 
 async def _update_hls_radio_metadata(
     mass: MusicAssistant,
-    playlist_url: str,
     streamdetails: StreamDetails,
     elapsed_time: int,  # noqa: ARG001
 ) -> None:
@@ -873,7 +872,6 @@ async def _update_hls_radio_metadata(
     Fetches the HLS playlist and extracts metadata from EXTINF lines.
 
     :param mass: MusicAssistant instance
-    :param playlist_url: URL to the HLS master playlist
     :param streamdetails: StreamDetails object to update with metadata
     :param elapsed_time: Current playback position in seconds (unused for live radio)
     """
@@ -885,7 +883,8 @@ async def _update_hls_radio_metadata(
         media_playlist_url = streamdetails.data.get("hls_media_playlist_url")
         if not media_playlist_url:
             try:
-                substream = await get_hls_substream(mass, playlist_url)
+                assert isinstance(streamdetails.path, str)  # for type checking
+                substream = await get_hls_substream(mass, streamdetails.path)
                 media_playlist_url = substream.path
                 streamdetails.data["hls_media_playlist_url"] = media_playlist_url
             except Exception as err:
