@@ -390,9 +390,9 @@ class BuiltinProvider(MusicProvider):
                         item_id, provider_instance_id_or_domain
                     )
                 if isinstance(track, get_args(PlaylistItem)):
-                    track = cast("PlaylistItem", track)  # type: ignore[assignment]
-                    track.position = index
-                    result.append(track)
+                    playlist_item = cast("PlaylistItem", track)
+                    playlist_item.position = index
+                    result.append(playlist_item)
                 else:
                     self.logger.warning(
                         "Unsupported media type in playlist %s: %s", prov_playlist_id, type(track)
