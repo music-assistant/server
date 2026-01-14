@@ -1,7 +1,7 @@
 """All constants for Music Assistant."""
 
 import pathlib
-from typing import Final, cast, get_args
+from typing import Final, cast
 
 from music_assistant_models.config_entries import (
     MULTI_VALUE_SPLITTER,
@@ -29,9 +29,6 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.PODCAST_EPISODE,
     MediaType.AUDIOBOOK,
 )
-
-# Class types for isinstance checks - derived from PlaylistItem
-PLAYLIST_ITEM_CLASSES: Final[tuple[type, ...]] = get_args(PlaylistItem)
 
 # Non-track playlist item classes (for cases where Track needs separate handling)
 PLAYLIST_NON_TRACK_ITEM_CLASSES: Final[tuple[type, ...]] = (Radio, PodcastEpisode, Audiobook)

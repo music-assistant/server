@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, get_args
 
 import aiofiles
 import shortuuid
@@ -38,7 +38,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
     MASS_LOGO,
-    PLAYLIST_ITEM_CLASSES,
     VARIOUS_ARTISTS_FANART,
     PlaylistItem,
 )
@@ -390,7 +389,7 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                if isinstance(track, PLAYLIST_ITEM_CLASSES):
+                if isinstance(track, get_args(PlaylistItem)):
                     track = cast("PlaylistItem", track)
                     track.position = index
                     result.append(track)
