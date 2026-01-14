@@ -55,9 +55,7 @@ SUPPORTED_FEATURES = {
 }
 
 CONF_IDENTITY = "identity"
-CONF_SEARCH_LIMIT = "search_limit"
 CONF_TOP_TRACKS_LIMIT = "top_tracks_limit"
-DEFAULT_SEARCH_LIMIT = 10
 DEFAULT_TOP_TRACKS_LIMIT = 50
 CACHE = 3600 * 24 * 30  # Cache for 30 days
 
@@ -88,15 +86,6 @@ async def get_config_entries(
             value=values.get(CONF_IDENTITY) if values else None,
         ),
         ConfigEntry(
-            key=CONF_SEARCH_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            label="Search items limit",
-            required=False,
-            description="Search items limit for one search.",
-            value=values.get(CONF_SEARCH_LIMIT) if values else DEFAULT_SEARCH_LIMIT,
-            default_value=DEFAULT_SEARCH_LIMIT,
-        ),
-        ConfigEntry(
             key=CONF_TOP_TRACKS_LIMIT,
             type=ConfigEntryType.INTEGER,
             label="Artist Top Tracks search limit",
@@ -104,6 +93,7 @@ async def get_config_entries(
             description="Search limit while getting artist top tracks.",
             value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
             default_value=DEFAULT_TOP_TRACKS_LIMIT,
+            category="advanced",
         ),
     )
 
@@ -123,15 +113,11 @@ class BandcampProvider(MusicProvider):
     _client: BandcampAPIClient
     _converters: BandcampConverters
     throttler: ThrottlerManager
-    search_limit: int
     top_tracks_limit: int
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
         identity = self.config.get_value(CONF_IDENTITY)
-        self.search_limit = cast(
-            "int", self.config.get_value(CONF_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT)
-        )
         self.top_tracks_limit = cast(
             "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )
@@ -150,12 +136,9 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE)
     @throttle_with_retries
     async def search(
-        self, search_query: str, media_types: list[MediaType], limit: int | None = None
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on music provider."""
-        if limit is None:
-            limit = self.search_limit
-
         results = SearchResults()
         if not self._client.identity:
             return results
@@ -170,7 +153,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise InvalidDataError("Unexpected error during Bandcamp search") from error
 
-        for item in search_results[:limit]:
+        for item in search_results:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
                     results.tracks = [*results.tracks, self._converters.track_from_search(item)]

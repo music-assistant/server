@@ -8,7 +8,7 @@ from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.bandcamp import BandcampProvider
+from music_assistant.providers.bandcamp import DEFAULT_TOP_TRACKS_LIMIT, BandcampProvider
 
 
 @pytest.fixture
@@ -82,8 +82,7 @@ async def test_provider_initialization(
 
         await provider.handle_async_init()
 
-        assert provider.search_limit == 10
-        assert provider.top_tracks_limit == 50
+        assert provider.top_tracks_limit == DEFAULT_TOP_TRACKS_LIMIT
 
 
 async def test_handle_async_init_with_identity(provider: BandcampProvider) -> None:
