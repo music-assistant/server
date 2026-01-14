@@ -1,0 +1,17 @@
+{
+  "type": "player",
+  "domain": "heos",
+  "stage": "experimental",
+  "name": "Denon HEOS",
+  "description": "Heos.",
+  "codeowners": [
+    "@Tommatheussen"
+  ],
+  "requirements": [
+    "pyheos==1.0.6"
+  ],
+  "documentation": "https://music-assistant.io/player-support/demo/",
+  "mdns_discovery": [
+    "_heos-audio._tcp.local."
+  ]
+}
