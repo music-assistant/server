@@ -13,14 +13,16 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
-    Audiobook,
     Playlist,
-    PodcastEpisode,
-    Radio,
     Track,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLISTS
+from music_assistant.constants import (
+    DB_TABLE_PLAYLISTS,
+    PLAYLIST_MEDIA_TYPES,
+    PLAYLIST_NON_TRACK_ITEM_CLASSES,
+    PlaylistItem,
+)
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
@@ -34,20 +36,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant import MusicAssistant
-
-# Type alias for items that can be added to playlists
-PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
-
-# Corresponding MediaType enum values (must match PlaylistItem types above)
-PLAYLIST_MEDIA_TYPES = (
-    MediaType.TRACK,
-    MediaType.RADIO,
-    MediaType.PODCAST_EPISODE,
-    MediaType.AUDIOBOOK,
-)
-
-# Class types for isinstance checks (must match PlaylistItem types above)
-PLAYLIST_ITEM_CLASSES = (Track, Radio, PodcastEpisode, Audiobook)
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -267,7 +255,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         full_item = await self.mass.music.get_item_by_uri(uri)
                         # Type check for supported media items with provider mappings
                         # Exclude Track since it has separate logic below (quality sorting, etc.)
-                        if isinstance(full_item, (Radio, PodcastEpisode, Audiobook)):
+                        if isinstance(full_item, PLAYLIST_NON_TRACK_ITEM_CLASSES):
                             # Use the first available provider mapping
                             for prov_mapping in full_item.provider_mappings:
                                 if not prov_mapping.available:
@@ -521,8 +509,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
-            # Base provider interface returns list[Track], but builtin provider
-            # can return list[Track | Radio] (covariant override)
+            # Builtin provider overrides to return list[PlaylistItem], others return list[Track].
+            # Since Track is part of PlaylistItem union, this is safe at runtime.
+            # Type ignore needed because list is invariant and mypy can't verify this.
             return await provider.get_playlist_tracks(item_id, page=page)  # type: ignore[return-value]
 
     async def radio_mode_base_tracks(
@@ -539,7 +528,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return [
             x
             async for x in self.tracks(item.item_id, item.provider)
-            # Radio mode only works with Tracks (filter out Radio/Podcast/Audiobook items)
+            # Radio mode only works with Tracks (filter out all other types)
             if isinstance(x, Track) and x.available
         ]
 

@@ -8,10 +8,33 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption, MediaType
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    PodcastEpisode,
+    Radio,
+    Track,
+)
 
 APPLICATION_NAME: Final = "Music Assistant"
+
+# Type alias for items that can be added to playlists
+PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
+
+# Corresponding MediaType enum values (must match PlaylistItem types above)
+PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
+
+# Class types for isinstance checks (must match PlaylistItem types above)
+PLAYLIST_ITEM_CLASSES: Final[tuple[type, ...]] = (Track, Radio, PodcastEpisode, Audiobook)
+
+# Non-track playlist item classes (for cases where Track needs separate handling)
+PLAYLIST_NON_TRACK_ITEM_CLASSES: Final[tuple[type, ...]] = (Radio, PodcastEpisode, Audiobook)
 
 
 API_SCHEMA_VERSION: Final[int] = 28

@@ -54,7 +54,6 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
-    Radio,
     Track,
     UniqueList,
     media_from_dict,
@@ -68,6 +67,7 @@ from music_assistant.constants import (
     CONF_FLOW_MODE,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
+    PlaylistItem,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -85,9 +85,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
-
-# Type alias for items that can be in playlists (must match playlists.py)
-PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"

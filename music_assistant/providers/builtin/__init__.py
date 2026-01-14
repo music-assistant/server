@@ -24,13 +24,11 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
-    Audiobook,
     AudioFormat,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
     Playlist,
-    PodcastEpisode,
     ProviderMapping,
     Radio,
     Track,
@@ -38,7 +36,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import (
+    MASS_LOGO,
+    PLAYLIST_ITEM_CLASSES,
+    VARIOUS_ARTISTS_FANART,
+    PlaylistItem,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
@@ -78,10 +81,6 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
-
-# Type alias for items supported in builtin playlists (matches PlaylistItem in playlists.py)
-PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
-PLAYLIST_ITEM_CLASSES = (Track, Radio, PodcastEpisode, Audiobook)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
