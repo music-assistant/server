@@ -89,8 +89,6 @@ def parse_podcast(
     elif isinstance(abs_podcast, AbsLibraryItemMinifiedPodcast):
         mass_podcast.total_episodes = abs_podcast.media.num_episodes
 
-    mass_podcast.date_added = datetime.fromtimestamp(abs_podcast.added_at / 1000)
-
     return mass_podcast
 
 
