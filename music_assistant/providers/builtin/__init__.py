@@ -370,9 +370,9 @@ class BuiltinProvider(MusicProvider):
             # paging not supported, we always return the whole list at once
             return []
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            # Builtin playlists only contain tracks, not radio items
+            # System-generated playlists (favorites, random, etc.) only contain tracks
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
-        # user created universal playlist
+        # User-created playlists can contain Track, Radio, PodcastEpisode, and Audiobook items
         result: list[PlaylistItem] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
