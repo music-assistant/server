@@ -136,7 +136,7 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE)
     @throttle_with_retries
     async def search(
-        self, search_query: str, media_types: list[MediaType], limit: int = 5
+        self, search_query: str, media_types: list[MediaType], limit: int = 50
     ) -> SearchResults:
         """Perform search on music provider."""
         results = SearchResults()
@@ -153,7 +153,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise InvalidDataError("Unexpected error during Bandcamp search") from error
 
-        for item in search_results:
+        for item in search_results[:limit]:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
                     results.tracks = [*results.tracks, self._converters.track_from_search(item)]
