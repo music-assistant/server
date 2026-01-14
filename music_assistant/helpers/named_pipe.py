@@ -6,6 +6,7 @@ import asyncio
 import os
 import stat
 from contextlib import suppress
+from pathlib import Path
 
 
 class AsyncNamedPipeWriter:
@@ -35,7 +36,7 @@ class AsyncNamedPipeWriter:
                 file_stat = os.stat(self._pipe_path)
                 if not stat.S_ISFIFO(file_stat.st_mode):
                     # Not a FIFO - remove and recreate
-                    os.remove(self._pipe_path)
+                    Path(self._pipe_path).unlink()
                     os.mkfifo(self._pipe_path)
 
         await asyncio.to_thread(_create)
@@ -55,7 +56,7 @@ class AsyncNamedPipeWriter:
 
         def _remove() -> None:
             with suppress(Exception):
-                os.remove(self._pipe_path)
+                Path(self._pipe_path).unlink()
 
         await asyncio.to_thread(_remove)
 

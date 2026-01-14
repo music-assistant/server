@@ -85,6 +85,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_RADIOS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
@@ -342,6 +343,11 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # manually added (multi provider) playlist removal
             key = CONF_KEY_PLAYLISTS
+            # also delete the playlist file if it exists
+            playlist_file = os.path.join(self._playlists_dir, prov_item_id)
+            if await asyncio.to_thread(os.path.isfile, playlist_file):
+                async with self._playlist_lock:
+                    await asyncio.to_thread(os.remove, playlist_file)
         else:
             return False
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
@@ -554,8 +560,11 @@ class BuiltinProvider(MusicProvider):
 
     @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
-        for random_album in await self.mass.music.albums.library_items(
-            limit=1, order_by="random", extra_query="album_type != 'single'"
+        for random_album in await self.mass.music.albums.get_library_items_by_query(
+            limit=1,
+            order_by="random",
+            extra_query_parts=["album_type != :excluded_album_type"],
+            extra_query_params={"excluded_album_type": "single"},
         ):
             tracks = await self.mass.music.albums.tracks(
                 random_album.item_id, random_album.provider

@@ -16,6 +16,7 @@ from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
@@ -371,6 +372,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -404,6 +406,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table
