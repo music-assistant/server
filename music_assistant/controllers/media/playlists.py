@@ -38,6 +38,17 @@ if TYPE_CHECKING:
 # Type alias for items that can be added to playlists
 PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
 
+# Corresponding MediaType enum values (must match PlaylistItem types above)
+PLAYLIST_MEDIA_TYPES = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
+
+# Class types for isinstance checks (must match PlaylistItem types above)
+PLAYLIST_ITEM_CLASSES = (Track, Radio, PodcastEpisode, Audiobook)
+
 
 class PlaylistController(MediaControllerBase[Playlist]):
     """Controller managing MediaItems of type Playlist."""
@@ -201,7 +212,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 async for item in self.tracks(item_id, provider_instance_id_or_domain):
                     if item.uri is not None:
                         unwrapped_uris.append(item.uri)
-            elif media_type in (MediaType.TRACK, MediaType.RADIO):
+            elif media_type in PLAYLIST_MEDIA_TYPES:
                 unwrapped_uris.append(uri)
             else:
                 self.logger.warning(
@@ -255,7 +266,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         # Get the full item from library to access provider mappings
                         full_item = await self.mass.music.get_item_by_uri(uri)
                         # Type check for supported media items with provider mappings
-                        # Use all non-Track types from PlaylistItem
+                        # Exclude Track since it has separate logic below (quality sorting, etc.)
                         if isinstance(full_item, (Radio, PodcastEpisode, Audiobook)):
                             # Use the first available provider mapping
                             for prov_mapping in full_item.provider_mappings:
@@ -528,7 +539,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return [
             x
             async for x in self.tracks(item.item_id, item.provider)
-            # filter out unavailable items
+            # Radio mode only works with Tracks (filter out Radio/Podcast/Audiobook items)
             if isinstance(x, Track) and x.available
         ]
 

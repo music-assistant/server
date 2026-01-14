@@ -79,6 +79,9 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
+# Type alias for items supported in builtin playlists (matches PlaylistItem in playlists.py)
+PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
+PLAYLIST_ITEM_CLASSES = (Track, Radio, PodcastEpisode, Audiobook)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -359,7 +362,7 @@ class BuiltinProvider(MusicProvider):
 
     async def get_playlist_tracks(  # type: ignore[override]
         self, prov_playlist_id: str, page: int = 0
-    ) -> list[Track | Radio | PodcastEpisode | Audiobook]:
+    ) -> list[PlaylistItem]:
         """Get playlist tracks.
 
         Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
@@ -372,7 +375,7 @@ class BuiltinProvider(MusicProvider):
             # Builtin playlists only contain tracks, not radio items
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         # user created universal playlist
-        result: list[Track | Radio | PodcastEpisode | Audiobook] = []
+        result: list[PlaylistItem] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
@@ -388,7 +391,7 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                if isinstance(track, (Track, Radio, PodcastEpisode, Audiobook)):
+                if isinstance(track, PLAYLIST_ITEM_CLASSES):
                     track.position = index
                     result.append(track)
                 else:
