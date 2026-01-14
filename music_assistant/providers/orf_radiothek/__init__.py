@@ -53,7 +53,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
-from .classes import (
+from .helpers import (
     OrfPodcast,
     OrfPodcastEpisode,
     OrfStation,
@@ -174,19 +174,6 @@ async def get_config_entries(
             value=values.get(CONF_INCLUDE_HIDDEN),
         ),
         ConfigEntry(
-            key=CONF_CATCHUP_DAYS,
-            type=ConfigEntryType.INTEGER,
-            label="Catch-up retention (days)",
-            required=False,
-            default_value=30,
-            description=(
-                "Expose broadcasts as podcast episodes for the last N days. "
-                "Older items vanish on next sync."
-            ),
-            value=values.get(CONF_CATCHUP_DAYS),
-            category="advanced",
-        ),
-        ConfigEntry(
             key=CONF_CATCHUP_PROTO,
             type=ConfigEntryType.STRING,
             label="Catch-up stream type",
@@ -238,7 +225,6 @@ class RadiothekProvider(MusicProvider):
         self.stream_quality = str(self.config.get_value(CONF_STREAM_QUALITY) or "qxa").lower()
         self.include_hidden = bool(self.config.get_value(CONF_INCLUDE_HIDDEN) or False)
 
-        self.catchup_days = _as_int(self.config.get_value(CONF_CATCHUP_DAYS), default=30)
         self.catchup_proto = str(self.config.get_value(CONF_CATCHUP_PROTO) or "progressive").lower()
         self.catchup_stations = str(self.config.get_value(CONF_CATCHUP_STATIONS) or "").strip()
 
