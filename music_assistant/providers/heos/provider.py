@@ -2,43 +2,34 @@
 
 from __future__ import annotations
 
-from pyheos import Credentials, Heos, HeosOptions
+import logging
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from pyheos import Credentials, Heos, HeosOptions, MediaMusicSource
+
+from music_assistant.constants import (
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.models.player_provider import PlayerProvider
 
 from .player import HeosPlayer
 
 
 class HeosPlayerProvider(PlayerProvider):
-    """
-    Example/demo Player provider.
-
-    Note that this is always subclassed from PlayerProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some conveniencemethods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+    """Player provided for Denon HEOS."""
 
     _heos: Heos
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is initialized in Music Assistant.
-        # you can use this to do any async initialization of the provider,
-        # such as loading configuration, setting up connections, etc.
-        self.logger.info("Initializing HeosPlayerProvider with config: %s", self.config)
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("pyheos").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pyheos").setLevel(self.logger.level + 10)
 
+        # Credentials are not needed, only used to grab favorites and music services
         credentials: Credentials | None = None
 
         if (username := self.config.get_value(CONF_USERNAME)) is not None and (
@@ -48,7 +39,7 @@ class HeosPlayerProvider(PlayerProvider):
 
         self._heos = Heos(
             HeosOptions(
-                "192.168.50.207",
+                str(self.config.get_value(CONF_IP_ADDRESS)),
                 credentials=credentials,
                 auto_reconnect=True,
             )
@@ -60,6 +51,7 @@ class HeosPlayerProvider(PlayerProvider):
         self.logger.info("Connected to HEOS System")
 
         players = await self._heos.get_players()
+        await self._heos.get_music_sources()
 
         self.logger.info("Found %s players", len(players))
 
@@ -69,15 +61,10 @@ class HeosPlayerProvider(PlayerProvider):
             heos_player = HeosPlayer(self, player)
             await heos_player.setup()
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
-        self.logger.info("DemoPlayerProvider loaded")
+    @property
+    def source_list(self) -> dict[int, MediaMusicSource]:
+        """Get the music source list for the system."""
+        return self._heos.music_sources
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -91,10 +78,10 @@ class HeosPlayerProvider(PlayerProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
+        await self._heos.disconnect()
+
         for player in self.players:
             # if you have any cleanup logic for the players, you can do that here.
             # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
-
-        await self._heos.disconnect()

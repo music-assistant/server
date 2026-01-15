@@ -1,9 +1,9 @@
 {
   "type": "player",
   "domain": "heos",
-  "stage": "experimental",
+  "stage": "alpha",
   "name": "Denon HEOS",
-  "description": "Heos.",
+  "description": "HEOS Player provider for Denon/Marantz devices with HEOS Built-in",
   "codeowners": [
     "@Tommatheussen"
   ],

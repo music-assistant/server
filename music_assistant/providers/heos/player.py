@@ -11,7 +11,7 @@ from pyheos import PlayState
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from pyheos import HeosPlayer as HeosSourcePlayer
+    from pyheos import HeosPlayer as pyheosPlayer
 
     from .provider import HeosPlayerProvider
 
@@ -23,80 +23,109 @@ PLAY_STATE_TO_PLAY_BACK_STATE: dict[PlayState | None, PlaybackState] = {
     None: PlaybackState.UNKNOWN,
 }
 
+PLAYER_FEATURES = {
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.PAUSE,
+    PlayerFeature.NEXT_PREVIOUS,
+}
+
 
 class HeosPlayer(Player):
     """HeosPLayer in Music Assistant."""
 
-    def __init__(self, provider: HeosPlayerProvider, client: HeosSourcePlayer) -> None:
+    def __init__(self, provider: HeosPlayerProvider, client: pyheosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(client.player_id))
 
-        self.client: HeosSourcePlayer = client
+        self.device: pyheosPlayer = client
 
-        # init some static variables
-        self._attr_name = client.name
+        # Set player attributes
         self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = {
-            PlayerFeature.VOLUME_SET,
-            PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,
-            PlayerFeature.NEXT_PREVIOUS,
-        }
+        self._attr_supported_features = PLAYER_FEATURES
         self._attr_device_info = DeviceInfo(
             model=client.model,
             software_version=client.version,
             ip_address=client.ip_address,
+            manufacturer="Denon",  # TODO: Grab this from API, technically can be others as well
         )
-        self._attr_available = self.client.available
+        self._attr_available = self.device.available
+        self._attr_name = client.name
+
+        self._attr_can_group_with = {self.provider.instance_id}
+
+        # TODO: Add source list
+        # self._attr_source_list = provider.source_list
 
     async def setup(self) -> None:
         """Set up the player."""
-        if self.client.available:
-            self.client.add_on_player_event(self._player_update)
+        if self.available:
+            self.device.add_on_player_event(self._player_event_received)
 
             await self.mass.players.register_or_update(self)
 
-    async def _player_update(self, event: str) -> None:
-        self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self.client.state]
-        self._attr_volume_muted = self.client.is_muted
-        self._attr_volume_level = self.client.volume
+    async def _player_event_received(self, event: str) -> None:
+        """Handle player device events."""
+        await self.set_dynamic_attributes()
+
+    async def set_dynamic_attributes(self) -> None:
+        """Update Player attributes."""
+        self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self.device.state]
+        self._attr_volume_muted = self.device.is_muted
+        self._attr_volume_level = self.device.volume
+
+        if self.device.now_playing_media.current_position is not None:
+            self._attr_elapsed_time = self.device.now_playing_media.current_position / 1000
+        else:
+            self._attr_elapsed_time = None
+
+        if self.device.now_playing_media.current_position_updated is not None:
+            self._attr_elapsed_time_last_updated = (
+                self.device.now_playing_media.current_position_updated.timestamp()
+            )
+        else:
+            self._attr_elapsed_time_last_updated = None
+
+        self.logger.debug(self.device.now_playing_media)
+
+        self._attr_active_source = str(self.device.now_playing_media.source_id)
 
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self.client.set_volume(volume_level)
+        await self.device.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         if muted:
-            await self.client.mute()
+            await self.device.mute()
         else:
-            await self.client.unmute()
+            await self.device.unmute()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        await self.client.play()
+        await self.device.play()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        await self.client.stop()
+        await self.device.stop()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        await self.client.pause()
+        await self.device.pause()
 
     async def next_track(self) -> None:
         """Handle NEXT_TRACK command on the player."""
-        await self.client.play_next()
+        await self.device.play_next()
 
     async def previous_track(self) -> None:
         """Handle PREVIOUS_TRACK command on the player."""
-        await self.client.play_previous()
+        await self.device.play_previous()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        await self.client.play_url(media.uri)
+        await self.device.play_url(media.uri)
 
         self._attr_current_media = media
 
