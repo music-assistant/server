@@ -46,22 +46,6 @@ async def setup(
     return SverigesRadio(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key="info",
-            type=ConfigEntryType.LABEL,
-            label="Sveriges Radio provider",
-            description="No configuration required yet.",
-        ),
-    )
 
 
 class SverigesRadio(MusicProvider):

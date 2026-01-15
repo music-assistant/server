@@ -2,9 +2,8 @@
   "type": "music",
   "domain": "sverigesradio",
   "name": "Sveriges Radio",
-  "description": "Live channels and podcasts from Sveriges Radio.",
+  "description": "Live channels from Sveriges Radio.",
   "codeowners": ["@romany"],
   "requirements": [],
-  "documentation": "https://www.romany.net/",
-  "mdns_discovery": []
+  "documentation": "https://music-assistant.io/music-providers/sveriges-radio/"
 }
