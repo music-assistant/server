@@ -218,7 +218,12 @@ class TimedClientStream:
         """
         audio_gen, position = await self.subscribe_raw()
 
+        # Calculate frame size for alignment
+        # Frame size = channels * bytes_per_sample
+        bytes_per_frame = output_format.channels * (output_format.bit_depth // 8)
+
         async def _stream_with_ffmpeg() -> AsyncGenerator[bytes, None]:
+            buffer = b""
             try:
                 async for chunk in get_ffmpeg_stream(
                     audio_input=audio_gen,
@@ -226,7 +231,17 @@ class TimedClientStream:
                     output_format=output_format,
                     filter_params=filter_params,
                 ):
-                    yield chunk
+                    buffer += chunk
+                    # Yield only complete frames
+                    aligned_size = (len(buffer) // bytes_per_frame) * bytes_per_frame
+                    if aligned_size > 0:
+                        yield buffer[:aligned_size]
+                        buffer = buffer[aligned_size:]
+                # Yield any remaining complete frames at end of stream
+                if buffer:
+                    aligned_size = (len(buffer) // bytes_per_frame) * bytes_per_frame
+                    if aligned_size > 0:
+                        yield buffer[:aligned_size]
             finally:
                 # Ensure audio_gen cleanup runs immediately
                 with suppress(Exception):
