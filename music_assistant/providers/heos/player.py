@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import DeviceInfo
+from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import PlayState
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -54,8 +54,8 @@ class HeosPlayer(Player):
 
         self._attr_can_group_with = {self.provider.instance_id}
 
-        # TODO: Add source list
-        # self._attr_source_list = provider.source_list
+        for source_id, source in provider.source_list.items():
+            self._attr_source_list.append(PlayerSource(id=str(source_id), name=source.name))
 
     async def setup(self) -> None:
         """Set up the player."""
