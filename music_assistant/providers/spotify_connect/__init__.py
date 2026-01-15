@@ -755,7 +755,6 @@ class SpotifyConnectProvider(PluginProvider):
         # this player has become the active spotify connect player
         # we need to start the playback
         if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
-
             # If we receive a 'sink' event but we are not officially connected
             # (i.e. we just disconnected), ignore it to prevent accidental
             # re-activation of this player (trailing event from dying session).
