@@ -428,7 +428,13 @@ class MetaDataController(CoreController):
             image_format = "png" if path.lower().endswith(".png") else "jpg"
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            path = os.path.join(self._collage_images_dir, path.split("/collage/")[-1])
+            collage_rel = path.split("/collage/")[-1]
+            # Normalize and ensure the collage path stays within the collage images directory
+            collage_path = os.path.realpath(os.path.join(self._collage_images_dir, collage_rel))
+            base_collage_dir = os.path.realpath(self._collage_images_dir)
+            if os.path.commonpath([collage_path, base_collage_dir]) != base_collage_dir:
+                raise FileNotFoundError("Invalid collage path")
+            path = collage_path
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )

@@ -27,6 +27,35 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
+def _is_safe_local_image_path(path_or_url: str) -> bool:
+    """Return True if the given path is considered safe to open as a local image file.
+
+    This performs basic normalization and traversal checks to avoid accessing
+    unexpected locations when the path originates from untrusted input.
+    """
+    # URLs and data URIs are handled elsewhere
+    if path_or_url.startswith(("http://", "https://", "data:image")):
+        return False
+
+    # Normalize the path and reject any traversal components
+    norm_path = os.path.normpath(path_or_url)
+    if norm_path.startswith("..") or "/../" in norm_path or "\\..\\" in norm_path:
+        return False
+
+    # Resolve to an absolute real path and ensure it is within the current working directory
+    real_path = os.path.realpath(norm_path)
+    cwd = os.path.realpath(os.getcwd())
+    try:
+        common = os.path.commonpath([real_path, cwd])
+    except ValueError:
+        # Different drives on Windows or other path issues
+        return False
+    if common != cwd:
+        return False
+
+    return True
+
+
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
     """Create thumbnail from image url."""
     # TODO: add local cache here !
@@ -48,7 +77,9 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.split(",")[-1])
     # handle FILE location (of type image)
-    if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")):
+    if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")) and _is_safe_local_image_path(
+        path_or_url
+    ):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read())
