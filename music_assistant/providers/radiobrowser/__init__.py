@@ -495,7 +495,7 @@ class RadioBrowserProvider(MusicProvider):
                 ),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
-                path=stream.url_resolved,
+                path=stream.url_resolved or stream.url,
                 can_seek=False,
                 allow_seek=False,
             )
