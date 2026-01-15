@@ -28,6 +28,7 @@ PLAYER_FEATURES = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
     PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.SELECT_SOURCE,
 }
 
 
@@ -54,14 +55,27 @@ class HeosPlayer(Player):
 
         self._attr_can_group_with = {self.provider.instance_id}
 
-        for source_id, source in provider.source_list.items():
-            self._attr_source_list.append(PlayerSource(id=str(source_id), name=source.name))
-
     async def setup(self) -> None:
         """Set up the player."""
         self.device.add_on_player_event(self._player_event_received)
 
         await self.mass.players.register_or_update(self)
+
+        await self._build_source_list()
+
+    async def _build_source_list(self) -> None:
+        assert self.device.heos is not None
+        music_sources = await self.device.heos.get_music_sources()
+
+        for source_id, source in music_sources.items():
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=str(source_id),
+                    name=source.name,
+                    can_play_pause=source_id == 1024,
+                    can_next_previous=source_id == 1024,
+                )
+            )
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
