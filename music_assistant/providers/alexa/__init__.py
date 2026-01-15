@@ -51,6 +51,7 @@ CONF_API_URL = "api_url"
 CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
+    "play_audio_fr-FR": "demande à music assistant de lire l'audio",
     "play_audio_de-DE": "sag music assistant spiele audio",
     "play_audio_en-US": "ask music assistant to play audio",
     "play_audio_default": "ask music assistant to play audio",
