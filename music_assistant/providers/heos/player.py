@@ -59,10 +59,9 @@ class HeosPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
-        if self.available:
-            self.device.add_on_player_event(self._player_event_received)
+        self.device.add_on_player_event(self._player_event_received)
 
-            await self.mass.players.register_or_update(self)
+        await self.mass.players.register_or_update(self)
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
