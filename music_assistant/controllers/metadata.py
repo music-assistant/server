@@ -43,6 +43,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
+    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     VARIOUS_ARTISTS_MBID,
@@ -981,6 +982,20 @@ class MetaDataController(CoreController):
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
+            await asyncio.sleep(30)
+
+        # Scan for missing album images
+        self.logger.debug("Start lookup for missing album images...")
+        query = (
+            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+            f"AND (json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') ISNULL "
+            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') = '[]')"
+        )
+        for album in await self.mass.music.albums.get_library_items_by_query(
+            limit=5, order_by="random", extra_query_parts=[query]
+        ):
+            if album.uri:
+                self.schedule_update_metadata(album.uri)
             await asyncio.sleep(30)
 
         # Force refresh playlist metadata every refresh interval
