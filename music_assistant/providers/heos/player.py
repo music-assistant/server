@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo, PlayerSource
-from pyheos import PlayState
+from pyheos import Heos, PlayState
 
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -35,11 +35,17 @@ PLAYER_FEATURES = {
 class HeosPlayer(Player):
     """HeosPLayer in Music Assistant."""
 
+    _heos: Heos
+
     def __init__(self, provider: HeosPlayerProvider, client: pyheosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(client.player_id))
 
         self.device: pyheosPlayer = client
+
+        # Keep internal reference so we don't need to check None on each call
+        assert self.device.heos
+        self._heos = self.device.heos
 
         # Set player attributes
         self._attr_type = PlayerType.PLAYER
@@ -64,8 +70,8 @@ class HeosPlayer(Player):
         await self._build_source_list()
 
     async def _build_source_list(self) -> None:
-        assert self.device.heos is not None
-        music_sources = await self.device.heos.get_music_sources()
+        """Build source list based on from controller."""
+        music_sources = await self._heos.get_music_sources()
 
         for source_id, source in music_sources.items():
             self._attr_source_list.append(
