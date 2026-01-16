@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from copy import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, PlayState
+from pyheos import const as pyheosConst  # noqa: N812
 
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -66,6 +67,7 @@ class HeosPlayer(Player):
     async def setup(self) -> None:
         """Set up the player."""
         self.device.add_on_player_event(self._player_event_received)
+        self._heos.add_on_controller_event(self._handle_controller_event)
 
         await self.mass.players.register_or_update(self)
 
@@ -73,6 +75,10 @@ class HeosPlayer(Player):
         await self._build_group_list()
 
         await self.set_dynamic_attributes()
+
+    async def _handle_controller_event(self, event: str, result: Any) -> None:
+        if event == pyheosConst.EVENT_GROUPS_CHANGED:
+            await self._build_group_list()
 
     async def _build_source_list(self) -> None:
         """Build source list based on from controller."""
