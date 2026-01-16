@@ -57,10 +57,7 @@ class HeosPlayerProvider(PlayerProvider):
 
         # Build player configs
         devices = await self._heos.get_players()
-        self.logger.info("Found %s players", len(devices))
-        for player_id, device in devices.items():
-            self.logger.info(f"Found player {player_id}, {device.name}")
-
+        for device in devices.values():
             heos_player = HeosPlayer(self, device)
             await heos_player.setup()
 
@@ -85,17 +82,7 @@ class HeosPlayerProvider(PlayerProvider):
         return self._source_list
 
     async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is unloaded from Music Assistant.
-        # this means also when the provider is getting reloaded
+        """Handle unload/close of the provider."""
         await self._heos.disconnect()
 
         for player in self.players:
