@@ -54,7 +54,7 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read())
     # use ffmpeg for embedded images
-    if img_data := await get_embedded_image(path_or_url):
+    if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
