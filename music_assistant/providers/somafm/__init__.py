@@ -43,7 +43,6 @@ SUPPORTED_FEATURES = {
 }
 
 CONF_QUALITY = "quality"
-CONF_FORMAT = "format"
 
 
 async def setup(
@@ -64,28 +63,15 @@ async def get_config_entries(
     return (
         ConfigEntry(
             key=CONF_QUALITY,
+            category="advanced",
             type=ConfigEntryType.STRING,
             label="Stream Quality",
-            description="Up to 320kbps in Highest",
             options=[
                 ConfigValueOption("Highest", "highest"),
                 ConfigValueOption("High", "high"),
                 ConfigValueOption("Low", "low"),
             ],
-            default_value="high",
-        ),
-        ConfigEntry(
-            key=CONF_FORMAT,
-            type=ConfigEntryType.STRING,
-            label="Format",
-            description="High and Low quality streams are only available in AAC",
-            depends_on=CONF_QUALITY,
-            depends_on_value="highest",
-            options=[
-                ConfigValueOption("MP3", "mp3"),
-                ConfigValueOption("AAC", "aac"),
-            ],
-            default_value="aac",
+            default_value="highest",
         ),
     )
 
@@ -193,21 +179,33 @@ class SomaFMProvider(MusicProvider):
             raise MediaNotFoundError("No valid SomaFM stream available")
 
         def _get_playlist_url(station: dict[str, Any]) -> str:
-            """Pick playlist based on quality and format config values."""
+            """Pick playlist based on quality config value."""
             req_quality = self.config.get_value(CONF_QUALITY)
-            req_format = self.config.get_value(CONF_FORMAT)
-            if req_quality in ["high", "low"]:
-                req_format = "aacp"
-                self.logger.info("SomaFM High and low quality streams are available only in AACP")
             playlists: list[dict[str, str]] = station.get("playlists", [])
+
+            # Remove MP3 playlist options for now; AAC is generally better
+            playlists = [
+                playlist for playlist in playlists if playlist["format"] in {"aac", "aacp"}
+            ]
+
+            # Sort by quality just in case they already aren't sorted highest/high/low
+            quality_map = {"highest": 0, "high": 1, "low": 2}
+            playlists.sort(key=lambda x: quality_map[x["quality"]])
+
+            # Detect empty playlist after sort and filter
+            if len(playlists) == 0:
+                raise MediaNotFoundError("No valid SomaFM playlist available")
+
+            # Find the first playlist item that has the requested quality
             for playlist in playlists:
                 avail_quality = playlist.get("quality")
-                avail_format = playlist.get("format")
                 playlist_url = playlist.get("url")
-                if req_quality == avail_quality and req_format == avail_format and playlist_url:
+                if req_quality == avail_quality and playlist_url:
                     return playlist_url
-            # Nothing matched, just return the first (probably highest quality) item
+
             self.logger.warning("Couldn't find SomaFM stream with requested quality and format")
+
+            # Get the first (highest quality) playlist if we couldn't find requested quality
             playlist_url = playlists[0].get("url")
             if playlist_url:
                 return playlist_url
