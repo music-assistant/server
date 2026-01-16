@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
@@ -29,6 +30,7 @@ PLAYER_FEATURES = {
     PlayerFeature.PAUSE,
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.SET_MEMBERS,
 }
 
 
@@ -151,3 +153,31 @@ class HeosPlayer(Player):
         self._attr_current_media = media
 
         self.update_state()
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET MEMBERS command on player."""
+        if player_ids_to_add is None and player_ids_to_remove is None:
+            return
+
+        members: list[str] = copy(self._attr_group_members)
+
+        #  Make sure we are always in the group
+        if self.player_id not in members:
+            members = [self.player_id, *members]
+
+        for added_player_id in player_ids_to_add or []:
+            members.append(added_player_id)
+
+        for removed_player_id in player_ids_to_remove or []:
+            members.remove(removed_player_id)
+
+        if len(members) <= 1:
+            # Update group to only include player's own ID, effectively removing the group
+            await self._heos.remove_group(self.device.player_id)
+        else:
+            await self._heos.set_group([int(player) for player in members])
+        # group_members will be updated when group_changed event is handled
