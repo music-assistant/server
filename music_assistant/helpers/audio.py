@@ -1202,6 +1202,12 @@ async def get_preview_stream(
         raise ProviderUnavailableError
     if TYPE_CHECKING:  # avoid circular import
         assert isinstance(music_prov, MusicProvider)
+
+    # Validate that item_id corresponds to a valid item in the provider for security
+    if not await music_prov.get_item(media_type, item_id):
+        msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
+        raise MediaNotFoundError(msg)
+
     streamdetails = await music_prov.get_stream_details(item_id, media_type)
     pcm_format = AudioFormat(
         content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
