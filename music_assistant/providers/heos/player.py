@@ -62,12 +62,10 @@ class HeosPlayer(Player):
             ip_address=client.ip_address,
             manufacturer="Denon",  # TODO: Grab this from API, technically can be others as well
         )
+        self._attr_can_group_with = {provider.instance_id}
+        self._attr_source_list = provider.source_list
         self._attr_available = self._device.available
         self._attr_name = client.name
-
-        self._attr_source_list = provider.source_list
-
-        self._attr_can_group_with = {self.provider.instance_id}
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -104,8 +102,8 @@ class HeosPlayer(Player):
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
         self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self._device.state]
-        self._attr_volume_muted = self._device.is_muted
         self._attr_volume_level = self._device.volume
+        self._attr_volume_muted = self._device.is_muted
 
         if self._device.now_playing_media.current_position is not None:
             self._attr_elapsed_time = self._device.now_playing_media.current_position / 1000
