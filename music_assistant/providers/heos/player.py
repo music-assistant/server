@@ -6,7 +6,7 @@ from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import DeviceInfo, PlayerSource
+from music_assistant_models.player import DeviceInfo
 from pyheos import Heos, PlayState
 from pyheos import const as pyheosConst  # noqa: N812
 
@@ -39,16 +39,19 @@ class HeosPlayer(Player):
     """HeosPLayer in Music Assistant."""
 
     _heos: Heos
+    _device: pyheosPlayer
 
     def __init__(self, provider: HeosPlayerProvider, client: pyheosPlayer) -> None:
         """Initialize the Player."""
         super().__init__(provider, str(client.player_id))
 
-        self.device: pyheosPlayer = client
+        self._device: pyheosPlayer = client
 
         # Keep internal reference so we don't need to check None on each call
-        assert self.device.heos
-        self._heos = self.device.heos
+        assert self._device.heos
+        self._heos = self._device.heos
+
+        self.logger.debug("Setting up player based on %s", client)
 
         # Set player attributes
         self._attr_type = PlayerType.PLAYER
@@ -59,19 +62,20 @@ class HeosPlayer(Player):
             ip_address=client.ip_address,
             manufacturer="Denon",  # TODO: Grab this from API, technically can be others as well
         )
-        self._attr_available = self.device.available
+        self._attr_available = self._device.available
         self._attr_name = client.name
+
+        self._attr_source_list = provider.source_list
 
         self._attr_can_group_with = {self.provider.instance_id}
 
     async def setup(self) -> None:
         """Set up the player."""
-        self.device.add_on_player_event(self._player_event_received)
+        self._device.add_on_player_event(self._player_event_received)
         self._heos.add_on_controller_event(self._handle_controller_event)
 
         await self.mass.players.register_or_update(self)
 
-        await self._build_source_list()
         await self._build_group_list()
 
         await self.set_dynamic_attributes()
@@ -80,24 +84,10 @@ class HeosPlayer(Player):
         if event == pyheosConst.EVENT_GROUPS_CHANGED:
             await self._build_group_list()
 
-    async def _build_source_list(self) -> None:
-        """Build source list based on from controller."""
-        music_sources = await self._heos.get_music_sources()
-
-        for source_id, source in music_sources.items():
-            self._attr_source_list.append(
-                PlayerSource(
-                    id=str(source_id),
-                    name=source.name,
-                    can_play_pause=source_id == 1024,
-                    can_next_previous=source_id == 1024,
-                )
-            )
-
     async def _build_group_list(self) -> None:
         """Build group list based on group info from controller."""
-        if self.device.group_id is not None and str(self.device.group_id) == self.player_id:
-            group_info = await self._heos.get_group_info(self.device.group_id)
+        if self._device.group_id is not None and str(self._device.group_id) == self.player_id:
+            group_info = await self._heos.get_group_info(self._device.group_id)
             self._attr_group_members = [
                 str(group_info.lead_player_id),
                 *(str(member) for member in group_info.member_player_ids),
@@ -113,62 +103,60 @@ class HeosPlayer(Player):
 
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
-        self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self.device.state]
-        self._attr_volume_muted = self.device.is_muted
-        self._attr_volume_level = self.device.volume
+        self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self._device.state]
+        self._attr_volume_muted = self._device.is_muted
+        self._attr_volume_level = self._device.volume
 
-        if self.device.now_playing_media.current_position is not None:
-            self._attr_elapsed_time = self.device.now_playing_media.current_position / 1000
+        if self._device.now_playing_media.current_position is not None:
+            self._attr_elapsed_time = self._device.now_playing_media.current_position / 1000
         else:
             self._attr_elapsed_time = None
 
-        if self.device.now_playing_media.current_position_updated is not None:
+        if self._device.now_playing_media.current_position_updated is not None:
             self._attr_elapsed_time_last_updated = (
-                self.device.now_playing_media.current_position_updated.timestamp()
+                self._device.now_playing_media.current_position_updated.timestamp()
             )
         else:
             self._attr_elapsed_time_last_updated = None
 
-        self.logger.debug(self.device.now_playing_media)
-
-        self._attr_active_source = str(self.device.now_playing_media.source_id)
+        self._attr_active_source = str(self._device.now_playing_media.source_id)
 
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self.device.set_volume(volume_level)
+        await self._device.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         if muted:
-            await self.device.mute()
+            await self._device.mute()
         else:
-            await self.device.unmute()
+            await self._device.unmute()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        await self.device.play()
+        await self._device.play()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        await self.device.stop()
+        await self._device.stop()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        await self.device.pause()
+        await self._device.pause()
 
     async def next_track(self) -> None:
         """Handle NEXT_TRACK command on the player."""
-        await self.device.play_next()
+        await self._device.play_next()
 
     async def previous_track(self) -> None:
         """Handle PREVIOUS_TRACK command on the player."""
-        await self.device.play_previous()
+        await self._device.play_previous()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        await self.device.play_url(media.uri)
+        await self._device.play_url(media.uri)
 
         self._attr_current_media = media
 
@@ -197,7 +185,7 @@ class HeosPlayer(Player):
 
         if len(members) <= 1:
             # Update group to only include player's own ID, effectively removing the group
-            await self._heos.remove_group(self.device.player_id)
+            await self._heos.remove_group(self._device.player_id)
         else:
             await self._heos.set_group([int(player) for player in members])
         # group_members will be updated when group_changed event is handled
