@@ -2485,10 +2485,7 @@ class PlayerQueuesController(CoreController):
         assert media_item.uri is not None  # uri is set in __post_init__
 
         if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
-            self.logger.debug(
-                "There was an error while streaming %s. Playback progress is not processed",
-                item_to_report.name,
-            )
+            #  Ignore items that had a stream error
             return
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
