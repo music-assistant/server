@@ -30,9 +30,6 @@ class HeosPlayerProvider(PlayerProvider):
             logging.getLogger("pyheos").setLevel(logging.DEBUG)
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
-
-        self.logger.info("handle_async_init")
-
         # Credentials are not needed, only used to grab favorites and music services
         credentials: Credentials | None = None
 
