@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "bandcamp",
+  "stage": "beta",
+  "name": "Bandcamp",
+  "description": "Stream music from Bandcamp's catalog.",
+  "codeowners": ["@ALERTua"],
+  "requirements": ["bandcamp-async-api==0.0.4"],
+  "documentation": "https://music-assistant.io/music-providers/bandcamp/",
+  "multi_instance": true
+}

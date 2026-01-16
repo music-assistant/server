@@ -235,14 +235,14 @@ jobs:
               let body = pr.body || '';
 
               if (!body.includes(cherry_commit.substring(0,7))) {
-                // Try to find the start of the list
-                const listMatch = body.match(/(cherry-picked commits:\n\n)([\s\S]*)/);
+                // Try to find the start of the list (case-insensitive)
+                const listMatch = body.match(/(cherry-picked commits:\n\n)([\s\S]*)/i);
                 if (listMatch) {
                   // Append to existing list
                   const before = listMatch[1];
                   const list = listMatch[2].trim();
                   const newList = list + '\n' + commit_item;
-                  body = body.replace(/(cherry-picked commits:\n\n)([\s\S]*)/, before + newList);
+                  body = body.replace(/(cherry-picked commits:\n\n)([\s\S]*)/i, before + newList);
                 } else {
                   // Add new list
                   body = body.trim() + `\n\nCherry-picked commits:\n\n${commit_item}`;

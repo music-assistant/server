@@ -677,6 +677,7 @@ class PlayerQueuesController(CoreController):
         queue.current_index = None
         queue.current_item = None
         queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
@@ -924,6 +925,7 @@ class PlayerQueuesController(CoreController):
         # this way the UI knows immediately that a new item is loading
         queue.current_item = self.get_item(queue_id, index)
         queue.elapsed_time = seek_position
+        queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
@@ -2483,6 +2485,10 @@ class PlayerQueuesController(CoreController):
             # only report on media items
             return
         assert media_item.uri is not None  # uri is set in __post_init__
+
+        if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
+            #  Ignore items that had a stream error
+            return
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)

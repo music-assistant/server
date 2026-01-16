@@ -9,6 +9,7 @@ import re
 import struct
 import time
 from collections.abc import AsyncGenerator
+from functools import partial
 from io import BytesIO
 from typing import TYPE_CHECKING, Final, cast
 
@@ -322,6 +323,12 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
+            # Set up metadata monitoring callback for HLS radio streams
+            if stream_type == StreamType.HLS:
+                streamdetails.stream_metadata_update_callback = partial(
+                    _update_hls_radio_metadata, mass
+                )
+                streamdetails.stream_metadata_update_interval = 5
         # handle volume normalization details
         if result := await mass.music.get_loudness(
             streamdetails.item_id,
@@ -830,6 +837,110 @@ async def get_icy_radio_stream(
                     cleaned_stream_title,
                 )
                 streamdetails.stream_title = cleaned_stream_title
+
+
+def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
+    """
+    Parse metadata from HLS EXTINF line.
+
+    Extracts structured metadata like title="...", artist="..." from EXTINF lines.
+    Common in iHeartRadio and other commercial radio HLS streams.
+
+    :param extinf_line: The EXTINF line containing metadata
+    """
+    metadata = {}
+
+    # Pattern to match key="value" pairs in the EXTINF line
+    # Handles nested quotes by matching everything until the closing quote
+    pattern = r'(\w+)="([^"]*)"'
+
+    matches = re.findall(pattern, extinf_line)
+    for key, value in matches:
+        metadata[key.lower()] = value
+
+    return metadata
+
+
+async def _update_hls_radio_metadata(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    elapsed_time: int,  # noqa: ARG001
+) -> None:
+    """
+    Update HLS radio stream metadata by fetching the playlist.
+
+    Fetches the HLS playlist and extracts metadata from EXTINF lines.
+
+    :param mass: MusicAssistant instance
+    :param streamdetails: StreamDetails object to update with metadata
+    :param elapsed_time: Current playback position in seconds (unused for live radio)
+    """
+    try:
+        # Get the actual media playlist URL from cache or resolve it
+        # We cache the media_playlist_url in streamdetails.data to avoid re-resolving
+        if streamdetails.data is None:
+            streamdetails.data = {}
+        media_playlist_url = streamdetails.data.get("hls_media_playlist_url")
+        if not media_playlist_url:
+            try:
+                assert isinstance(streamdetails.path, str)  # for type checking
+                substream = await get_hls_substream(mass, streamdetails.path)
+                media_playlist_url = substream.path
+                streamdetails.data["hls_media_playlist_url"] = media_playlist_url
+            except Exception as err:
+                LOGGER.warning(
+                    "Failed to resolve HLS substream for metadata monitoring: %s",
+                    err,
+                )
+                return
+
+        # Fetch the media playlist
+        timeout = ClientTimeout(total=0, connect=10, sock_read=30)
+        async with mass.http_session_no_ssl.get(media_playlist_url, timeout=timeout) as resp:
+            resp.raise_for_status()
+            playlist_content = await resp.text()
+
+        # Parse the playlist and look for EXTINF metadata
+        # The most recent segment usually has the current metadata
+        lines = playlist_content.strip().split("\n")
+        for line in reversed(lines):
+            if line.startswith("#EXTINF:"):
+                # Extract metadata from EXTINF line
+                metadata = parse_extinf_metadata(line)
+
+                # Build stream title from title and artist
+                title = metadata.get("title", "")
+                artist = metadata.get("artist", "")
+
+                if title or artist:
+                    # Format as "Artist - Title"
+                    if artist and title:
+                        stream_title = f"{artist} - {title}"
+                    elif title:
+                        stream_title = title
+                    else:
+                        stream_title = artist
+
+                    # Clean the stream title
+                    cleaned_title = clean_stream_title(stream_title)
+
+                    # Only update if changed
+                    if cleaned_title != streamdetails.stream_title and cleaned_title:
+                        LOGGER.log(
+                            VERBOSE_LOG_LEVEL,
+                            "HLS Radio metadata updated: %s",
+                            cleaned_title,
+                        )
+                        streamdetails.stream_title = cleaned_title
+
+                # Only check the most recent EXTINF
+                break
+
+    except Exception as err:
+        LOGGER.debug(
+            "Error fetching HLS metadata: %s",
+            err,
+        )
 
 
 async def get_hls_substream(
