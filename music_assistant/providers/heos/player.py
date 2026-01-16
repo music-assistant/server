@@ -69,6 +69,8 @@ class HeosPlayer(Player):
 
         await self._build_source_list()
 
+        await self.set_dynamic_attributes()
+
     async def _build_source_list(self) -> None:
         """Build source list based on from controller."""
         music_sources = await self._heos.get_music_sources()
