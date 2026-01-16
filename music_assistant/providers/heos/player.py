@@ -69,7 +69,10 @@ class HeosPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
-        self._device.add_on_player_event(self._player_event_received)
+        self._on_unload_callbacks.append(
+            self._device.add_on_player_event(self._player_event_received)
+        )
+
         self._heos.add_on_controller_event(self._handle_controller_event)
 
         await self.mass.players.register_or_update(self)
