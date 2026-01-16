@@ -18,6 +18,7 @@ from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
@@ -116,7 +117,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
-        if "/" in name or "\\" in name or ".." in name:
+        if not is_safe_name(name):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
         # create playlist on the provider

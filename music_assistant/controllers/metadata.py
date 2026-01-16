@@ -52,6 +52,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.images import create_collage, get_image_thumb
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -429,12 +430,9 @@ class MetaDataController(CoreController):
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.split("/collage/")[-1]
-            # Normalize and ensure the collage path stays within the collage images directory
-            collage_path = os.path.realpath(os.path.join(self._collage_images_dir, collage_rel))
-            base_collage_dir = os.path.realpath(self._collage_images_dir)
-            if os.path.commonpath([collage_path, base_collage_dir]) != base_collage_dir:
+            if not is_safe_path(collage_rel):
                 raise FileNotFoundError("Invalid collage path")
-            path = collage_path
+            path = os.path.join(self._collage_images_dir, collage_rel)
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )
