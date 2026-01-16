@@ -433,6 +433,11 @@ class PlexRemoteControlServer:
                         media=media,  # type: ignore[arg-type]
                         option=QueueOption.REPLACE,
                     )
+                    # Do not re-apply shuffle here; this may still be Plex-initiated playback
+                    # where Plex has already handled shuffle. Only apply seek if needed.
+                    if offset > 0:
+                        await self._seek_to_offset_after_playback(player_id, offset)
+
             elif container_key:
                 # Playing from a regular container (album, playlist, artist) not a play queue
                 # Reset queue tracking
@@ -449,6 +454,11 @@ class PlexRemoteControlServer:
                     option=QueueOption.REPLACE,
                 )
 
+                # Apply shuffle and seek for regular container
+                await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                if offset > 0:
+                    await self._seek_to_offset_after_playback(player_id, offset)
+
             else:
                 # Playing a single item, reset queue tracking
                 self.play_queue_id = None
@@ -463,13 +473,13 @@ class PlexRemoteControlServer:
                     option=QueueOption.REPLACE,
                 )
 
-            # Set shuffle if requested
-            if shuffle:
+                # Apply shuffle and seek for single item.
+                # Even though shuffle has no practical effect for a single track,
+                # we still update the player shuffle state so it stays in sync with
+                # Plex and affects any future items added to the queue.
                 await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
-
-            # Seek to offset if specified
-            if offset > 0:
-                await self._seek_to_offset_after_playback(player_id, offset)
+                if offset > 0:
+                    await self._seek_to_offset_after_playback(player_id, offset)
 
             await self._broadcast_timeline()
             return web.Response(status=200)
@@ -612,6 +622,12 @@ class PlexRemoteControlServer:
                     if offset > 0:
                         await self._seek_to_offset_after_playback(player_id, offset)
 
+                    # Update the MA queue shuffle state to match Plex without triggering a reload
+                    queue = self.provider.mass.player_queues.get(player_id)
+                    if queue and queue.shuffle_enabled != shuffle:
+                        queue.shuffle_enabled = shuffle
+                        self.provider.mass.player_queues.signal_update(player_id)
+
                     # Broadcast timeline update immediately
                     await self._broadcast_timeline()
 
@@ -728,6 +744,11 @@ class PlexRemoteControlServer:
                 LOGGER.info(f"Adding {len(tracks_to_add)} remaining tracks to queue")
 
                 # Add remaining tracks to the queue
+                # Use native override to prevent MA from shuffling natively (Plex provides exact ordering)
+                queue = self.provider.mass.player_queues.get(player_id)
+                if queue:
+                    queue.shuffle_enabled = False
+
                 await self.provider.mass.player_queues.play_media(
                     queue_id=player_id,
                     media=tracks_to_add,  # type: ignore[arg-type]
@@ -746,9 +767,10 @@ class PlexRemoteControlServer:
                 self._last_synced_ma_queue_length = len(synced_keys)
                 self._last_synced_ma_queue_keys = synced_keys
 
-                # Apply shuffle if requested (after all tracks are loaded)
-                if shuffle:
-                    await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                # Restore shuffle state natively without triggering full queue scrambling
+                if queue and shuffle:
+                    queue.shuffle_enabled = True
+                    self.provider.mass.player_queues.signal_update(player_id)
 
                 LOGGER.info(
                     f"Successfully loaded {len(tracks_to_add)} remaining tracks "
@@ -902,12 +924,15 @@ class PlexRemoteControlServer:
                 LOGGER.error("No player assigned to this server")
                 return web.Response(status=500, text="No player assigned")
 
-            # disable shuffle to avoid infinite loop
-            await self.provider.mass.player_queues.set_shuffle(player_id, False)
             ma_queue = self.provider.mass.player_queues.get(player_id)
             if not ma_queue:
                 LOGGER.error(f"MA queue not found for player {player_id}")
                 return web.Response(status=500, text="MA queue not found")
+
+            # Temporarily disable shuffle natively to ensure items are added linearly
+            original_shuffle = ma_queue.shuffle_enabled
+            if ma_queue.shuffle_enabled:
+                ma_queue.shuffle_enabled = False
 
             # Get current playback state
             current_index = ma_queue.current_index
@@ -949,6 +974,11 @@ class PlexRemoteControlServer:
                             break
             self._last_synced_ma_queue_length = len(synced_keys)
             self._last_synced_ma_queue_keys = synced_keys
+
+            # Restore original shuffle state natively so the UI accurately reflects it
+            if original_shuffle:
+                ma_queue.shuffle_enabled = True
+                self.provider.mass.player_queues.signal_update(player_id)
 
             return web.Response(status=200)
 
@@ -1039,6 +1069,12 @@ class PlexRemoteControlServer:
                                 shuffle,
                             )
                         )
+
+                    # Update the MA queue shuffle state to match Plex without triggering a reload
+                    queue = self.provider.mass.player_queues.get(player_id)
+                    if queue and queue.shuffle_enabled != shuffle:
+                        queue.shuffle_enabled = shuffle
+                        self.provider.mass.player_queues.signal_update(player_id)
 
                     # Broadcast timeline update
                     await self._broadcast_timeline()
@@ -1284,7 +1320,14 @@ class PlexRemoteControlServer:
             if "shuffle" in request.query:
                 # Plex sends shuffle as "0" or "1"
                 shuffle = request.query["shuffle"] == "1"
-                await self.provider.mass.player_queues.set_shuffle(self._ma_player_id, shuffle)
+
+                # We update the shuffle state natively without triggering MA's load()
+                # which would aggressively reorganize the items and break Plex's
+                # PlayQueue item ID mappings.
+                queue = self.provider.mass.player_queues.get(self._ma_player_id)
+                if queue and queue.shuffle_enabled != shuffle:
+                    queue.shuffle_enabled = shuffle
+                    self.provider.mass.player_queues.signal_update(self._ma_player_id)
 
             if "repeat" in request.query:
                 # Plex repeat: 0=off, 1=repeat one, 2=repeat all
