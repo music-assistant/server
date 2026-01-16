@@ -70,6 +70,7 @@ class HeosPlayer(Player):
         await self.mass.players.register_or_update(self)
 
         await self._build_source_list()
+        await self._build_group_list()
 
         await self.set_dynamic_attributes()
 
@@ -86,6 +87,19 @@ class HeosPlayer(Player):
                     can_next_previous=source_id == 1024,
                 )
             )
+
+    async def _build_group_list(self) -> None:
+        """Build group list based on group info from controller."""
+        if self.device.group_id is not None and str(self.device.group_id) == self.player_id:
+            group_info = await self._heos.get_group_info(self.device.group_id)
+            self._attr_group_members = [
+                str(group_info.lead_player_id),
+                *(str(member) for member in group_info.member_player_ids),
+            ]
+        else:
+            self._attr_group_members.clear()
+
+        self.update_state()
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
