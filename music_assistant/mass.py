@@ -757,7 +757,7 @@ class MusicAssistant:
             # If a provider fails, that will not block the loading of other providers.
             self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:
+    async def _load_provider(self, conf: ProviderConfig) -> None:  # noqa: PLR0915
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -818,15 +818,18 @@ class MusicAssistant:
             if provider.type != ProviderType.PLAYER:
                 return
             # add mdns discovery if needed
-            for mdns_type in provider.manifest.mdns_discovery or []:
-                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                    if mdns_type not in mdns_name or mdns_type == mdns_name:
-                        continue
-                    info = AsyncServiceInfo(mdns_type, mdns_name)
-                    if await info.async_request(self.aiozc.zeroconf, 3000):
-                        await provider.on_mdns_service_state_change(
-                            mdns_name, ServiceStateChange.Added, info
-                        )
+            if provider.instance_id not in self._mdns_locks:
+                self._mdns_locks[provider.instance_id] = asyncio.Lock()
+            async with self._mdns_locks[provider.instance_id]:
+                for mdns_type in provider.manifest.mdns_discovery or []:
+                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                        if mdns_type not in mdns_name or mdns_type == mdns_name:
+                            continue
+                        info = AsyncServiceInfo(mdns_type, mdns_name)
+                        if await info.async_request(self.aiozc.zeroconf, 3000):
+                            await provider.on_mdns_service_state_change(
+                                mdns_name, ServiceStateChange.Added, info
+                            )
 
         self.create_task(_on_provider_loaded())
 
