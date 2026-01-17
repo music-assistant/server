@@ -90,37 +90,18 @@ CONF_STREAM_PROTO = "stream_proto"  # hls | shoutcast (ORF stations only)
 CONF_STREAM_QUALITY = "stream_quality"  # hls: q1a/q2a/q3a/q4a/qxa ; shoutcast: q1a/q2a
 CONF_INCLUDE_HIDDEN = "include_hidden"
 
-CONF_CATCHUP_DAYS = "catchup_days"  # default 30 (ORF keeps ~30 days)
 CONF_CATCHUP_PROTO = "catchup_proto"  # progressive | hls
 CONF_CATCHUP_STATIONS = "catchup_stations"  # optional comma-separated station ids
 
 # local-image pseudo scheme (provider-owned)
 LOCAL_IMG_PREFIX = "radiothek://station/"
+CATCHUP_DAYS = 30
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_PODCASTS,
 }
-
-
-def _as_int(value: ConfigValueType, default: int = 0) -> int:
-    """Coerce MA config value union into a stable int for mypy."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return default
-    # lists etc.
-    return default
 
 
 async def setup(
@@ -210,7 +191,6 @@ class RadiothekProvider(MusicProvider):
         self.stream_quality = "qxa"
         self.include_hidden = False
 
-        self.catchup_days = 30
         self.catchup_proto = "progressive"
         self.catchup_stations = ""
 
@@ -239,9 +219,6 @@ class RadiothekProvider(MusicProvider):
 
         if self.catchup_proto not in ("progressive", "hls"):
             self.catchup_proto = "progressive"
-
-        self.catchup_days = max(self.catchup_days, 1)
-        self.catchup_days = min(self.catchup_days, 30)
 
         await self._get_bundle(force=True)
 
@@ -351,67 +328,6 @@ class RadiothekProvider(MusicProvider):
             raise MediaNotFoundError("Image not found.")
 
         return str(fpath)
-
-    def _images_from_private(self, pobj: dict[str, Any]) -> list[MediaItemImage]:
-        imgs: list[MediaItemImage] = []
-
-        def add(url: str) -> None:
-            if not url:
-                return
-            imgs.append(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=url,
-                    provider=self.domain,
-                    remotely_accessible=True,
-                )
-            )
-
-        image = pobj.get("image")
-        if isinstance(image, dict) and isinstance(image.get("src"), str):
-            add(image["src"])
-
-        image_large = pobj.get("imageLarge")
-        if isinstance(image_large, dict):
-            for mode in ("light", "dark"):
-                v = image_large.get(mode)
-                if isinstance(v, dict) and isinstance(v.get("src"), str):
-                    add(v["src"])
-
-        # dedupe
-        seen: set[str] = set()
-        out: list[MediaItemImage] = []
-        for i in imgs:
-            if i.path in seen:
-                continue
-            seen.add(i.path)
-            out.append(i)
-        return out
-
-    def _images_from_orf_podcast(self, pod: dict[str, Any]) -> list[MediaItemImage]:
-        imgs: list[MediaItemImage] = []
-        image = pod.get("image")
-        if not isinstance(image, dict):
-            return imgs
-        versions = image.get("versions")
-        if not isinstance(versions, dict):
-            return imgs
-
-        for key in ("premium", "standard", "id3art", "thumbnail"):
-            v = versions.get(key)
-            if not isinstance(v, dict):
-                continue
-            path = v.get("path")
-            if isinstance(path, str) and path:
-                imgs.append(
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=path,
-                        provider=self.domain,
-                        remotely_accessible=True,
-                    )
-                )
-        return imgs
 
     # ----------------------------
     # Stream URL helpers (radio)
@@ -830,7 +746,7 @@ class RadiothekProvider(MusicProvider):
         podcast_title = st.name or station_id
 
         today = datetime.now(UTC).date()
-        for day_offset in range(self.catchup_days):
+        for day_offset in range(CATCHUP_DAYS):
             d = today - timedelta(days=day_offset)
             yyyymmdd = f"{d.year:04d}{d.month:02d}{d.day:02d}"
             items = await self._get_broadcasts_for_day(station_id, yyyymmdd)
