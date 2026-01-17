@@ -137,6 +137,7 @@ class MusicAssistant:
         )
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
+        self._mdns_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
@@ -922,12 +923,17 @@ class MusicAssistant:
         """Handle MDNS service state callback."""
 
         async def process_mdns_state_change(prov: ProviderInstanceType) -> None:
+            if prov.instance_id not in self._mdns_locks:
+                self._mdns_locks[prov.instance_id] = asyncio.Lock()
             if state_change == ServiceStateChange.Removed:
                 info = None
             else:
                 info = AsyncServiceInfo(service_type, name)
                 await info.async_request(zeroconf, 3000)
-            await prov.on_mdns_service_state_change(name, state_change, info)
+            # use a lock per provider instance to avoid
+            # race conditions in processing mdns events
+            async with self._mdns_locks[prov.instance_id]:
+                await prov.on_mdns_service_state_change(name, state_change, info)
 
         LOGGER.log(
             VERBOSE_LOG_LEVEL,

@@ -88,7 +88,6 @@ class AirPlayProvider(PlayerProvider):
             display_name = info.name.split(".")[0]
         else:
             return
-
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
