@@ -44,10 +44,7 @@ class SendspinProxyHandler:
 
     @property
     def internal_sendspin_url(self) -> str:
-        """Return the internal sendspin URL based on stream bind IP.
-
-        :return: The WebSocket URL for connecting to the internal Sendspin server.
-        """
+        """Return the internal sendspin URL for connecting to the internal Sendspin server."""
         return f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
