@@ -38,7 +38,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import Throttler
@@ -72,7 +72,7 @@ API_BASE_URL = "api.audioaddict.com/v1"
 API_TIMEOUT = 30
 CACHE_CHANNELS = 86400  # 24 hours
 CACHE_GENRES = 86400  # 24 hours
-CACHE_STREAM_URL = 3600  # 1 hour
+CACHE_STREAM_URLS = 3600  # 1 hour
 
 # Rate limiting
 RATE_LIMIT = 2  # requests per period
@@ -606,8 +606,8 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
             return {}
 
-    @use_cache(CACHE_STREAM_URL)
-    async def _get_stream_url(self, network_key: str, channel_key: str) -> str:
+    @use_cache(CACHE_STREAM_URLS)
+    async def _get_stream_urls(self, network_key: str, channel_key: str) -> str:
         """Get the streaming URL for a channel."""
         self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
 
@@ -622,61 +622,25 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 network_key, f"listen/premium_high/{channel_key}", use_https=True, **params
             )
 
-            # Use the first stream URL from the playlist
-            self.logger.debug(
-                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
-            )
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
 
-            # Log all available URLs for debugging
-            for i, url in enumerate(playlist):
+            stream_list = [MultiPartPath(url) for url in playlist if url and isinstance(url, str)]
+            
+            self.logger.debug(
+                "%s: Filtered %d valid stream URLs from playlist of %d URLs", self.domain, len(stream_list), len(playlist)
+            )
+            
+            if not stream_list:
+                msg = f"{self.domain}: No valid stream URLs found in the playlist"
+                raise MediaNotFoundError(msg)
+            
+            # Log all available URLs
+            for i, url in enumerate(stream_list):
                 self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
 
-            # Try each URL until one responds without 403 (forbidden)
-            candidate_urls = [str(url) for url in playlist if isinstance(url, str) and str(url).strip()]
-            if not candidate_urls:
-                msg = f"{self.domain}: No valid stream URLs received from Digitally Incorporated API"
-                raise MediaNotFoundError(msg)
-
-            total_candidates = len(candidate_urls)
-            for idx, stream_url in enumerate(candidate_urls, start=1):
-                try:
-                    timeout = aiohttp.ClientTimeout(total=10)
-                    async with self.mass.http_session.head(
-                        stream_url, allow_redirects=True, timeout=timeout
-                    ) as resp:
-                        if resp.status == 403:
-                            self.logger.warning(
-                                "%s: Stream URL %s returned 403 (candidate %d/%d), trying next",
-                                self.domain,
-                                stream_url,
-                                idx,
-                                total_candidates,
-                            )
-                            continue
-                        resp.raise_for_status()
-                        self.logger.debug(
-                            "%s: Selected stream URL %d/%d: %s",
-                            self.domain,
-                            idx,
-                            total_candidates,
-                            stream_url,
-                        )
-                        return stream_url
-
-                except aiohttp.ClientError as err:
-                    self.logger.debug(
-                        "%s: Stream URL %s check failed (%s), trying next",
-                        self.domain,
-                        stream_url,
-                        err,
-                    )
-                    continue
-
-            msg = f"{self.domain}: Unable to get working stream URL after {total_candidates} attempts"
-            raise MediaNotFoundError(msg)
+            return stream_list
 
         except (ProviderUnavailableError, MediaNotFoundError):
             # Re-raise provider/media errors as-is (they already have domain prefix)
