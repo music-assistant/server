@@ -812,7 +812,25 @@ class MusicAssistant:
         )
         provider.available = True
 
-        self.create_task(provider.loaded_in_mass())
+        # execute post load actions
+        async def _on_provider_loaded() -> None:
+            await provider.loaded_in_mass()
+            if provider.type != ProviderType.PLAYER:
+                return
+            # add mdns discovery if needed
+            for mdns_type in provider.manifest.mdns_discovery or []:
+                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                    if mdns_type not in mdns_name or mdns_type == mdns_name:
+                        continue
+                    info = AsyncServiceInfo(mdns_type, mdns_name)
+                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                        await provider.on_mdns_service_state_change(
+                            mdns_name, ServiceStateChange.Added, info
+                        )
+
+        self.create_task(_on_provider_loaded())
+
+        # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
