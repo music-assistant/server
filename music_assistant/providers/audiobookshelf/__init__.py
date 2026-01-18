@@ -578,6 +578,8 @@ for more details.
 
         file_parts: list[MultiPartPath] = []
         abs_base_url = str(self.config.get_value(CONF_URL))
+        if self.is_token_user:
+            self.logger.debug("Token User - Streams are direct.")
         for idx, track in enumerate(tracks):
             if self.is_token_user:
                 # an api key is long-lived
@@ -620,12 +622,12 @@ for more details.
                 break
         if abs_episode is None:
             raise MediaNotFoundError("Stream not found")
-        self.logger.debug(f'Using direct playback for podcast episode "{abs_episode.title}".')
         content_type = ContentType.UNKNOWN
         if abs_episode.audio_track.metadata is not None:
             content_type = ContentType.try_parse(abs_episode.audio_track.metadata.ext)
 
         if self.is_token_user:
+            self.logger.debug("Token User - Stream is direct.")
             # long lived API token, no need for detour
             abs_base_url = str(self.config.get_value(CONF_URL))
             stream_url = (
