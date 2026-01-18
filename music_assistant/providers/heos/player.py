@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from copy import copy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from pyheos import Heos, PlayState
-from pyheos import const as pyheosConst  # noqa: N812
 
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -73,20 +72,15 @@ class HeosPlayer(Player):
             self._device.add_on_player_event(self._player_event_received)
         )
 
-        self._heos.add_on_controller_event(self._handle_controller_event)
-
         await self.mass.players.register_or_update(self)
 
-        await self._build_group_list()
+        await self.build_group_list()
 
         await self.set_dynamic_attributes()
 
-    async def _handle_controller_event(self, event: str, result: Any) -> None:
-        if event == pyheosConst.EVENT_GROUPS_CHANGED:
-            await self._build_group_list()
-
-    async def _build_group_list(self) -> None:
+    async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
+        # Group IDs are the player ID of the leader
         if self._device.group_id is not None and str(self._device.group_id) == self.player_id:
             group_info = await self._heos.get_group_info(self._device.group_id)
             self._attr_group_members = [

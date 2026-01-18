@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from music_assistant_models.player import PlayerSource
-from pyheos import Credentials, Heos, HeosOptions
+from pyheos import Credentials, Heos, HeosOptions, PlayerUpdateResult, const
 
 from music_assistant.constants import (
     CONF_IP_ADDRESS,
@@ -52,11 +52,23 @@ class HeosPlayerProvider(PlayerProvider):
         # Initialize library values
         await self._build_source_list()
 
+        self._heos.add_on_controller_event(self._handle_controller_event)
+
         # Build player configs
         devices = await self._heos.get_players()
         for device in devices.values():
             heos_player = HeosPlayer(self, device)
             await heos_player.setup()
+
+    async def _handle_controller_event(
+        self, event: str, result: PlayerUpdateResult | None = None
+    ) -> None:
+        self.logger.debug("Controller event received: %s", event)
+
+        if event == const.EVENT_GROUPS_CHANGED:
+            for player in self.mass.players.all(provider_filter=self.instance_id):
+                assert isinstance(player, HeosPlayer)  # for type checking
+                await player.build_group_list()
 
     async def _build_source_list(self) -> None:
         """Build source list based on data from controller."""
@@ -80,6 +92,7 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        self._heos.dispatcher.disconnect_all()  # Remove all event connections
         await self._heos.disconnect()
 
         for player in self.players:
