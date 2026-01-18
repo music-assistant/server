@@ -678,7 +678,7 @@ class RadiothekProvider(MusicProvider):
         if prov_podcast_id.startswith("pod:"):
             try:
                 pid = int(prov_podcast_id.split(":", 1)[1])
-            except Exception as err:
+            except (ValueError, IndexError) as err:
                 raise MediaNotFoundError("Podcast not found.") from err
 
             pods = await self._get_orf_podcasts_index()
@@ -932,124 +932,132 @@ class RadiothekProvider(MusicProvider):
     # MA API: Playback
     # ----------------------------
 
-    async def get_stream_details(  # noqa: PLR0915
-        self, item_id: str, media_type: MediaType
-    ) -> StreamDetails:
+    async def _get_radio_stream_details(self, item_id: str) -> StreamDetails:
+        bundle = await self._get_bundle()
+
+        stations = {s.id: s for s in self._iter_orf_stations(bundle)}
+        if item_id in stations:
+            url = self._build_orf_url(stations[item_id])
+            if not url:
+                raise UnplayableMediaError("No stream URL for ORF station.")
+            ctype = self._content_type_from_url_or_format(url, None)
+            return StreamDetails(
+                provider=self.domain,
+                item_id=item_id,
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HTTP,
+                path=url,
+                audio_format=AudioFormat(content_type=ctype),
+                can_seek=False,
+                allow_seek=False,
+            )
+
+        priv = self._privates_by_id(bundle).get(item_id)
+        if priv:
+            url, fmt = self._build_private_url(priv)
+            if not url:
+                raise UnplayableMediaError("No stream URL for private station.")
+            ctype = self._content_type_from_url_or_format(url, fmt)
+            return StreamDetails(
+                provider=self.domain,
+                item_id=item_id,
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HTTP,
+                path=url,
+                audio_format=AudioFormat(content_type=ctype),
+                can_seek=False,
+                allow_seek=False,
+            )
+
+        raise MediaNotFoundError("Radio not found.")
+
+    async def _get_podcast_episode_stream_details(self, item_id: str) -> StreamDetails:
+        if item_id.startswith("pod:"):
+            return await self._get_orf_podcast_episode_stream_details(item_id)
+
+        if item_id.startswith("br:"):
+            return await self._get_broadcast_episode_stream_details(item_id)
+
+        raise MediaNotFoundError("Podcast episode not found.")
+
+    async def _get_orf_podcast_episode_stream_details(self, item_id: str) -> StreamDetails:
+        pid, guid = self._parse_pod_episode_id(item_id)
+        detail = await self._get_orf_podcast_detail(pid)
+
+        eps = detail.get("episodes")
+        if not isinstance(eps, list):
+            raise UnplayableMediaError("No episodes for podcast")
+
+        target: dict[str, Any] | None = None
+        for ep in eps:
+            if isinstance(ep, dict) and ep.get("guid") == guid:
+                target = ep
+                break
+        if not target:
+            raise MediaNotFoundError("Podcast episode not found")
+
+        enc = target.get("enclosures")
+        if not isinstance(enc, list) or not enc or not isinstance(enc[0], dict):
+            raise UnplayableMediaError("No enclosure for episode")
+        url = enc[0].get("url")
+        if not isinstance(url, str) or not url:
+            raise UnplayableMediaError("No playable url for episode")
+
+        return StreamDetails(
+            provider=self.domain,
+            item_id=item_id,
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.HTTP,
+            path=url,
+            audio_format=AudioFormat(content_type=ContentType.try_parse("mp3")),
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def _get_broadcast_episode_stream_details(self, item_id: str) -> StreamDetails:
+        station_id, bid = self._parse_catchup_episode_id(item_id)
+        b = await self._get_broadcast_detail(station_id, bid)
+
+        streams = b.get("streams")
+        if not isinstance(streams, list) or not streams:
+            raise UnplayableMediaError("No streams for episode")
+
+        s0 = streams[0]
+        urls = s0.get("urls") if isinstance(s0, dict) else None
+        if not isinstance(urls, dict):
+            raise UnplayableMediaError("No stream urls for episode")
+
+        if self.catchup_proto == "hls":
+            url = urls.get("hls")
+            ctype = ContentType.try_parse("aac")
+            stream_type = StreamType.HLS
+        else:
+            url = urls.get("progressive")
+            ctype = ContentType.try_parse("mp3")
+            stream_type = StreamType.HTTP
+
+        if not isinstance(url, str) or not url:
+            raise UnplayableMediaError("No playable url for episode")
+
+        url = self._sanitize_template_url(url)
+
+        return StreamDetails(
+            provider=self.domain,
+            item_id=item_id,
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=stream_type,
+            path=url,
+            audio_format=AudioFormat(content_type=ctype),
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Resolve Playable stream."""
         if media_type == MediaType.RADIO:
-            bundle = await self._get_bundle()
-
-            stations = {s.id: s for s in self._iter_orf_stations(bundle)}
-            if item_id in stations:
-                url = self._build_orf_url(stations[item_id])
-                if not url:
-                    raise UnplayableMediaError("No stream URL for ORF station.")
-                ctype = self._content_type_from_url_or_format(url, None)
-                return StreamDetails(
-                    provider=self.domain,
-                    item_id=item_id,
-                    media_type=MediaType.RADIO,
-                    stream_type=StreamType.HTTP,  # keep minimal: let MA probe
-                    path=url,
-                    audio_format=AudioFormat(content_type=ctype),
-                    can_seek=False,
-                    allow_seek=False,
-                )
-
-            priv = self._privates_by_id(bundle).get(item_id)
-            if priv:
-                url, fmt = self._build_private_url(priv)
-                if not url:
-                    raise UnplayableMediaError("No stream URL for private station.")
-                ctype = self._content_type_from_url_or_format(url, fmt)
-                return StreamDetails(
-                    provider=self.domain,
-                    item_id=item_id,
-                    media_type=MediaType.RADIO,
-                    stream_type=StreamType.HTTP,
-                    path=url,
-                    audio_format=AudioFormat(content_type=ctype),
-                    can_seek=False,
-                    allow_seek=False,
-                )
-
-            raise MediaNotFoundError("Radio not found.")
+            return await self._get_radio_stream_details(item_id)
 
         if media_type == MediaType.PODCAST_EPISODE:
-            # actual podcast episodes: pod:<pid>:<guid>
-            if item_id.startswith("pod:"):
-                pid, guid = self._parse_pod_episode_id(item_id)
-                detail = await self._get_orf_podcast_detail(pid)
-                eps = detail.get("episodes")
-                if not isinstance(eps, list):
-                    raise UnplayableMediaError("No episodes for podcast")
-
-                target: dict[str, Any] | None = None
-                for ep in eps:
-                    if isinstance(ep, dict) and ep.get("guid") == guid:
-                        target = ep
-                        break
-                if not target:
-                    raise MediaNotFoundError("Podcast episode not found")
-
-                enc = target.get("enclosures")
-                if not isinstance(enc, list) or not enc or not isinstance(enc[0], dict):
-                    raise UnplayableMediaError("No enclosure for episode")
-                url = enc[0].get("url")
-                if not isinstance(url, str) or not url:
-                    raise UnplayableMediaError("No playable url for episode")
-
-                # enclosures are typically audio/mpeg (mp3)
-                return StreamDetails(
-                    provider=self.domain,
-                    item_id=item_id,
-                    media_type=MediaType.PODCAST_EPISODE,
-                    stream_type=StreamType.HTTP,
-                    path=url,
-                    audio_format=AudioFormat(content_type=ContentType.try_parse("mp3")),
-                    can_seek=True,
-                    allow_seek=True,
-                )
-
-            # catch-up broadcast episodes: br:<station>:<bid>
-            if item_id.startswith("br:"):
-                station_id, bid = self._parse_catchup_episode_id(item_id)
-                b = await self._get_broadcast_detail(station_id, bid)
-
-                streams = b.get("streams")
-                if not isinstance(streams, list) or not streams:
-                    raise UnplayableMediaError("No streams for episode")
-
-                s0 = streams[0]
-                urls = s0.get("urls") if isinstance(s0, dict) else None
-                if not isinstance(urls, dict):
-                    raise UnplayableMediaError("No stream urls for episode")
-
-                if self.catchup_proto == "hls":
-                    url = urls.get("hls")
-                    ctype = ContentType.try_parse("aac")
-                    stream_type = StreamType.HLS
-                else:
-                    url = urls.get("progressive")
-                    ctype = ContentType.try_parse("mp3")
-                    stream_type = StreamType.HTTP
-
-                if not isinstance(url, str) or not url:
-                    raise UnplayableMediaError("No playable url for episode")
-
-                url = self._sanitize_template_url(url)
-
-                return StreamDetails(
-                    provider=self.domain,
-                    item_id=item_id,
-                    media_type=MediaType.PODCAST_EPISODE,
-                    stream_type=stream_type,
-                    path=url,
-                    audio_format=AudioFormat(content_type=ctype),
-                    can_seek=True,
-                    allow_seek=True,
-                )
-
-            raise MediaNotFoundError("Podcast episode not found.")
+            return await self._get_podcast_episode_stream_details(item_id)
 
         raise UnplayableMediaError("Unsupported media type")
