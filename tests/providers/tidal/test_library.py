@@ -129,11 +129,12 @@ async def test_get_playlists(
     # Configure paginate side effect
     async def paginate_side_effect(
         endpoint: str, **_kwargs: Any
-    ) -> AsyncGenerator[dict[Any, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         if "mixes" in endpoint:
             for item in mixes_response:
                 yield item
         else:
+            # The ignore[assignment] is needed because of the different return types
             for item in playlists_response:  # type: ignore[assignment]
                 yield item
 

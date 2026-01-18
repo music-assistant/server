@@ -173,7 +173,7 @@ def parse_track(
     lyrics: dict[str, str] | None = None,
 ) -> Track:
     """Parse tidal track object to generic layout."""
-    track_obj_data = track_obj["item"]
+    track_obj_data = track_obj.get("item", track_obj)
     name, version = parse_title_and_version(
         track_obj_data.get("title", "Unknown"),
         track_obj_data.get("version") or None,
@@ -298,7 +298,7 @@ def parse_playlist(
     )
 
     # Metadata - different fields based on type
-    if "created" in playlist_obj_data:
+    if "created" in playlist_obj:
         with suppress(ValueError):
             playlist.date_added = datetime.fromisoformat(playlist_obj["created"])
     # Add the description from the subtitle for mixes
