@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -584,3 +585,21 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
+
+    async def resolve_image(self, path: str) -> bytes:
+        """Resolve an image from an image path."""
+        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        if ha_url.endswith("/api") and path.startswith("/api/"):
+            url = f"{ha_url}{path[4:]}"
+        else:
+            url = f"{ha_url}{path}"
+
+        # Use HASSIO_TOKEN when running as addon (token config is None)
+        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        async with http_session.get(url, headers=headers) as response:
+            response.raise_for_status()
+            return await response.read()
