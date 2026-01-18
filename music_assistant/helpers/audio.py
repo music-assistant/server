@@ -33,7 +33,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import MultiPartPath
+from music_assistant_models.streamdetails import MultiPartPath, StreamMirror
 
 from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
@@ -553,9 +553,33 @@ async def get_media_stream(
             assert streamdetails.decryption_key is not None  # for type checking
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
         if isinstance(streamdetails.path, list):
-            # multi part stream
-            audio_source = get_multi_file_stream(mass, streamdetails, seek_position)
-            seek_position = 0  # handled by get_multi_file_stream
+            logger.debug(
+                "media_stream path list len=%s first_type=%s",
+                len(streamdetails.path),
+                type(streamdetails.path[0]).__name__ if streamdetails.path else None,
+            )
+            if all(isinstance(part, MultiPartPath) for part in streamdetails.path):
+                # multi part stream
+                audio_source = get_multi_file_stream(mass, streamdetails, seek_position)
+                seek_position = 0  # handled by get_multi_file_stream
+            elif all(isinstance(part, StreamMirror) for part in streamdetails.path):
+                # mirror URLs
+                LOGGER.debug(
+                    "Using mirror stream list (count=%s) for %s",
+                    len(streamdetails.path),
+                    streamdetails.uri,
+                )
+                audio_source = get_mirror_stream(mass, streamdetails)
+                seek_position = 0  # no seeking in a radio stream
+            else:
+                logger.error(
+                    "Unsupported path list contents for %s: %s",
+                    streamdetails.uri,
+                    [type(p).__name__ for p in streamdetails.path],
+                )
+                raise InvalidDataError(
+                    "Streamdetails.path must be list of MultiPartPath or StreamMirror"
+                )
         else:
             # regular single file/url stream
             assert isinstance(streamdetails.path, str)  # for type checking
@@ -1156,7 +1180,10 @@ async def get_multi_file_stream(
     """
     if not isinstance(streamdetails.path, list):
         raise InvalidDataError("Multi-file streamdetails requires a list of MultiPartPath")
-    parts, seek_position = _get_parts_from_position(streamdetails.path, seek_position)
+    # type narrowing: we already validated path is a list of MultiPartPath
+    parts, seek_position = _get_parts_from_position(
+        cast("list[MultiPartPath]", streamdetails.path), seek_position
+    )
     files_list = [part.path for part in parts]
 
     # concat input files
@@ -1189,6 +1216,74 @@ async def get_multi_file_stream(
             yield chunk
     finally:
         await remove_file(temp_file)
+
+
+async def get_mirror_stream(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+) -> AsyncGenerator[bytes, None]:
+    """Return audio stream from mirrored URLs.
+
+    Tries each mirror (ordered by priority, highest first) until one works.
+    """
+    if not isinstance(streamdetails.path, list):
+        raise InvalidDataError("Mirror streamdetails requires a list of StreamMirror")
+
+    # Validate and normalize mirrors
+    mirrors: list[StreamMirror] = []
+    for m in streamdetails.path:
+        if not isinstance(m, StreamMirror):
+            raise InvalidDataError("Mirror streamdetails requires a list of StreamMirror")
+        if not isinstance(m.path, str):
+            raise InvalidDataError("StreamMirror.path must be a URL string")
+        mirrors.append(m)
+
+    # Try mirrors sorted by priority (higher priority first). Sort is stable so
+    # mirrors with equal priority keep their original order.
+    mirrors.sort(key=lambda x: x.priority or 0, reverse=True)
+
+    LOGGER.debug(
+        "Mirror stream start for %s with %s mirror(s)",
+        streamdetails.uri,
+        len(mirrors),
+    )
+
+    last_exception: Exception | None = None
+    for mirror in mirrors:
+        LOGGER.debug(
+            "Trying mirror %s (priority=%s) for %s",
+            mirror.path,
+            mirror.priority,
+            streamdetails.uri,
+        )
+        try:
+            async for chunk in get_http_stream(
+                mass,
+                mirror.path,
+                streamdetails,
+                # There's no verify_ssl on StreamMirror; default to True.
+                verify_ssl=True,
+            ):
+                yield chunk
+            return
+        except Exception as err:
+            LOGGER.warning(
+                "Error streaming from mirror %s (priority=%s) for %s: %s",
+                mirror.path,
+                mirror.priority,
+                streamdetails.uri,
+                err,
+                exc_info=err,
+            )
+            last_exception = err
+
+    LOGGER.error(
+        "All mirror streams failed for %s (attempted %s)",
+        streamdetails.uri,
+        [m.path for m in mirrors],
+        exc_info=last_exception,
+    )
+    raise AudioError("All mirror streams failed") from last_exception
 
 
 async def get_preview_stream(

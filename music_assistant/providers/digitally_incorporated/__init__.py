@@ -38,7 +38,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMirror
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import Throttler
@@ -334,7 +334,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         network_key, channel_key = self._validate_item_id(item_id)
 
         # Get the stream URL
-        stream_url = await self._get_stream_url(network_key, channel_key)
+        stream_url = await self._get_stream_urls(network_key, channel_key)
 
         return StreamDetails(
             provider=self.instance_id,
@@ -343,7 +343,8 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 content_type=ContentType.UNKNOWN,  # Let ffmpeg auto-detect
             ),
             media_type=MediaType.RADIO,
-            stream_type=StreamType.ICY,
+            # Use HTTP stream type with mirrors so we can try multiple URLs
+            stream_type=StreamType.HTTP,
             path=stream_url,
             allow_seek=False,
             can_seek=False,
@@ -607,8 +608,8 @@ class DigitallyIncorporatedProvider(MusicProvider):
             return {}
 
     @use_cache(CACHE_STREAM_URLS)
-    async def _get_stream_urls(self, network_key: str, channel_key: str) -> str:
-        """Get the streaming URL for a channel."""
+    async def _get_stream_urls(self, network_key: str, channel_key: str) -> list[StreamMirror]:
+        """Get the streaming URLs for a channel."""
         self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
 
         listen_key = self.config.get_value("listen_key")
@@ -626,16 +627,20 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
 
-            stream_list = [MultiPartPath(url) for url in playlist if url and isinstance(url, str)]
-            
+            # Represent returned URLs as StreamMirror objects (explicit mirror semantics)
+            stream_list = [StreamMirror(url) for url in playlist if url and isinstance(url, str)]
+
             self.logger.debug(
-                "%s: Filtered %d valid stream URLs from playlist of %d URLs", self.domain, len(stream_list), len(playlist)
+                "%s: Filtered %d valid stream URLs from playlist of %d URLs",
+                self.domain,
+                len(stream_list),
+                len(playlist),
             )
-            
+
             if not stream_list:
                 msg = f"{self.domain}: No valid stream URLs found in the playlist"
                 raise MediaNotFoundError(msg)
-            
+
             # Log all available URLs
             for i, url in enumerate(stream_list):
                 self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
