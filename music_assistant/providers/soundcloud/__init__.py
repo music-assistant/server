@@ -299,6 +299,8 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
         """Get playlist object from Soundcloud API based on playlist ID type."""
+        # Handle playlist id's which are actually numbers
+        prov_playlist_id = str(prov_playlist_id)
         if prov_playlist_id.startswith("soundcloud:system-playlists"):
             # Handle system playlists
             result = await self._soundcloud.get_system_playlist_details(prov_playlist_id)

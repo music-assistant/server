@@ -20,6 +20,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

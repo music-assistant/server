@@ -621,6 +621,33 @@ class PlayerQueuesController(CoreController):
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
+    @api_command("player_queues/move_item_end")
+    def move_item_end(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Move queue item to the end the queue.
+
+        - queue_id: id of the queue to process this request.
+        - queue_item_id: the item_id of the queueitem that needs to be moved.
+        """
+        queue = self._queues[queue_id]
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            raise InvalidDataError(f"Item {queue_item_id} not found in queue")
+        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+            msg = f"{item_index} is already played/buffered"
+            raise IndexError(msg)
+
+        queue_items = self._queue_items[queue_id]
+        if item_index == (len(queue_items) - 1):
+            return
+        queue_items = queue_items.copy()
+
+        new_index = len(self._queue_items[queue_id]) - 1
+
+        # move the item in the list
+        queue_items.insert(new_index, queue_items.pop(item_index))
+        self.update_items(queue_id, queue_items)
+
     @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
@@ -650,6 +677,7 @@ class PlayerQueuesController(CoreController):
         queue.current_index = None
         queue.current_item = None
         queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
@@ -897,6 +925,7 @@ class PlayerQueuesController(CoreController):
         # this way the UI knows immediately that a new item is loading
         queue.current_item = self.get_item(queue_id, index)
         queue.elapsed_time = seek_position
+        queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
@@ -2456,6 +2485,10 @@ class PlayerQueuesController(CoreController):
             # only report on media items
             return
         assert media_item.uri is not None  # uri is set in __post_init__
+
+        if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
+            #  Ignore items that had a stream error
+            return
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
