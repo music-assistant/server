@@ -37,8 +37,10 @@ class Provider:
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
         self.logger = (
             mass_logger.getChild(self.domain)
-            if self.name != self.config.name
-            else mass_logger.getChild(f"{self.domain} ({self.name})")
+            if len(self._get_instances()) <= 1
+            else mass_logger.getChild(
+                f"{self.domain} ({self.config.name or self.config.instance_id.split('--')[1]})"
+            )
         )
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
@@ -109,8 +111,7 @@ class Provider:
     def default_name(self) -> str:
         """Return a default friendly name for this provider instance."""
         # create default name based on instance count
-        prov_confs = self.mass.config.get("providers", {}).values()
-        instances = [x["instance_id"] for x in prov_confs if x["domain"] == self.domain]
+        instances = self._get_instances()
         if len(instances) <= 1:
             # only one instance (or no instances yet at all) - return provider name
             return self.manifest.name
@@ -131,6 +132,11 @@ class Provider:
     def stage(self) -> ProviderStage:
         """Return the stage of this provider."""
         return self.manifest.stage
+
+    def _get_instances(self) -> list[str]:
+        """Return the instance ids for this provider."""
+        prov_confs = self.mass.config.get("providers", {}).values()
+        return [x["instance_id"] for x in prov_confs if x["domain"] == self.domain]
 
     def update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
         """Update a config value."""
