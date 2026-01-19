@@ -240,6 +240,8 @@ class Audiobookshelf(MusicProvider):
             pagination_items_per_page=30,  # audible provider goes with 50 for pagination
             timeout=AIOHTTP_TIMEOUT,
         )
+        # If we are configured with a non-expiring API key or not.
+        self.is_token_user = False
         try:
             if token_api is not None or token_old is not None:
                 _token = token_api if token_api is not None else token_old
@@ -248,6 +250,7 @@ class Audiobookshelf(MusicProvider):
                     self._client,
                     self._client_socket,
                 ) = await aioabs.get_user_and_socket_client_by_token(session_config=session_config)
+                self.is_token_user = True
             else:
                 self._client, self._client_socket = await aioabs.get_user_and_socket_client(
                     session_config=session_config, username=username, password=password
@@ -332,6 +335,11 @@ for more details.
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
                 f"/{self.instance_id}_part_stream", self._handle_audiobook_part_request
+            )
+        )
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"/{self.instance_id}_episode_stream", self._handle_episode_request
             )
         )
 
@@ -569,15 +577,22 @@ for more details.
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
         file_parts: list[MultiPartPath] = []
+        abs_base_url = str(self.config.get_value(CONF_URL))
+        if self.is_token_user:
+            self.logger.debug("Token User - Streams are direct.")
         for idx, track in enumerate(tracks):
-            # to ensure token is always valid, we create a dynamic url
-            # this ensures that we always get a fresh token on each part
-            # without having to deal with a custom stream etc.
-            # we also use this for the first part, otherwise we can't seek
-            stream_url = (
-                f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
-            )
+            if self.is_token_user:
+                # an api key is long-lived
+                stream_url = f"{abs_base_url}{track.content_url}?token={self._client.token}"
+            else:
+                # to ensure token is always valid, we create a dynamic url
+                # this ensures that we always get a fresh token on each part
+                # without having to deal with a custom stream etc.
+                # we also use this for the first part, otherwise we can't seek
+                stream_url = (
+                    f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                    f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
+                )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
@@ -607,12 +622,23 @@ for more details.
                 break
         if abs_episode is None:
             raise MediaNotFoundError("Stream not found")
-        self.logger.debug(f'Using direct playback for podcast episode "{abs_episode.title}".')
         content_type = ContentType.UNKNOWN
         if abs_episode.audio_track.metadata is not None:
             content_type = ContentType.try_parse(abs_episode.audio_track.metadata.ext)
-        base_url = str(self.config.get_value(CONF_URL))
-        stream_url = f"{base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
+
+        if self.is_token_user:
+            self.logger.debug("Token User - Stream is direct.")
+            # long lived API token, no need for detour
+            abs_base_url = str(self.config.get_value(CONF_URL))
+            stream_url = (
+                f"{abs_base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
+            )
+        else:
+            stream_url = (
+                f"{self.mass.streams.base_url}/{self.instance_id}_episode_stream?"
+                f"podcast_id={abs_podcast.id_}&episode_id={abs_episode.id_}"
+            )
+
         return StreamDetails(
             provider=self.instance_id,
             item_id=podcast_id,
@@ -647,6 +673,30 @@ for more details.
 
         base_url = str(self.config.get_value(CONF_URL))
         stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
+        # redirect to the actual stream url
+        raise web.HTTPFound(location=stream_url)
+
+    async def _handle_episode_request(self, request: web.Request) -> web.Response:
+        """Podcast episode request.
+
+        For a podcast episode, we only have a single file, but the token might be expired should
+        user try to seek an episode.
+        """
+        if not (abs_podcast_id := request.query.get("podcast_id")):
+            return web.Response(status=400, text="Missing podcast_id")
+        if not (abs_episode_id := request.query.get("episode_id")):
+            return web.Response(status=400, text="Missing episode_id")
+        abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_podcast_id)
+        abs_episode = None
+        for abs_episode in abs_podcast.media.episodes:
+            if abs_episode.id_ == abs_episode_id:
+                break
+        if abs_episode is None:
+            return web.Response(status=400, text="Stream not found")
+
+        base_url = str(self.config.get_value(CONF_URL))
+        stream_url = f"{base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
+
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
 
