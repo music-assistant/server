@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import IntEnum
 from typing import Final
 
 from music_assistant_models.enums import ContentType
@@ -13,7 +13,7 @@ from music_assistant.constants import INTERNAL_PCM_FORMAT
 DOMAIN = "airplay"
 
 
-class StreamingProtocol(Enum):
+class StreamingProtocol(IntEnum):
     """AirPlay streaming protocol versions."""
 
     RAOP = 1  # AirPlay 1 (RAOP)
@@ -80,7 +80,7 @@ BROKEN_AIRPLAY_MODELS = (
     ("Sonos", "Move 2"),
     ("Sonos", "Roam 2"),
     ("Sonos", "Arc Ultra"),
-    # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
+    # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
     ("Samsung", "*"),
 )
 

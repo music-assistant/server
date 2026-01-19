@@ -115,7 +115,7 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
 
 
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken RAOP support."""
+    """Check if a model is known to have broken AirPlay support."""
     for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
         if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
             return True
