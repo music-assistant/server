@@ -174,6 +174,8 @@ class WiimProvider(PlayerProvider):
 
         player = WiimPlayer(provider=self, player_id=player_id, device=wiim_dev)
 
+        await player.setup()
+
         init_success = await wiim_dev.async_init_services_and_subscribe()
 
         if not init_success:

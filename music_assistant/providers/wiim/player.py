@@ -12,6 +12,8 @@ from wiim import PlayingStatus, WiimDevice
 
 from music_assistant.models.player import Player, PlayerMedia
 
+from .constants import PLAYER_SOURCE_MAP, SOURCE_AIRPLAY, SOURCE_SPOTIFY, SOURCE_UNKNOWN
+
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
 
@@ -40,14 +42,23 @@ class WiimPlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,
+            PlayerFeature.SELECT_SOURCE,
             # PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {provider.instance_id}
         self.device = device
 
+        self.current_uri: str | None = None
+
         device.rendering_control_event_callback = self._handle_sdk_rendering_control_event
         device.av_transport_event_callback = self._handle_sdk_av_transport_event
         device.play_queue_event_callback = self._handle_sdk_play_queue_event
+
+    async def setup(self) -> None:
+        """Handle logic when the player is set up in the Player controller."""
+        self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_AIRPLAY])
+        self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
+        self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_UNKNOWN])
 
     def _handle_sdk_av_transport_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
@@ -68,6 +79,22 @@ class WiimPlayer(Player):
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
         return False
+
+    async def select_source(self, source: str) -> None:
+        """
+        Handle SELECT SOURCE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
+
+        :param source: The source(id) to select, as defined in the source_list.
+        """
+        # if source == SOURCE_LINE_IN:
+        #     await self.client.player.group.load_line_in(play_on_completion=True)
+        # elif source == SOURCE_TV:
+        #     await self.client.player.load_home_theater_playback()
+        # else:
+        #     # unsupported source - try to clear the queue/player
+        #     await self.stop()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -130,11 +157,13 @@ class WiimPlayer(Player):
             didl_lite.AudioItem(
                 id="0",
                 parent_id="0",
-                title=media.title,
+                title="Music Assistant",
                 restricted="1",
             ),
         ]
         didl_string = didl_lite.to_xml_string(*items).decode("utf-8")
+
+        self.current_uri = media.uri
 
         await self.device.async_play(uri=media.uri, metadata=didl_string)
 
@@ -239,15 +268,48 @@ class WiimPlayer(Player):
             #         self._attr_active_source = "Wifi"
 
             # Current Track Info / Media Metadata
-            if self.device.current_track_info and (
-                self.device.current_track_info.get("title") != "Music Assistant"
-            ):
+            if self.device.current_track_uri:
+                if self.current_uri and self.current_uri == self.device.current_track_uri:
+                    self._attr_active_source = self.player_id
+                elif self.device.current_track_uri == "wiimu_airplay":
+                    self._attr_active_source = SOURCE_AIRPLAY
+                    self.set_current_media(
+                        uri=self.device.current_track_info.get("uri") or "",
+                        title=self.device.current_track_info.get("title"),
+                        artist=self.device.current_track_info.get("artist"),
+                        album=self.device.current_track_info.get("album"),
+                        image_url=self.device.current_track_info.get("album_art_uri"),
+                        source_id=SOURCE_AIRPLAY,
+                    )
+                elif self.device.current_track_uri == "wiimu_spotify":
+                    self._attr_active_source = SOURCE_SPOTIFY
+                    self.set_current_media(
+                        uri=self.device.current_track_info.get("uri") or "",
+                        title=self.device.current_track_info.get("title"),
+                        artist=self.device.current_track_info.get("artist"),
+                        album=self.device.current_track_info.get("album"),
+                        image_url=self.device.current_track_info.get("album_art_uri"),
+                        source_id=SOURCE_SPOTIFY,
+                    )
+                else:
+                    self._attr_active_source = SOURCE_UNKNOWN
+                    self.set_current_media(
+                        uri=self.device.current_track_info.get("uri") or "",
+                        title=self.device.current_track_info.get("title"),
+                        artist=self.device.current_track_info.get("artist"),
+                        album=self.device.current_track_info.get("album"),
+                        image_url=self.device.current_track_info.get("album_art_uri"),
+                        source_id=SOURCE_UNKNOWN,
+                    )
+            else:
+                self._attr_active_source = SOURCE_UNKNOWN
                 self.set_current_media(
                     uri=self.device.current_track_info.get("uri") or "",
                     title=self.device.current_track_info.get("title"),
                     artist=self.device.current_track_info.get("artist"),
                     album=self.device.current_track_info.get("album"),
                     image_url=self.device.current_track_info.get("album_art_uri"),
+                    source_id=SOURCE_UNKNOWN,
                 )
 
         elif group_info and group_info.get("role") == "follower":
