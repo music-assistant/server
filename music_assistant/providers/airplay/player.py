@@ -110,10 +110,16 @@ class AirPlayPlayer(Player):
 
     @cached_property
     def protocol(self) -> StreamingProtocol:
-        """Get the streaming protocol to use for this player."""
-        protocol_value = self.config.get_value(CONF_AIRPLAY_PROTOCOL)
-        # Convert integer value to StreamingProtocol enum
-        if protocol_value == 2:
+        """Get the streaming protocol to use/prefer for this player."""
+        preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL))
+        if preferred_option == StreamingProtocol.AIRPLAY2 and self.airplay_discovery_info:
+            return StreamingProtocol.AIRPLAY2
+        if preferred_option == StreamingProtocol.RAOP and self.raop_discovery_info:
+            return StreamingProtocol.RAOP
+        # automatic selection
+        if self.airplay_discovery_info and is_airplay2_preferred_model(
+            self.device_info.manufacturer, self.device_info.model
+        ):
             return StreamingProtocol.AIRPLAY2
         return StreamingProtocol.RAOP
 
@@ -168,21 +174,21 @@ class AirPlayPlayer(Player):
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 required=False,
-                label="AirPlay version to use for streaming",
+                label="AirPlay protocol version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
                 "AirPlay version 2 is an extension of RAOP.\n"
                 "Some newer devices do not fully support RAOP and "
-                "will only work with AirPlay version 2.",
+                "will only work with AirPlay version 2, "
+                "while older devices may only support RAOP.\n\n"
+                "In most cases the default automatic selection will work fine.",
                 category="airplay",
                 options=[
-                    ConfigValueOption("AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
-                    ConfigValueOption("AirPlay 2", StreamingProtocol.AIRPLAY2.value),
+                    ConfigValueOption("Automatically select", 0),
+                    ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
+                    ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
-                default_value=StreamingProtocol.AIRPLAY2.value
-                if is_airplay2_preferred_model(
-                    self.device_info.manufacturer, self.device_info.model
-                )
-                else StreamingProtocol.RAOP.value,
+                default_value=0,
+                hidden=self.protocol != StreamingProtocol.RAOP,
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
@@ -194,6 +200,7 @@ class AirPlayPlayer(Player):
                 category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
             ),
             ConfigEntry(
                 key=CONF_ALAC_ENCODE,
@@ -205,6 +212,7 @@ class AirPlayPlayer(Player):
                 category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
             ),
             CONF_ENTRY_SYNC_ADJUST,
             ConfigEntry(
@@ -233,8 +241,10 @@ class AirPlayPlayer(Player):
                     "Enable this option to ignore these reports."
                 ),
                 category="airplay",
+                # TODO: remove depends_on when DACP support is added for AirPlay2
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
             ),
         ]
 
