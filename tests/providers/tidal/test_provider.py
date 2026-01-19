@@ -21,6 +21,7 @@ def mass_mock() -> Mock:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
+    mass.config.get = Mock(return_value={})
     return mass
 
 
@@ -93,6 +94,7 @@ async def test_handle_async_init_missing_auth() -> None:
     mass = Mock()
     mass.http_session = AsyncMock()
     mass.metadata.locale = "en_US"
+    mass.config.get = Mock(return_value={})
 
     manifest = Mock()
     manifest.domain = "tidal"

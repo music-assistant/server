@@ -18,6 +18,7 @@ def mass_mock() -> AsyncMock:
     mass.http_session = AsyncMock()
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
+    mass.config.get = MagicMock(return_value={})
     return mass
 
 
