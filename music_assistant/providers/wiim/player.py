@@ -281,7 +281,7 @@ class WiimPlayer(Player):
                         image_url=self.device.current_track_info.get("album_art_uri"),
                         source_id=SOURCE_AIRPLAY,
                     )
-                elif self.device.current_track_uri == "wiimu_spotify":
+                elif self.device.current_track_uri.startswith("spotify:"):
                     self._attr_active_source = SOURCE_SPOTIFY
                     self.set_current_media(
                         uri=self.device.current_track_info.get("uri") or "",
@@ -301,16 +301,6 @@ class WiimPlayer(Player):
                         image_url=self.device.current_track_info.get("album_art_uri"),
                         source_id=SOURCE_UNKNOWN,
                     )
-            else:
-                self._attr_active_source = SOURCE_UNKNOWN
-                self.set_current_media(
-                    uri=self.device.current_track_info.get("uri") or "",
-                    title=self.device.current_track_info.get("title"),
-                    artist=self.device.current_track_info.get("artist"),
-                    album=self.device.current_track_info.get("album"),
-                    image_url=self.device.current_track_info.get("album_art_uri"),
-                    source_id=SOURCE_UNKNOWN,
-                )
 
         elif group_info and group_info.get("role") == "follower":
             self._attr_group_members.clear()
