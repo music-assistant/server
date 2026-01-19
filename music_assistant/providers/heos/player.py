@@ -1,28 +1,27 @@
-"""Demo Player implementation."""
+"""HEOS Player implementation."""
 
 from __future__ import annotations
 
+import time
 from copy import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
-from pyheos import Heos, PlayState
+from pyheos import Heos, MediaItem, const
+from pyheos.util import mediauri as pyheos_source
 
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.providers.heos.constants import (
+    HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
+    HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
+)
 
 if TYPE_CHECKING:
     from pyheos import HeosPlayer as pyheosPlayer
 
     from .provider import HeosPlayerProvider
 
-PLAY_STATE_TO_PLAY_BACK_STATE: dict[PlayState | None, PlaybackState] = {
-    PlayState.PLAY: PlaybackState.PLAYING,
-    PlayState.PAUSE: PlaybackState.PAUSED,
-    PlayState.STOP: PlaybackState.IDLE,
-    PlayState.UNKNOWN: PlaybackState.UNKNOWN,
-    None: PlaybackState.UNKNOWN,
-}
 
 PLAYER_FEATURES = {
     PlayerFeature.VOLUME_SET,
@@ -76,7 +75,7 @@ class HeosPlayer(Player):
 
         await self.build_group_list()
 
-        await self.set_dynamic_attributes()
+        self.set_dynamic_attributes()
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
@@ -94,27 +93,79 @@ class HeosPlayer(Player):
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
-        await self.set_dynamic_attributes()
+        self.logger.debug("[%s] Event received: %s", self._device.name, event)
 
-    async def set_dynamic_attributes(self) -> None:
-        """Update Player attributes."""
-        self._attr_playback_state = PLAY_STATE_TO_PLAY_BACK_STATE[self._device.state]
+        match event:
+            case const.EVENT_PLAYER_STATE_CHANGED:
+                self._update_player_state()
+
+            case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
+                self._update_player_current_media()
+                return
+
+            case const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
+                self._update_player_playing_progress()
+                return
+
+            case const.EVENT_PLAYER_VOLUME_CHANGED:
+                self._update_player_volume()
+
+            case _:
+                self.set_dynamic_attributes()
+
+        self.update_state()
+
+    def _update_player_volume(self) -> None:
+        """Update volume properties."""
         self._attr_volume_level = self._device.volume
         self._attr_volume_muted = self._device.is_muted
 
-        if self._device.now_playing_media.current_position is not None:
-            self._attr_elapsed_time = self._device.now_playing_media.current_position / 1000
-        else:
-            self._attr_elapsed_time = None
+    def _update_player_state(self) -> None:
+        """Update playback state."""
+        self._attr_playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE[self._device.state]
 
-        if self._device.now_playing_media.current_position_updated is not None:
-            self._attr_elapsed_time_last_updated = (
-                self._device.now_playing_media.current_position_updated.timestamp()
+    def _update_player_current_media(self) -> None:
+        """Update current media properties."""
+        now_playing = self._device.now_playing_media
+
+        if now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC:
+            self.logger.debug("[%s] Now playing: %s", self._device.name, now_playing)
+
+            self.set_current_media(
+                uri=pyheos_source.to_media_uri(cast("MediaItem", now_playing)),
+                media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE[now_playing.type],
+                title=now_playing.song,
+                artist=now_playing.artist,
+                album=now_playing.album,
+                image_url=now_playing.image_url,
+                duration=now_playing.duration,
+                # TODO: We can use custom_data to set the IDs
+                clear_all=True,
             )
-        else:
-            self._attr_elapsed_time_last_updated = None
 
-        self._attr_active_source = str(self._device.now_playing_media.source_id)
+            self._attr_active_source = str(now_playing.source_id)
+
+        # TODO: Attempt to figure out if we can still differentiate different LOCAL_MUSIC sources
+
+    def _update_player_playing_progress(self) -> None:
+        """Update current media progress properties."""
+        now_playing = self._device.now_playing_media
+
+        self._attr_elapsed_time = (
+            now_playing.current_position / 1000 if now_playing.current_position else None
+        )
+        self._attr_elapsed_time_last_updated = (
+            now_playing.current_position_updated.timestamp()
+            if now_playing.current_position_updated
+            else None
+        )
+
+    def set_dynamic_attributes(self) -> None:
+        """Update all player dynamic attributes."""
+        self._update_player_volume()
+        self._update_player_state()
+        self._update_player_current_media()
+        self._update_player_playing_progress()
 
         self.update_state()
 
@@ -154,6 +205,12 @@ class HeosPlayer(Player):
         await self._device.play_url(media.uri)
 
         self._attr_current_media = media
+
+        # TODO: Maybe we can set this in the now_playing changed event
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+
+        self._attr_active_source = self.player_id
 
         self.update_state()
 

@@ -1,4 +1,4 @@
-"""Demo Player Provider implementation."""
+"""HEOS Player Provider implementation."""
 
 from __future__ import annotations
 
