@@ -362,6 +362,8 @@ class UniversalGroupPlayer(GroupPlayer):
             )
         elif output_format_str == "flac":
             output_format = AudioFormat(content_type=ContentType.FLAC)
+        elif output_format_str == "aac":
+            output_format = AudioFormat(content_type=ContentType.AAC)
         else:
             output_format = AudioFormat(content_type=ContentType.MP3)
             http_profile = "chunked"
