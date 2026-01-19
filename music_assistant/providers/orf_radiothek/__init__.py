@@ -153,6 +153,7 @@ async def get_config_entries(
             default_value=False,
             description="Include stations with hideFromStations=true.",
             value=values.get(CONF_INCLUDE_HIDDEN),
+            category="advanced",
         ),
         ConfigEntry(
             key=CONF_CATCHUP_PROTO,
