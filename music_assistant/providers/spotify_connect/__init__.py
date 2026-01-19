@@ -606,6 +606,19 @@ class SpotifyConnectProvider(PluginProvider):
             and "Using StdoutSink (pipe) with format: S16" in line
         ):
             self._librespot_started.set()
+
+        # Librespot catches "Broken pipe" errors (os error 32) and transitions to
+        # Paused state without exiting. We must forcibly close it to trigger restart.
+        if "Broken pipe (os error 32)" in line:
+            self.logger.debug("[%s] %s", self.name, line)
+            self.logger.error(
+                "Librespot output pipe is broken (Zombie State). Restarting process..."
+            )
+            if self._librespot_proc:
+                # self._librespot_proc.close() is too polite; we don't end up restarting.
+                self.mass.create_task(self.mass.load_provider_config(self.config))
+            return
+
         if "error sending packet Os" in line:
             return
         if "dropping truncated packet" in line:
