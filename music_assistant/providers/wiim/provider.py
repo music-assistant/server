@@ -95,11 +95,11 @@ class WiimProvider(PlayerProvider):
         if cur_address is None:
             return
 
-        potential_locations = [
+        potential_locations = (
             f"http://{cur_address}:{get_port_from_zeroconf(info)}/description.xml",
             f"http://{cur_address}/description.xml",
             f"http://{cur_address}:49152/description.xml",
-        ]
+        )
 
         upnp_device = None
         for location in potential_locations:
