@@ -9,6 +9,10 @@ from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from pyheos import Heos, const
 
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
+    create_sample_rates_config_entry,
+)
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
@@ -18,6 +22,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from pyheos import HeosPlayer as pyheosPlayer
 
     from .provider import HeosPlayerProvider
@@ -243,3 +248,20 @@ class HeosPlayer(Player):
         else:
             await self._heos.set_group([int(player) for player in members])
         # group_members will be updated when group_changed event is handled
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        return [
+            *await super().get_config_entries(action=action, values=values),
+            create_sample_rates_config_entry(
+                max_sample_rate=192000,
+                safe_max_sample_rate=192000,
+                max_bit_depth=24,
+                safe_max_bit_depth=24,
+            ),
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
+        ]
