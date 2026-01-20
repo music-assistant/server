@@ -68,19 +68,22 @@ class HeosPlayer(Player):
         self._attr_can_group_with = {provider.instance_id}
         self._attr_source_list = provider.source_list
         self._attr_available = self._device.available
-        self._attr_name = client.name
+
+        self.logger.info("[%s] Loaded config: %s", self._device.name, self.config)
 
     async def setup(self) -> None:
         """Set up the player."""
         self.set_dynamic_attributes()
 
-        self._on_unload_callbacks.append(
-            self._device.add_on_player_event(self._player_event_received)
-        )
-
         await self.mass.players.register_or_update(self)
 
-        await self.build_group_list()
+        self.logger.debug("[%s] Player currently enabled: %s", self._device.name, self.enabled)
+        if self.enabled:
+            self._on_unload_callbacks.append(
+                self._device.add_on_player_event(self._player_event_received)
+            )
+
+            await self.build_group_list()
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""

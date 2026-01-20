@@ -7,6 +7,7 @@ import logging
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import PlayerSource
 from pyheos import Credentials, Heos, HeosError, HeosOptions, PlayerUpdateResult, const
+from pyheos import HeosPlayer as PyHeosPlayer
 
 from music_assistant.constants import (
     CONF_IP_ADDRESS,
@@ -24,6 +25,8 @@ class HeosPlayerProvider(PlayerProvider):
 
     _heos: Heos
     _source_list: list[PlayerSource] = []
+
+    _device_map: dict[str, PyHeosPlayer] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -64,7 +67,9 @@ class HeosPlayerProvider(PlayerProvider):
 
             # Build player configs
             devices = await self._heos.get_players()
-            for device in devices.values():
+            for device_id, device in devices.items():
+                self._device_map[str(device_id)] = device
+
                 heos_player = HeosPlayer(self, device)
                 await heos_player.setup()
         except HeosError as e:
@@ -116,3 +121,15 @@ class HeosPlayerProvider(PlayerProvider):
             # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
+
+    def on_player_disabled(self, player_id: str) -> None:
+        """Unregister player when it is disabled, cleans up connections."""
+        self.mass.create_task(self.mass.players.unregister(player_id))
+
+    def on_player_enabled(self, player_id: str) -> None:
+        """Reregister player when it is enabled."""
+        self.logger.debug("Attempting player re-enabling")
+        if device := self._device_map.get(player_id):
+            # Reinstantiate the player
+            heos_player = HeosPlayer(self, device)
+            self.mass.create_task(heos_player.setup())
