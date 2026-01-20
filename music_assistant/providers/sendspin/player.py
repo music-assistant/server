@@ -147,25 +147,14 @@ class MusicAssistantMediaStream(MediaStream):
             # DSP is disabled and output is stereo, use main_stream
             return None
 
-        # Use mono for non-stereo output channels, it will upmix in aiosendspin in case
-        # only stereo is supported by the player
-        output_format = self.output_format
-        if output_format.channels != 2:
-            output_format = AudioFormat(
-                content_type=self.output_format.content_type,
-                sample_rate=self.output_format.sample_rate,
-                bit_depth=self.output_format.bit_depth,
-                channels=1,
-            )
-
         # Get per-player DSP filter parameters
         filter_params = get_player_filter_params(
-            mass, player_id, self.internal_format, output_format
+            mass, player_id, self.internal_format, self.output_format
         )
 
         # Get the stream with position (in seconds)
         stream_gen, actual_position = await multi_client_stream.get_stream(
-            output_format=output_format,
+            output_format=self.output_format,
             filter_params=filter_params,
         )
 
@@ -181,9 +170,9 @@ class MusicAssistantMediaStream(MediaStream):
         return (
             stream_gen,
             SendspinAudioFormat(
-                sample_rate=output_format.sample_rate,
-                bit_depth=output_format.bit_depth,
-                channels=output_format.channels,
+                sample_rate=self.output_format.sample_rate,
+                bit_depth=self.output_format.bit_depth,
+                channels=self.output_format.channels,
                 codec=self._main_channel_format.codec,
             ),
             actual_position_us,
