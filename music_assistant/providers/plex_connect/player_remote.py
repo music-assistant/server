@@ -712,7 +712,7 @@ class PlexRemoteControlServer:
 
                 # Apply shuffle if requested (after all tracks are loaded)
                 if shuffle:
-                    self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+                    await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
                 LOGGER.info(
                     f"Successfully loaded {len(tracks_to_add)} remaining tracks "
