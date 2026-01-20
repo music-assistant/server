@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import PlayerSource
-from pyheos import Credentials, Heos, HeosOptions, PlayerUpdateResult, const
+from pyheos import Credentials, Heos, HeosError, HeosOptions, PlayerUpdateResult, const
 
 from music_assistant.constants import (
     CONF_IP_ADDRESS,
@@ -30,6 +31,7 @@ class HeosPlayerProvider(PlayerProvider):
             logging.getLogger("pyheos").setLevel(logging.DEBUG)
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
+
         # Credentials are not needed, only used to grab favorites and music services
         credentials: Credentials | None = None
 
@@ -45,20 +47,34 @@ class HeosPlayerProvider(PlayerProvider):
                 auto_reconnect=True,
             )
         )
+        self._heos.add_on_user_credentials_invalid(self.invalid_credentials)
 
-        # TODO: Handle connection failures
-        await self._heos.connect()
+        try:
+            await self._heos.connect()
+
+            self._heos.add_on_controller_event(self._handle_controller_event)
+        except HeosError as e:
+            self.logger.error(f"Failed to connect to HEOS controller: {e}")
+            raise MusicAssistantError("Failed to connect to HEOS controller") from e
 
         # Initialize library values
-        await self._build_source_list()
+        try:
+            # Populate source list
+            await self._build_source_list()
 
-        self._heos.add_on_controller_event(self._handle_controller_event)
+            # Build player configs
+            devices = await self._heos.get_players()
+            for device in devices.values():
+                heos_player = HeosPlayer(self, device)
+                await heos_player.setup()
+        except HeosError as e:
+            self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
+            raise MusicAssistantError("Unexpected error setting up HEOS controller") from e
 
-        # Build player configs
-        devices = await self._heos.get_players()
-        for device in devices.values():
-            heos_player = HeosPlayer(self, device)
-            await heos_player.setup()
+    async def invalid_credentials(self) -> None:
+        """Handle invalid login credentials."""
+        # Just log a warning, HEOS works fine without login, just no favorites and music services
+        self.logger.warning("Invalid login credentials provided for HEOS")
 
     async def _handle_controller_event(
         self, event: str, result: PlayerUpdateResult | None = None
