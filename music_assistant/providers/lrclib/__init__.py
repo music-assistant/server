@@ -148,15 +148,14 @@ class LrclibProvider(MetadataProvider):
                 self.logger.debug("Found synchronized lyrics for %s by %s", track.name, artist_name)
                 return metadata
 
-            else:
-                self.logger.debug(
-                    "No synchronized lyrics found for %s by %s with album name %s and with a "
-                    "duration within 2 secs of %s",
-                    track.name,
-                    artist_name,
-                    album_name,
-                    duration,
-                )
+            self.logger.debug(
+                "No synchronized lyrics found for %s by %s with album name %s and with a "
+                "duration within 2 secs of %s",
+                track.name,
+                artist_name,
+                album_name,
+                duration,
+            )
 
             plain_lyrics = data.get("plainLyrics")
 
@@ -166,13 +165,12 @@ class LrclibProvider(MetadataProvider):
 
                 self.logger.debug("Found plain lyrics for %s by %s", track.name, artist_name)
                 return metadata
-            else:
-                self.logger.info(
-                    "No lyrics found for %s by %s with album name %s and with a "
-                    "duration within 2 secs of %s",
-                    track.name,
-                    artist_name,
-                    album_name,
-                    duration,
-                )
+            self.logger.info(
+                "No lyrics found for %s by %s with album name %s and with a "
+                "duration within 2 secs of %s",
+                track.name,
+                artist_name,
+                album_name,
+                duration,
+            )
         return None

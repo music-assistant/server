@@ -169,25 +169,24 @@ class MusicCastProvider(PlayerProvider):
         ):
             # nothing to do, device is already connected
             return
-        else:
-            # new or updated player detected
-            physical_device = MusicCastPhysicalDevice(
-                device=MusicCastDevice(
-                    client=self.mass.http_session,
-                    ip=device_ip,
-                    upnp_description=description_url,
-                ),
-                controller=self.mc_controller,
+        # new or updated player detected
+        physical_device = MusicCastPhysicalDevice(
+            device=MusicCastDevice(
+                client=self.mass.http_session,
+                ip=device_ip,
+                upnp_description=description_url,
+            ),
+            controller=self.mc_controller,
+        )
+        self.update_player_locks[device_id] = asyncio.Lock()
+        success = await physical_device.async_init()  # fetch + polling
+        if not success:
+            self.logger.debug(
+                "Had trouble setting up device at %s. Will be retried on next discovery.",
+                device_ip,
             )
-            self.update_player_locks[device_id] = asyncio.Lock()
-            success = await physical_device.async_init()  # fetch + polling
-            if not success:
-                self.logger.debug(
-                    "Had trouble setting up device at %s. Will be retried on next discovery.",
-                    device_ip,
-                )
-                return
-            await self._register_player(physical_device, device_id)
+            return
+        await self._register_player(physical_device, device_id)
 
     async def _register_player(
         self, physical_device: MusicCastPhysicalDevice, device_id: str

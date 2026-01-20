@@ -138,9 +138,8 @@ class SmartFade(ABC):
 
         if raw_crossfade_output:
             return raw_crossfade_output
-        else:
-            stderr_msg = stderr.decode() if stderr else "(no stderr output)"
-            raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
+        stderr_msg = stderr.decode() if stderr else "(no stderr output)"
+        raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
 
     def __repr__(self) -> str:
         """Return string representation of SmartFade showing the filter chain."""
