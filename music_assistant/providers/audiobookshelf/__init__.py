@@ -555,7 +555,7 @@ for more details.
         """Get stream of item."""
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._get_stream_details_episode(item_id)
-        elif media_type == MediaType.AUDIOBOOK:
+        if media_type == MediaType.AUDIOBOOK:
             abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=item_id)
             return await self._get_stream_details_audiobook(abs_audiobook)
         raise MediaNotFoundError("Stream unknown")
@@ -1048,9 +1048,8 @@ for more details.
         if len(sub_path) == 1:
             if lib_key == AbsBrowsePaths.LIBRARIES_PODCAST:
                 return await self._browse_lib_podcasts(library_id=lib_id)
-            else:
-                return self._browse_lib_audiobooks(current_path=path)
-        elif len(sub_path) == 2:
+            return self._browse_lib_audiobooks(current_path=path)
+        if len(sub_path) == 2:
             item_key = sub_path[1]
             match item_key:
                 case AbsBrowsePaths.AUTHORS:

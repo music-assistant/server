@@ -263,7 +263,7 @@ class Player(ABC):
         ):
             # always ensure the player_id is in the group_members list for players
             return [self.player_id, *self._attr_group_members]
-        elif self._attr_group_members == [self.player_id]:
+        if self._attr_group_members == [self.player_id]:
             return []
         return self._attr_group_members
 
@@ -1425,7 +1425,7 @@ class Player(ABC):
                 elapsed_time=int(active_queue.elapsed_time),
                 elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
             )
-        elif active_queue:
+        if active_queue:
             # queue is active but no current item
             return None
         # return native current media if no group/queue is active
