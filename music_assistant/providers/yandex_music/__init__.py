@@ -63,7 +63,7 @@ async def get_config_entries(
 
     if is_authenticated:
         # User is authenticated - show status and clear option
-        auth_entries: tuple[ConfigEntry, ...] = (
+        return (
             ConfigEntry(
                 key="label_ok",
                 type=ConfigEntryType.LABEL,
@@ -90,54 +90,49 @@ async def get_config_entries(
                 ],
                 default_value=QUALITY_HIGH,
             ),
-        )
-    else:
-        # User is not authenticated - show token input
-        auth_entries = (
-            ConfigEntry(
-                key="label_instructions",
-                type=ConfigEntryType.LABEL,
-                label="To use Yandex Music, you need to provide your OAuth token.\n\n"
-                "You can obtain your token from browser developer tools:\n\n"
-                "1. Open https://music.yandex.ru in your browser\n"
-                "2. Log in to your Yandex account\n"
-                "3. Open browser Developer Tools (F12)\n"
-                "4. Go to Application/Storage > Cookies\n"
-                "5. Find the 'Session_id' cookie and copy its value\n\n"
-                "Alternatively, use yandex-music-token tool:\n"
-                "https://github.com/MarshalX/yandex-music-token",
-            ),
+            # Hidden field to preserve the token
             ConfigEntry(
                 key=CONF_TOKEN,
                 type=ConfigEntryType.SECURE_STRING,
                 label="Yandex Music Token",
-                description="Enter your Yandex Music OAuth token",
-                required=True,
+                hidden=True,
                 value=cast("str", values.get(CONF_TOKEN)) if values else None,
-            ),
-            ConfigEntry(
-                key=CONF_QUALITY,
-                type=ConfigEntryType.STRING,
-                label="Audio quality",
-                description="Select preferred audio quality.\n\n"
-                "High: MP3 320 kbps\n\n"
-                "Lossless: FLAC (requires Yandex Music Plus subscription)",
-                options=[
-                    ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
-                    ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
-                ],
-                default_value=QUALITY_HIGH,
             ),
         )
 
+    # User is not authenticated - show token input
     return (
-        *auth_entries,
-        # Hidden field to store the token
+        ConfigEntry(
+            key="label_instructions",
+            type=ConfigEntryType.LABEL,
+            label="To use Yandex Music, you need to provide your OAuth token.\n\n"
+            "You can obtain your token from browser developer tools:\n\n"
+            "1. Open https://music.yandex.ru in your browser\n"
+            "2. Log in to your Yandex account\n"
+            "3. Open browser Developer Tools (F12)\n"
+            "4. Go to Application/Storage > Cookies\n"
+            "5. Find the 'Session_id' cookie and copy its value\n\n"
+            "Alternatively, use yandex-music-token tool:\n"
+            "https://github.com/MarshalX/yandex-music-token",
+        ),
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Yandex Music Token",
-            hidden=True,
-            value=cast("str", values.get(CONF_TOKEN)) if values else None,
+            description="Enter your Yandex Music OAuth token",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_QUALITY,
+            type=ConfigEntryType.STRING,
+            label="Audio quality",
+            description="Select preferred audio quality.\n\n"
+            "High: MP3 320 kbps\n\n"
+            "Lossless: FLAC (requires Yandex Music Plus subscription)",
+            options=[
+                ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
+                ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
+            ],
+            default_value=QUALITY_HIGH,
         ),
     )
