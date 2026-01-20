@@ -65,6 +65,7 @@ OPTIONAL_FEATURES = {
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.MULTI_DEVICE_DSP,
 }
 
 
@@ -111,11 +112,15 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
-        if self.sync_leader:
+        members = self.group_members
+        p: Player | None = self.sync_leader or (
+            self.mass.players.get(members[0]) if members else None
+        )
+        if p:
             base_features = self._attr_supported_features.copy()
             # add features supported by the sync leader
             for feature in OPTIONAL_FEATURES:
-                if feature in self.sync_leader.supported_features:
+                if feature in p.supported_features:
                     base_features.add(feature)
             return base_features
         return self._attr_supported_features
