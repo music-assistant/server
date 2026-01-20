@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import time
 from copy import copy
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
-from pyheos import Heos, MediaItem, const
-from pyheos.util import mediauri as pyheos_source
+from pyheos import Heos, const
 
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.heos.constants import (
+from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
+
+from .constants import (
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
 )
@@ -67,6 +67,8 @@ class HeosPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
+        self.set_dynamic_attributes()
+
         self._on_unload_callbacks.append(
             self._device.add_on_player_event(self._player_event_received)
         )
@@ -74,8 +76,6 @@ class HeosPlayer(Player):
         await self.mass.players.register_or_update(self)
 
         await self.build_group_list()
-
-        self.set_dynamic_attributes()
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
@@ -101,16 +101,16 @@ class HeosPlayer(Player):
 
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
-                return
+                self._update_player_playing_progress()
 
             case const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
                 self._update_player_playing_progress()
-                return
 
             case const.EVENT_PLAYER_VOLUME_CHANGED:
                 self._update_player_volume()
 
             case _:
+                # Update everything on other events
                 self.set_dynamic_attributes()
 
         self.update_state()
@@ -128,24 +128,33 @@ class HeosPlayer(Player):
         """Update current media properties."""
         now_playing = self._device.now_playing_media
 
-        if now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC:
-            self.logger.debug("[%s] Now playing: %s", self._device.name, now_playing)
+        # Only update if we're not playing from our queue
+        # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
+        # generic URL (like MA), or other local source.
+        # We can only know we're playing from MA if we started this session.
+        if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
+            self._attr_active_source != self.player_id
+        ):
+            self.logger.debug("[%s] Now playing change: %s", self._device.name, now_playing)
 
-            self.set_current_media(
-                uri=pyheos_source.to_media_uri(cast("MediaItem", now_playing)),
+            self._attr_active_source = str(now_playing.source_id)
+            self._attr_current_media = PlayerMedia(
+                uri=now_playing.media_id or media_uri_from_now_playing_media(now_playing),
                 media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE[now_playing.type],
                 title=now_playing.song,
                 artist=now_playing.artist,
                 album=now_playing.album,
                 image_url=now_playing.image_url,
                 duration=now_playing.duration,
+                source_id=str(now_playing.source_id),
+                elapsed_time=now_playing.current_position,
+                elapsed_time_last_updated=(
+                    now_playing.current_position_updated.timestamp()
+                    if now_playing.current_position_updated
+                    else None
+                ),
                 # TODO: We can use custom_data to set the IDs
-                clear_all=True,
             )
-
-            self._attr_active_source = str(now_playing.source_id)
-
-        # TODO: Attempt to figure out if we can still differentiate different LOCAL_MUSIC sources
 
     def _update_player_playing_progress(self) -> None:
         """Update current media progress properties."""
@@ -166,8 +175,6 @@ class HeosPlayer(Player):
         self._update_player_state()
         self._update_player_current_media()
         self._update_player_playing_progress()
-
-        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -205,11 +212,6 @@ class HeosPlayer(Player):
         await self._device.play_url(media.uri)
 
         self._attr_current_media = media
-
-        # TODO: Maybe we can set this in the now_playing changed event
-        self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = time.time()
-
         self._attr_active_source = self.player_id
 
         self.update_state()
