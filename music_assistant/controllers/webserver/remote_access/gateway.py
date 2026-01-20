@@ -81,6 +81,7 @@ class WebRTCGateway:
         certificate: RTCCertificate,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
+        sendspin_url: str = "ws://localhost:8927/sendspin",
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
@@ -92,12 +93,14 @@ class WebRTCGateway:
         :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
+        :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
+        self.sendspin_url = sendspin_url
         self._remote_id = remote_id
         self._certificate = certificate
         self.logger = LOGGER
@@ -729,7 +732,7 @@ class WebRTCGateway:
                 if session.sendspin_ws and not session.sendspin_ws.closed:
                     asyncio.run_coroutine_threadsafe(session.sendspin_ws.close(), loop)
 
-            session.sendspin_ws = await self.http_session.ws_connect("ws://127.0.0.1:8927/sendspin")
+            session.sendspin_ws = await self.http_session.ws_connect(self.sendspin_url)
             self.logger.debug("Sendspin channel connected for session %s", session.session_id)
 
             # Start forwarding tasks - queued messages will be processed
