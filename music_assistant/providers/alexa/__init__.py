@@ -51,6 +51,7 @@ CONF_API_URL = "api_url"
 CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
+    "play_audio_fr-FR": "music assistant",
     "play_audio_de-DE": "sag music assistant spiele audio",
     "play_audio_en-US": "ask music assistant to play audio",
     "play_audio_default": "ask music assistant to play audio",
@@ -425,6 +426,8 @@ class AlexaProvider(PlayerProvider):
         if devices is None:
             return
 
+        alexa_locale = str(self.config.get_value(CONF_ALEXA_LANGUAGE, "en-US"))
+
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
                 dev_name = device["accountName"]
@@ -435,7 +438,7 @@ class AlexaProvider(PlayerProvider):
                 device_object.device_serial_number = device["serialNumber"]
                 device_object._device_family = device["deviceOwnerCustomerId"]
                 device_object._cluster_members = device["clusterMembers"]
-                device_object._locale = "en-US"
+                device_object._locale = alexa_locale
                 self.devices[player_id] = device_object
 
                 # Create AlexaPlayer instance

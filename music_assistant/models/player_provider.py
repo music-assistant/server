@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from zeroconf import ServiceStateChange
-from zeroconf.asyncio import AsyncServiceInfo
-
 from .provider import Provider
 
 if TYPE_CHECKING:
@@ -64,21 +61,9 @@ class PlayerProvider(Provider):
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
-        # This will be called (once) when the player provider is loaded into MA.
-        # Default implementation is mdns discovery, which will also automatically
-        # discovery players during runtime. If a provider overrides this method and
-        # doesn't use mdns, it is responsible for periodically searching for new players.
-        if not self.available:
-            return
-        for mdns_type in self.manifest.mdns_discovery or []:
-            for mdns_name in set(self.mass.aiozc.zeroconf.cache.cache):
-                if mdns_type not in mdns_name or mdns_type == mdns_name:
-                    continue
-                info = AsyncServiceInfo(mdns_type, mdns_name)
-                if await info.async_request(self.mass.aiozc.zeroconf, 3000):
-                    await self.on_mdns_service_state_change(
-                        mdns_name, ServiceStateChange.Added, info
-                    )
+        # This will be called when the player provider is (re)loaded into MA.
+        # For providers that support dynamic discovery of players via mdns,
+        # there is no need to implement this method.
 
     @property
     def players(self) -> list[Player]:

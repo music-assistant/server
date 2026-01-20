@@ -122,9 +122,8 @@ class GWClient:
                 return await self._gw_api_call(
                     method, use_csrf_token, args, params, http_method, False
                 )
-            else:
-                msg = "Failed to call GW-API"
-                raise DeezerGWError(msg, result_json["error"])
+            msg = "Failed to call GW-API"
+            raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
     async def get_song_data(self, track_id: str) -> dict[str, Any]:

@@ -16,7 +16,9 @@ from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
@@ -115,7 +117,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
-        if "/" in name or "\\" in name or ".." in name:
+        if not is_safe_name(name):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
         # create playlist on the provider
@@ -371,6 +373,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -404,6 +407,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table

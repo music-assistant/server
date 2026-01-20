@@ -4,6 +4,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -62,6 +63,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -132,6 +134,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'date_added': None,
           'external_ids': list([
           ]),
           'favorite': False,
@@ -190,6 +193,7 @@
           'version': '',
         }),
       ]),
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -258,6 +262,7 @@
         'album': None,
         'artists': list([
           dict({
+            'date_added': None,
             'external_ids': list([
             ]),
             'favorite': False,
@@ -328,6 +333,7 @@
             'version': '',
           }),
         ]),
+        'date_added': None,
         'disc_number': 0,
         'duration': 2,
         'external_ids': list([
@@ -415,6 +421,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -473,6 +480,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -539,6 +547,7 @@
 # ---
 # name: test_converter_with_fixture[artists/following_users.json]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -611,6 +620,7 @@
 # ---
 # name: test_converter_with_fixture[artists/user_details.json]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -686,6 +696,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -756,6 +767,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -841,6 +853,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -911,6 +924,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -993,6 +1007,7 @@
 # ---
 # name: test_converter_with_fixture[playlists/following_mylists.json]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1067,6 +1082,7 @@
 # ---
 # name: test_converter_with_fixture[playlists/own_mylists.json]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1142,6 +1158,7 @@
 # name: test_converter_with_fixture[playlists/single_mylist_details.json]
   dict({
     'playlist': dict({
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -1218,6 +1235,7 @@
         'album': None,
         'artists': list([
           dict({
+            'date_added': None,
             'external_ids': list([
             ]),
             'favorite': False,
@@ -1288,6 +1306,7 @@
             'version': '',
           }),
         ]),
+        'date_added': None,
         'disc_number': 0,
         'duration': 2,
         'external_ids': list([
@@ -1372,6 +1391,7 @@
 # ---
 # name: test_converter_with_fixture[search/mylist_search.json]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1449,6 +1469,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1507,6 +1528,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1576,6 +1598,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1646,6 +1669,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -1731,6 +1755,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1801,6 +1826,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -1924,6 +1950,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1994,6 +2021,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -2079,6 +2107,7 @@
     'album': None,
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -2149,6 +2178,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
@@ -2235,6 +2265,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'date_added': None,
           'external_ids': list([
           ]),
           'favorite': False,
@@ -2305,6 +2336,7 @@
           'version': '',
         }),
       ]),
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -2370,6 +2402,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -2440,6 +2473,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 2,
     'external_ids': list([
