@@ -5,11 +5,11 @@ from __future__ import annotations
 import typing
 from typing import TYPE_CHECKING, cast
 
-from didl_lite import didl_lite
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
 
+from music_assistant.helpers.upnp import create_didl_metadata_str
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import PLAYER_SOURCE_MAP, SOURCE_AIRPLAY, SOURCE_SPOTIFY, SOURCE_UNKNOWN
@@ -145,17 +145,7 @@ class WiimPlayer(Player):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # self._attr_current_media = media
-
-        items = [
-            didl_lite.AudioItem(
-                id="0",
-                parent_id="0",
-                title="Music Assistant",
-                restricted="1",
-            ),
-        ]
-        didl_string = didl_lite.to_xml_string(*items).decode("utf-8")
+        didl_string = create_didl_metadata_str(media)
 
         self.current_uri = media.uri
 

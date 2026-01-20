@@ -4,7 +4,7 @@
   "name": "WiiM",
   "description": "Stream music to WiiM devices.",
   "codeowners": ["@davidanthoff"],
-  "requirements": ["wiim@git+https://github.com/davidanthoff/wiim.git@ma-branch", "python-didl-lite==1.5.0"],
+  "requirements": ["wiim@git+https://github.com/davidanthoff/wiim.git@ma-branch"],
   "documentation": "https://music-assistant.io/player-support/wiim/",
   "mdns_discovery": ["_linkplay._tcp.local."]
 }
