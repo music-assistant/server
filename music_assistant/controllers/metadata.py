@@ -355,7 +355,7 @@ class MetaDataController(CoreController):
             if media_item.image and media_item.image.type == img_type:
                 if media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
-                elif not media_item.image.remotely_accessible:
+                if not media_item.image.remotely_accessible:
                     return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need

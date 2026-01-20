@@ -823,7 +823,7 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        pre_announce: bool | str | None = None,
+        pre_announce: bool | None = None,
         volume_level: int | None = None,
         pre_announce_url: str | None = None,
     ) -> None:
@@ -900,7 +900,7 @@ class PlayerController(CoreController):
             # we can send a regular play-media call downstream
             announce_data = AnnounceData(
                 announcement_url=url,
-                pre_announce=bool(pre_announce or False),
+                pre_announce=bool(pre_announce),
                 pre_announce_url=pre_announce_url,
             )
             announcement = PlayerMedia(
@@ -2040,7 +2040,7 @@ class PlayerController(CoreController):
             # nothing to do anymore, player was not previously powered
             # and does not support power control
             return
-        elif prev_synced_to:
+        if prev_synced_to:
             self.logger.debug(
                 "Announcement to player %s - syncing back to %s...",
                 player.display_name,

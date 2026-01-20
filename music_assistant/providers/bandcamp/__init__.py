@@ -275,7 +275,7 @@ class BandcampProvider(MusicProvider):
                     album_name=api_album.title,
                     album_image_url=api_album.art_url,
                 )
-            elif not album_id:
+            if not album_id:
                 api_track = await self._client.get_track(artist_id, track_id)
                 return self._converters.track_from_api(
                     track=api_track,
@@ -283,8 +283,7 @@ class BandcampProvider(MusicProvider):
                     album_name=api_track.album.title if api_track.album else "",
                     album_image_url=api_track.album.art_url if api_track.album else "",
                 )
-            else:
-                raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
+            raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Bandcamp track {prov_track_id} search returned no results"

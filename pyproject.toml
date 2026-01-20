@@ -64,7 +64,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
   "tomli==2.3.0",
-  "ruff==0.14.9",
+  "ruff==0.14.13",
 ]
 
 [project.scripts]
@@ -197,6 +197,9 @@ ignore = [
   "TRY003", # Just annoying, not really useful
   "TRY400", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
+  "ASYNC109", # Not relevant, since we use helpers with configurable timeouts
+  "ASYNC110", # Use `asyncio.Event` instead of awaiting `asyncio.sleep` in a `while` loop
+  "N818", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
@@ -229,7 +232,6 @@ ignore = [
   "ARG002",
   "S311",
   "TRY301",
-  "RET505",
   "PLR0912",
   "B904",
   "TRY401",
@@ -245,12 +247,9 @@ ignore = [
   "RUF006",
   "TRY300",
   "S608",
-  "N818",
   "S307",
   "B007",
   "ANN204",
-  "ASYNC109",
-  "ASYNC110",
 ]
 
 select = ["ALL"]
