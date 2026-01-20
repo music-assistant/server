@@ -98,8 +98,7 @@ class WiimPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
+        self.logger.info(
             "Received VOLUME_SET command on player %s with level %s",
             self.display_name,
             volume_level,
@@ -112,8 +111,7 @@ class WiimPlayer(Player):
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
+        self.logger.info(
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
         await self.device.async_set_mute(muted)
@@ -122,32 +120,28 @@ class WiimPlayer(Player):
 
     async def play(self) -> None:
         """Play command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info("Received PLAY command on player %s", self.display_name)
+        self.logger.info("Received PLAY command on player %s", self.display_name)
         await self.device.async_play()
 
         self._update_ma_state_from_sdk_cache()
 
     async def stop(self) -> None:
         """Stop command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info("Received STOP command on player %s", self.display_name)
+        self.logger.info("Received STOP command on player %s", self.display_name)
         await self.device.async_stop()
 
         self._update_ma_state_from_sdk_cache()
 
     async def pause(self) -> None:
         """Pause command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info("Received PAUSE command on player %s", self.display_name)
+        self.logger.info("Received PAUSE command on player %s", self.display_name)
         await self.device.async_pause()
 
         self._update_ma_state_from_sdk_cache()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
+        self.logger.info(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
