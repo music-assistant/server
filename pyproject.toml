@@ -73,7 +73,7 @@ mass = "music_assistant.__main__:main"
 [tool.codespell]
 # explicit is misspelled in the iTunes API
 # "additionals" is a fixed field name from the Nicovideo API fixtures
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 """
