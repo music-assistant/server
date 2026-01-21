@@ -33,7 +33,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
-    EventType,
     ImageType,
     PlaybackState,
     PlayerFeature,
@@ -49,6 +48,7 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_HIDDEN,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     CONF_ENTRY_SAMPLE_RATES,
+    CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
 )
@@ -74,7 +74,7 @@ SUPPORTED_GROUP_COMMANDS = [
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigValueType
-    from music_assistant_models.event import MassEvent
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from .provider import SendspinProvider
@@ -140,12 +140,14 @@ class MusicAssistantMediaStream(MediaStream):
         assert multi_client_stream is not None
 
         dsp = mass.config.get_player_dsp_config(player_id)
-        if not dsp.enabled:
-            # DSP is disabled for this player, use main_stream
+        output_channels = mass.config.get_raw_player_config_value(
+            player_id, CONF_OUTPUT_CHANNELS, "stereo"
+        )
+        if not dsp.enabled and output_channels == "stereo":
+            # DSP is disabled and output is stereo, use main_stream
             return None
 
         # Get per-player DSP filter parameters
-        # Convert from internal format to output format
         filter_params = get_player_filter_params(
             mass, player_id, self.internal_format, self.output_format
         )
@@ -224,20 +226,14 @@ class SendspinPlayer(Player):
             self._attr_volume_level = player_client.volume
             self._attr_volume_muted = player_client.muted
         self._attr_available = True
-        self._on_unload_callbacks.append(
-            self.mass.subscribe(
-                self._on_queue_update,
-                (EventType.QUEUE_UPDATED),
-            )
-        )
         self.is_web_player = sendspin_client.name.startswith(
-            "Music Assistant Web ("  # The regular Web Interface
+            "Web ("  # The regular Web Interface
         ) or sendspin_client.name.startswith(
-            "Music Assistant ("  # The PWA App
+            "PWA ("  # The PWA App
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
 
-    async def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
+    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
@@ -288,11 +284,11 @@ class SendspinPlayer(Player):
             case MediaCommand.REPEAT_ALL if queue:
                 self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case MediaCommand.SHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=True)
             case MediaCommand.UNSHUFFLE if queue:
-                self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
-    async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
         if self.synced_to is not None:
             # Only handle group events as the leader, except for:
@@ -305,7 +301,7 @@ class SendspinPlayer(Player):
         match event:
             case GroupCommandEvent(command=command):
                 self.logger.debug("Group command received: %s", command)
-                await self._handle_group_command(command)
+                self.mass.create_task(self._handle_group_command(command))
             case GroupStateChangedEvent(state=state):
                 self.logger.debug("Group state changed to: %s", state)
                 match state:
@@ -325,31 +321,35 @@ class SendspinPlayer(Player):
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
-                if client_id == self.player_id:
-                    if len(self._attr_group_members) > 0:
-                        # We were just removed as a leader:
-                        # 1. stop playback on the old group
-                        await group.stop()
-                        # 2. clear our members (since we are now alone)
-                        group_members = [
-                            member for member in self._attr_group_members if member != client_id
-                        ]
-                        self._attr_group_members = []
-                        # 3. assign new leader if there are members left
-                        if len(group_members) > 0 and (
-                            new_leader := self.mass.players.get(group_members[0])
-                        ):
-                            new_leader = cast("SendspinPlayer", new_leader)
-                            new_leader._attr_group_members = group_members[1:]
-                            new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
-                            new_leader.update_state()
-                    self.update_state()
-                elif client_id in self._attr_group_members:
-                    # Someone else left our group
-                    self._attr_group_members.remove(client_id)
-                    self.update_state()
+                self.mass.create_task(self._handle_member_removed(group, client_id))
             case GroupDeletedEvent():
                 pass
+
+    async def _handle_member_removed(self, group: SendspinGroup, client_id: str) -> None:
+        """Handle group member removed event asynchronously."""
+        if client_id == self.player_id:
+            if len(self._attr_group_members) > 0:
+                # We were just removed as a leader:
+                # 1. stop playback on the old group
+                await group.stop()
+                # 2. clear our members (since we are now alone)
+                group_members = [
+                    member for member in self._attr_group_members if member != client_id
+                ]
+                self._attr_group_members = []
+                # 3. assign new leader if there are members left
+                if len(group_members) > 0 and (
+                    new_leader := self.mass.players.get(group_members[0])
+                ):
+                    new_leader = cast("SendspinPlayer", new_leader)
+                    new_leader._attr_group_members = group_members[1:]
+                    new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
+                    new_leader.update_state()
+            self.update_state()
+        elif client_id in self._attr_group_members:
+            # Someone else left our group
+            self._attr_group_members.remove(client_id)
+            self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -395,10 +395,11 @@ class SendspinPlayer(Player):
     async def _run_playback(self, media: PlayerMedia) -> None:
         """Run the actual playback in a background task."""
         try:
+            # Use 32-bit for the main channel: aiosendspin converts per player as needed
             pcm_format = AudioFormat(
-                content_type=ContentType.PCM_S16LE,
+                content_type=ContentType.PCM_S32LE,
                 sample_rate=48000,
-                bit_depth=16,
+                bit_depth=32,
                 channels=2,
             )
             flow_pcm_format = AudioFormat(
@@ -425,7 +426,6 @@ class SendspinPlayer(Player):
             )
 
             # Setup the main channel subscription
-            # aiosendspin only really supports 16-bit for now TODO: upgrade later to 32-bit
             main_channel_gen, main_position = await self.timed_client_stream.get_stream(
                 output_format=pcm_format,
                 filter_params=None,  # TODO: this should probably still include the safety limiter
@@ -533,66 +533,60 @@ class SendspinPlayer(Player):
                 # Clear artist artwork if none available
                 await self.api.group.set_media_art(None, source=ArtworkSource.ARTIST)
 
-    async def _on_queue_update(self, event: MassEvent) -> None:
-        """Extract and send current media metadata to sendspin players on queue updates."""
-        queue = self.mass.player_queues.get_active_queue(self.player_id)
-        if not queue or not queue.current_item:
+    def _on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if self.synced_to is not None:
+            # Only leader sends metadata
             return
 
-        current_item = queue.current_item
+        if self.current_media is None:
+            # Clear metadata when no media loaded
+            self.api.group.set_metadata(Metadata())
+            return
+        self.mass.create_task(self.send_current_media_metadata())
 
-        title = current_item.name
-        artist = None
-        album_artist = None
-        album = None
-        track = None
-        artwork_url = None
-        year = None
-
-        if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
-            # stream title/metadata from radio/live stream
-            if " - " in streamdetails.stream_title:
-                artist, title = streamdetails.stream_title.split(" - ", 1)
-            else:
-                title = streamdetails.stream_title
-                artist = ""
-            # set album to radio station name
-            album = current_item.name
-        elif media_item := current_item.media_item:
-            title = media_item.name
-            if artist_str := getattr(media_item, "artist_str", None):
-                artist = artist_str
-            if _album := getattr(media_item, "album", None):
-                album = _album.name
-                year = getattr(_album, "year", None)
-                album_artist = getattr(_album, "artist_str", None)
-            if _track_number := getattr(media_item, "track_number", None):
-                track = _track_number
+    async def send_current_media_metadata(self) -> None:
+        """Send the current media metadata to the sendspin group."""
+        if not self.available:
+            return
+        current_media = self.current_media
+        if current_media is None:
+            return
+        # check if we are playing a MA queue item
+        queue_item: QueueItem | None = None
+        queue: PlayerQueue | None = None
+        if current_media.source_id and current_media.queue_item_id:
+            queue = self.mass.player_queues.get(current_media.source_id)
+            queue_item = self.mass.player_queues.get_item(
+                current_media.source_id, current_media.queue_item_id
+            )
 
         # Send album and artist artwork
-        artwork_url = await self._send_album_artwork(current_item)
-        await self._send_artist_artwork(current_item)
+        if queue_item:
+            await self._send_album_artwork(queue_item)
+            await self._send_artist_artwork(queue_item)
 
-        track_duration = current_item.duration
-
+        track_duration = current_media.duration or 0
         repeat = SendspinRepeatMode.OFF
-        if queue.repeat_mode == RepeatMode.ALL:
+        if queue and queue.repeat_mode == RepeatMode.ALL:
             repeat = SendspinRepeatMode.ALL
-        elif queue.repeat_mode == RepeatMode.ONE:
+        elif queue and queue.repeat_mode == RepeatMode.ONE:
             repeat = SendspinRepeatMode.ONE
 
-        shuffle = queue.shuffle_enabled
+        shuffle = queue.shuffle_enabled if queue else False
 
         metadata = Metadata(
-            title=title,
-            artist=artist,
-            album_artist=album_artist,
-            album=album,
-            artwork_url=artwork_url,
-            year=year,
-            track=track,
+            title=current_media.title,
+            artist=current_media.artist,
+            album_artist=None,  # TODO: extract from optional queue item
+            album=current_media.album,
+            artwork_url=current_media.image_url,
+            year=None,  # TODO: extract from optional queue item
+            track=None,  # TODO: extract from optional queue item
             track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=int(queue.corrected_elapsed_time * 1000),
+            track_progress=int(current_media.corrected_elapsed_time * 1000)
+            if current_media.corrected_elapsed_time
+            else 0,
             playback_speed=1000,
             repeat=repeat,
             shuffle=shuffle,

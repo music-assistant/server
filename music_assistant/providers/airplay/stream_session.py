@@ -8,8 +8,6 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState
-
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -30,7 +28,6 @@ from .protocols.raop import RaopStream
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
-    from music_assistant_models.player import PlayerMedia
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
@@ -68,6 +65,8 @@ class AirPlayStreamSession:
         # because we reuse an existing stream session for new play_media requests,
         # we need to track when the last stream was started
         self.last_stream_started: float = 0.0
+        self.total_pause_time: float = 0.0
+        self.last_paused: float | None = None
         self._clients_ready = asyncio.Event()
         self._first_chunk_received = asyncio.Event()
 
@@ -209,6 +208,8 @@ class AirPlayStreamSession:
             old_audio_source_task.cancel()
             self._audio_source_task = new_audio_source_task
         self.last_stream_started = time.time() + self.wait_start
+        self.total_pause_time = 0.0
+        self.last_paused = None
         for sync_client in self.sync_clients:
             sync_client.set_state_from_stream(state=None, elapsed_time=0)
         # ensure we cleanly wait for the old audio source task to finish
@@ -217,8 +218,6 @@ class AirPlayStreamSession:
 
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
-        _last_metadata: str | None = None
-        prev_progress_report: float = 0.0
         pcm_sample_size = self.pcm_format.pcm_sample_size
         stream_start_time = time.time()
         first_chunk_received = False
@@ -277,27 +276,6 @@ class AirPlayStreamSession:
                 chunk_seconds = len(chunk) / pcm_sample_size
                 self.seconds_streamed += chunk_seconds
 
-            # send metadata if changed
-            # do this in a separate task to not disturb audio streaming
-            # NOTE: we should probably move this out of the audio stream task into it's own task
-            metadata: PlayerMedia | None
-            if (
-                self.sync_clients
-                and (_leader := self.sync_clients[0])
-                and (_leader.corrected_elapsed_time or 0) > 2
-                and (metadata := _leader.current_media) is not None
-            ):
-                now = time.time()
-                metadata_checksum = f"{metadata.uri}.{metadata.title}.{metadata.image_url}"
-                progress = int(metadata.corrected_elapsed_time or 0)
-                if _last_metadata != metadata_checksum:
-                    _last_metadata = metadata_checksum
-                    prev_progress_report = now
-                    self.mass.create_task(self._send_metadata(progress, metadata))
-                # send the progress report every 5 seconds
-                elif now - prev_progress_report >= 5:
-                    prev_progress_report = now
-                    self.mass.create_task(self._send_metadata(progress, None))
         # Entire stream consumed: send EOF
         self.prov.logger.debug("Audio source stream exhausted")
         async with self._lock:
@@ -319,11 +297,6 @@ class AirPlayStreamSession:
         Blocks (async) until the data has been written.
         """
         player_id = airplay_player.player_id
-
-        # don't write a chunk if we're paused
-        while airplay_player.playback_state == PlaybackState.PAUSED:
-            await asyncio.sleep(0.1)
-
         # we write the chunk to the player's ffmpeg process which
         # applies any player-specific filters (e.g. volume, dsp, etc)
         # and outputs in the correct format for the player stream
@@ -331,9 +304,10 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.get(player_id):
             if ffmpeg.closed:
                 return
-            # Use a 10 second timeout - if the write takes longer, the player
+            # Use a 35 second timeout - if the write takes longer, the player
             # has stopped reading data and we're in a deadlock situation
-            await asyncio.wait_for(ffmpeg.write(chunk), timeout=10.0)
+            # 35 seconds is a little bit above out pause timeout (30s) to allow for some margin
+            await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
 
     async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
         """Write EOF to a specific player."""
@@ -342,18 +316,6 @@ class AirPlayStreamSession:
             await ffmpeg.write_eof()
             await ffmpeg.wait_with_timeout(30)
             del ffmpeg
-
-    async def _send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
-        """Send metadata to all players."""
-        async with self._lock:
-            await asyncio.gather(
-                *[
-                    x.stream.send_metadata(progress, metadata)
-                    for x in self.sync_clients
-                    if x.stream and x.stream.running
-                ],
-                return_exceptions=True,
-            )
 
     async def _prepare_client(self, airplay_player: AirPlayPlayer) -> None:
         """Prepare stream for a single client."""

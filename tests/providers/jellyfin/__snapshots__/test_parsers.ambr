@@ -19,6 +19,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -113,6 +114,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -207,6 +209,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -269,6 +272,7 @@
 # ---
 # name: test_parse_artists[ash]
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -384,6 +388,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 272,
     'external_ids': list([
@@ -487,6 +492,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 577,
     'external_ids': list([
@@ -570,6 +576,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 246,
     'external_ids': list([
@@ -608,7 +615,7 @@
       'review': None,
       'style': None,
     }),
-    'name': 'Where the Bands Are (2018 Version)',
+    'name': 'Where the Bands Are',
     'position': 1,
     'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
@@ -632,11 +639,11 @@
         'url': 'http://localhost:1234/Audio/54918f75ee8f6c8b8dc5efd680644f29/universal?userId=USER_ID&deviceId=X&maxStreamingBitrate=140000000&api_key=ACCESS_TOKEN',
       }),
     ]),
-    'sort_name': 'where the bands are (2018 version)',
+    'sort_name': 'where the bands are',
     'track_number': 1,
     'translation_key': None,
     'uri': 'xx-instance-id-xx://track/54918f75ee8f6c8b8dc5efd680644f29',
-    'version': '',
+    'version': '2018 Version',
   })
 # ---
 # name: test_parse_tracks[zombie_christmas]
@@ -688,6 +695,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 224,
     'external_ids': list([

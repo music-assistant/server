@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "AirPlay",
   "description": "Stream to AirPlay-enabled devices on your local network.",
-  "codeowners": ["@music-assistant", "@brad"],
+  "codeowners": ["@music-assistant", "@bradkeifer"],
   "credits": [
     "[libraop (RAOP)](https://github.com/music-assistant/libraop)",
     "[OwnTone (AirPlay2)](https://github.com/OwnTone)"

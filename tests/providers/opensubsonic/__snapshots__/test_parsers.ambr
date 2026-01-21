@@ -4,6 +4,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -62,6 +63,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -140,6 +142,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -198,6 +201,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -327,6 +331,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -450,6 +455,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -531,6 +537,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist]
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -608,6 +615,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist].1
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -691,6 +699,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist]
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -768,6 +777,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist].1
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -851,6 +861,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': True,
@@ -918,6 +929,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist].1
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': True,
@@ -991,6 +1003,7 @@
 # ---
 # name: test_parse_episode[gonic-sample.episode]
   dict({
+    'date_added': None,
     'duration': 1878,
     'external_ids': list([
     ]),
@@ -1030,6 +1043,7 @@
     }),
     'name': '179- The End',
     'podcast': dict({
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -1128,6 +1142,7 @@
 # ---
 # name: test_parse_episode[no-cover.episode]
   dict({
+    'date_added': None,
     'duration': 0,
     'external_ids': list([
     ]),
@@ -1167,6 +1182,7 @@
     }),
     'name': '179- The End',
     'podcast': dict({
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -1265,6 +1281,7 @@
 # ---
 # name: test_parse_episode[no-duration.episode]
   dict({
+    'date_added': None,
     'duration': 0,
     'external_ids': list([
     ]),
@@ -1304,6 +1321,7 @@
     }),
     'name': '179- The End',
     'podcast': dict({
+      'date_added': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -1402,6 +1420,7 @@
 # ---
 # name: test_parse_playlist[gonic-sample.playlist]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1471,6 +1490,7 @@
 # ---
 # name: test_parse_podcast[gonic-sample.podcast]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1540,6 +1560,7 @@
 # ---
 # name: test_parse_podcast[no-episodes.podcast]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1626,6 +1647,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1684,6 +1706,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 0,
     'external_ids': list([
@@ -1829,6 +1852,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -1887,6 +1911,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 0,
     'external_ids': list([
@@ -1979,6 +2004,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -2037,6 +2063,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 0,
     'external_ids': list([
@@ -2182,6 +2209,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -2240,6 +2268,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 0,
     'external_ids': list([
@@ -2377,6 +2406,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 178,
     'external_ids': list([
@@ -2567,6 +2597,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 178,
     'external_ids': list([

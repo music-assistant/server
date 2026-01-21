@@ -263,7 +263,7 @@ class Player(ABC):
         ):
             # always ensure the player_id is in the group_members list for players
             return [self.player_id, *self._attr_group_members]
-        elif self._attr_group_members == [self.player_id]:
+        if self._attr_group_members == [self.player_id]:
             return []
         return self._attr_group_members
 
@@ -707,6 +707,12 @@ class Player(ABC):
                 return player.player_id
         return None
 
+    def _on_player_media_updated(self) -> None:  # noqa: B027
+        """Handle callback when the current media of the player is updated."""
+        # optional callback for players that want to be informed when the final
+        # current media is updated (after applying group/sync membership logic).
+        # for instance to update any display information on the physical player.
+
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they
     # are used to perform a very specific function. Overwriting these may
@@ -1015,7 +1021,7 @@ class Player(ABC):
         return self._state
 
     @final
-    def update_state(self, force_update: bool = False) -> None:
+    def update_state(self, force_update: bool = False, signal_event: bool = True) -> None:
         """
         Update the PlayerState with the current state of the player.
 
@@ -1024,12 +1030,17 @@ class Player(ABC):
 
         :param force_update: If True, a state update event will be
         pushed even if the state has not actually changed.
+        :param signal_event: If True, signal the state update event to the PlayerController.
         """
         self.mass.verify_event_loop_thread("player.update_state")
         # clear the dict for the cached properties
         self._cache.clear()
         # calculate the new state
+        prev_media_checksum = self._get_player_media_checksum()
         changed_values = self.__calculate_state()
+        if prev_media_checksum != self._get_player_media_checksum():
+            # current media changed, call the media updated callback
+            self._on_player_media_updated()
         # ignore some values that are not relevant for the state
         changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
@@ -1042,7 +1053,8 @@ class Player(ABC):
         if len(changed_values) == 0 and not force_update:
             return
         # signal the state update to the PlayerController
-        self.mass.players.signal_player_state_update(self, changed_values)
+        if signal_event:
+            self.mass.players.signal_player_state_update(self, changed_values)
 
     @final
     def set_current_media(  # noqa: PLR0913
@@ -1196,6 +1208,15 @@ class Player(ABC):
             ),
         ]
 
+    def _get_player_media_checksum(self) -> str:
+        """Return a checksum for the current media."""
+        if not (media := self.current_media):
+            return ""
+        return (
+            f"{media.uri}|{media.title}|{media.source_id}|{media.queue_item_id}|"
+            f"{media.image_url}|{media.duration}|{media.elapsed_time}"
+        )
+
     def __calculate_state(
         self,
     ) -> dict[str, tuple[Any, Any]]:
@@ -1336,6 +1357,8 @@ class Player(ABC):
             active_queue = self.mass.player_queues.get(self._current_media.source_id)
         if not active_queue and self.active_source:
             active_queue = self.mass.player_queues.get(self.active_source)
+        if not active_queue and self._active_source is None:
+            active_queue = self.mass.player_queues.get(self.player_id)
 
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
@@ -1353,7 +1376,7 @@ class Player(ABC):
                     media_type=current_item.media_type,
                     title=stream_metadata.title or current_item.name,
                     artist=stream_metadata.artist,
-                    album=stream_metadata.album or current_item.name,
+                    album=stream_metadata.album or stream_metadata.description or current_item.name,
                     image_url=(stream_metadata.image_url or item_image_url),
                     duration=stream_metadata.duration or current_item.duration,
                     source_id=active_queue.queue_id,
@@ -1364,12 +1387,18 @@ class Player(ABC):
                 )
             if media_item := current_item.media_item:
                 # normal media item
+                # we use getattr here to avoid issues with different media item types
+                version = getattr(media_item, "version", None)
+                album = getattr(media_item, "album", None)
+                podcast = getattr(media_item, "podcast", None)
+                metadata = getattr(media_item, "metadata", None)
+                description = getattr(metadata, "description", None) if metadata else None
                 return PlayerMedia(
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
-                    title=media_item.name,
+                    title=f"{media_item.name} ({version})" if version else media_item.name,
                     artist=getattr(media_item, "artist_str", None),
-                    album=album.name if (album := getattr(media_item, "album", None)) else None,
+                    album=album.name if album else podcast.name if podcast else description,
                     # the image format needs to be 500x500 jpeg for maximum player compatibility
                     image_url=self.mass.metadata.get_image_url(
                         current_item.media_item.image, size=500, image_format="jpeg"
@@ -1396,6 +1425,9 @@ class Player(ABC):
                 elapsed_time=int(active_queue.elapsed_time),
                 elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
             )
+        if active_queue:
+            # queue is active but no current item
+            return None
         # return native current media if no group/queue is active
         if self._current_media:
             return PlayerMedia(

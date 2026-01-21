@@ -54,7 +54,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import infer_album_type, install_package
+from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -740,12 +740,15 @@ class YoutubeMusicProvider(MusicProvider):
             raise InvalidDataError("Album ID is required but not found")
 
         if "title" in album_obj:
-            name = album_obj["title"]
+            name, version = parse_title_and_version(album_obj["title"])
         elif "name" in album_obj:
-            name = album_obj["name"]
+            name, version = parse_title_and_version(album_obj["name"])
+        else:
+            name, version = "", ""
         album = Album(
             item_id=album_id,
             name=name,
+            version=version,
             provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
@@ -787,7 +790,7 @@ class YoutubeMusicProvider(MusicProvider):
             album.album_type = album_type
 
         # Try inference - override if it finds something more specific
-        inferred_type = infer_album_type(name, "")  # YouTube doesn't seem to have version field
+        inferred_type = infer_album_type(name, version)
         if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
             album.album_type = inferred_type
 
@@ -873,10 +876,12 @@ class YoutubeMusicProvider(MusicProvider):
             msg = "Track is missing videoId"
             raise InvalidDataError(msg)
         track_id = str(track_obj["videoId"])
+        name, version = parse_title_and_version(track_obj["title"])
         track = Track(
             item_id=track_id,
             provider=self.instance_id,
-            name=track_obj["title"],
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,

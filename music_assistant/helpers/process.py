@@ -26,6 +26,15 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 DEFAULT_CHUNKSIZE = 64000
 
 
+def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
+    result = dict(os.environ)
+    result.pop("LD_PRELOAD", None)
+    if env:
+        result.update(env)
+    return result
+
+
 class AsyncProcess:
     """
     AsyncProcess.
@@ -65,7 +74,7 @@ class AsyncProcess:
         self._stdin = None if stdin is False else stdin
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
-        self._env = env
+        self._env = get_subprocess_env(env)
         self._stderr_lock = asyncio.Lock()
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -319,7 +328,10 @@ class AsyncProcess:
 async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
     """Run subprocess and return returncode and output."""
     proc = await asyncio.create_subprocess_exec(
-        *args, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE, env=env
+        *args,
+        stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.PIPE,
+        env=get_subprocess_env(env),
     )
     stdout, _ = await proc.communicate()
     assert proc.returncode is not None  # for type checking
@@ -336,6 +348,7 @@ async def communicate(
         stderr=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE if input is not None else None,
+        env=get_subprocess_env(),
     )
     stdout, stderr = await proc.communicate(input)
     assert proc.returncode is not None  # for type checking

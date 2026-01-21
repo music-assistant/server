@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import logging
@@ -73,8 +74,6 @@ from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    import asyncio
-
     from music_assistant import MusicAssistant
     from music_assistant.models.core_controller import CoreController
 
@@ -215,7 +214,7 @@ class ConfigController:
 
         self.save()
 
-    @api_command("config/providers", required_role="admin")
+    @api_command("config/providers")
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -236,7 +235,7 @@ class ConfigController:
             and prov_conf["domain"] in prov_entries
         ]
 
-    @api_command("config/providers/get", required_role="admin")
+    @api_command("config/providers/get")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -422,13 +421,18 @@ class ConfigController:
             ):
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
 
-        return [
+        all_entries = [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
             *extra_entries,
             *await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
             ),
         ]
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
@@ -554,7 +558,12 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
 
-        return await player.get_config_entries(action=action, values=values)
+        all_entries = await player.get_config_entries(action=action, values=values)
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @overload
     async def get_player_config_value(
@@ -741,55 +750,54 @@ class ConfigController:
         """
         if raw_conf := self.get(f"{CONF_PLAYER_DSP}/{player_id}"):
             return DSPConfig.from_dict(raw_conf)
-        else:
-            # return default DSP config
-            dsp_config = DSPConfig()
+        # return default DSP config
+        dsp_config = DSPConfig()
 
-            deprecated_eq_bass = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_BASS, 0
-            )
-            deprecated_eq_mid = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_MID, 0
-            )
-            deprecated_eq_treble = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_DEPRECATED_EQ_TREBLE, 0
-            )
-            if deprecated_eq_bass != 0 or deprecated_eq_mid != 0 or deprecated_eq_treble != 0:
-                # the user previously used the now deprecated EQ settings:
-                # add a tone control filter with the old values, reset the deprecated values and
-                # save this as the new DSP config
-                # TODO: remove this in a future release
-                dsp_config.enabled = True
-                dsp_config.filters.append(
-                    ToneControlFilter(
-                        enabled=True,
-                        bass_level=float(deprecated_eq_bass)
-                        if isinstance(deprecated_eq_bass, (int, float, str))
-                        else 0.0,
-                        mid_level=float(deprecated_eq_mid)
-                        if isinstance(deprecated_eq_mid, (int, float, str))
-                        else 0.0,
-                        treble_level=float(deprecated_eq_treble)
-                        if isinstance(deprecated_eq_treble, (int, float, str))
-                        else 0.0,
-                    )
+        deprecated_eq_bass = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_BASS, 0
+        )
+        deprecated_eq_mid = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_MID, 0
+        )
+        deprecated_eq_treble = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_EQ_TREBLE, 0
+        )
+        if deprecated_eq_bass != 0 or deprecated_eq_mid != 0 or deprecated_eq_treble != 0:
+            # the user previously used the now deprecated EQ settings:
+            # add a tone control filter with the old values, reset the deprecated values and
+            # save this as the new DSP config
+            # TODO: remove this in a future release
+            dsp_config.enabled = True
+            dsp_config.filters.append(
+                ToneControlFilter(
+                    enabled=True,
+                    bass_level=float(deprecated_eq_bass)
+                    if isinstance(deprecated_eq_bass, (int, float, str))
+                    else 0.0,
+                    mid_level=float(deprecated_eq_mid)
+                    if isinstance(deprecated_eq_mid, (int, float, str))
+                    else 0.0,
+                    treble_level=float(deprecated_eq_treble)
+                    if isinstance(deprecated_eq_treble, (int, float, str))
+                    else 0.0,
                 )
+            )
 
-                deprecated_eq_keys = [
-                    CONF_DEPRECATED_EQ_BASS,
-                    CONF_DEPRECATED_EQ_MID,
-                    CONF_DEPRECATED_EQ_TREBLE,
-                ]
-                for key in deprecated_eq_keys:
-                    if self.mass.config.get_raw_player_config_value(player_id, key, 0) != 0:
-                        self.mass.config.set_raw_player_config_value(player_id, key, 0)
+            deprecated_eq_keys = [
+                CONF_DEPRECATED_EQ_BASS,
+                CONF_DEPRECATED_EQ_MID,
+                CONF_DEPRECATED_EQ_TREBLE,
+            ]
+            for key in deprecated_eq_keys:
+                if self.mass.config.get_raw_player_config_value(player_id, key, 0) != 0:
+                    self.mass.config.set_raw_player_config_value(player_id, key, 0)
 
-                self.set(f"{CONF_PLAYER_DSP}/{player_id}", dsp_config.to_dict())
-            else:
-                # The DSP config does not do anything by default, so we disable it
-                dsp_config.enabled = False
+            self.set(f"{CONF_PLAYER_DSP}/{player_id}", dsp_config.to_dict())
+        else:
+            # The DSP config does not do anything by default, so we disable it
+            dsp_config.enabled = False
 
-            return dsp_config
+        return dsp_config
 
     @api_command("config/players/dsp/save", required_role="admin")
     async def save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
@@ -934,7 +942,7 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set_default(conf_key, default_config.to_raw())
 
-    @api_command("config/core", required_role="admin")
+    @api_command("config/core")
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -1036,10 +1044,15 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
-        return list(
+        all_entries = list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
+        # set current value from stored values
+        for entry in all_entries:
+            if entry.value is None:
+                entry.value = values.get(entry.key, None)
+        return all_entries
 
     @api_command("config/core/save", required_role="admin")
     async def save_core_config(
@@ -1049,20 +1062,31 @@ class ConfigController:
     ) -> CoreConfig:
         """Save CoreController Config values."""
         config = await self.get_core_config(domain)
+        prev_config = config.to_raw()
         changed_keys = config.update(values)
         # validate the new config
         config.validate()
         if not changed_keys:
             # no changes
             return config
-        # try to load the provider first to catch errors before we save it.
-        controller: CoreController = getattr(self.mass, domain)
-        await controller.reload(config)
-        # reload succeeded, save new config
-        config.last_error = None
+        # save the config first before reloading to avoid issues on reload
+        # for example when reloading the webserver we might be cancelled here
         conf_key = f"{CONF_CORE}/{domain}"
         self.set(conf_key, config.to_raw())
-        # return full config, just in case
+        self.save(immediate=True)
+        try:
+            controller: CoreController = getattr(self.mass, domain)
+            await controller.reload(config)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # revert to previous config on error
+            self.set(conf_key, prev_config)
+            self.save(immediate=True)
+            raise
+        # reload succeeded; clear last_error and persist the final state
+        config.last_error = None
+        # return full config
         return await self.get_core_config(domain)
 
     if TYPE_CHECKING:

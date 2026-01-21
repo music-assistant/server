@@ -29,7 +29,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.player_control import PlayerControl
 
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
@@ -37,7 +37,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
-    from hass_client.models import CompressedState, EntityStateEvent
+    from hass_client.models import CompressedState, Device, EntityStateEvent
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -220,11 +220,11 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
     if not hass.connected:
         return ()
     for state in await hass.get_states():
-        if "friendly_name" not in state["attributes"]:
-            # filter out invalid/unavailable players
-            continue
         entity_platform = state["entity_id"].split(".")[0]
-        name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
+        if "friendly_name" not in state["attributes"]:
+            name = state["entity_id"]
+        else:
+            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
 
         if entity_platform in ("switch", "input_boolean"):
             # simple on/off controls are suitable as power and mute controls
@@ -378,8 +378,8 @@ class HomeAssistantProvider(PluginProvider):
         for entity_id in control_entity_ids:
             entity_platform = entity_id.split(".")[0]
             hass_state = hass_states.get(entity_id)
-            if hass_state:
-                name = f"{hass_state['attributes']['friendly_name']} ({entity_id})"
+            if hass_state and (friendly_name := hass_state["attributes"].get("friendly_name")):
+                name = f"{friendly_name} ({entity_id})"
             else:
                 name = entity_id
             control = PlayerControl(
@@ -472,6 +472,28 @@ class HomeAssistantProvider(PluginProvider):
             service_data={"value": volume_level},
         )
 
+    async def get_device_by_connection(
+        self,
+        connection_value: str,
+        connection_type: str = "mac",
+    ) -> Device | None:
+        """
+        Get device details from Home Assistant by connection type and value.
+
+        :param connection_value: The connection value (e.g. MAC address).
+        :param connection_type: The connection type (default: 'mac').
+        """
+        devices = await self.hass.get_device_registry()
+        for device in devices:
+            for connection in device.get("connections", []):
+                if (
+                    len(connection) == 2
+                    and connection[0] == connection_type
+                    and connection[1].lower() == connection_value.lower()
+                ):
+                    return device
+        return None
+
     def _update_control_from_state_msg(self, entity_id: str, state: CompressedState) -> None:
         """Update PlayerControl from state(update) message."""
         if self._player_controls is None:
@@ -496,3 +518,69 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_mute and entity_platform == "media_player":
                 player_control.volume_muted = attributes.get("volume_muted")
         self.mass.players.update_player_control(entity_id)
+
+    async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
+        """
+        Get user username, display name and avatar URL from Home Assistant.
+
+        Looks up the user in config/auth/list for username, and the person entity
+        for display name and picture URL.
+
+        :param ha_user_id: Home Assistant user ID.
+        :return: Tuple of (username, display_name, avatar_url) or all None if not found.
+        """
+        try:
+            username: str | None = None
+            display_name: str | None = None
+            avatar_url: str | None = None
+
+            # Get username from config/auth/list (admin endpoint, we have admin access)
+            try:
+                users = await self.hass.send_command("config/auth/list")
+                for user in users or []:
+                    if user.get("id") == ha_user_id:
+                        username = user.get("username")
+                        # Also get name as fallback display name
+                        if not display_name:
+                            display_name = user.get("name")
+                        break
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
+
+            # Get external URL for building avatar URL
+            ha_url: str | None = None
+            try:
+                network_urls = await self.hass.send_command("network/url")
+                if network_urls:
+                    ha_url = network_urls.get("external") or network_urls.get("internal")
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
+
+            # Find person linked to this HA user ID for display name and avatar
+            try:
+                persons = await self.hass.send_command("person/list")
+                # person/list returns {storage: [...], config: [...]}
+                all_persons = (persons.get("storage") or []) + (persons.get("config") or [])
+                for person in all_persons:
+                    if person.get("user_id") == ha_user_id:
+                        # Person name takes priority for display name
+                        if person_name := person.get("name"):
+                            display_name = person_name
+                        if (person_picture := person.get("picture")) and ha_url:
+                            avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
+                        break
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
+
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "get_user_details for %s: username=%s, display_name=%s, avatar_url=%s",
+                ha_user_id,
+                username,
+                display_name,
+                avatar_url,
+            )
+            return username, display_name, avatar_url
+        except Exception as err:
+            self.logger.warning("Failed to get HA user details: %s", err)
+            return None, None, None

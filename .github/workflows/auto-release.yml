@@ -7,8 +7,8 @@ name: Auto Release
 
 on:
   schedule:
-    # Run at 02:00 UTC every day for nightly releases
-    - cron: "0 2 * * *"
+    # Run at 03:00 UTC every day for nightly releases
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       channel:

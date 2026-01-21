@@ -1,5 +1,7 @@
 """Snapcast Player provider for Music Assistant."""
 
+import re
+
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -55,12 +57,18 @@ async def get_config_entries(
     """
     Return Config entries to setup this provider.
 
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
+    :param instance_id: id of an existing provider instance (None if new instance setup).
+    :param action: [optional] action key called from config entries UI.
+    :param values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output("snapserver", "-v")
-    snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
+    snapserver_version = -1
+    if returncode == 0:
+        # Parse version from output, handling potential noise from library warnings
+        # Expected format: "0.27.0" or similar version string
+        output_str = output.decode()
+        if version_match := re.search(r"(\d+)\.(\d+)\.(\d+)", output_str):
+            snapserver_version = int(version_match.group(2))
     local_snapserver_present = snapserver_version >= 27 and snapserver_version != 30
     if returncode == 0 and not local_snapserver_present:
         raise SetupFailedError(

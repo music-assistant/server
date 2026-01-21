@@ -80,7 +80,8 @@ def main() -> int:
     for req_key in sorted(final_requirements):
         req_str = final_requirements[req_key]
         content += f"{req_str}\n"
-    Path("requirements_all.txt").write_text(content)
+    # Always use LF line endings for cross-platform compatibility
+    Path("requirements_all.txt").write_text(content, newline="\n")
 
     return 0
 

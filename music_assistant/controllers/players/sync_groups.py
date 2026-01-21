@@ -59,7 +59,6 @@ SUPPORT_DYNAMIC_LEADER = {
 OPTIONAL_FEATURES = {
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -126,8 +125,7 @@ class SyncGroupPlayer(GroupPlayer):
         """Return the current playback state of the player."""
         if self.powered:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
-        else:
-            return PlaybackState.IDLE
+        return PlaybackState.IDLE
 
     @cached_property
     def flow_mode(self) -> bool:
@@ -178,10 +176,9 @@ class SyncGroupPlayer(GroupPlayer):
         """
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
-        elif self.is_dynamic:
+        if self.is_dynamic:
             return {self.provider.instance_id}
-        else:
-            return set()
+        return set()
 
     async def get_config_entries(
         self,
@@ -529,7 +526,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await other_group.power(False)
         if (
             member.synced_to is not None
-            and member.synced_to != self.sync_leader
+            and self.sync_leader
+            and member.synced_to != self.sync_leader.player_id
             and (synced_to_player := self.mass.players.get(member.synced_to))
             and member.player_id in synced_to_player.group_members
         ):

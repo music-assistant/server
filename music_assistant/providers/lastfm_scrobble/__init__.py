@@ -21,7 +21,11 @@ from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.auth import AuthenticationHelper
-from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
+from music_assistant.helpers.scrobbler import (
+    ScrobblerConfig,
+    ScrobblerHelper,
+    create_scrobble_users_config_entry,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -199,6 +203,8 @@ async def get_config_entries(
             required=True,
             value=values.get(CONF_API_SECRET) if values else None,
         ),
+        # add user selection entry
+        await create_scrobble_users_config_entry(mass),
     ]
 
     # early return so we can assume values are present

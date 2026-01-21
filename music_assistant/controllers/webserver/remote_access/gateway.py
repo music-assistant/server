@@ -38,11 +38,18 @@ class WebRTCSession:
 
     session_id: str
     peer_connection: RTCPeerConnection
-    data_channel: Any = None  # Main API channel (ma-api)
+    # Main API channel (ma-api) - bridges to local MA WebSocket API
+    data_channel: Any = None
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
     forward_to_local_task: asyncio.Task[None] | None = None
     forward_from_local_task: asyncio.Task[None] | None = None
+    # Sendspin channel - bridges to internal sendspin server
+    sendspin_channel: Any = None
+    sendspin_ws: Any = None
+    sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
+    sendspin_to_local_task: asyncio.Task[None] | None = None
+    sendspin_from_local_task: asyncio.Task[None] | None = None
 
 
 class WebRTCGateway:
@@ -54,6 +61,10 @@ class WebRTCGateway:
     3. Handles incoming WebRTC connections from remote PWA clients
     4. Bridges WebRTC DataChannel messages to the local WebSocket API
     """
+
+    # Close code 4000 means this connection was replaced by a new one from the same server
+    # In that case, we should not reconnect as another connection is now active
+    CLOSE_CODE_REPLACED = 4000
 
     # Default ICE servers (public STUN only - used as fallback)
     DEFAULT_ICE_SERVERS: list[dict[str, Any]] = [
@@ -70,24 +81,26 @@ class WebRTCGateway:
         certificate: RTCCertificate,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
+        sendspin_url: str = "ws://localhost:8927/sendspin",
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
-        """Initialize the WebRTC Gateway.
+        """
+        Initialize the WebRTC Gateway.
 
-        :param http_session: Shared aiohttp ClientSession to use for HTTP/WebSocket connections.
+        :param http_session: Shared aiohttp ClientSession for HTTP/WebSocket connections.
         :param remote_id: Remote ID for this server instance.
         :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
+        :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
-            If provided, this will be called for each client connection to get fresh TURN
-            credentials. If not provided, the static ice_servers will be used.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
+        self.sendspin_url = sendspin_url
         self._remote_id = remote_id
         self._certificate = certificate
         self.logger = LOGGER
@@ -99,9 +112,9 @@ class WebRTCGateway:
         self.sessions: dict[str, WebRTCSession] = {}
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
-        self._reconnect_delay = 5
-        self._max_reconnect_delay = 60
-        self._current_reconnect_delay = 5
+        self._reconnect_delay = 10  # Wait 10 seconds before reconnecting
+        self._max_reconnect_delay = 300  # Max 5 minutes between reconnects
+        self._current_reconnect_delay = 10
         self._run_task: asyncio.Task[None] | None = None
         self._is_connected = False
         self._connecting = False
@@ -135,6 +148,9 @@ class WebRTCGateway:
 
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
+        if self._running:
+            self.logger.warning("WebRTC Gateway already running, skipping start")
+            return
         self.logger.info("Starting WebRTC Gateway")
         self.logger.debug("Signaling URL: %s", self.signaling_url)
         self.logger.debug("Local WS URL: %s", self.local_ws_url)
@@ -158,23 +174,29 @@ class WebRTCGateway:
             except Exception:
                 self.logger.debug("Error closing signaling WebSocket", exc_info=True)
 
-        # Cancel run task
+        # Cancel run task and wait for it to finish
         if self._run_task and not self._run_task.done():
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._run_task
 
+        # Wait briefly for any in-progress connection to notice _running=False
+        if self._connecting:
+            await asyncio.sleep(0.1)
+
         self._signaling_ws = None
+        self._connecting = False
 
     async def _run(self) -> None:
         """Run the main loop with reconnection logic."""
         self.logger.debug("WebRTC Gateway _run() loop starting")
         while self._running:
+            should_reconnect = True
             try:
-                await self._connect_to_signaling()
+                should_reconnect = await self._connect_to_signaling()
                 # Connection closed gracefully or with error
                 self._is_connected = False
-                if self._running:
+                if self._running and should_reconnect:
                     self.logger.warning(
                         "Signaling server connection lost. Reconnecting in %ss...",
                         self._current_reconnect_delay,
@@ -188,67 +210,58 @@ class WebRTCGateway:
                         self._current_reconnect_delay,
                     )
 
-            if self._running:
+            if self._running and should_reconnect:
                 await asyncio.sleep(self._current_reconnect_delay)
                 # Exponential backoff with max limit
                 self._current_reconnect_delay = min(
                     self._current_reconnect_delay * 2, self._max_reconnect_delay
                 )
+            elif not should_reconnect:
+                # Connection was replaced by another instance, stop the run loop
+                self.logger.info("Connection replaced, stopping reconnection attempts")
+                self._running = False
+                break
 
-    async def _connect_to_signaling(self) -> None:
-        """Connect to the signaling server."""
+    async def _connect_to_signaling(self) -> bool:
+        """Connect to the signaling server.
+
+        :return: True if reconnection should be attempted, False if connection was replaced.
+        """
         if self._connecting:
             self.logger.warning("Already connecting to signaling server, skipping")
-            return
+            return False  # Don't trigger another reconnect cycle
         self._connecting = True
+        close_code: int | None = None
         self.logger.info("Connecting to signaling server: %s", self.signaling_url)
         try:
             self._signaling_ws = await self.http_session.ws_connect(
                 self.signaling_url,
-                heartbeat=None,
+                heartbeat=35.0,  # Send ping every 35s (slightly above server's 30s interval)
             )
+            # Check if we were stopped while connecting
+            if not self._running:
+                self.logger.debug("Gateway stopped during connection, closing WebSocket")
+                await self._signaling_ws.close()
+                self._signaling_ws = None
+                self._connecting = False
+                return False
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
             await self._register()
             self._current_reconnect_delay = self._reconnect_delay
             self.logger.debug("Registration sent, waiting for confirmation...")
 
-            # Message loop
-            self.logger.debug("Entering message loop")
-            async for msg in self._signaling_ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        await self._handle_signaling_message(json.loads(msg.data))
-                    except Exception:
-                        self.logger.exception("Error handling signaling message")
-                elif msg.type == aiohttp.WSMsgType.PING:
-                    # WebSocket ping - autoping should handle this, just log
-                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PING")
-                elif msg.type == aiohttp.WSMsgType.PONG:
-                    # WebSocket pong response - just log
-                    self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PONG")
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
-                    # Close frame received
-                    self.logger.warning(
-                        "Signaling server sent close frame: code=%s, reason=%s",
-                        msg.data,
-                        msg.extra,
-                    )
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    self.logger.warning("Signaling server closed connection")
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    self.logger.error("WebSocket error: %s", self._signaling_ws.exception())
-                    break
-                else:
-                    self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
+            # Run message loop and get close code
+            close_code = await self._signaling_message_loop(self._signaling_ws)
 
+            # Get close code from WebSocket if not already set from CLOSE message
+            if close_code is None:
+                close_code = self._signaling_ws.close_code
             ws_exception = self._signaling_ws.exception()
             self.logger.debug(
                 "Message loop exited - WebSocket closed: %s, close_code: %s, exception: %s",
                 self._signaling_ws.closed,
-                self._signaling_ws.close_code,
+                close_code,
                 ws_exception,
             )
         except TimeoutError:
@@ -261,6 +274,49 @@ class WebRTCGateway:
             self._is_connected = False
             self._connecting = False
             self._signaling_ws = None
+
+        # Check if this connection was replaced by another one
+        if close_code == self.CLOSE_CODE_REPLACED:
+            self.logger.info("Connection was replaced by another instance - not reconnecting")
+            return False
+
+        return True
+
+    async def _signaling_message_loop(self, ws: aiohttp.ClientWebSocketResponse) -> int | None:
+        """Process messages from the signaling WebSocket.
+
+        :param ws: The WebSocket connection to process messages from.
+        :return: Close code if connection was closed with a code, None otherwise.
+        """
+        close_code: int | None = None
+        self.logger.debug("Entering message loop")
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    await self._handle_signaling_message(json.loads(msg.data))
+                except Exception:
+                    self.logger.exception("Error handling signaling message")
+            elif msg.type == aiohttp.WSMsgType.PING:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PING")
+            elif msg.type == aiohttp.WSMsgType.PONG:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Received WebSocket PONG")
+            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                close_code = msg.data
+                self.logger.warning(
+                    "Signaling server sent close frame: code=%s, reason=%s",
+                    msg.data,
+                    msg.extra,
+                )
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                self.logger.warning("Signaling server closed connection")
+                break
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                self.logger.error("WebSocket error: %s", ws.exception())
+                break
+            else:
+                self.logger.warning("Unexpected WebSocket message type: %s", msg.type)
+        return close_code
 
     async def _register(self) -> None:
         """Register with the signaling server."""
@@ -280,10 +336,9 @@ class WebRTCGateway:
         """
         msg_type = message.get("type")
 
-        if msg_type == "ping":
-            if self._signaling_ws:
-                await self._signaling_ws.send_json({"type": "pong"})
-        elif msg_type == "pong":
+        if msg_type in ("ping", "pong"):
+            # Ignore JSON-level ping/pong messages - we use WebSocket protocol-level heartbeat
+            # The signaling server still sends these for backward compatibility with older clients
             pass
         elif msg_type == "registered":
             self._is_connected = True
@@ -335,8 +390,12 @@ class WebRTCGateway:
 
         @pc.on("datachannel")
         def on_datachannel(channel: Any) -> None:
-            session.data_channel = channel
-            asyncio.create_task(self._setup_data_channel(session))
+            if channel.label == "sendspin":
+                session.sendspin_channel = channel
+                asyncio.create_task(self._setup_sendspin_channel(session))
+            else:
+                session.data_channel = channel
+                asyncio.create_task(self._setup_data_channel(session))
 
         @pc.on("icecandidate")
         async def on_icecandidate(candidate: Any) -> None:
@@ -624,9 +683,121 @@ class WebRTCGateway:
             with contextlib.suppress(asyncio.CancelledError):
                 await session.forward_from_local_task
 
+        # Cancel sendspin forwarding tasks
+        if session.sendspin_to_local_task and not session.sendspin_to_local_task.done():
+            session.sendspin_to_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.sendspin_to_local_task
+
+        if session.sendspin_from_local_task and not session.sendspin_from_local_task.done():
+            session.sendspin_from_local_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await session.sendspin_from_local_task
+
         # Close connections
         if session.local_ws and not session.local_ws.closed:
             await session.local_ws.close()
+        if session.sendspin_ws and not session.sendspin_ws.closed:
+            await session.sendspin_ws.close()
         if session.data_channel:
             session.data_channel.close()
+        if session.sendspin_channel:
+            session.sendspin_channel.close()
         await session.peer_connection.close()
+
+    async def _setup_sendspin_channel(self, session: WebRTCSession) -> None:
+        """Set up sendspin data channel and bridge to internal sendspin server.
+
+        :param session: The WebRTC session.
+        """
+        channel = session.sendspin_channel
+        if not channel:
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            @channel.on("message")  # type: ignore[untyped-decorator]
+            def on_message(message: str | bytes) -> None:
+                # Queue if task not yet created (None) or still running.
+                # Only drop when task exists and is done (shutdown).
+                if (
+                    session.sendspin_to_local_task is None
+                    or not session.sendspin_to_local_task.done()
+                ):
+                    loop.call_soon_threadsafe(session.sendspin_queue.put_nowait, message)
+
+            @channel.on("close")  # type: ignore[untyped-decorator]
+            def on_close() -> None:
+                if session.sendspin_ws and not session.sendspin_ws.closed:
+                    asyncio.run_coroutine_threadsafe(session.sendspin_ws.close(), loop)
+
+            session.sendspin_ws = await self.http_session.ws_connect(self.sendspin_url)
+            self.logger.debug("Sendspin channel connected for session %s", session.session_id)
+
+            # Start forwarding tasks - queued messages will be processed
+            session.sendspin_to_local_task = asyncio.create_task(
+                self._forward_sendspin_to_local(session)
+            )
+            session.sendspin_from_local_task = asyncio.create_task(
+                self._forward_sendspin_from_local(session)
+            )
+
+        except Exception:
+            self.logger.exception(
+                "Failed to connect sendspin channel to internal server for session %s",
+                session.session_id,
+            )
+            # Clean up partial state on failure
+            if session.sendspin_to_local_task:
+                session.sendspin_to_local_task.cancel()
+            if session.sendspin_from_local_task:
+                session.sendspin_from_local_task.cancel()
+            if session.sendspin_ws and not session.sendspin_ws.closed:
+                await session.sendspin_ws.close()
+
+    async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
+        """Forward messages from sendspin DataChannel to internal sendspin server.
+
+        :param session: The WebRTC session.
+        """
+        try:
+            while session.sendspin_ws and not session.sendspin_ws.closed:
+                message = await session.sendspin_queue.get()
+                if session.sendspin_ws and not session.sendspin_ws.closed:
+                    if isinstance(message, bytes):
+                        await session.sendspin_ws.send_bytes(message)
+                    else:
+                        await session.sendspin_ws.send_str(message)
+        except asyncio.CancelledError:
+            self.logger.debug(
+                "Sendspin forward to local task cancelled for session %s",
+                session.session_id,
+            )
+            raise
+        except Exception:
+            self.logger.exception("Error forwarding sendspin to local")
+
+    async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:
+        """Forward messages from internal sendspin server to sendspin DataChannel.
+
+        :param session: The WebRTC session.
+        """
+        if not session.sendspin_ws or session.sendspin_ws.closed:
+            return
+
+        try:
+            async for msg in session.sendspin_ws:
+                if msg.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:
+                    if session.sendspin_channel and session.sendspin_channel.readyState == "open":
+                        session.sendspin_channel.send(msg.data)
+                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                    break
+        except asyncio.CancelledError:
+            self.logger.debug(
+                "Sendspin forward from local task cancelled for session %s",
+                session.session_id,
+            )
+            raise
+        except Exception:
+            self.logger.exception("Error forwarding sendspin from local")

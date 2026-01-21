@@ -105,7 +105,8 @@ class Provider:
     def default_name(self) -> str:
         """Return a default friendly name for this provider instance."""
         # create default name based on instance count
-        instances = [x.instance_id for x in self.mass.music.providers if x.domain == self.domain]
+        prov_confs = self.mass.config.get("providers", {}).values()
+        instances = [x["instance_id"] for x in prov_confs if x["domain"] == self.domain]
         if len(instances) <= 1:
             # only one instance (or no instances yet at all) - return provider name
             return self.manifest.name

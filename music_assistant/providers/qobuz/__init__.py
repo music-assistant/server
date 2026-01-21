@@ -9,7 +9,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import client_exceptions
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -86,6 +86,8 @@ SUPPORTED_FEATURES = {
 
 VARIOUS_ARTISTS_ID = "145383"
 
+CONF_QUALITY = "quality"
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -120,6 +122,20 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_QUALITY,
+            type=ConfigEntryType.STRING,
+            label="Stream Quality",
+            description="Maximum streaming quality. Lower quality will be used "
+            "if selected quality is unavailable.",
+            default_value="27",
+            options=[
+                ConfigValueOption("Hi-Res 192kHz/24 bit", "27"),
+                ConfigValueOption("Hi-Res 96kHz/24 bit", "7"),
+                ConfigValueOption("CD Quality 44.1kHz/16 bit", "6"),
+                ConfigValueOption("MP3 320kbps", "5"),
+            ],
         ),
     )
 
@@ -440,8 +456,14 @@ class QobuzProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        max_quality = int(cast("str", self.config.get_value(CONF_QUALITY)) or "27")
+        # Quality order from highest to lowest
+        quality_order = [27, 7, 6, 5]
+        # Only try qualities up to the user's maximum setting
+        allowed_qualities = [q for q in quality_order if q <= max_quality]
+
         streamdata: dict[str, Any] | None = None
-        for format_id in [27, 7, 6, 5]:
+        for format_id in allowed_qualities:
             # it seems that simply requesting for highest available quality does not work
             # from time to time the api response is empty for this request ?!
             result = await self._get_data(

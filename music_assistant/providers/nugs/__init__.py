@@ -41,7 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -281,11 +281,12 @@ class NugsProvider(MusicProvider):
         """Parse nugs release/show/album object to generic album layout."""
         item_id = album_obj.get("releaseId") or album_obj.get("id") or album_obj.get("containerID")
         title = album_obj.get("title") or album_obj.get("containerInfo")
+        name, version = parse_title_and_version(str(title))
         album = Album(
             item_id=str(item_id),
             provider=self.instance_id,
-            name=str(title),
-            # version=album_obj["type"],
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(item_id),
@@ -327,7 +328,7 @@ class NugsProvider(MusicProvider):
             album.year = int(year)
 
         # No album type info in this provider so try and infer it
-        album.album_type = infer_album_type(album.name, "")
+        album.album_type = infer_album_type(album.name, album.version)
 
         return album
 
@@ -371,11 +372,13 @@ class NugsProvider(MusicProvider):
             track_obj.get("trackId") or track_obj.get("trackID") or track_obj.get("trackLabel")
         )
         track_name = track_obj.get("name") or track_obj.get("songTitle")
+        name, version = parse_title_and_version(str(track_name))
 
         track = Track(
             item_id=str(track_id),
             provider=self.instance_id,
-            name=str(track_name),
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(track_id),

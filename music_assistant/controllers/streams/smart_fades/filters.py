@@ -131,18 +131,15 @@ class FrequencySweepFilter(Filter):
             # Exponential curve for smoother transitions
             if direction == "up":
                 return f"'pow({norm_t},2)':eval=frame"
-            else:
-                return f"'1-pow({norm_t},2)':eval=frame"
-        elif curve == "logarithmic":
+            return f"'1-pow({norm_t},2)':eval=frame"
+        if curve == "logarithmic":
             # Logarithmic curve for more aggressive initial change
             if direction == "up":
                 return f"'sqrt({norm_t})':eval=frame"
-            else:
-                return f"'1-sqrt({norm_t})':eval=frame"
-        elif direction == "up":
+            return f"'1-sqrt({norm_t})':eval=frame"
+        if direction == "up":
             return f"'{norm_t}':eval=frame"
-        else:
-            return f"'1-{norm_t}':eval=frame"
+        return f"'1-{norm_t}':eval=frame"
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Generate FFmpeg filters for frequency sweep effect."""

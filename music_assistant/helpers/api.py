@@ -13,6 +13,7 @@ from types import NoneType, UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
+from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.util import try_parse_bool
 
@@ -340,9 +341,12 @@ def parse_value(  # noqa: PLR0911
             return value
 
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
+        # Only validate media_type for actual MediaItem subclasses, not for other classes
+        # like StreamDetails that have a media_type field for a different purpose
         if (
             "media_type" in value
             and value_type.__name__ != "ItemMapping"
+            and issubclass(value_type, MediaItem)
             and value["media_type"] != value_type.media_type
         ):
             msg = "Invalid MediaType"

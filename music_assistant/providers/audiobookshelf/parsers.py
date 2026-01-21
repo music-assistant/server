@@ -265,4 +265,6 @@ def parse_audiobook(
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
 
+    mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000)
+
     return mass_audiobook

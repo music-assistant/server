@@ -299,14 +299,15 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
         """Get playlist object from Soundcloud API based on playlist ID type."""
+        # Handle playlist id's which are actually numbers
+        prov_playlist_id = str(prov_playlist_id)
         if prov_playlist_id.startswith("soundcloud:system-playlists"):
             # Handle system playlists
             result = await self._soundcloud.get_system_playlist_details(prov_playlist_id)
             return cast("dict[str, Any]", result)
-        else:
-            # Handle regular playlists
-            result = await self._soundcloud.get_playlist_details(prov_playlist_id)
-            return cast("dict[str, Any]", result)
+        # Handle regular playlists
+        result = await self._soundcloud.get_playlist_details(prov_playlist_id)
+        return cast("dict[str, Any]", result)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -367,7 +368,6 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])

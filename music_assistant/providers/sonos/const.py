@@ -22,7 +22,6 @@ PLAYER_FEATURES_BASE = {
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 SOURCE_LINE_IN = "line_in"

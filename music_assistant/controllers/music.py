@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from math import inf
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -97,7 +97,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 26
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -181,7 +181,10 @@ class MusicController(CoreController):
         ):
             await self.cleanup_provider(removed_provider)
         # schedule cleanup task for matching provider instances
-        last_scan = cast("int", self.config.get_value(LAST_PROVIDER_INSTANCE_SCAN, 0))
+        last_scan = cast(
+            "int",
+            self.mass.config.get_raw_core_config_value(self.domain, LAST_PROVIDER_INSTANCE_SCAN, 0),
+        )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
 
@@ -303,18 +306,17 @@ class MusicController(CoreController):
                 else:
                     if media_type == MediaType.ARTIST:
                         return SearchResults(artists=[item])
-                    elif media_type == MediaType.ALBUM:
+                    if media_type == MediaType.ALBUM:
                         return SearchResults(albums=[item])
-                    elif media_type == MediaType.TRACK:
+                    if media_type == MediaType.TRACK:
                         return SearchResults(tracks=[item])
-                    elif media_type == MediaType.PLAYLIST:
+                    if media_type == MediaType.PLAYLIST:
                         return SearchResults(playlists=[item])
-                    elif media_type == MediaType.AUDIOBOOK:
+                    if media_type == MediaType.AUDIOBOOK:
                         return SearchResults(audiobooks=[item])
-                    elif media_type == MediaType.PODCAST:
+                    if media_type == MediaType.PODCAST:
                         return SearchResults(podcasts=[item])
-                    else:
-                        return SearchResults()
+                    return SearchResults()
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
         # always first search the library
@@ -325,7 +327,7 @@ class MusicController(CoreController):
             # this way we can avoid returning duplicates in the search results
             all_prov_item_ids = {
                 (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
-                for result in (
+                for items in (
                     library_results.artists,
                     library_results.albums,
                     library_results.tracks,
@@ -333,7 +335,7 @@ class MusicController(CoreController):
                     library_results.audiobooks,
                     library_results.podcasts,
                 )
-                for item in result
+                for item in items
                 for prov_mapping in item.provider_mappings
             }
             # include results from library + all (unique) music providers
@@ -349,52 +351,52 @@ class MusicController(CoreController):
                     for provider_instance in search_providers
                 ],
             )
-            # return result from all providers while keeping index
-            # so the result is sorted as each provider delivered
-            result = SearchResults(
-                artists=[
-                    item
-                    for sublist in zip_longest(*[x.artists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                albums=[
-                    item
-                    for sublist in zip_longest(*[x.albums for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                tracks=[
-                    item
-                    for sublist in zip_longest(*[x.tracks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                playlists=[
-                    item
-                    for sublist in zip_longest(*[x.playlists for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                radio=[
-                    item
-                    for sublist in zip_longest(*[x.radio for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                audiobooks=[
-                    item
-                    for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-                podcasts=[
-                    item
-                    for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
-                    for item in sublist
-                    if item is not None
-                ][:limit],
-            )
+        # return result from all providers while keeping index
+        # so the result is sorted as each provider delivered
+        result = SearchResults(
+            artists=[
+                item
+                for sublist in zip_longest(*[x.artists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            albums=[
+                item
+                for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            tracks=[
+                item
+                for sublist in zip_longest(*[x.tracks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            playlists=[
+                item
+                for sublist in zip_longest(*[x.playlists for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            radio=[
+                item
+                for sublist in zip_longest(*[x.radio for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            audiobooks=[
+                item
+                for sublist in zip_longest(*[x.audiobooks for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            podcasts=[
+                item
+                for sublist in zip_longest(*[x.podcasts for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+        )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
@@ -558,32 +560,51 @@ class MusicController(CoreController):
 
     @api_command("music/recently_played_items")
     async def recently_played(
-        self, limit: int = 10, media_types: list[MediaType] | None = None, all_users: bool = True
+        self,
+        limit: int = 10,
+        media_types: list[MediaType] | None = None,
+        userid: str | None = None,
+        queue_id: str | None = None,
+        fully_played_only: bool = True,
+        user_initiated_only: bool = False,
     ) -> list[ItemMapping]:
-        """Return a list of the last played items."""
+        """Return a list of the last played items.
+
+        :param limit: Maximum number of items to return.
+        :param media_types: Filter by media types.
+        :param userid: Filter by specific user ID.
+        :param queue_id: Filter by specific queue ID.
+        :param fully_played_only: If True, only return fully played items.
+        :param user_initiated_only: If True, only return items initiated by the user.
+        """
         if media_types is None:
-            media_types = [
-                MediaType.ALBUM,
-                MediaType.AUDIOBOOK,
-                MediaType.ARTIST,
-                MediaType.PLAYLIST,
-                MediaType.PODCAST,
-                MediaType.FOLDER,
-                MediaType.RADIO,
-                MediaType.GENRE,
-            ]
+            media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in {media_types_str} AND fully_played = 1 "
+            f"WHERE media_type in {media_types_str} "
             f"AND provider in {available_providers_str} "
         )
-        if not all_users and (user := get_current_user()):
-            query += f"AND userid = '{user.user_id}' "
+        params: dict[str, Any] = {}
+        if fully_played_only:
+            query += "AND fully_played = 1 "
+        if user_initiated_only:
+            query += "AND user_initiated = 1 "
+        if userid:
+            query += "AND userid = :userid "
+            params["userid"] = userid
+        elif user := get_current_user():
+            query += "AND userid = :userid "
+            params["userid"] = user.user_id
+        if queue_id:
+            query += "AND queue_id = :queue_id "
+            params["queue_id"] = queue_id
         query += "ORDER BY timestamp DESC"
-        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            query, params=params or None, limit=limit
+        )
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
 
@@ -802,7 +823,7 @@ class MusicController(CoreController):
         # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
@@ -822,7 +843,7 @@ class MusicController(CoreController):
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
@@ -1112,6 +1133,8 @@ class MusicController(CoreController):
         seconds_played: int | None = None,
         is_playing: bool = False,
         userid: str | None = None,
+        queue_id: str | None = None,
+        user_initiated: bool = True,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -1121,6 +1144,8 @@ class MusicController(CoreController):
         :param seconds_played: The number of seconds played.
         :param is_playing: If True, the item is currently playing.
         :param userid: The user ID to mark the item as played for (instead of the current user).
+        :param queue_id: The queue ID where the item was played.
+        :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
         """
         timestamp = utc_timestamp()
         if (
@@ -1140,6 +1165,8 @@ class MusicController(CoreController):
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
+            "queue_id": queue_id,
+            "user_initiated": user_initiated,
         }
         # try to figure out the user that triggered the action
         user: User | None = None
@@ -1390,8 +1417,7 @@ class MusicController(CoreController):
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
-        else:
-            return provider_fully_played, provider_position_ms
+        return provider_fully_played, provider_position_ms
 
     def get_controller(
         self, media_type: MediaType
@@ -1663,7 +1689,7 @@ class MusicController(CoreController):
                 name="Recently played",
                 translation_key="recently_played",
                 icon="mdi-motion-play",
-                items=await self.recently_played(limit=10),
+                items=await self.recently_played(limit=10, user_initiated_only=True),
             ),
             RecommendationFolder(
                 item_id="recently_added_tracks",
@@ -1723,7 +1749,9 @@ class MusicController(CoreController):
                 name="Favorite Radio stations",
                 translation_key="favorite_radio_stations",
                 icon="mdi-access-point",
-                items=await self.radio.library_items(favorite=True, limit=10, order_by="random"),
+                items=await self.radio.library_items(
+                    favorite=True, limit=10, order_by="play_count_desc"
+                ),
             ),
         ]
 
@@ -2124,6 +2152,43 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
+        if prev_version <= 24:
+            # add queue_id and user_initiated columns to playlog table
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                    "ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
+        if prev_version <= 26:
+            # force in_library=True for provider mappings from non-streaming providers
+            # streaming providers will be automatically added to library when synced
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain NOT IN "
+                "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
+            )
+            # also set in_library=True for all radio items
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type = 'radio';"
+            )
+            # remove invalid playlist provider mappings for playlists which are not in library
+            await self._database.execute(
+                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE media_type = 'playlist' AND in_library = 0;"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2160,6 +2225,8 @@ class MusicController(CoreController):
                 [fully_played] BOOLEAN,
                 [seconds_played] INTEGER,
                 [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 UNIQUE(item_id, provider, media_type, userid));"""
         )
         await self.database.execute(

@@ -22,8 +22,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    EventType,
     ImageType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
@@ -40,7 +40,6 @@ from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -48,6 +47,10 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_AIRPLAY_NAME = "airplay_name"
+CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
+
+# Special value for auto player selection
+PLAYER_ID_AUTO = "__auto__"
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
@@ -78,15 +81,32 @@ async def get_config_entries(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
             label="Connected Music Assistant Player",
-            description="Select the player that will play the AirPlay audio stream.",
+            description="The Music Assistant player connected to this AirPlay receiver plugin. "
+            "When you stream audio via AirPlay to this virtual speaker, "
+            "the audio will play on the selected player. "
+            "Set to 'Auto' to automatically select a currently playing player, "
+            "or the first available player if none is playing.",
             multi_value=False,
+            default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption(x.display_name, x.player_id)
-                for x in sorted(
-                    mass.players.all(False, False), key=lambda p: p.display_name.lower()
-                )
+                ConfigValueOption("Auto (prefer playing player)", PLAYER_ID_AUTO),
+                *(
+                    ConfigValueOption(x.display_name, x.player_id)
+                    for x in sorted(
+                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                    )
+                ),
             ],
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_ALLOW_PLAYER_SWITCH,
+            type=ConfigEntryType.BOOLEAN,
+            label="Allow manual player switching",
+            description="When enabled, you can select this plugin as a source on any player "
+            "to switch playback to that player. When disabled, playback is fixed to the "
+            "configured default player.",
+            default_value=True,
         ),
         ConfigEntry(
             key=CONF_AIRPLAY_NAME,
@@ -106,7 +126,17 @@ class AirPlayReceiverProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
+        # Default player ID from config (PLAYER_ID_AUTO or a specific player_id)
+        self._default_player_id: str = (
+            cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+        )
+        # Whether manual player switching is allowed (default to True for upgrades)
+        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
+        self._allow_player_switch: bool = (
+            cast("bool", allow_switch_value) if allow_switch_value is not None else True
+        )
+        # Currently active player (the one currently playing or selected)
+        self._active_player_id: str | None = None
         self._shairport_bin: str | None = None
         self._stop_called: bool = False
         self._runner_task: asyncio.Task[None] | None = None
@@ -125,9 +155,9 @@ class AirPlayReceiverProvider(PluginProvider):
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.name,
-            # Set passive to true because we don't allow this source to be selected directly
-            # It will be automatically selected when AirPlay playback starts
-            passive=True,
+            # passive=False allows this source to be selected on any player
+            # Only show in source list if player switching is allowed
+            passive=not self._allow_player_switch,
             can_play_pause=False,
             can_seek=False,
             can_next_previous=False,
@@ -144,6 +174,8 @@ class AirPlayReceiverProvider(PluginProvider):
             stream_type=StreamType.NAMED_PIPE,
             path=self.audio_pipe.path,
         )
+        # Set the on_select callback for when the source is selected on a player
+        self._source_details.on_select = self._on_source_selected
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
@@ -152,18 +184,8 @@ class AirPlayReceiverProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._shairport_bin = await get_shairport_sync_binary()
-        self.player = self.mass.players.get(self.mass_player_id)
-        if self.player:
-            self._setup_shairport_daemon()
-
-        # Subscribe to events
-        self._on_unload_callbacks.append(
-            self.mass.subscribe(
-                self._on_mass_player_event,
-                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
-                id_filter=self.mass_player_id,
-            )
-        )
+        # Always start the daemon - we always have a default player configured
+        self._setup_shairport_daemon()
 
     async def _stop_shairport_daemon(self) -> None:
         """Stop the shairport-sync daemon without unloading the provider.
@@ -201,6 +223,132 @@ class AirPlayReceiverProvider(PluginProvider):
         """Get (audio)source details for this plugin."""
         return self._source_details
 
+    @property
+    def active_player_id(self) -> str | None:
+        """Return the currently active player ID for this plugin."""
+        return self._active_player_id
+
+    def _get_target_player_id(self) -> str | None:
+        """
+        Determine the target player ID for playback.
+
+        Returns the player ID to use based on the following priority:
+        1. If a player was explicitly selected (source selected on a player), use that
+        2. If default is 'auto': prefer playing player, then first available
+        3. If a specific default player is configured, use that
+
+        :return: The player ID to use for playback, or None if no player available.
+        """
+        # If there's an active player (source was selected on a player), use it
+        if self._active_player_id:
+            # Validate that the active player still exists
+            if self.mass.players.get(self._active_player_id):
+                return self._active_player_id
+            # Active player no longer exists, clear it
+            self._active_player_id = None
+
+        # Handle auto selection
+        if self._default_player_id == PLAYER_ID_AUTO:
+            all_players = list(self.mass.players.all(False, False))
+            # First, try to find a playing player
+            for player in all_players:
+                if player.state.playback_state == PlaybackState.PLAYING:
+                    self.logger.debug("Auto-selecting playing player: %s", player.display_name)
+                    return player.player_id
+            # Fallback to first available player
+            if all_players:
+                first_player = all_players[0]
+                self.logger.debug(
+                    "Auto-selecting first available player: %s", first_player.display_name
+                )
+                return first_player.player_id
+            # No player available
+            return None
+
+        # Use the specific default player if configured and it still exists
+        if self.mass.players.get(self._default_player_id):
+            return self._default_player_id
+        self.logger.warning(
+            "Configured default player '%s' no longer exists", self._default_player_id
+        )
+        return None
+
+    async def _on_source_selected(self) -> None:
+        """
+        Handle callback when this source is selected on a player.
+
+        This is called by the player controller when a user selects this
+        plugin as a source on a specific player.
+        """
+        # The player that selected us is stored in in_use_by by the player controller
+        new_player_id = self._source_details.in_use_by
+        if not new_player_id:
+            return
+
+        # Check if manual player switching is allowed
+        if not self._allow_player_switch:
+            # Player switching disabled - only allow if it matches the current target
+            current_target = self._get_target_player_id()
+            if new_player_id != current_target:
+                self.logger.debug(
+                    "Manual player switching disabled, ignoring selection on %s",
+                    new_player_id,
+                )
+                # Revert in_use_by to reflect the rejection
+                self._source_details.in_use_by = current_target
+                self.mass.players.trigger_player_update(new_player_id)
+                return
+
+        # If there's already an active player and it's different, kick it out
+        if self._active_player_id and self._active_player_id != new_player_id:
+            self.logger.info(
+                "Source selected on player %s, stopping playback on %s",
+                new_player_id,
+                self._active_player_id,
+            )
+            # Stop the current player
+            try:
+                await self.mass.players.cmd_stop(self._active_player_id)
+            except Exception as err:
+                self.logger.debug(
+                    "Failed to stop previous player %s: %s", self._active_player_id, err
+                )
+
+        # Update the active player
+        self._active_player_id = new_player_id
+        self.logger.debug("Active player set to: %s", new_player_id)
+
+        # Only persist the selected player as the new default if not in auto mode
+        if self._default_player_id != PLAYER_ID_AUTO:
+            self._save_last_player_id(new_player_id)
+
+    def _clear_active_player(self) -> None:
+        """
+        Clear the active player and revert to default if configured.
+
+        Called when playback ends to reset the plugin state.
+        """
+        prev_player_id = self._active_player_id
+        self._active_player_id = None
+        self._source_details.in_use_by = None
+
+        if prev_player_id:
+            self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
+            # Trigger update for the player that was using this source
+            self.mass.players.trigger_player_update(prev_player_id)
+
+    def _save_last_player_id(self, player_id: str) -> None:
+        """Persist the selected player ID to config as the new default."""
+        if self._default_player_id == player_id:
+            return  # No change needed
+        try:
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, CONF_MASS_PLAYER_ID, player_id
+            )
+            self._default_player_id = player_id
+        except Exception as err:
+            self.logger.debug("Failed to persist player ID: %s", err)
+
     async def _create_config_file(self) -> None:
         """Create shairport-sync configuration file from template."""
         # Read template
@@ -219,11 +367,13 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
 
-        # Set default volume based on player's current volume
+        # Set default volume based on default player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
         player_volume = 100  # Default to 100%
-        if self.player and self.player.volume_level is not None:
-            player_volume = self.player.volume_level
+        if self._default_player_id and self._default_player_id != PLAYER_ID_AUTO:
+            if _player := self.mass.players.get(self._default_player_id):
+                if _player.volume_level is not None:
+                    player_volume = _player.volume_level
         # Map 0-100 to -30.0...0.0
         airplay_volume = (player_volume / 100.0) * 30.0 - 30.0
         config_content = config_content.replace("{DEFAULT_VOLUME}", f"{airplay_volume:.1f}")
@@ -356,20 +506,6 @@ class AirPlayReceiverProvider(PluginProvider):
         self._shairport_started.clear()
         self._runner_task = self.mass.create_task(self._shairport_runner())
 
-    def _on_mass_player_event(self, event: MassEvent) -> None:
-        """Handle incoming event from linked player."""
-        if event.object_id != self.mass_player_id:
-            return
-        if event.event == EventType.PLAYER_REMOVED:
-            # Stop shairport-sync but keep the provider loaded
-            # so it can restart when the player comes back
-            self.mass.create_task(self._stop_shairport_daemon())
-            return
-        if event.event == EventType.PLAYER_ADDED:
-            # Restart shairport-sync when the player is added back
-            self._setup_shairport_daemon()
-            return
-
     def _on_metadata_update(self, metadata: dict[str, Any]) -> None:
         """Handle metadata updates from shairport-sync.
 
@@ -408,24 +544,36 @@ class AirPlayReceiverProvider(PluginProvider):
         if play_state == "playing":
             # Reset volume event flag for new playback session
             self._first_volume_event_received = False
-            # Initiate playback by selecting this source on the default player
+            # Initiate playback by selecting this source on the target player
             if not self._source_details.in_use_by:
-                self.mass.create_task(
-                    self.mass.players.select_source(self.mass_player_id, self.instance_id)
-                )
-                self._source_details.in_use_by = self.mass_player_id
+                target_player_id = self._get_target_player_id()
+                if target_player_id:
+                    self.logger.info("Starting AirPlay playback on player %s", target_player_id)
+                    self._active_player_id = target_player_id
+                    self.mass.create_task(
+                        self.mass.players.select_source(target_player_id, self.instance_id)
+                    )
+                    self._source_details.in_use_by = target_player_id
+                else:
+                    self.logger.warning(
+                        "AirPlay playback started but no player available. "
+                        "Select this source on a player to start playback."
+                    )
         elif play_state == "stopped":
             self.logger.info("AirPlay playback stopped")
             # Reset volume event flag for next session
             self._first_volume_event_received = False
-            # Setting in_use_by to None will signal the stream to stop
-            self._source_details.in_use_by = None
+            # Get the current player before clearing
+            current_player_id = self._source_details.in_use_by
+            # Clear active player state
+            self._clear_active_player()
             # Write silence to the pipe to unblock ffmpeg
             # This will cause ffmpeg to output a chunk, which will then check in_use_by
             # and break out of the loop when it sees it's None
             self.mass.create_task(self._write_silence_to_unblock_stream())
-            # Deselect source from player
-            self.mass.create_task(self.mass.players.select_source(self.mass_player_id, None))
+            # Deselect source from player if there was one
+            if current_player_id:
+                self.mass.create_task(self.mass.players.select_source(current_player_id, None))
 
     def _handle_volume_change(self, volume: int) -> None:
         """Handle volume changes from AirPlay client (iOS/macOS device).

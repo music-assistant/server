@@ -170,7 +170,6 @@ class PodcastMusicprovider(MusicProvider):
             if mass_episode := self._parse_episode(episode, idx):
                 yield mass_episode
 
-    @use_cache(3600)  # Cache for 1 hour
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         for episode in self.parsed_podcast["episodes"]:

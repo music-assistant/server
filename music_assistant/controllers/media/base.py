@@ -7,6 +7,7 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
@@ -94,7 +95,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
                         'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
             FROM {self.db_table} """  # noqa: E501
@@ -165,7 +167,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # search by (exact) name match
         query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
-        for db_item in await self._get_library_items_by_query(
+        for db_item in await self.get_library_items_by_query(
             extra_query_parts=[query], extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
@@ -241,19 +243,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
-        """Get in-database items."""
-        return await self._get_library_items_by_query(
+        """
+        Get the library items for this mediatype.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID (single string or list).
+        """
+        return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            extra_query_parts=[extra_query] if extra_query else None,
-            extra_query_params=extra_query_params,
         )
 
     async def iter_library_items(
@@ -262,8 +269,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all in-database items."""
         limit: int = 500
@@ -273,15 +278,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         else:
             provider_filter = None
         while True:
-            next_items = await self._get_library_items_by_query(
+            next_items = await self.get_library_items_by_query(
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
                 provider_filter=provider_filter,
-                extra_query_parts=[extra_query] if extra_query else None,
-                extra_query_params=extra_query_params,
             )
             for item in next_items:
                 yield item
@@ -356,9 +359,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
-        extra_query = f"WHERE {self.db_table}.item_id = {item_id}"
-        for db_item in await self._get_library_items_by_query(
+        extra_query = f"WHERE {self.db_table}.item_id = :item_id"
+        for db_item in await self.get_library_items_by_query(
             extra_query_parts=[extra_query],
+            extra_query_params={"item_id": db_id},
         ):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -413,7 +417,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
             external_id_str = f'%"{external_id}"%'
-        for item in await self._get_library_items_by_query(
+        for item in await self.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"external_id_str": external_id_str},
         ):
@@ -463,7 +467,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["item_id"] = provider_item_id
         subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"
         query = f"WHERE {self.db_table}.item_id IN ({subquery})"
-        return await self._get_library_items_by_query(
+        return await self.get_library_items_by_query(
             limit=limit,
             offset=offset,
             extra_query_parts=[query],
@@ -587,11 +591,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # ignore if the mapping is already present
             if provider_mapping not in library_item.provider_mappings:
                 new_mappings.add(provider_mapping)
-        if new_mappings:
-            library_item.provider_mappings.update(new_mappings)
-            self.mass.music.match_provider_instances(library_item)
-            await self.set_provider_mappings(db_id, library_item.provider_mappings)
-            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        if not new_mappings:
+            return
+        # handle special case where the user wants to merge 2 library items
+        for mapping in new_mappings:
+            if _library_item := await self.get_library_item_by_prov_id(
+                mapping.item_id, mapping.provider_instance
+            ):
+                if _library_item.item_id != library_item.item_id:
+                    # merging items
+                    self.logger.debug(
+                        "merging item id %s into item id %s based on provider mapping %s/%s",
+                        _library_item.item_id,
+                        library_item.item_id,
+                        mapping.provider_instance,
+                        mapping.item_id,
+                    )
+                    await self.remove_item_from_library(_library_item.item_id, recursive=True)
+                    break
+        library_item.provider_mappings.update(new_mappings)
+        self.mass.music.match_provider_instances(library_item)
+        await self.set_provider_mappings(db_id, library_item.provider_mappings)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
     @final
     async def remove_provider_mapping(
@@ -604,11 +625,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         except MediaNotFoundError:
             # edge case: already deleted / race condition
             return
-        library_item.provider_mappings = {
-            x
-            for x in library_item.provider_mappings
-            if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
-        }
+
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -628,6 +645,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        library_item.provider_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if not (x.provider_instance == provider_instance_id and x.item_id == provider_item_id)
+        }
         if library_item.provider_mappings:
             self.logger.debug(
                 "removed provider_mapping %s/%s from item id %s",
@@ -703,7 +725,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "available": provider_mapping.available,
                 "audio_format": serialize_to_json(provider_mapping.audio_format),
             }
-            for key in ("url", "details", "in_library"):
+            for key in ("url", "details", "in_library", "is_unique"):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
             await self.mass.music.database.upsert(
@@ -748,7 +770,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
 
     @final
-    async def _get_library_items_by_query(
+    async def get_library_items_by_query(
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -873,11 +895,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # Apply the provider filter
         if provider_filter:
             provider_conditions = []
-            for prov in provider_filter:
-                provider_conditions.append(f"provider_mappings.provider_instance = '{prov}'")
+            for idx, prov in enumerate(provider_filter):
+                param_name = f"provider_filter_{idx}"
+                provider_conditions.append(f"provider_mappings.provider_instance = :{param_name}")
+                query_params[param_name] = prov
+            query_params["provider_media_type"] = self.media_type.value
             join_parts.append(
                 f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
-                f"AND provider_mappings.media_type = '{self.media_type.value}' "
+                "AND provider_mappings.media_type = :provider_media_type "
                 "AND provider_mappings.in_library = 1 "
                 f"AND ({' OR '.join(provider_conditions)})"
             )
@@ -918,6 +943,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_row_dict["provider"] = "library"
         db_row_dict["favorite"] = bool(db_row_dict["favorite"])
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
+        db_row_dict["date_added"] = datetime.fromtimestamp(
+            db_row_dict["timestamp_added"]
+        ).isoformat()
 
         for key in JSON_KEYS:
             if key not in db_row_dict:

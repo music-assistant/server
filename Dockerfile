@@ -82,4 +82,11 @@ EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-ENTRYPOINT ["mass", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
+# Entrypoint script that enables jemalloc for the main process only
+RUN printf '#!/bin/sh\n\
+for path in /usr/lib/*/libjemalloc.so.2; do\n\
+    [ -f "$path" ] && export LD_PRELOAD="$path" && break\n\
+done\n\
+exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

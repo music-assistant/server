@@ -6,7 +6,9 @@ from typing import Any
 
 import aiohttp
 import podcastparser
+from aiohttp.client import ClientError
 from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -32,11 +34,24 @@ async def get_podcastparser_dict(
     # but, reports on discord show, that also the opposite may be true
     for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
         # raises ClientError on status failure
-        response = await session.get(feed_url, headers=headers, raise_for_status=True)
-    assert response is not None  # for type checking
+        # ClientError is the base class of all possible Error, i.e. not authorized,
+        # url doesn't exist etc.
+        try:
+            response = await session.get(feed_url, headers=headers, raise_for_status=True)
+        except ClientError:
+            continue
+        break
+    if response is None:
+        # we did not get a single acceptable response
+        raise MediaNotFoundError(
+            f"Did not get acceptable response while trying to access {feed_url}."
+        )
     feed_data = await response.read()
     feed_stream = BytesIO(feed_data)
-    return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
+    try:
+        return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
+    except podcastparser.FeedParseError:
+        raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
 
 
 def parse_podcast(
