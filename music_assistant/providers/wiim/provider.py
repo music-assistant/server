@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientSession, TCPConnector
@@ -9,7 +10,7 @@ from wiim import WiimApiEndpoint, WiimController, WiimDevice
 from wiim.discovery import verify_wiim_device
 from zeroconf import ServiceStateChange
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -33,6 +34,13 @@ class WiimProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.logger.info("Initializing WiimProvider with config: %s", self.config)
+
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("wiim").setLevel(logging.DEBUG)
+            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("wiim").setLevel(self.logger.level + 10)
+            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
 
         self.wiim_session = ClientSession(connector=TCPConnector(ssl=False))
         self.wiim_controller = WiimController(self.wiim_session)
