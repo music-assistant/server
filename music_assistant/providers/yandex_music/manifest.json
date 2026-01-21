@@ -4,7 +4,7 @@
   "stage": "beta",
   "name": "Yandex Music",
   "description": "Stream music from Yandex Music service.",
-  "codeowners": ["@MarshalX"],
+  "codeowners": ["@TrudenBoy"],
   "requirements": ["yandex-music==2.2.0"],
   "multi_instance": true
 }
