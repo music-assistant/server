@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .constants import IMAGE_SIZE_LARGE
+from .constants import CONF_QUALITY, IMAGE_SIZE_LARGE, QUALITY_LOSSLESS
 
 if TYPE_CHECKING:
     from yandex_music import Album as YandexAlbum
@@ -33,6 +33,14 @@ if TYPE_CHECKING:
     from yandex_music import Track as YandexTrack
 
     from .provider import YandexMusicProvider
+
+
+def _get_content_type(provider: YandexMusicProvider) -> ContentType:
+    """Get content type based on provider quality setting."""
+    quality = provider.config.get_value(CONF_QUALITY)
+    if quality == QUALITY_LOSSLESS:
+        return ContentType.FLAC
+    return ContentType.MP3
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
@@ -129,7 +137,7 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=ContentType.MP3,
+                    content_type=_get_content_type(provider),
                 ),
                 url=f"https://music.yandex.ru/album/{album_id}",
                 available=available,
@@ -151,8 +159,6 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
         album.album_type = AlbumType.COMPILATION
     elif album_type_str == "single":
         album.album_type = AlbumType.SINGLE
-    elif album_type_str == "podcast":
-        album.album_type = AlbumType.PODCAST
     else:
         album.album_type = AlbumType.ALBUM
 
@@ -231,7 +237,7 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=ContentType.MP3,
+                    content_type=_get_content_type(provider),
                 ),
                 url=f"https://music.yandex.ru/track/{track_id}",
                 available=available,

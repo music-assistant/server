@@ -5,7 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    LoginFailed,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import ClientAsync, Search, TrackShort
@@ -37,8 +41,7 @@ class YandexMusicClient:
     def user_id(self) -> int:
         """Return the user ID."""
         if self._user_id is None:
-            msg = "Client not initialized, call connect() first"
-            raise RuntimeError(msg)
+            raise ProviderUnavailableError("Client not initialized, call connect() first")
         return self._user_id
 
     async def connect(self) -> bool:
@@ -68,8 +71,7 @@ class YandexMusicClient:
     def _ensure_connected(self) -> ClientAsync:
         """Ensure the client is connected and return it."""
         if self._client is None:
-            msg = "Client not connected, call connect() first"
-            raise RuntimeError(msg)
+            raise ProviderUnavailableError("Client not connected, call connect() first")
         return self._client
 
     # Library methods

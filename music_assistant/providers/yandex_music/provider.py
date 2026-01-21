@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -34,51 +39,24 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
-    ProviderFeature.BROWSE,
-}
-
-
 class YandexMusicProvider(MusicProvider):
     """Implementation of a Yandex Music MusicProvider."""
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize Yandex Music provider.
-
-        :param mass: The Music Assistant instance.
-        :param manifest: The provider manifest.
-        :param config: The provider configuration.
-        """
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self._client: YandexMusicClient | None = None
-        self._streaming: YandexMusicStreamingManager | None = None
+    _client: YandexMusicClient | None = None
+    _streaming: YandexMusicStreamingManager | None = None
 
     @property
     def client(self) -> YandexMusicClient:
         """Return the Yandex Music client."""
         if self._client is None:
-            msg = "Provider not initialized"
-            raise RuntimeError(msg)
+            raise ProviderUnavailableError("Provider not initialized")
         return self._client
 
     @property
     def streaming(self) -> YandexMusicStreamingManager:
         """Return the streaming manager."""
         if self._streaming is None:
-            msg = "Provider not initialized"
-            raise RuntimeError(msg)
+            raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
     async def handle_async_init(self) -> None:
@@ -144,7 +122,7 @@ class YandexMusicProvider(MusicProvider):
             for track in search_result.tracks.results[:limit]:
                 try:
                     result.tracks.append(parse_track(self, track))
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing track: %s", err)
 
         # Parse albums
@@ -152,7 +130,7 @@ class YandexMusicProvider(MusicProvider):
             for album in search_result.albums.results[:limit]:
                 try:
                     result.albums.append(parse_album(self, album))
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing album: %s", err)
 
         # Parse artists
@@ -160,7 +138,7 @@ class YandexMusicProvider(MusicProvider):
             for artist in search_result.artists.results[:limit]:
                 try:
                     result.artists.append(parse_artist(self, artist))
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing artist: %s", err)
 
         # Parse playlists
@@ -168,7 +146,7 @@ class YandexMusicProvider(MusicProvider):
             for playlist in search_result.playlists.results[:limit]:
                 try:
                     result.playlists.append(parse_playlist(self, playlist))
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing playlist: %s", err)
 
         return result
@@ -255,7 +233,7 @@ class YandexMusicProvider(MusicProvider):
                     parsed_track.disc_number = volume_index + 1
                     parsed_track.track_number = track_index + 1
                     tracks.append(parsed_track)
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing album track: %s", err)
         return tracks
 
@@ -294,7 +272,7 @@ class YandexMusicProvider(MusicProvider):
         for track in full_tracks:
             try:
                 tracks.append(parse_track(self, track))
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing playlist track: %s", err)
         return tracks
 
@@ -310,7 +288,7 @@ class YandexMusicProvider(MusicProvider):
         for album in albums:
             try:
                 result.append(parse_album(self, album))
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing artist album: %s", err)
         return result
 
@@ -326,7 +304,7 @@ class YandexMusicProvider(MusicProvider):
         for track in tracks:
             try:
                 result.append(parse_track(self, track))
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing artist track: %s", err)
         return result
 
@@ -338,7 +316,7 @@ class YandexMusicProvider(MusicProvider):
         for artist in artists:
             try:
                 yield parse_artist(self, artist)
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing library artist: %s", err)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
@@ -347,7 +325,7 @@ class YandexMusicProvider(MusicProvider):
         for album in albums:
             try:
                 yield parse_album(self, album)
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing library album: %s", err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -365,7 +343,7 @@ class YandexMusicProvider(MusicProvider):
             for track in full_tracks:
                 try:
                     yield parse_track(self, track)
-                except Exception as err:
+                except InvalidDataError as err:
                     self.logger.debug("Error parsing library track: %s", err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -374,7 +352,7 @@ class YandexMusicProvider(MusicProvider):
         for playlist in playlists:
             try:
                 yield parse_playlist(self, playlist)
-            except Exception as err:
+            except InvalidDataError as err:
                 self.logger.debug("Error parsing library playlist: %s", err)
 
     # Library edit methods
