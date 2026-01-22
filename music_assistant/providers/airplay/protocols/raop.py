@@ -14,9 +14,9 @@ from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
     CONF_ALAC_ENCODE,
-    CONF_AP_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
+    CONF_RAOP_CREDENTIALS,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -36,8 +36,6 @@ class RaopStream(AirPlayProtocol):
     and we can send some interactive commands using a named pipe.
     """
 
-    supports_pairing = True
-
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
         assert self.player.raop_discovery_info is not None  # for type checker
@@ -56,9 +54,9 @@ class RaopStream(AirPlayProtocol):
             player_id, CONF_PASSWORD
         ):
             extra_args += ["-password", str(device_password)]
-        # Add AirPlay credentials from pairing if available (for Apple devices)
-        if ap_credentials := self.player.config.get_value(CONF_AP_CREDENTIALS):
-            extra_args += ["-secret", str(ap_credentials)]
+        # Add RAOP credentials from pairing if available (for Apple devices)
+        if raop_credentials := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
+            extra_args += ["-secret", str(raop_credentials)]
         if self.prov.logger.isEnabledFor(logging.DEBUG):
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -116,57 +114,6 @@ class RaopStream(AirPlayProtocol):
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
         self.mass.call_later(1, self.send_cli_command(f"VOLUME={self.player.volume_level}\n"))
-
-    async def start_pairing(self) -> None:
-        """Start pairing process for this protocol (if supported)."""
-        assert self.player.raop_discovery_info is not None  # for type checker
-        cli_binary = await get_cli_binary(self.player.protocol)
-
-        cliraop_args = [
-            cli_binary,
-            "-pair",
-            "-if",
-            self.mass.streams.bind_ip,
-            "-port",
-            str(self.player.raop_discovery_info.port),
-            "-udn",
-            self.player.raop_discovery_info.name,
-            self.player.address,
-        ]
-        self.player.logger.debug(
-            "Starting PAIRING with cliraop process for player %s with args: %s",
-            self.player.player_id,
-            cliraop_args,
-        )
-        self._cli_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
-        await self._cli_proc.start()
-        # read up to first 10 lines of stderr to get the initial status
-        for _ in range(10):
-            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
-            self.player.logger.debug(line)
-            if "enter PIN code displayed on " in line:
-                self.is_pairing = True
-                return
-        await self._cli_proc.close()
-        raise PlayerCommandFailed("Pairing failed")
-
-    async def finish_pairing(self, pin: str) -> str:
-        """Finish pairing process with given PIN (if supported)."""
-        if not self.is_pairing:
-            await self.start_pairing()
-        if not self._cli_proc or self._cli_proc.closed:
-            raise PlayerCommandFailed("Pairing process not started")
-
-        self.is_pairing = False
-        _, _stderr = await self._cli_proc.communicate(input=f"{pin}\n".encode(), timeout=10)
-        for line in _stderr.decode().splitlines():
-            self.player.logger.debug(line)
-            for error in ("device did not respond", "can't authentify", "pin failed"):
-                if error in line.lower():
-                    raise PlayerCommandFailed(f"Pairing failed: {error}")
-            if "secret is " in line:
-                return line.split("secret is ")[1].strip()
-        raise PlayerCommandFailed(f"Pairing failed: {_stderr.decode().strip()}")
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""

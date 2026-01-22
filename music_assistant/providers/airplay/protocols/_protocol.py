@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from random import randint
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
@@ -12,6 +11,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
+from music_assistant.providers.airplay.helpers import generate_active_remote_id
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
@@ -33,8 +33,6 @@ class AirPlayProtocol(ABC):
 
     # the pcm audio format used for streaming to this protocol
     pcm_format = AIRPLAY_PCM_FORMAT
-    supports_pairing = False  # whether this protocol supports pairing
-    is_pairing: bool = False  # whether this protocol instance is in pairing mode
 
     def __init__(
         self,
@@ -49,8 +47,15 @@ class AirPlayProtocol(ABC):
         self.mass = player.provider.mass
         self.player = player
         self.logger = player.provider.logger.getChild(f"protocol.{self.__class__.__name__}")
-        # Generate unique ID to prevent race conditions with named pipes
-        self.active_remote_id: str = str(randint(1000, 8000))
+        # Generate active_remote_id from device's deviceid (or fallback to random)
+        # This ID is used for DACP callbacks to match requests to the correct stream
+        discovery_info = player.airplay_discovery_info or player.raop_discovery_info
+        self.active_remote_id: str = generate_active_remote_id(discovery_info)
+        self.logger.debug(
+            "Generated active_remote_id: %s for player %s",
+            self.active_remote_id,
+            player.display_name,
+        )
         self.prevent_playback: bool = False
         self._cli_proc: AsyncProcess | None = None
         self.audio_pipe = AsyncNamedPipeWriter(
@@ -92,14 +97,6 @@ class AirPlayProtocol(ABC):
         # Cleanup named pipes
         await self.audio_pipe.remove()
         await self.commands_pipe.remove()
-
-    async def start_pairing(self) -> None:
-        """Start pairing process for this protocol (if supported)."""
-        raise NotImplementedError("Pairing not implemented for this protocol")
-
-    async def finish_pairing(self, pin: str) -> str:
-        """Finish pairing process with given PIN (if supported)."""
-        raise NotImplementedError("Pairing not implemented for this protocol")
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLI binary."""

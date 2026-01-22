@@ -45,14 +45,19 @@ AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
 )
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
 AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+
+# Per-protocol credential storage keys
+CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
+CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
+CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
+
+# Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
-CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
-CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"
-CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_ap_pairing"
-CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
-CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
+
+# Pairing action keys
+CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"
+CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
-CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
@@ -86,6 +91,16 @@ BROKEN_AIRPLAY_MODELS = (
 
 AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
+    # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
     ("Juke Audio", "*"),
+    # Apple TV HD (4th gen, 2015) and all Apple TV 4K models support AirPlay 2
+    ("Apple", "Apple TV Gen4"),  # Apple TV HD (4th gen) - AppleTV5,3
+    ("Apple", "Apple TV 4K"),  # Apple TV 4K (1st gen) - AppleTV6,2
+    ("Apple", "Apple TV 4K Gen2"),  # Apple TV 4K (2nd gen) - AppleTV11,1
+    ("Apple", "Apple TV 4K Gen3"),  # Apple TV 4K (3rd gen) - AppleTV14,1
+    # HomePod models also support AirPlay 2
+    ("Apple", "HomePod"),  # HomePod (1st gen and generic)
+    ("Apple", "HomePod 2"),  # HomePod (2nd gen) - AudioAccessory6,1
+    ("Apple", "HomePod Mini"),  # HomePod mini - AudioAccessory5,1
 )

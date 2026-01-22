@@ -272,6 +272,35 @@ def unix_time_to_ntp(unix_timestamp: float) -> int:
     return (ntp_seconds << 32) | ntp_fraction
 
 
+def generate_active_remote_id(discovery_info: AsyncServiceInfo | None) -> str:
+    """Generate an Active-Remote ID for DACP communication.
+
+    The Active-Remote ID is used to match DACP callbacks from devices to the
+    correct stream. This function generates a consistent ID based on:
+    1. The device's deviceid TXT record (preferred, converted to uint32)
+    2. A random number as fallback
+
+    :param discovery_info: Zeroconf discovery info for the device (can be None).
+    :return: Active-Remote ID as decimal string.
+    """
+    from random import randint  # noqa: PLC0415
+
+    if discovery_info:
+        # Try to get deviceid from TXT record (format: "AA:BB:CC:DD:EE:FF")
+        deviceid = discovery_info.decoded_properties.get("deviceid")
+        if deviceid:
+            # Convert MAC address format to uint32
+            # Remove colons: "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF"
+            hex_str = deviceid.replace(":", "")
+            # Parse as uint64 and truncate to uint32 (lower 32 bits)
+            device_id_u64 = int(hex_str, 16)
+            device_id_u32 = device_id_u64 & 0xFFFFFFFF
+            return str(device_id_u32)
+
+    # Fallback to random number
+    return str(randint(1000, 8000))
+
+
 def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     """
     Add seconds to an NTP timestamp.

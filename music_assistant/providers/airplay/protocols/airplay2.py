@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -12,10 +13,14 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
+    CONF_AIRPLAY_CREDENTIALS,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
 from ._protocol import AirPlayProtocol
+
+if TYPE_CHECKING:
+    from music_assistant.providers.airplay.provider import AirPlayProvider
 
 
 class AirPlay2Stream(AirPlayProtocol):
@@ -71,6 +76,14 @@ class AirPlay2Stream(AirPlayProtocol):
         # this binary leverages from the AirPlay2 support in owntones
         # https://github.com/music-assistant/cliairplay
 
+        # Get AirPlay credentials if available (for Apple devices that require pairing)
+        airplay_credentials: str | None = None
+        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+            airplay_credentials = str(creds)
+
+        # Get the provider's DACP ID for remote control callbacks
+        prov = cast("AirPlayProvider", self.prov)
+
         cli_args = [
             cli_binary,
             "--name",
@@ -89,11 +102,25 @@ class AirPlay2Stream(AirPlayProtocol):
             str(self.player.volume_level),
             "--loglevel",
             str(self._cli_loglevel),
+            "--dacp_id",
+            prov.dacp_id,
+            "--active_remote",
+            self.active_remote_id,
             "--pipe",
             self.audio_pipe.path,
             "--command_pipe",
             self.commands_pipe.path,
         ]
+
+        # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
+        # pyatv credentials format: "privkey:pubkey:id1:id2" (4 colon-separated parts)
+        # cliap2 expects: "privkeypubkey" (just the hex keys concatenated)
+        if airplay_credentials:
+            creds_parts = airplay_credentials.split(":")
+            if len(creds_parts) >= 2:
+                # Concatenate private key and public key (first two parts)
+                cliap2_auth = creds_parts[0] + creds_parts[1]
+                cli_args += ["--auth", cliap2_auth]
 
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
