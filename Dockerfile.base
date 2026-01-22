@@ -127,6 +127,23 @@ RUN PYAV_VERSION=$(pip install --dry-run aiosendspin 2>&1 | grep -oP 'av-\K[0-9.
 
 ##################################################################################################
 
+# miniaudio wheel builder - builds miniaudio for pyatv dependency
+FROM python:3.13-slim-bookworm AS miniaudio-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ python3-dev libasound2-dev && rm -rf /var/lib/apt/lists/*
+
+# Resolve miniaudio version from pyatv's dependencies and build wheel
+RUN MINIAUDIO_VERSION=$(pip install --dry-run pyatv 2>&1 | grep -oP 'miniaudio-\K[0-9.]+' | head -1) && \
+    if [ -z "$MINIAUDIO_VERSION" ]; then \
+        echo "ERROR: Failed to detect miniaudio version from pyatv dependencies" >&2; \
+        exit 1; \
+    fi && \
+    echo "Building miniaudio version: ${MINIAUDIO_VERSION}" && \
+    pip wheel --no-binary miniaudio miniaudio==${MINIAUDIO_VERSION} -w /wheels/
+
+##################################################################################################
+
 FROM python:3.13-slim-bookworm
 
 # Enable non-free and contrib repositories for codec libraries
@@ -221,6 +238,9 @@ COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
 
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
+
+# Copy pre-built miniaudio wheel for use by downstream images (pyatv dependency)
+COPY --from=miniaudio-builder /wheels/ /usr/local/share/miniaudio-wheels/
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version

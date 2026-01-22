@@ -32,6 +32,17 @@ RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; pr
     fi && \
     uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
 
+# Install miniaudio from pre-built wheel (pyatv dependency, requires C compilation)
+# First verify the wheel version matches what pip resolved to avoid version mismatch
+RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('miniaudio'))") && \
+    WHEEL_VERSION=$(ls /usr/local/share/miniaudio-wheels/miniaudio*.whl | grep -oP 'miniaudio-\K[0-9.]+') && \
+    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
+      echo "ERROR: miniaudio version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
+      echo "Please rebuild the base image with the correct miniaudio version." && \
+      exit 1; \
+    fi && \
+    uv pip install --force-reinstall --no-deps /usr/local/share/miniaudio-wheels/miniaudio*.whl
+
 # Install Music Assistant from prebuilt wheel
 ARG MASS_VERSION
 RUN uv pip install \
