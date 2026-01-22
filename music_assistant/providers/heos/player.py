@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import copy
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo
 from pyheos import Heos, const
@@ -133,7 +133,9 @@ class HeosPlayer(Player):
 
     def _update_player_state(self) -> None:
         """Update playback state."""
-        self._attr_playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE[self._device.state]
+        self._attr_playback_state = HEOS_PLAY_STATE_TO_PLAYBACK_STATE.get(
+            self._device.state, PlaybackState.UNKNOWN
+        )
 
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
@@ -153,7 +155,10 @@ class HeosPlayer(Player):
             self._attr_active_source = str(now_playing.source_id)
             self._attr_current_media = PlayerMedia(
                 uri=now_playing.media_id or media_uri_from_now_playing_media(now_playing),
-                media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE[now_playing.type],
+                media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE.get(
+                    now_playing.type,
+                    MediaType.UNKNOWN,
+                ),
                 title=now_playing.song,
                 artist=now_playing.artist,
                 album=now_playing.album,

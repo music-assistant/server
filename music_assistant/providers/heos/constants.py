@@ -15,7 +15,6 @@ HEOS_MEDIA_TYPE_TO_MEDIA_TYPE: dict[HeosMediaType | None, MediaType] = {
     HeosMediaType.PLAYLIST: MediaType.PLAYLIST,
     HeosMediaType.SONG: MediaType.TRACK,
     HeosMediaType.STATION: MediaType.TRACK,
-    None: MediaType.UNKNOWN,
 }
 
 HEOS_PLAY_STATE_TO_PLAYBACK_STATE: dict[HeosPlayState | None, PlaybackState] = {
@@ -23,5 +22,4 @@ HEOS_PLAY_STATE_TO_PLAYBACK_STATE: dict[HeosPlayState | None, PlaybackState] = {
     HeosPlayState.PAUSE: PlaybackState.PAUSED,
     HeosPlayState.STOP: PlaybackState.IDLE,
     HeosPlayState.UNKNOWN: PlaybackState.UNKNOWN,
-    None: PlaybackState.UNKNOWN,
 }
