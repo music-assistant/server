@@ -122,9 +122,18 @@ class AirPlay2Stream(AirPlayProtocol):
         # So we need to pass: ltsk + ltpk (parts[1] + parts[0])
         if airplay_credentials:
             creds_parts = airplay_credentials.split(":")
+            self.player.logger.debug(
+                "AirPlay credentials: %d parts, lengths: %s",
+                len(creds_parts),
+                [len(p) for p in creds_parts],
+            )
             if len(creds_parts) >= 2:
                 # Concatenate ltsk (private key) + ltpk (public key) in correct order
                 cliap2_auth = creds_parts[1] + creds_parts[0]
+                self.player.logger.debug(
+                    "Passing auth to cliap2: length=%d (expected 192 for full credentials)",
+                    len(cliap2_auth),
+                )
                 cli_args += ["--auth", cliap2_auth]
 
         self.player.logger.debug(
