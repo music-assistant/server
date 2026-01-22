@@ -19,6 +19,7 @@ class AsyncNamedPipeWriter:
             pipe_path: Path to the named pipe
         """
         self._pipe_path = pipe_path
+        self._reader_fd: int | None = None
 
     @property
     def path(self) -> str:
@@ -26,7 +27,12 @@ class AsyncNamedPipeWriter:
         return self._pipe_path
 
     async def create(self) -> None:
-        """Create the named pipe (if it does not exist)."""
+        """Create the named pipe (if it does not exist).
+
+        Also opens a non-blocking reader fd to allow writers to open the pipe
+        without blocking. This is needed because FIFO semantics require a reader
+        to be present before a writer can open the pipe for writing.
+        """
 
         def _create() -> None:
             try:
@@ -40,6 +46,9 @@ class AsyncNamedPipeWriter:
                     os.mkfifo(self._pipe_path)
 
         await asyncio.to_thread(_create)
+        # Open a non-blocking reader fd to allow writers to open the pipe
+        # This fd will be kept open until remove() is called
+        self._reader_fd = os.open(self._pipe_path, os.O_RDONLY | os.O_NONBLOCK)
 
     async def write(self, data: bytes) -> None:
         """Write data to the named pipe (blocking operation runs in thread)."""
@@ -53,6 +62,11 @@ class AsyncNamedPipeWriter:
 
     async def remove(self) -> None:
         """Remove the named pipe."""
+        # Close the reader fd if it's open
+        if self._reader_fd is not None:
+            with suppress(Exception):
+                os.close(self._reader_fd)
+            self._reader_fd = None
 
         def _remove() -> None:
             with suppress(Exception):

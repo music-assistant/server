@@ -442,9 +442,17 @@ class AirPlayPlayer(Player):
         elif action == CONF_ACTION_RESET_PAIRING:
             # Clear credentials for current protocol
             cred_key = self._get_credentials_key()
-            if values:
+            self.logger.info(
+                "Resetting %s pairing for %s (cred_key=%s)",
+                protocol_name,
+                self.display_name,
+                cred_key,
+            )
+            if values is not None:
                 values[cred_key] = ""
-            self.logger.info("Reset %s pairing for %s", protocol_name, self.display_name)
+                self.logger.debug("Cleared credentials in values dict")
+            else:
+                self.logger.warning("Values dict is None, cannot clear credentials")
 
     async def stop(self) -> None:
         """Send STOP command to player."""
