@@ -21,6 +21,8 @@ import os
 import pathlib
 import re
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -47,6 +49,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -104,12 +107,21 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
+ROOT_PLAYLIST_FOLDER_ID = "p.playlistsroot"
 
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
+
+
+@dataclass(slots=True)
+class AppleMusicPlaylistFolder:
+    """Representation of an Apple Music playlist folder."""
+
+    item_id: str
+    name: str
 
 
 async def setup(
@@ -355,6 +367,123 @@ class AppleMusicProvider(MusicProvider):
             ]
         return searchresult
 
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Apple Music with support for playlist folders."""
+        if not path or "://" not in path:
+            return await super().browse(path)
+        sub_path = path.split("://", 1)[1]
+        path_parts = [part for part in sub_path.split("/") if part]
+        if path_parts and path_parts[0] == "playlists":
+            if len(path_parts) == 1:
+                return await self._browse_playlist_root()
+            folder_id = self._extract_playlist_folder_id(path_parts[1:])
+            if folder_id:
+                return await self._browse_playlist_folder(path, folder_id)
+            return await self._browse_playlist_root()
+        return await super().browse(path)
+
+    async def _browse_playlist_root(self) -> Sequence[MediaItemType | BrowseFolder]:
+        """Return the root playlist listing with folders."""
+        folders, playlists = await self._fetch_playlist_folder_children()
+        base_path = f"{self.instance_id}://playlists"
+        folder_nodes = self._folder_nodes(folders, base_path)
+        return folder_nodes + playlists
+
+    async def _browse_playlist_folder(
+        self, current_path: str, folder_id: str
+    ) -> Sequence[MediaItemType | BrowseFolder]:
+        """Return the contents of a playlist folder."""
+        folders, playlists = await self._fetch_playlist_folder_children(folder_id)
+        folder_nodes = self._folder_nodes(folders, current_path.rstrip("/"))
+        return folder_nodes + playlists
+
+    def _extract_playlist_folder_id(self, path_parts: list[str]) -> str | None:
+        """Extract the active folder id from a playlist browse path."""
+        if not path_parts:
+            return None
+        last_segment = path_parts[-1]
+        if "|" in last_segment:
+            return last_segment.rsplit("|", 1)[1]
+        return last_segment
+
+    async def _fetch_playlist_folder_children(
+        self, folder_id: str | None = None
+    ) -> tuple[list[AppleMusicPlaylistFolder], list[Playlist]]:
+        """Fetch folders and playlists for the requested Apple Music folder."""
+        apple_folder_id = folder_id or ROOT_PLAYLIST_FOLDER_ID
+        endpoint = f"me/library/playlist-folders/{apple_folder_id}/children"
+        try:
+            children = await self._get_all_items(endpoint)
+        except MediaNotFoundError:
+            children = []
+        folders: list[AppleMusicPlaylistFolder] = []
+        playlist_entries: list[dict[str, Any]] = []
+        library_playlist_ids: list[str] = []
+        for child in children:
+            child_id = child.get("id")
+            if not child_id:
+                continue
+            child_type = child.get("type")
+            attributes = child.get("attributes") or {}
+            if child_type == "library-playlist-folders":
+                folders.append(
+                    AppleMusicPlaylistFolder(
+                        item_id=child_id,
+                        name=attributes.get("name") or "Folder",
+                    )
+                )
+            elif child_type == "library-playlists":
+                playlist_entries.append(child)
+                if self.is_library_id(child_id):
+                    library_playlist_ids.append(child_id)
+        ratings: dict[str, Any] = {}
+        if library_playlist_ids:
+            ratings = await self._get_ratings(library_playlist_ids, MediaType.PLAYLIST)
+        playlists: list[Playlist] = []
+        for playlist_obj in playlist_entries:
+            playlist_id = playlist_obj.get("id")
+            is_favourite = ratings.get(playlist_id)
+            attributes = playlist_obj.get("attributes") or {}
+            play_params = attributes.get("playParams") or {}
+            global_id = play_params.get("globalId")
+            if attributes.get("hasCatalog") and global_id and not self.is_library_id(global_id):
+                try:
+                    playlists.append(await self.get_playlist(global_id, is_favourite))
+                    continue
+                except MediaNotFoundError:
+                    self.logger.debug(
+                        "Catalog playlist %s not found, falling back to library metadata",
+                        global_id,
+                    )
+            playlists.append(self._parse_playlist(playlist_obj, is_favourite))
+        playlists.sort(key=lambda item: (item.name or "").casefold())
+        folders.sort(key=lambda folder: folder.name.casefold())
+        return folders, playlists
+
+    def _folder_nodes(
+        self, folders: list[AppleMusicPlaylistFolder], base_path: str
+    ) -> list[BrowseFolder]:
+        """Convert folder metadata returned by the API into browse nodes."""
+        normalized_base = base_path.rstrip("/")
+        items: list[BrowseFolder] = []
+        for folder in folders:
+            folder_name = folder.name or "Folder"
+            segment_name = self._folder_path_segment(folder_name)
+            segment = f"{segment_name}|{folder.item_id}"
+            items.append(
+                BrowseFolder(
+                    item_id=f"folder:{folder.item_id}",
+                    provider=self.instance_id,
+                    path=f"{normalized_base}/{segment}",
+                    name=folder_name,
+                )
+            )
+        return items
+
+    def _folder_path_segment(self, name: str) -> str:
+        """Return human-readable, path-safe breadcrumb text."""
+        return (name.strip() or "Folder").replace("/", "-").replace("|", "-")
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""
         endpoint = "me/library/artists"
@@ -478,7 +607,6 @@ class AppleMusicProvider(MusicProvider):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}"
-        endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 
