@@ -7,7 +7,6 @@ import logging
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import PlayerSource
 from pyheos import Credentials, Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
-from pyheos import HeosPlayer as PyHeosPlayer
 
 from music_assistant.constants import (
     CONF_IP_ADDRESS,
@@ -27,8 +26,6 @@ class HeosPlayerProvider(PlayerProvider):
     _heos: Heos
     _music_source_list: list[PlayerSource] = []
     _input_source_list: list[MediaItem] = []
-
-    _device_map: dict[str, PyHeosPlayer] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -69,10 +66,9 @@ class HeosPlayerProvider(PlayerProvider):
 
             # Build player configs
             devices = await self._heos.get_players()
-            for device_id, device in devices.items():
-                self._device_map[str(device_id)] = device
-
+            for device in devices.values():
                 heos_player = HeosPlayer(self, device)
+
                 await heos_player.setup()
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
@@ -92,6 +88,25 @@ class HeosPlayerProvider(PlayerProvider):
             for player in self.mass.players.all(provider_filter=self.instance_id):
                 assert isinstance(player, HeosPlayer)  # for type checking
                 await player.build_group_list()
+
+        if event == const.EVENT_PLAYERS_CHANGED:
+            if result is None:
+                return
+
+            for removed_player_id in result.removed_player_ids:
+                await self.mass.players.unregister(str(removed_player_id))
+
+            for new_player_id in result.added_player_ids:
+                try:
+                    device = await self._heos.get_player_info(new_player_id)
+                    heos_player = HeosPlayer(self, device)
+
+                    await heos_player.setup()
+                except HeosError as e:
+                    self.logger.error(
+                        "Error adding new HEOS player with id %s: %s", new_player_id, e
+                    )
+                    continue
 
     async def _populate_sources(self) -> None:
         """Build source list based on data from controller."""
