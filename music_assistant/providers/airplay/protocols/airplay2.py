@@ -113,13 +113,18 @@ class AirPlay2Stream(AirPlayProtocol):
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
-        # pyatv credentials format: "privkey:pubkey:id1:id2" (4 colon-separated parts)
-        # cliap2 expects: "privkeypubkey" (just the hex keys concatenated)
+        # pyatv HAP credentials format: "ltpk:ltsk:atv_id:client_id" (4 colon-separated hex parts)
+        #   - ltpk (Long-Term Public Key): 32 bytes = 64 hex chars
+        #   - ltsk (Long-Term Secret Key): 64 bytes = 128 hex chars
+        # cliap2 (owntone) expects: "client_private_key + server_public_key" (concatenated hex)
+        #   - client_private_key (ltsk): 64 bytes = 128 hex chars
+        #   - server_public_key (ltpk): 32 bytes = 64 hex chars
+        # So we need to pass: ltsk + ltpk (parts[1] + parts[0])
         if airplay_credentials:
             creds_parts = airplay_credentials.split(":")
             if len(creds_parts) >= 2:
-                # Concatenate private key and public key (first two parts)
-                cliap2_auth = creds_parts[0] + creds_parts[1]
+                # Concatenate ltsk (private key) + ltpk (public key) in correct order
+                cliap2_auth = creds_parts[1] + creds_parts[0]
                 cli_args += ["--auth", cliap2_auth]
 
         self.player.logger.debug(
