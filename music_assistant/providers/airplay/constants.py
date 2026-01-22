@@ -57,6 +57,7 @@ CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
 # Pairing action keys
 CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"
 CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
+CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
 

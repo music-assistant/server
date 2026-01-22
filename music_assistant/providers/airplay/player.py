@@ -26,6 +26,7 @@ from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
+    CONF_ACTION_RESET_PAIRING,
     CONF_ACTION_START_PAIRING,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AIRPLAY_PROTOCOL,
@@ -356,6 +357,15 @@ class AirPlayPlayer(Player):
                     label=f"Device is paired ({protocol_name}) and ready to use.",
                 )
             )
+            # Add reset pairing button
+            entries.append(
+                ConfigEntry(
+                    key=CONF_ACTION_RESET_PAIRING,
+                    type=ConfigEntryType.ACTION,
+                    label=f"Reset {protocol_name} pairing",
+                    action=CONF_ACTION_RESET_PAIRING,
+                )
+            )
 
         # Store credentials for current protocol (hidden from UI)
         entries.append(
@@ -428,6 +438,13 @@ class AirPlayPlayer(Player):
             values[cred_key] = credentials
 
             self.logger.info("Finished %s pairing for %s", protocol_name, self.display_name)
+
+        elif action == CONF_ACTION_RESET_PAIRING:
+            # Clear credentials for current protocol
+            cred_key = self._get_credentials_key()
+            if values:
+                values[cred_key] = ""
+            self.logger.info("Reset %s pairing for %s", protocol_name, self.display_name)
 
     async def stop(self) -> None:
         """Send STOP command to player."""
