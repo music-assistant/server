@@ -122,12 +122,15 @@ class HeosPlayerProvider(PlayerProvider):
 
     def on_player_disabled(self, player_id: str) -> None:
         """Unregister player when it is disabled, cleans up connections."""
+        # Clean up event handling connection
         self.mass.create_task(self.mass.players.unregister(player_id))
 
-    def on_player_enabled(self, player_id: str) -> None:
-        """Reregister player when it is enabled."""
-        self.logger.debug("Attempting player re-enabling")
-        if device := self._device_map.get(player_id):
-            # Reinstantiate the player
-            heos_player = HeosPlayer(self, device)
-            self.mass.create_task(heos_player.setup())
+    # TODO: Re-enable when MA lifecycles get updated.
+    # Currently a race-condition prevents `register_or_update` to finish because Enabled is still false  # noqa: E501
+    # def on_player_enabled(self, player_id: str) -> None:
+    #     """Reregister player when it is enabled."""
+    #     self.logger.debug("Attempting player re-enabling")
+    #     if device := self._device_map.get(player_id):
+    #         # Reinstantiate the player
+    #         heos_player = HeosPlayer(self, device)
+    #         self.mass.create_task(heos_player.setup())
