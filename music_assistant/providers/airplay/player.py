@@ -158,6 +158,10 @@ class AirPlayPlayer(Player):
 
         require_pairing = self._requires_pairing()
 
+        # Debug: log incoming action
+        if action:
+            self.logger.debug("get_config_entries received action=%s, values=%s", action, values)
+
         # Handle pairing actions
         if action and require_pairing:
             await self._handle_pairing_action(action=action, values=values)
@@ -283,8 +287,10 @@ class AirPlayPlayer(Player):
         cred_key = self._get_credentials_key()
 
         # Check values dict first (for form submission)
-        if values and (creds := values.get(cred_key)):
-            return str(creds)
+        # Important: if key exists in values (even if empty), use that value
+        # This allows reset action to clear credentials by setting to ""
+        if values is not None and cred_key in values:
+            return str(values[cred_key]) if values[cred_key] else ""
 
         # Check stored config for protocol-specific key
         if creds := self.config.get_value(cred_key):
