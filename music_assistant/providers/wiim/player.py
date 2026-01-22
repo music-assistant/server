@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import typing
 from typing import TYPE_CHECKING, cast
 
@@ -251,6 +252,9 @@ class WiimPlayer(Player):
             #         )
             #         self._attr_active_source = "Wifi"
 
+            self._attr_elapsed_time = self.device.current_position
+            self._attr_elapsed_time_last_updated = time.time()
+
             # Current Track Info / Media Metadata
             if self.device.current_track_uri:
                 if self.current_uri and self.current_uri == self.device.current_track_uri:
@@ -264,6 +268,7 @@ class WiimPlayer(Player):
                         album=self.device.current_track_info.get("album"),
                         image_url=self.device.current_track_info.get("album_art_uri"),
                         source_id=SOURCE_AIRPLAY,
+                        duration=self.device.current_track_duration,
                     )
                 elif self.device.current_track_uri.startswith("spotify:"):
                     self._attr_active_source = SOURCE_SPOTIFY
@@ -274,6 +279,7 @@ class WiimPlayer(Player):
                         album=self.device.current_track_info.get("album"),
                         image_url=self.device.current_track_info.get("album_art_uri"),
                         source_id=SOURCE_SPOTIFY,
+                        duration=self.device.current_track_duration,
                     )
                 else:
                     self._attr_active_source = SOURCE_UNKNOWN
@@ -284,6 +290,7 @@ class WiimPlayer(Player):
                         album=self.device.current_track_info.get("album"),
                         image_url=self.device.current_track_info.get("album_art_uri"),
                         source_id=SOURCE_UNKNOWN,
+                        duration=self.device.current_track_duration,
                     )
 
         elif group_info and group_info.get("role") == "follower":
