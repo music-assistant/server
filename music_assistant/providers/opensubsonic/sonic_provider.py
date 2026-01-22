@@ -388,7 +388,7 @@ class OpenSonicProvider(MusicProvider):
                     )
                 },
             )
-        elif prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
+        if prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
             # Special case for handling track artists on various artists album for Navidrome.
             return Artist(
                 item_id=prov_artist_id,

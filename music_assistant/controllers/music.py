@@ -306,18 +306,17 @@ class MusicController(CoreController):
                 else:
                     if media_type == MediaType.ARTIST:
                         return SearchResults(artists=[item])
-                    elif media_type == MediaType.ALBUM:
+                    if media_type == MediaType.ALBUM:
                         return SearchResults(albums=[item])
-                    elif media_type == MediaType.TRACK:
+                    if media_type == MediaType.TRACK:
                         return SearchResults(tracks=[item])
-                    elif media_type == MediaType.PLAYLIST:
+                    if media_type == MediaType.PLAYLIST:
                         return SearchResults(playlists=[item])
-                    elif media_type == MediaType.AUDIOBOOK:
+                    if media_type == MediaType.AUDIOBOOK:
                         return SearchResults(audiobooks=[item])
-                    elif media_type == MediaType.PODCAST:
+                    if media_type == MediaType.PODCAST:
                         return SearchResults(podcasts=[item])
-                    else:
-                        return SearchResults()
+                    return SearchResults()
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
         # always first search the library
@@ -1418,8 +1417,7 @@ class MusicController(CoreController):
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
-        else:
-            return provider_fully_played, provider_position_ms
+        return provider_fully_played, provider_position_ms
 
     def get_controller(
         self, media_type: MediaType
