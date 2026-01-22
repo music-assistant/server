@@ -72,6 +72,11 @@ class UniversalGroupPlayer(GroupPlayer):
                 f"/ugp/{self.player_id}.mp3", self._serve_ugp_stream
             )
         )
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"/ugp/{self.player_id}.aac", self._serve_ugp_stream
+            )
+        )
         # allow grouping with all providers, except the ugp provider itself
         self._attr_can_group_with = {
             x.instance_id
