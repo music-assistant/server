@@ -6,6 +6,7 @@ from copy import copy
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo
 from pyheos import Heos, const
 
@@ -23,7 +24,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-    from pyheos import HeosPlayer as pyheosPlayer
+    from pyheos import HeosPlayer as PyHeosPlayer
 
     from .provider import HeosPlayerProvider
 
@@ -39,37 +40,40 @@ PLAYER_FEATURES = {
 
 
 class HeosPlayer(Player):
-    """HeosPLayer in Music Assistant."""
+    """HeosPlayer in Music Assistant."""
 
     _heos: Heos
-    _device: pyheosPlayer
+    _device: PyHeosPlayer
 
-    def __init__(self, provider: HeosPlayerProvider, client: pyheosPlayer) -> None:
+    def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
-        super().__init__(provider, str(client.player_id))
+        super().__init__(provider, str(device.player_id))
 
-        self._device: pyheosPlayer = client
+        self._device: PyHeosPlayer = device
+
+        if self._device.heos is None:
+            raise SetupFailedError("HEOS device has no controller assigned")
 
         # Keep internal reference so we don't need to check None on each call
-        assert self._device.heos
         self._heos = self._device.heos
 
-        self.logger.debug("Setting up player based on %s", client)
+        model_parts = device.model.split(maxsplit=1)
+        manufacturer = model_parts[0] if len(model_parts) == 2 else "HEOS"
+        model = model_parts[1] if len(model_parts) == 2 else device.model
 
         # Set player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
         self._attr_device_info = DeviceInfo(
-            model=client.model,
-            software_version=client.version,
-            ip_address=client.ip_address,
-            manufacturer="Denon",  # TODO: Grab this from API, technically can be others as well
+            model=model,
+            software_version=device.version,
+            ip_address=device.ip_address,
+            manufacturer=manufacturer,
         )
         self._attr_can_group_with = {provider.instance_id}
         self._attr_source_list = provider.source_list
         self._attr_available = self._device.available
-
-        self.logger.info("[%s] Loaded config: %s", self._device.name, self.config)
+        self._attr_name = device.name
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -77,7 +81,6 @@ class HeosPlayer(Player):
 
         await self.mass.players.register_or_update(self)
 
-        self.logger.debug("[%s] Player currently enabled: %s", self._device.name, self.enabled)
         if self.enabled:
             self._on_unload_callbacks.append(
                 self._device.add_on_player_event(self._player_event_received)
@@ -143,7 +146,9 @@ class HeosPlayer(Player):
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
             self._attr_active_source != self.player_id
         ):
-            self.logger.debug("[%s] Now playing change: %s", self._device.name, now_playing)
+            self.logger.debug(
+                "[%s] Now playing changed externally: %s", self._device.name, now_playing
+            )
 
             self._attr_active_source = str(now_playing.source_id)
             self._attr_current_media = PlayerMedia(
@@ -246,7 +251,6 @@ class HeosPlayer(Player):
             members.remove(removed_player_id)
 
         if len(members) <= 1:
-            # Update group to only include player's own ID, effectively removing the group
             await self._heos.remove_group(self._device.player_id)
         else:
             await self._heos.set_group([int(player) for player in members])

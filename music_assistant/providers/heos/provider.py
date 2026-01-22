@@ -117,8 +117,6 @@ class HeosPlayerProvider(PlayerProvider):
         await self._heos.disconnect()
 
         for player in self.players:
-            # if you have any cleanup logic for the players, you can do that here.
-            # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
