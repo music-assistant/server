@@ -113,28 +113,15 @@ class AirPlay2Stream(AirPlayProtocol):
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
-        # pyatv HAP credentials format: "ltpk:ltsk:atv_id:client_id" (4 colon-separated hex parts)
-        #   - ltpk (Long-Term Public Key): 32 bytes = 64 hex chars
-        #   - ltsk (Long-Term Secret Key): 64 bytes = 128 hex chars
-        # cliap2 (owntone) expects: "client_private_key + server_public_key" (concatenated hex)
-        #   - client_private_key (ltsk): 64 bytes = 128 hex chars
-        #   - server_public_key (ltpk): 32 bytes = 64 hex chars
-        # So we need to pass: ltsk + ltpk (parts[1] + parts[0])
+        # Native HAP pairing format: 192 hex chars = client_private_key(128) + server_public_key(64)
         if airplay_credentials:
-            creds_parts = airplay_credentials.split(":")
-            self.player.logger.debug(
-                "AirPlay credentials: %d parts, lengths: %s",
-                len(creds_parts),
-                [len(p) for p in creds_parts],
-            )
-            if len(creds_parts) >= 2:
-                # Concatenate ltsk (private key) + ltpk (public key) in correct order
-                cliap2_auth = creds_parts[1] + creds_parts[0]
-                self.player.logger.debug(
-                    "Passing auth to cliap2: length=%d (expected 192 for full credentials)",
-                    len(cliap2_auth),
+            if len(airplay_credentials) == 192:
+                cli_args += ["--auth", airplay_credentials]
+            else:
+                self.player.logger.warning(
+                    "Invalid credentials length: %d (expected 192)",
+                    len(airplay_credentials),
                 )
-                cli_args += ["--auth", cliap2_auth]
 
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",

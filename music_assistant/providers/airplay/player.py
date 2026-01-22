@@ -296,7 +296,7 @@ class AirPlayPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return pairing config entries for Apple TV and macOS devices.
 
-        Uses pyatv for pairing based on the configured streaming protocol.
+        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
         """
         entries: list[ConfigEntry] = []
 
@@ -375,24 +375,35 @@ class AirPlayPlayer(Player):
     async def _handle_pairing_action(
         self, action: str, values: dict[str, ConfigValueType] | None
     ) -> None:
-        """Handle pairing actions using pyatv based on current protocol."""
-        from .pairing import AirPlayPairing  # noqa: PLC0415
+        """Handle pairing actions.
+
+        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
+        Both produce credentials compatible with cliap2/cliraop respectively.
+        """
+        protocol_name = "RAOP" if self.protocol == StreamingProtocol.RAOP else "AirPlay"
 
         if action == CONF_ACTION_START_PAIRING:
             if self._active_pairing and self._active_pairing.is_pairing:
                 self.logger.warning("Pairing process already in progress for %s", self.display_name)
                 return
 
-            self.logger.info(
-                "Starting %s pairing for %s",
-                "RAOP" if self.protocol == StreamingProtocol.RAOP else "AirPlay",
-                self.display_name,
-            )
+            self.logger.info("Starting %s pairing for %s", protocol_name, self.display_name)
+
+            from .pairing import AirPlayPairing  # noqa: PLC0415
+
+            # Determine port based on protocol
+            port: int | None = None
+            if self.protocol == StreamingProtocol.AIRPLAY2 and self.airplay_discovery_info:
+                port = self.airplay_discovery_info.port or 7000
+            elif self.protocol == StreamingProtocol.RAOP and self.raop_discovery_info:
+                port = self.raop_discovery_info.port or 5000
+
             self._active_pairing = AirPlayPairing(
                 address=self.address,
                 name=self.display_name,
                 protocol=self.protocol,
                 logger=self.logger,
+                port=port,
             )
             await self._active_pairing.start_pairing()
 
@@ -410,16 +421,13 @@ class AirPlayPlayer(Player):
                 return
 
             credentials = await self._active_pairing.finish_pairing(pin=str(pin))
+            self._active_pairing = None
+
             # Store credentials with the protocol-specific key
             cred_key = self._get_credentials_key()
             values[cred_key] = credentials
-            self._active_pairing = None
 
-            self.logger.info(
-                "Finished %s pairing for %s",
-                "RAOP" if self.protocol == StreamingProtocol.RAOP else "AirPlay",
-                self.display_name,
-            )
+            self.logger.info("Finished %s pairing for %s", protocol_name, self.display_name)
 
     async def stop(self) -> None:
         """Send STOP command to player."""
