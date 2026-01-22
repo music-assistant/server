@@ -6,7 +6,7 @@ import logging
 
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import PlayerSource
-from pyheos import Credentials, Heos, HeosError, HeosOptions, PlayerUpdateResult, const
+from pyheos import Credentials, Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 from pyheos import HeosPlayer as PyHeosPlayer
 
 from music_assistant.constants import (
@@ -16,6 +16,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
 
 from .player import HeosPlayer
 
@@ -24,7 +25,8 @@ class HeosPlayerProvider(PlayerProvider):
     """Player provided for Denon HEOS."""
 
     _heos: Heos
-    _source_list: list[PlayerSource] = []
+    _music_source_list: list[PlayerSource] = []
+    _input_source_list: list[MediaItem] = []
 
     _device_map: dict[str, PyHeosPlayer] = {}
 
@@ -62,8 +64,8 @@ class HeosPlayerProvider(PlayerProvider):
 
         # Initialize library values
         try:
-            # Populate source list
-            await self._build_source_list()
+            # Populate source lists
+            await self._populate_sources()
 
             # Build player configs
             devices = await self._heos.get_players()
@@ -91,25 +93,31 @@ class HeosPlayerProvider(PlayerProvider):
                 assert isinstance(player, HeosPlayer)  # for type checking
                 await player.build_group_list()
 
-    async def _build_source_list(self) -> None:
+    async def _populate_sources(self) -> None:
         """Build source list based on data from controller."""
-        music_sources = await self._heos.get_music_sources()
+        self._input_source_list = list(await self._heos.get_input_sources())
 
+        music_sources = await self._heos.get_music_sources()
         for source_id, source in music_sources.items():
-            self._source_list.append(
+            self._music_source_list.append(
                 PlayerSource(
                     id=str(source_id),
                     name=source.name,
-                    passive=not source.available,
-                    can_play_pause=source_id == 1024,  # TODO: properly check
+                    passive=source_id in HEOS_PASSIVE_SOURCES or not source.available,
+                    can_play_pause=True,  # All sources support play/pause
                     can_next_previous=source_id == 1024,  # TODO: properly check
                 )
             )
 
     @property
-    def source_list(self) -> list[PlayerSource]:
-        """Get mapped source list from controller info."""
-        return self._source_list
+    def music_source_list(self) -> list[PlayerSource]:
+        """Get mapped music source list from controller info."""
+        return self._music_source_list
+
+    @property
+    def input_source_list(self) -> list[MediaItem]:
+        """Get input list from controller info. This represents all inputs across all players."""
+        return self._input_source_list
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""

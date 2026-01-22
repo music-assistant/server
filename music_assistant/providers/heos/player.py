@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from copy import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.player import DeviceInfo
+from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, const
 
 from music_assistant.constants import (
@@ -71,7 +71,6 @@ class HeosPlayer(Player):
             manufacturer=manufacturer,
         )
         self._attr_can_group_with = {provider.instance_id}
-        self._attr_source_list = provider.source_list
         self._attr_available = self._device.available
         self._attr_name = device.name
 
@@ -87,6 +86,7 @@ class HeosPlayer(Player):
             )
 
             await self.build_group_list()
+            await self.build_source_list()
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
@@ -99,6 +99,26 @@ class HeosPlayer(Player):
             ]
         else:
             self._attr_group_members.clear()
+
+        self.update_state()
+
+    async def build_source_list(self) -> None:
+        """Build source list based on music source list, combined with player specific inputs."""
+        prov = cast("HeosPlayerProvider", self.provider)
+        self._attr_source_list = prov.music_source_list[:]  # copy so we can modify
+
+        for input_source in prov.input_source_list:
+            # Only add input sources that belong to this player
+            if str(input_source.source_id) != self.player_id or input_source.media_id is None:
+                continue
+
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=input_source.media_id,
+                    name=input_source.name,
+                    can_play_pause=True,
+                )
+            )
 
         self.update_state()
 
@@ -152,7 +172,11 @@ class HeosPlayer(Player):
                 "[%s] Now playing changed externally: %s", self._device.name, now_playing
             )
 
-            self._attr_active_source = str(now_playing.source_id)
+            if now_playing.source_id == const.MUSIC_SOURCE_AUX_INPUT:
+                self._attr_active_source = str(now_playing.media_id)
+            else:
+                self._attr_active_source = str(now_playing.source_id)
+
             self._attr_current_media = PlayerMedia(
                 uri=now_playing.media_id or media_uri_from_now_playing_media(now_playing),
                 media_type=HEOS_MEDIA_TYPE_TO_MEDIA_TYPE.get(

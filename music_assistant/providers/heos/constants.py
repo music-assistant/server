@@ -3,6 +3,7 @@
 from music_assistant_models.enums import MediaType, PlaybackState
 from pyheos import MediaType as HeosMediaType
 from pyheos import PlayState as HeosPlayState
+from pyheos import const
 
 HEOS_MEDIA_TYPE_TO_MEDIA_TYPE: dict[HeosMediaType | None, MediaType] = {
     HeosMediaType.ALBUM: MediaType.ALBUM,
@@ -23,3 +24,5 @@ HEOS_PLAY_STATE_TO_PLAYBACK_STATE: dict[HeosPlayState | None, PlaybackState] = {
     HeosPlayState.STOP: PlaybackState.IDLE,
     HeosPlayState.UNKNOWN: PlaybackState.UNKNOWN,
 }
+
+HEOS_PASSIVE_SOURCES = [const.MUSIC_SOURCE_AUX_INPUT]
