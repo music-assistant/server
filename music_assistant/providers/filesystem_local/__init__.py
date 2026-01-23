@@ -726,7 +726,9 @@ class LocalFileSystemProvider(MusicProvider):
             category=0,
         )
         if cached_data is not None:
-            return [Track.from_dict(track_dict) for track_dict in cached_data]
+            if cached_data and isinstance(cached_data[0], dict):
+                return [Track.from_dict(track_dict) for track_dict in cached_data]
+            return cast("list[Track]", cached_data)
 
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
