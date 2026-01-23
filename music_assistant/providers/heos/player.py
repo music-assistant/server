@@ -296,11 +296,12 @@ class HeosPlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             *await super().get_config_entries(action=action, values=values),
+            # Gen 1 devices, like HEOS Link, only support up to 48kHz/16bit
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
-                safe_max_sample_rate=192000,
+                safe_max_sample_rate=48000,
                 max_bit_depth=24,
-                safe_max_bit_depth=24,
+                safe_max_bit_depth=16,
             ),
             CONF_ENTRY_FLOW_MODE_ENFORCED,
         ]
