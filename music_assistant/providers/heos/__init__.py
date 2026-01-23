@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_IP_ADDRESS
 
 from .provider import HeosPlayerProvider
 
@@ -53,26 +53,5 @@ async def get_config_entries(
             description="Hostname or IP address of the HEOS device "
             "to be used as the main controller. It is recommended to use a "
             "wired device as the main controller.",
-        ),
-        ConfigEntry(key="separator", type=ConfigEntryType.DIVIDER, label=""),
-        ConfigEntry(
-            key="credentials_info",
-            type=ConfigEntryType.LABEL,
-            label="Optional credentials, used to populate HEOS players with saved playlists "
-            "and favorites.",
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=False,
-            description="The username to authenticate to the HEOS system.",
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=False,
-            description="The password to authenticate to the HEOS system.",
         ),
     )

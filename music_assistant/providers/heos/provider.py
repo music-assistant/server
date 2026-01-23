@@ -6,12 +6,10 @@ import logging
 
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
-from pyheos import Credentials, Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
+from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 
 from music_assistant.constants import (
     CONF_IP_ADDRESS,
-    CONF_PASSWORD,
-    CONF_USERNAME,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.models.player_provider import PlayerProvider
@@ -34,22 +32,12 @@ class HeosPlayerProvider(PlayerProvider):
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
 
-        # Credentials are not needed, only used to grab favorites and music services
-        credentials: Credentials | None = None
-
-        if (username := self.config.get_value(CONF_USERNAME)) is not None and (
-            password := self.config.get_value(CONF_PASSWORD)
-        ) is not None:
-            credentials = Credentials(str(username), str(password))
-
         self._heos = Heos(
             HeosOptions(
                 str(self.config.get_value(CONF_IP_ADDRESS)),
-                credentials=credentials,
                 auto_reconnect=True,
             )
         )
-        self._heos.add_on_user_credentials_invalid(self.invalid_credentials)
 
         try:
             await self._heos.connect()
@@ -73,11 +61,6 @@ class HeosPlayerProvider(PlayerProvider):
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e
-
-    async def invalid_credentials(self) -> None:
-        """Handle invalid login credentials."""
-        # Just log a warning, HEOS works fine without login, just no favorites and music services
-        self.logger.warning("Invalid login credentials provided for HEOS")
 
     async def _handle_controller_event(
         self, event: str, result: PlayerUpdateResult | None = None
