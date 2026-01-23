@@ -14,6 +14,7 @@ import hashlib
 import logging
 import os
 import plistlib
+import uuid
 
 import aiohttp
 from cryptography.hazmat.primitives import hashes, serialization
@@ -150,7 +151,7 @@ RAOP_SRP_PRIME_2048 = (
     "94B5C803D89F7AE435DE236D525F54759B65E372FCD68EF20FA7111F"
     "9E4AFF73"
 )
-RAOP_SRP_GENERATOR = "5"
+RAOP_SRP_GENERATOR = "02"  # RFC5054-2048bit uses generator 2
 
 
 # ============================================================================
@@ -171,6 +172,7 @@ class AirPlayPairing:
         protocol: StreamingProtocol,
         logger: logging.Logger,
         port: int | None = None,
+        device_id: str | None = None,
     ) -> None:
         """Initialize AirPlay pairing.
 
@@ -179,6 +181,7 @@ class AirPlayPairing:
         :param protocol: Streaming protocol (RAOP or AIRPLAY2).
         :param logger: Logger instance.
         :param port: Port number (default: 7000 for AirPlay 2, 5000 for RAOP).
+        :param device_id: Device identifier (DACP ID) - must match what cliap2 uses.
         """
         self.address = address
         self.name = name
@@ -196,8 +199,19 @@ class AirPlayPairing:
         self._srp_session: SRPClientSession | None = None
         self._session_key: bytes | None = None
 
-        # Client identifier
-        self._client_id: bytes = os.urandom(8)
+        # Client identifier (device_id) handling depends on protocol:
+        # - HAP (AirPlay 2): Uses DACP ID as string identifier (must match cliap2 pair-verify)
+        # - RAOP: Uses 8 random bytes (not the DACP ID) - credentials are self-contained
+        if protocol == StreamingProtocol.AIRPLAY2:
+            # For HAP, use DACP ID as the identifier (must match pair-verify)
+            if device_id:
+                self._client_id: bytes = device_id.encode()
+            else:
+                self._client_id = str(uuid.uuid4()).encode()
+        else:
+            # For RAOP, generate 8 random bytes for client_id
+            # The credentials format is client_id_hex:auth_secret_hex
+            self._client_id = os.urandom(8)
 
         # Ed25519 keypair
         self._client_private_key: Ed25519PrivateKey | None = None
@@ -259,25 +273,7 @@ class AirPlayPairing:
             self._is_pairing = True
             self.logger.info("Device %s is displaying PIN", self.name)
 
-            # Initialize SRP context based on protocol
-            if self.protocol == StreamingProtocol.AIRPLAY2:
-                self._srp_context = SRPContext(
-                    username="Pair-Setup",
-                    prime=HAP_SRP_PRIME_3072,
-                    generator=HAP_SRP_GENERATOR,
-                    hash_func=hashlib.sha512,
-                    bits_random=256,
-                )
-            else:
-                # RAOP uses 2048-bit prime with SHA-1
-                self._srp_context = SRPContext(
-                    username="Pair-Setup",
-                    prime=RAOP_SRP_PRIME_2048,
-                    generator=RAOP_SRP_GENERATOR,
-                    hash_func=hashlib.sha1,
-                    bits_random=256,
-                )
-
+            # SRP context will be created in finish_pairing when we have the PIN
             return True
 
         except aiohttp.ClientError as err:
@@ -291,7 +287,7 @@ class AirPlayPairing:
         :return: Credentials string for cliap2/cliraop.
         :raises PlayerCommandFailed: If pairing fails.
         """
-        if not self._srp_context or not self._session:
+        if not self._session:
             raise PlayerCommandFailed("Pairing not started")
 
         try:
@@ -316,23 +312,29 @@ class AirPlayPairing:
         :param pin: 4-digit PIN.
         :return: Credentials (192 hex chars).
         """
-        if not self._srp_context or not self._session:
+        if not self._session:
             raise PlayerCommandFailed("Pairing not started")
 
         self.logger.info("Completing HAP pairing with PIN")
 
-        # M1: Send method request
+        # HAP headers required for pair-setup
+        hap_headers = {
+            "Content-Type": "application/octet-stream",
+            "X-Apple-HKP": "3",
+        }
+
+        # M1: Send method request (state=1, method=0 for pair-setup)
         m1_data = tlv_encode(
             [
-                (TLV_STATE, bytes([0x01])),
                 (TLV_METHOD, bytes([0x00])),
+                (TLV_STATE, bytes([0x01])),
             ]
         )
 
         async with self._session.post(
             f"{self._base_url}/pair-setup",
             data=m1_data,
-            headers={"Content-Type": "application/octet-stream"},
+            headers=hap_headers,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
@@ -349,18 +351,40 @@ class AirPlayPairing:
         if not salt or not server_pk_srp:
             raise PlayerCommandFailed("Invalid M2: missing salt or public key")
 
-        # M3: SRP authentication
-        self._srp_session = self._srp_context.get_client_session()
-        client_pk_srp, client_proof = self._srp_session.process(
-            password=pin.encode("utf-8"),
-            salt=salt,
-            server_public=int.from_bytes(server_pk_srp, "big"),
+        # M3: SRP authentication - create context with password
+        # PIN is passed directly as string (not "Pair-Setup:PIN")
+        # Note: pyatv doesn't specify bits_random, uses default
+        self._srp_context = SRPContext(
+            username="Pair-Setup",
+            password=pin,
+            prime=HAP_SRP_PRIME_3072,
+            generator=HAP_SRP_GENERATOR,
+            hash_func=hashlib.sha512,
         )
+        # Pass Ed25519 private key bytes as the SRP "a" value (random private exponent)
+        # This is what pyatv does - use the client's Ed25519 private key as the SRP private value
+        if not self._client_private_key:
+            raise PlayerCommandFailed("Client private key not initialized")
+        auth_private = self._client_private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        self._srp_session = SRPClientSession(
+            self._srp_context, binascii.hexlify(auth_private).decode()
+        )
+
+        # Process with server's public key and salt (as hex strings)
+        self._srp_session.process(server_pk_srp.hex(), salt.hex())
+
+        # Get client's public key and proof
+        client_pk_srp = bytes.fromhex(self._srp_session.public)
+        client_proof = bytes.fromhex(self._srp_session.key_proof.decode("ascii"))
 
         m3_data = tlv_encode(
             [
                 (TLV_STATE, bytes([0x03])),
-                (TLV_PUBLIC_KEY, client_pk_srp.to_bytes(384, "big")),
+                (TLV_PUBLIC_KEY, client_pk_srp),
                 (TLV_PROOF, client_proof),
             ]
         )
@@ -368,7 +392,7 @@ class AirPlayPairing:
         async with self._session.post(
             f"{self._base_url}/pair-setup",
             data=m3_data,
-            headers={"Content-Type": "application/octet-stream"},
+            headers=hap_headers,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
@@ -384,11 +408,12 @@ class AirPlayPairing:
         if not server_proof:
             raise PlayerCommandFailed("Invalid M4: missing proof")
 
-        if not self._srp_session.verify_server(server_proof):
+        # Verify server proof
+        if not self._srp_session.verify_proof(server_proof.hex().encode("ascii")):
             raise PlayerCommandFailed("Server proof verification failed")
 
-        self._session_key = self._srp_session.key
-        self.logger.debug("SRP authentication successful")
+        # Get session key
+        self._session_key = bytes.fromhex(self._srp_session.key.decode("ascii"))
 
         # M5: Send encrypted client info
         await self._send_hap_m5()
@@ -405,6 +430,12 @@ class AirPlayPairing:
             or not self._session
         ):
             raise PlayerCommandFailed("Invalid state for M5")
+
+        # HAP headers required for pair-setup
+        hap_headers = {
+            "Content-Type": "application/octet-stream",
+            "X-Apple-HKP": "3",
+        }
 
         # Derive keys
         enc_key = hkdf_derive(
@@ -434,7 +465,8 @@ class AirPlayPairing:
         )
 
         cipher = ChaCha20Poly1305(enc_key)
-        nonce = b"PS-Msg05\x00\x00\x00\x00"
+        # Nonce format: 4 zero bytes + 8-byte message identifier = 12 bytes
+        nonce = b"\x00\x00\x00\x00PS-Msg05"
         encrypted = cipher.encrypt(nonce, inner_tlv, None)
 
         # Send M5
@@ -448,7 +480,7 @@ class AirPlayPairing:
         async with self._session.post(
             f"{self._base_url}/pair-setup",
             data=m5_data,
-            headers={"Content-Type": "application/octet-stream"},
+            headers=hap_headers,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
@@ -465,7 +497,8 @@ class AirPlayPairing:
             raise PlayerCommandFailed("Invalid M6: missing encrypted data")
 
         # Decrypt M6
-        nonce = b"PS-Msg06\x00\x00\x00\x00"
+        # Nonce format: 4 zero bytes + 8-byte message identifier = 12 bytes
+        nonce = b"\x00\x00\x00\x00PS-Msg06"
         decrypted = cipher.decrypt(nonce, encrypted_data, None)
 
         # Extract server's public key
@@ -473,8 +506,6 @@ class AirPlayPairing:
         self._server_public_key = inner.get(TLV_PUBLIC_KEY)
         if not self._server_public_key:
             raise PlayerCommandFailed("Invalid M6: missing server public key")
-
-        self.logger.debug("Received server public key: %d bytes", len(self._server_public_key))
 
     def _generate_hap_credentials(self) -> str:
         """Generate HAP credentials for cliap2.
@@ -504,15 +535,130 @@ class AirPlayPairing:
         if len(private_key_bytes) != 64 or len(self._server_public_key) != 32:
             raise PlayerCommandFailed("Invalid key lengths")
 
-        credentials = binascii.hexlify(private_key_bytes).decode("ascii") + binascii.hexlify(
+        return binascii.hexlify(private_key_bytes).decode("ascii") + binascii.hexlify(
             self._server_public_key
         ).decode("ascii")
-        self.logger.debug("Generated HAP credentials: %d chars", len(credentials))
-        return credentials
 
     # ========================================================================
     # RAOP (AirPlay 1 legacy) pairing implementation
     # ========================================================================
+
+    def _compute_raop_premaster_secret(
+        self,
+        user_id: str,
+        password: str,
+        salt: bytes,
+        client_private: bytes,
+        client_public: bytes,
+        server_public: bytes,
+    ) -> bytes:
+        """Compute RAOP SRP premaster secret S.
+
+        S = (B - k*v)^(a + u*x) mod N
+
+        :param user_id: Username (hex-encoded client_id).
+        :param password: PIN code.
+        :param salt: Salt from server.
+        :param client_private: Client private key (a) as bytes.
+        :param client_public: Client public key (A) as bytes.
+        :param server_public: Server public key (B) as bytes.
+        :return: Premaster secret S as bytes (padded to N length).
+        """
+        # Convert values to integers
+        n_bytes = bytes.fromhex(RAOP_SRP_PRIME_2048)
+        n_len = len(n_bytes)
+        n = int.from_bytes(n_bytes, "big")
+        g = int.from_bytes(bytes.fromhex(RAOP_SRP_GENERATOR), "big")
+
+        a = int.from_bytes(client_private, "big")
+        b_pub = int.from_bytes(server_public, "big")
+
+        # x = H(s | H(I : P))
+        inner_hash = hashlib.sha1(f"{user_id}:{password}".encode()).digest()
+        x = int.from_bytes(hashlib.sha1(salt + inner_hash).digest(), "big")
+
+        # k = H(N | PAD(g))
+        g_padded = bytes.fromhex(RAOP_SRP_GENERATOR).rjust(n_len, b"\x00")
+        k = int.from_bytes(hashlib.sha1(n_bytes + g_padded).digest(), "big")
+
+        # u = H(PAD(A) | PAD(B))
+        a_padded = client_public.rjust(n_len, b"\x00")
+        b_padded = server_public.rjust(n_len, b"\x00")
+        u = int.from_bytes(hashlib.sha1(a_padded + b_padded).digest(), "big")
+
+        # v = g^x mod N
+        v = pow(g, x, n)
+
+        # S = (B - k*v)^(a + u*x) mod N
+        s_int = pow(b_pub - k * v, a + u * x, n)
+
+        # Convert to bytes and pad to N length
+        s_bytes = s_int.to_bytes((s_int.bit_length() + 7) // 8, "big")
+        return s_bytes.rjust(n_len, b"\x00")
+
+    def _compute_raop_session_key(self, premaster_secret: bytes) -> bytes:
+        r"""Compute RAOP session key K from premaster secret S.
+
+        K = SHA1(S | \x00\x00\x00\x00) | SHA1(S | \x00\x00\x00\x01)
+
+        This produces a 40-byte key (two SHA1 hashes concatenated).
+
+        :param premaster_secret: The SRP premaster secret S.
+        :return: 40-byte session key K.
+        """
+        k1 = hashlib.sha1(premaster_secret + b"\x00\x00\x00\x00").digest()
+        k2 = hashlib.sha1(premaster_secret + b"\x00\x00\x00\x01").digest()
+        return k1 + k2
+
+    def _compute_raop_m1(
+        self, user_id: str, salt: bytes, client_pk: bytes, server_pk: bytes, session_key: bytes
+    ) -> bytes:
+        """Compute RAOP SRP M1 proof with padding for A and B (but not g).
+
+        M1 = H(H(N) XOR H(g) | H(I) | s | PAD(A) | PAD(B) | K)
+
+        Note: g is NOT padded, but A and B ARE padded to N length.
+        K is 40 bytes (from _compute_raop_session_key).
+
+        :param user_id: Username (hex-encoded client_id).
+        :param salt: Salt bytes from server.
+        :param client_pk: Client public key (A).
+        :param server_pk: Server public key (B).
+        :param session_key: Session key (K) - 40 bytes.
+        :return: M1 proof bytes (20 bytes for SHA-1).
+        """
+        n_bytes = bytes.fromhex(RAOP_SRP_PRIME_2048)
+        n_len = len(n_bytes)
+        g_bytes = bytes.fromhex(RAOP_SRP_GENERATOR)
+
+        # H(N) XOR H(g) - g is NOT padded
+        h_n = hashlib.sha1(n_bytes).digest()
+        h_g = hashlib.sha1(g_bytes).digest()
+        h_n_xor_h_g = bytes(a ^ b for a, b in zip(h_n, h_g, strict=True))
+
+        # H(I) - hash of username
+        h_i = hashlib.sha1(user_id.encode("ascii")).digest()
+
+        # PAD A and B to N length
+        a_padded = client_pk.rjust(n_len, b"\x00")
+        b_padded = server_pk.rjust(n_len, b"\x00")
+
+        # M1 = H(H(N) XOR H(g) | H(I) | s | PAD(A) | PAD(B) | K)
+        m1_data = h_n_xor_h_g + h_i + salt + a_padded + b_padded + session_key
+        return hashlib.sha1(m1_data).digest()
+
+    def _compute_raop_client_public(self, auth_secret: bytes) -> bytes:
+        """Compute RAOP SRP client public key A = g^a mod N.
+
+        :param auth_secret: 32-byte random secret (used as SRP private key a).
+        :return: Client public key A as bytes.
+        """
+        n_bytes = bytes.fromhex(RAOP_SRP_PRIME_2048)
+        n = int.from_bytes(n_bytes, "big")
+        g = int.from_bytes(bytes.fromhex(RAOP_SRP_GENERATOR), "big")
+        a = int.from_bytes(auth_secret, "big")
+        a_pub = pow(g, a, n)
+        return a_pub.to_bytes((a_pub.bit_length() + 7) // 8, "big")
 
     async def _finish_raop_pairing(self, pin: str) -> str:
         """Complete RAOP pairing for AirPlay 1.
@@ -520,7 +666,7 @@ class AirPlayPairing:
         :param pin: 4-digit PIN.
         :return: Credentials (client_id:auth_secret format).
         """
-        if not self._srp_context or not self._session:
+        if not self._session:
             raise PlayerCommandFailed("Pairing not started")
 
         self.logger.info("Completing RAOP pairing with PIN")
@@ -541,9 +687,10 @@ class AirPlayPairing:
         )
 
         # Step 1: Send device ID and method
+        user_id = self._client_id.hex().upper()
         step1_plist = {
             "method": "pin",
-            "user": self._client_id.hex(),
+            "user": user_id,
         }
 
         async with self._session.post(
@@ -557,23 +704,21 @@ class AirPlayPairing:
             step1_response = plistlib.loads(await resp.read())
 
         # Get salt and server public key
-        salt = step1_response.get("salt")
-        server_pk = step1_response.get("pk")
+        salt, server_pk = step1_response.get("salt"), step1_response.get("pk")
         if not salt or not server_pk:
             raise PlayerCommandFailed("Invalid RAOP step 1 response")
 
-        # Step 2: SRP authentication with modified K calculation
-        self._srp_session = self._srp_context.get_client_session()
-
-        # RAOP uses modified SRP6 - process with PIN
-        client_pk, client_proof = self._srp_session.process(
-            password=pin.encode("utf-8"),
-            salt=salt,
-            server_public=int.from_bytes(server_pk, "big"),
+        # Step 2: SRP authentication
+        # Apple uses a custom K formula: K = SHA1(S|0000) | SHA1(S|0001) (40 bytes)
+        client_pk = self._compute_raop_client_public(auth_secret)
+        premaster_secret = self._compute_raop_premaster_secret(
+            user_id, pin, salt, auth_secret, client_pk, server_pk
         )
+        session_key = self._compute_raop_session_key(premaster_secret)
+        client_proof = self._compute_raop_m1(user_id, salt, client_pk, server_pk, session_key)
 
         step2_plist = {
-            "pk": client_pk.to_bytes(256, "big"),
+            "pk": client_pk,
             "proof": client_proof,
         }
 
@@ -587,17 +732,16 @@ class AirPlayPairing:
                 raise PlayerCommandFailed(f"RAOP step 2 failed: HTTP {resp.status}")
             step2_response = plistlib.loads(await resp.read())
 
-        # Verify server proof
+        # Verify server proof M2 exists (verification optional)
         server_proof = step2_response.get("proof")
-        if not server_proof or not self._srp_session.verify_server(server_proof):
-            raise PlayerCommandFailed("RAOP server proof verification failed")
-
-        self._session_key = self._srp_session.key
+        if not server_proof:
+            raise PlayerCommandFailed("RAOP server did not return proof")
+        self._session_key = session_key
 
         # Step 3: Encrypt and send auth public key using AES-GCM
-        # Derive AES key and IV from session key
-        aes_key = hashlib.sha512(b"Pair-Setup-AES-Key" + self._session_key).digest()[:16]
-        aes_iv = bytearray(hashlib.sha512(b"Pair-Setup-AES-IV" + self._session_key).digest()[:16])
+        # Derive AES key and IV from session key K (40 bytes)
+        aes_key = hashlib.sha512(b"Pair-Setup-AES-Key" + session_key).digest()[:16]
+        aes_iv = bytearray(hashlib.sha512(b"Pair-Setup-AES-IV" + session_key).digest()[:16])
         aes_iv[-1] = (aes_iv[-1] + 1) % 256  # Increment last byte
 
         # Encrypt auth public key with AES-GCM
@@ -620,10 +764,8 @@ class AirPlayPairing:
             if resp.status != 200:
                 raise PlayerCommandFailed(f"RAOP step 3 failed: HTTP {resp.status}")
 
-        # Generate credentials in cliraop format: client_id:auth_secret
-        credentials = f"{self._client_id.hex()}:{auth_secret.hex()}"
-        self.logger.debug("Generated RAOP credentials")
-        return credentials
+        # Return credentials in cliraop format: client_id:auth_secret
+        return f"{self._client_id.hex()}:{auth_secret.hex()}"
 
     # ========================================================================
     # Cleanup

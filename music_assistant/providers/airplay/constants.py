@@ -34,22 +34,16 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-AIRPLAY_PRELOAD_SECONDS: Final[int] = (
-    5  # Number of seconds (in PCM) to preload before throttling back
-)
-AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
-    200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
-)
 AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
     2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
 )
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
 AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+RAOP_CONNECT_TIME_MS: Final[int] = 1000  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
-CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"

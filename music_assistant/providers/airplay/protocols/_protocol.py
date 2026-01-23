@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 from music_assistant.providers.airplay.helpers import generate_active_remote_id
@@ -47,24 +46,13 @@ class AirPlayProtocol(ABC):
         self.mass = player.provider.mass
         self.player = player
         self.logger = player.provider.logger.getChild(f"protocol.{self.__class__.__name__}")
-        # Generate active_remote_id from device's deviceid (or fallback to random)
-        # This ID is used for DACP callbacks to match requests to the correct stream
         discovery_info = player.airplay_discovery_info or player.raop_discovery_info
         self.active_remote_id: str = generate_active_remote_id(discovery_info)
-        self.logger.debug(
-            "Generated active_remote_id: %s for player %s",
-            self.active_remote_id,
-            player.display_name,
-        )
         self.prevent_playback: bool = False
         self._cli_proc: AsyncProcess | None = None
-        self.audio_pipe = AsyncNamedPipeWriter(
-            f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-audio",  # noqa: S108
-        )
         self.commands_pipe = AsyncNamedPipeWriter(
             f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-cmd",  # noqa: S108
         )
-        # State tracking
         self._stopped = False
         self._total_bytes_sent = 0
         self._stream_bytes_sent = 0
@@ -76,26 +64,22 @@ class AirPlayProtocol(ABC):
 
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
-        """Initialize streaming process for the player.
+        """Start the CLI process.
 
-        Args:
-            start_ntp: NTP timestamp to start streaming
+        :param start_ntp: NTP timestamp to start streaming.
         """
+
+    @abstractmethod
+    async def wait_for_connection(self) -> None:
+        """Wait for the device connection to be established."""
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
-        # Send stop command before setting _stopped flag
         await self.send_cli_command("ACTION=STOP")
         self._stopped = True
-
-        # Close the CLI process (wait for it to terminate)
         if self._cli_proc and not self._cli_proc.closed:
             await self._cli_proc.close()
-
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
-
-        # Cleanup named pipes
-        await self.audio_pipe.remove()
         await self.commands_pipe.remove()
 
     async def send_cli_command(self, command: str) -> None:
@@ -104,8 +88,6 @@ class AirPlayProtocol(ABC):
             return
         if not self.commands_pipe:
             return
-
-        self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()
         await self.commands_pipe.write(command.encode("utf-8"))
 

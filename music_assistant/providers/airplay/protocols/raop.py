@@ -37,7 +37,7 @@ class RaopStream(AirPlayProtocol):
     """
 
     async def start(self, start_ntp: int) -> None:
-        """Initialize CLIRaop process for a player."""
+        """Start CLIRaop process."""
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
@@ -56,17 +56,14 @@ class RaopStream(AirPlayProtocol):
             extra_args += ["-password", str(device_password)]
         # Add RAOP credentials from pairing if available (for Apple devices)
         if raop_credentials := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
-            extra_args += ["-secret", str(raop_credentials)]
+            # Credentials format is "client_id:auth_secret", cliraop expects just auth_secret
+            creds_str = str(raop_credentials)
+            auth_secret = creds_str.split(":", 1)[1] if ":" in creds_str else creds_str
+            extra_args += ["-secret", auth_secret]
         if self.prov.logger.isEnabledFor(logging.DEBUG):
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
-
-        # cliraop is the binary that handles the actual raop streaming to the player
-        # this is a slightly modified version of philippe44's libraop
-        # https://github.com/music-assistant/libraop
-        # we use this intermediate binary to do the actual streaming because attempts to do
-        # so using pure python (e.g. pyatv) were not successful due to the realtime nature
 
         cliraop_args = [
             cli_binary,
@@ -88,7 +85,7 @@ class RaopStream(AirPlayProtocol):
             "-udn",
             self.player.raop_discovery_info.name,
             self.player.address,
-            self.audio_pipe.path,
+            "-",  # Use stdin for audio input
         ]
         self.player.logger.debug(
             "Starting cliraop process for player %s with args: %s",
@@ -98,6 +95,10 @@ class RaopStream(AirPlayProtocol):
         self._cli_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
         await self._cli_proc.start()
 
+    async def wait_for_connection(self) -> None:
+        """Wait for device connection to be established."""
+        if not self._cli_proc:
+            return
         # read up to first 50 lines of stderr to get the initial status
         for _ in range(50):
             line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
@@ -113,7 +114,7 @@ class RaopStream(AirPlayProtocol):
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        self.mass.call_later(1, self.send_cli_command(f"VOLUME={self.player.volume_level}\n"))
+        self.mass.call_later(2, self.send_cli_command(f"VOLUME={self.player.volume_level}\n"))
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
@@ -124,12 +125,14 @@ class RaopStream(AirPlayProtocol):
             return
         async for line in self._cli_proc.iter_stderr():
             if "set pause" in line or "Pause at" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED)
+                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             if "Restarted at" in line or "restarting w/ pause" in line:
-                player.set_state_from_stream(state=PlaybackState.PLAYING)
+                player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             if "restarting w/o pause" in line:
                 # streaming has started
-                player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
+                player.set_state_from_stream(
+                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
+                )
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
@@ -146,4 +149,4 @@ class RaopStream(AirPlayProtocol):
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)

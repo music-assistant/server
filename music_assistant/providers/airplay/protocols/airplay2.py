@@ -27,10 +27,8 @@ class AirPlay2Stream(AirPlayProtocol):
     """
     AirPlay 2 Audio Streamer.
 
-    Python is not suitable for realtime audio streaming so we do the actual streaming
-    of audio using a small executable written in C based on owntones to do
-    the actual timestamped playback. It reads pcm audio from a named pipe
-    and we can send some interactive commands using another named pipe.
+    Uses cliap2 (C executable based on owntone) for timestamped playback.
+    Audio is fed via stdin, commands via a named pipe.
     """
 
     @property
@@ -56,8 +54,8 @@ class AirPlay2Stream(AirPlayProtocol):
             mass_level = 5
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
-        """Initialize CLI process for a player."""
+    async def start(self, start_ntp: int) -> None:
+        """Start cliap2 process."""
         cli_binary = await get_cli_binary(self.player.protocol)
         assert self.player.airplay_discovery_info is not None
 
@@ -68,9 +66,6 @@ class AirPlay2Stream(AirPlayProtocol):
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
-
-        # Note: skip parameter is accepted for API compatibility with base class
-        # but is not currently used by the cliap2 binary (AirPlay2 handles late joiners differently)
 
         # cliap2 is the binary that handles the actual streaming to the player
         # this binary leverages from the AirPlay2 support in owntones
@@ -107,7 +102,7 @@ class AirPlay2Stream(AirPlayProtocol):
             "--active_remote",
             self.active_remote_id,
             "--pipe",
-            self.audio_pipe.path,
+            "-",  # Use stdin for audio input
             "--command_pipe",
             self.commands_pipe.path,
         ]
@@ -128,8 +123,13 @@ class AirPlay2Stream(AirPlayProtocol):
             player_id,
             cli_args,
         )
-        self._cli_proc = AsyncProcess(cli_args, stdin=False, stderr=True, name="cliap2")
+        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
         await self._cli_proc.start()
+
+    async def wait_for_connection(self) -> None:
+        """Wait for device connection to be established."""
+        if not self._cli_proc:
+            return
         # read up to first num_lines lines of stderr to get the initial status
         num_lines: int = 50
         if self.prov.logger.level > logging.INFO:
@@ -153,12 +153,14 @@ class AirPlay2Stream(AirPlayProtocol):
             return
         async for line in self._cli_proc.iter_stderr():
             if "Pause at" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED)
+                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             if "Restarted at" in line:
-                player.set_state_from_stream(state=PlaybackState.PLAYING)
+                player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             if "Starting at" in line:
                 # streaming has started
-                player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
+                player.set_state_from_stream(
+                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
+                )
             if "put delay detected" in line:
                 if "resetting all outputs" in line:
                     logger.error("High packet loss detected, restarting playback...")
@@ -178,6 +180,9 @@ class AirPlay2Stream(AirPlayProtocol):
                 logger.info(line)
             elif "[ WARN]" in line:
                 logger.warning(line)
+            elif "[DEBUG]" in line and "mass_timer_cb" in line:
+                # mass_timer_cb is very spammy, reduce it to verbose
+                logger.log(VERBOSE_LOG_LEVEL, line)
             elif "[DEBUG]" in line:
                 logger.debug(line)
             elif "[ SPAM]" in line:
@@ -189,4 +194,4 @@ class AirPlay2Stream(AirPlayProtocol):
         # ensure we're cleaned up afterwards (this also logs the returncode)
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)

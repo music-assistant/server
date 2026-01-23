@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
-from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -51,6 +50,7 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from .pairing import AirPlayPairing
+    from .protocols._protocol import AirPlayProtocol
     from .protocols.airplay2 import AirPlay2Stream
     from .protocols.raop import RaopStream
     from .provider import AirPlayProvider
@@ -112,7 +112,7 @@ class AirPlayPlayer(Player):
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
-    @cached_property
+    @property
     def protocol(self) -> StreamingProtocol:
         """Get the streaming protocol to use/prefer for this player."""
         preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL))
@@ -158,10 +158,6 @@ class AirPlayPlayer(Player):
 
         require_pairing = self._requires_pairing()
 
-        # Debug: log incoming action
-        if action:
-            self.logger.debug("get_config_entries received action=%s, values=%s", action, values)
-
         # Handle pairing actions
         if action and require_pairing:
             await self._handle_pairing_action(action=action, values=values)
@@ -195,7 +191,6 @@ class AirPlayPlayer(Player):
                     ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
                 default_value=0,
-                hidden=self.protocol != StreamingProtocol.RAOP,
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
@@ -408,11 +403,17 @@ class AirPlayPlayer(Player):
             from .pairing import AirPlayPairing  # noqa: PLC0415
 
             # Determine port based on protocol
+            # Note: For Apple devices, pairing always happens on the AirPlay port (7000)
+            # even when streaming will use RAOP. The RAOP port (5000) is only for streaming.
             port: int | None = None
-            if self.protocol == StreamingProtocol.AIRPLAY2 and self.airplay_discovery_info:
+            if self.airplay_discovery_info:
                 port = self.airplay_discovery_info.port or 7000
-            elif self.protocol == StreamingProtocol.RAOP and self.raop_discovery_info:
+            elif self.raop_discovery_info:
+                # Fallback for devices without AirPlay service
                 port = self.raop_discovery_info.port or 5000
+            # Get the DACP ID from the provider - must match what cliap2 uses
+            provider = cast("AirPlayProvider", self.provider)
+            device_id = provider.dacp_id
 
             self._active_pairing = AirPlayPairing(
                 address=self.address,
@@ -420,6 +421,7 @@ class AirPlayPlayer(Player):
                 protocol=self.protocol,
                 logger=self.logger,
                 port=port,
+                device_id=device_id,
             )
             await self._active_pairing.start_pairing()
 
@@ -446,19 +448,10 @@ class AirPlayPlayer(Player):
             self.logger.info("Finished %s pairing for %s", protocol_name, self.display_name)
 
         elif action == CONF_ACTION_RESET_PAIRING:
-            # Clear credentials for current protocol
             cred_key = self._get_credentials_key()
-            self.logger.info(
-                "Resetting %s pairing for %s (cred_key=%s)",
-                protocol_name,
-                self.display_name,
-                cred_key,
-            )
+            self.logger.info("Resetting %s pairing for %s", protocol_name, self.display_name)
             if values is not None:
                 values[cred_key] = ""
-                self.logger.debug("Cleared credentials in values dict")
-            else:
-                self.logger.warning("Values dict is None, cannot clear credentials")
 
     async def stop(self) -> None:
         """Send STOP command to player."""
@@ -494,18 +487,15 @@ class AirPlayPlayer(Player):
             raise RuntimeError("Player is synced")
         self._attr_current_media = media
 
+        # Stop any existing stream - starting fresh is faster than replacing
+        if self.stream and self.stream.running and self.stream.session:
+            # Stop in background to not block new session startup
+            old_session = self.stream.session
+            self.stream = None
+            self.mass.create_task(old_session.stop())
+
         # select audio source
         audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
-
-        # if an existing stream session is running, we could replace it with the new stream
-        if self.stream and self.stream.running:
-            # check if we need to replace the stream
-            if self.stream.prevent_playback:
-                # player is in prevent playback mode, we need to stop the stream
-                await self.stop()
-            elif self.stream.session:
-                await self.stream.session.replace_stream(audio_source)
-                return
 
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
@@ -651,9 +641,21 @@ class AirPlayPlayer(Player):
         self.update_state()
 
     def set_state_from_stream(
-        self, state: PlaybackState | None = None, elapsed_time: float | None = None
+        self,
+        state: PlaybackState | None = None,
+        elapsed_time: float | None = None,
+        stream: AirPlayProtocol | None = None,
     ) -> None:
-        """Set the playback state from stream (RAOP or AirPlay2)."""
+        """Set the playback state from stream (RAOP or AirPlay2).
+
+        :param state: New playback state (or None to keep current).
+        :param elapsed_time: New elapsed time (or None to keep current).
+        :param stream: The stream instance sending this update (for validation).
+        """
+        # Ignore state updates from old/stale streams
+        if stream is not None and stream != self.stream:
+            return
+
         if state is not None:
             prev_state = self._attr_playback_state
             self._attr_playback_state = state
