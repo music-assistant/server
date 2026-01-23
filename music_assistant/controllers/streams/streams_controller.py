@@ -65,7 +65,13 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.player_controller import AnnounceData
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
+from music_assistant.controllers.streams.smart_fades.extended_analysis import (
+    ExtendedAnalysisProcessor,
+)
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.smart_fades.streaming_extractor import (
+    StreamingFeatureExtractor,
+)
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
     get_buffered_media_stream,
@@ -158,6 +164,12 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self._smart_fades_mixer = SmartFadesMixer(self)
         self._smart_fades_analyzer = SmartFadesAnalyzer(self)
+        # Extended smart fades feature extraction
+        self._active_extractors: dict[str, StreamingFeatureExtractor] = {}
+        self._extraction_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent extractions
+        self._extended_analysis_processor = ExtendedAnalysisProcessor(
+            self.logger.getChild("extended_analysis")
+        )
 
     @property
     def base_url(self) -> str:
@@ -1019,6 +1031,14 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
+
+            # Start feature extraction for extended smart fades analysis
+            feature_extractor: StreamingFeatureExtractor | None = None
+            if smart_fades_mode != SmartFadesMode.DISABLED:
+                feature_extractor = await self._start_feature_extraction(
+                    queue_track, queue, pcm_format
+                )
+
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
@@ -1072,6 +1092,13 @@ class StreamsController(CoreController):
                         if smart_fades_mode == SmartFadesMode.DISABLED
                         else crossfade_buffer_size
                     )
+
+                # Queue chunk for feature extraction (non-blocking, just appends to list)
+                if feature_extractor and not feature_extractor.is_aborted:
+                    feature_extractor.queue_chunk(chunk, pcm_format)
+                    # Process accumulated audio if threshold reached
+                    if feature_extractor.should_process():
+                        self.mass.create_task(feature_extractor.process_pending())
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -1129,6 +1156,15 @@ class StreamsController(CoreController):
                     buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
+            # Stream data fully received - start final feature extraction analysis in background
+            # We do this here (not after buffer handling) so analysis can run while
+            # remaining audio is being sent to player
+            if feature_extractor and not feature_extractor.is_aborted:
+                self.mass.create_task(
+                    self._finalize_feature_extraction(feature_extractor, pcm_format)
+                )
+                feature_extractor = None  # Prevent double finalization
+
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
                 for _chunk in divide_chunks(last_fadeout_part, pcm_sample_size):
@@ -1173,6 +1209,7 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
+
         #### HANDLE END OF QUEUE FLOW STREAM
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
@@ -1511,6 +1548,11 @@ class StreamsController(CoreController):
             "true" if crossfade_data else "false",
         )
 
+        # Start feature extraction for extended smart fades analysis
+        feature_extractor: StreamingFeatureExtractor | None = None
+        if smart_fades_mode != SmartFadesMode.DISABLED:
+            feature_extractor = await self._start_feature_extraction(queue_item, queue, pcm_format)
+
         buffer = b""
         bytes_written = 0
         # calculate crossfade buffer size
@@ -1569,6 +1611,13 @@ class StreamsController(CoreController):
             else:
                 req_buffer_size = crossfade_buffer_size
 
+            # Queue chunk for feature extraction (non-blocking, just appends to list)
+            if feature_extractor and not feature_extractor.is_aborted:
+                feature_extractor.queue_chunk(chunk, pcm_format)
+                # Process accumulated audio if threshold reached
+                if feature_extractor.should_process():
+                    self.mass.create_task(feature_extractor.process_pending())
+
             # ALWAYS APPEND CHUNK TO BUFFER
             buffer += chunk
             del chunk
@@ -1617,6 +1666,12 @@ class StreamsController(CoreController):
                 buffer = buffer[pcm_format.pcm_sample_size :]
 
         #### HANDLE END OF TRACK
+        # Stream data fully received - start final feature extraction analysis in background
+        # We do this here (not after buffer handling) so analysis can run while
+        # remaining audio is being sent to player
+        if feature_extractor and not feature_extractor.is_aborted:
+            self.mass.create_task(self._finalize_feature_extraction(feature_extractor, pcm_format))
+            feature_extractor = None  # Prevent double finalization
 
         if crossfade_data:
             # edge case: we did not get enough data to send the crossfade data
@@ -1994,3 +2049,169 @@ class StreamsController(CoreController):
         else:
             self.smart_fades_analyzer.logger.setLevel(log_level)
             self.smart_fades_mixer.logger.setLevel(log_level)
+
+    async def _start_feature_extraction(
+        self,
+        queue_item: QueueItem,
+        queue: PlayerQueue,
+        pcm_format: AudioFormat,
+    ) -> StreamingFeatureExtractor | None:
+        """Start feature extraction for a queue item if eligible.
+
+        :param queue_item: The queue item being streamed.
+        :param queue: The player queue.
+        :param pcm_format: PCM format of the audio stream.
+        :return: Extractor instance if extraction started, None otherwise.
+        """
+        streamdetails = queue_item.streamdetails
+        if not streamdetails:
+            return None
+
+        # Eligibility checks
+        # 1. Only extract for tracks (not radio, etc.)
+        if streamdetails.media_type != MediaType.TRACK:
+            return None
+
+        # 2. Only extract when starting from beginning (no seek)
+        if streamdetails.seek_position > 0:
+            self.logger.debug(
+                "Skipping feature extraction for %s - seek position > 0",
+                queue_item.name,
+            )
+            return None
+
+        # 3. Check if we already have full-song analysis
+        existing = await self.mass.music.get_extended_smart_fades_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+        )
+        if existing:
+            self.logger.debug(
+                "Skipping feature extraction for %s - already have extended analysis",
+                queue_item.name,
+            )
+            return None
+
+        # 4. Check concurrency limit
+        if not self._extraction_semaphore.locked():
+            # We have capacity
+            pass
+        else:
+            # Check how many are actually running
+            active_count = sum(
+                1
+                for ext in self._active_extractors.values()
+                if ext.is_started and not ext.is_finalized and not ext.is_aborted
+            )
+            if active_count >= 3:
+                self.logger.debug(
+                    "Skipping feature extraction for %s - max concurrent extractions reached",
+                    queue_item.name,
+                )
+                return None
+
+        # Create extractor
+        extractor = StreamingFeatureExtractor(
+            streams=self,
+            sample_rate=pcm_format.sample_rate,
+            hop_length=512,
+            n_fft=2048,
+        )
+
+        extractor.start_extraction(
+            track_id=streamdetails.item_id,
+            provider_id=streamdetails.provider,
+            queue_id=queue.queue_id,
+            session_id=queue.session_id or "",
+            queue_item_id=queue_item.queue_item_id,
+        )
+
+        # Track the extractor
+        extractor_key = f"{queue.queue_id}:{queue_item.queue_item_id}"
+        self._active_extractors[extractor_key] = extractor
+
+        self.logger.debug(
+            "Feature extraction started for %s (key: %s)",
+            queue_item.name,
+            extractor_key,
+        )
+
+        return extractor
+
+    async def _finalize_feature_extraction(
+        self,
+        extractor: StreamingFeatureExtractor,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Finalize feature extraction and store the analysis.
+
+        :param extractor: The feature extractor to finalize.
+        :param pcm_format: PCM format of the audio stream.
+        """
+        if extractor.is_aborted or extractor.is_finalized:
+            return
+
+        # finalize() processes any remaining audio buffer
+        await extractor.finalize()
+
+        # Remove from active extractors
+        for key, ext in list(self._active_extractors.items()):
+            if ext is extractor:
+                del self._active_extractors[key]
+                break
+
+        # Check if we have sufficient data
+        if not extractor.accumulator.has_sufficient_data():
+            self.logger.debug(
+                "Feature extraction for %s has insufficient data, skipping analysis",
+                extractor.track_id,
+            )
+            return
+
+        # Log accumulator stats before analysis
+        self.logger.debug(
+            "Finalizing feature extraction for %s: duration=%.1fs",
+            extractor.track_id,
+            extractor.accumulator.get_duration(),
+        )
+
+        # Perform extended analysis
+        try:
+            analysis = await self._extended_analysis_processor.analyze(
+                accumulator=extractor.accumulator,
+                sample_rate=pcm_format.sample_rate,
+                hop_length=extractor.hop_length,
+            )
+
+            if analysis:
+                # Store in database
+                await self.mass.music.set_extended_smart_fades_analysis(
+                    extractor.track_id,
+                    extractor.provider_id,
+                    analysis,
+                )
+                self.logger.debug(
+                    "Extended smart fades analysis stored for %s: BPM=%.1f, key=%s, "
+                    "%d phrase boundaries",
+                    extractor.track_id,
+                    analysis.bpm,
+                    f"{analysis.musical_key.root} {analysis.musical_key.mode}"
+                    if analysis.musical_key
+                    else "unknown",
+                    len(analysis.phrase_boundaries),
+                )
+            else:
+                self.logger.debug(
+                    "Extended analysis failed for %s",
+                    extractor.track_id,
+                )
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to finalize feature extraction for %s: %s",
+                extractor.track_id,
+                e,
+            )
+        finally:
+            # Clean up accumulator
+            extractor.accumulator.clear()
