@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
 from pyheos import Credentials, Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 
@@ -57,7 +57,7 @@ class HeosPlayerProvider(PlayerProvider):
             self._heos.add_on_controller_event(self._handle_controller_event)
         except HeosError as e:
             self.logger.error(f"Failed to connect to HEOS controller: {e}")
-            raise MusicAssistantError("Failed to connect to HEOS controller") from e
+            raise SetupFailedError("Failed to connect to HEOS controller") from e
 
         # Initialize library values
         try:
@@ -72,7 +72,7 @@ class HeosPlayerProvider(PlayerProvider):
                 await heos_player.setup()
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
-            raise MusicAssistantError("Unexpected error setting up HEOS controller") from e
+            raise SetupFailedError("Unexpected error setting up HEOS controller") from e
 
     async def invalid_credentials(self) -> None:
         """Handle invalid login credentials."""

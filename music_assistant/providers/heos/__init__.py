@@ -54,6 +54,13 @@ async def get_config_entries(
             "to be used as the main controller. It is recommended to use a "
             "wired device as the main controller.",
         ),
+        ConfigEntry(key="separator", type=ConfigEntryType.DIVIDER, label=""),
+        ConfigEntry(
+            key="credentials_info",
+            type=ConfigEntryType.LABEL,
+            label="Optional credentials, used to populate HEOS players with saved playlists "
+            "and favorites.",
+        ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
