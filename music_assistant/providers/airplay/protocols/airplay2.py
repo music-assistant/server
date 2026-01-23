@@ -7,7 +7,6 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
@@ -125,23 +124,6 @@ class AirPlay2Stream(AirPlayProtocol):
         )
         self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
         await self._cli_proc.start()
-
-    async def wait_for_connection(self) -> None:
-        """Wait for device connection to be established."""
-        if not self._cli_proc:
-            return
-        # read up to first num_lines lines of stderr to get the initial status
-        num_lines: int = 50
-        if self.prov.logger.level > logging.INFO:
-            num_lines *= 10
-        for _ in range(num_lines):
-            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore").strip()
-            self.player.logger.debug(line)
-            if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
-                self.player.logger.info("AirPlay device connected. Starting playback.")
-                break
-            if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
-                raise PlayerCommandFailed("Cannot connect to AirPlay device")
         # start reading the stderr of the cliap2 process from another task
         self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
 
@@ -152,11 +134,16 @@ class AirPlay2Stream(AirPlayProtocol):
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
+            if self._stopped:
+                break
+            if "player: event_play_start()" in line:
+                # successfully connected
+                self._connected.set()
             if "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
-            if "Restarted at" in line:
+            elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
-            if "Starting at" in line:
+            elif "Starting at" in line:
                 # streaming has started
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=0, stream=self

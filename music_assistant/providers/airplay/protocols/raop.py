@@ -7,7 +7,6 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
@@ -94,27 +93,8 @@ class RaopStream(AirPlayProtocol):
         )
         self._cli_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
         await self._cli_proc.start()
-
-    async def wait_for_connection(self) -> None:
-        """Wait for device connection to be established."""
-        if not self._cli_proc:
-            return
-        # read up to first 50 lines of stderr to get the initial status
-        for _ in range(50):
-            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
-            self.player.logger.debug(line)
-            if "connected to " in line:
-                self.player.logger.info("AirPlay device connected. Starting playback.")
-                break
-            if "Cannot connect to AirPlay device" in line:
-                raise PlayerCommandFailed("Cannot connect to AirPlay device")
-
-        # start reading the stderr of the cliraop process from another task
+        # start reading the stderr of the cliap2 process from another task
         self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
-        # repeat sending the volume level to the player because some players seem
-        # to ignore it the first time
-        # https://github.com/music-assistant/support/issues/3330
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={self.player.volume_level}\n"))
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
@@ -124,11 +104,16 @@ class RaopStream(AirPlayProtocol):
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
+            if self._stopped:
+                break
+            if "connected to " in line:
+                self._connected.set()
+                # successfully connected - playback will/can start
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
-            if "Restarted at" in line or "restarting w/ pause" in line:
+            elif "Restarted at" in line or "restarting w/ pause" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
-            if "restarting w/o pause" in line:
+            elif "restarting w/o pause" in line:
                 # streaming has started
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=0, stream=self

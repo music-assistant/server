@@ -316,7 +316,10 @@ class AirPlayProvider(PlayerProvider):
                 player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
-                if stream := player.stream:
+                # Ignore during stream transition (stale message from old CLI process)
+                if player._transitioning:
+                    self.logger.debug("Ignoring prevent-playback during stream transition")
+                elif stream := player.stream:
                     stream.prevent_playback = True
                     if stream.session:
                         self.mass.create_task(stream.session.remove_client(player))

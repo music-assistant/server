@@ -93,6 +93,7 @@ class AirPlayPlayer(Player):
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
         self._active_pairing: AirPlayPairing | None = None
+        self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         # Set (static) player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_name = display_name
@@ -142,7 +143,7 @@ class AirPlayPlayer(Player):
         if not self.stream or not self.stream.session:
             return super().corrected_elapsed_time or 0.0
         session = self.stream.session
-        elapsed = time.time() - session.last_stream_started - session.total_pause_time
+        elapsed = time.time() - session.start_time - session.total_pause_time
         if session.last_paused is not None:
             current_pause = time.time() - session.last_paused
             elapsed -= current_pause
@@ -465,7 +466,7 @@ class AirPlayPlayer(Player):
         """Send PLAY (unpause) command to player."""
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY\n")
+                await self.stream.send_cli_command("ACTION=PLAY")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -478,7 +479,7 @@ class AirPlayPlayer(Player):
         async with self._lock:
             if not self.stream or not self.stream.running:
                 return
-            await self.stream.send_cli_command("ACTION=PAUSE\n")
+            await self.stream.send_cli_command("ACTION=PAUSE")
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -487,12 +488,13 @@ class AirPlayPlayer(Player):
             raise RuntimeError("Player is synced")
         self._attr_current_media = media
 
-        # Stop any existing stream - starting fresh is faster than replacing
+        # Always stop any existing stream
         if self.stream and self.stream.running and self.stream.session:
-            # Stop in background to not block new session startup
-            old_session = self.stream.session
+            # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
+            self._transitioning = True
+            # Force stop the session (to speed up stopping)
+            await self.stream.session.stop(force=True)
             self.stream = None
-            self.mass.create_task(old_session.stop())
 
         # select audio source
         audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
@@ -502,11 +504,12 @@ class AirPlayPlayer(Player):
         provider = cast("AirPlayProvider", self.provider)
         stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
         await stream_session.start(audio_source)
+        self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         if self.stream and self.stream.running:
-            await self.stream.send_cli_command(f"VOLUME={volume_level}\n")
+            await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self._attr_volume_level = volume_level
         self.update_state()
         # store last state in cache

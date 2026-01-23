@@ -8,6 +8,8 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from music_assistant_models.errors import PlayerCommandFailed
+
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -57,7 +59,6 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        self.last_stream_started: float = 0.0
         self.total_pause_time: float = 0.0
         self.last_paused: float | None = None
         self._first_chunk_received = asyncio.Event()
@@ -72,24 +73,33 @@ class AirPlayStreamSession:
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds
-        self.last_stream_started = self.start_time
         self.start_ntp = unix_time_to_ntp(self.start_time)
         await asyncio.gather(*[self._start_client(p, self.start_ntp) for p in self.sync_clients])
         self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
-        await asyncio.gather(
-            *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
-        )
+        try:
+            await asyncio.gather(
+                *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
+            )
+        except Exception:
+            # playback failed to start, cleanup
+            await self.stop()
+            raise PlayerCommandFailed("Playback failed to start")
 
-    async def stop(self) -> None:
+    async def stop(self, force: bool = False) -> None:
         """Stop playback and cleanup."""
-        await asyncio.gather(
-            *[self.remove_client(x) for x in self.sync_clients],
-            return_exceptions=True,
-        )
         if self._audio_source_task and not self._audio_source_task.done():
             self._audio_source_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._audio_source_task
+        if force:
+            await asyncio.gather(
+                *[self.stop_client(x, force=True) for x in self.sync_clients],
+            )
+            self.sync_clients = []
+        else:
+            await asyncio.gather(
+                *[self.remove_client(x) for x in self.sync_clients],
+            )
 
     async def remove_client(self, airplay_player: AirPlayPlayer) -> None:
         """Remove a sync client from the session."""
@@ -97,14 +107,30 @@ class AirPlayStreamSession:
             if airplay_player not in self.sync_clients:
                 return
             self.sync_clients.remove(airplay_player)
-        if airplay_player.stream and airplay_player.stream.session == self:
-            await airplay_player.stream.stop()
-        if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
-            await ffmpeg.close()
+        await self.stop_client(airplay_player)
         # If this was the last client, stop the session
         if not self.sync_clients:
             await self.stop()
             return
+
+    async def stop_client(self, airplay_player: AirPlayPlayer, force: bool = False) -> None:
+        """
+        Stop a client's stream and ffmpeg.
+
+        :param airplay_player: The player to stop.
+        :param force: If True, kill CLI process immediately.
+        """
+        ffmpeg = self._player_ffmpeg.pop(airplay_player.player_id, None)
+        if force:
+            if ffmpeg and not ffmpeg.closed:
+                await ffmpeg.kill()
+            if airplay_player.stream and airplay_player.stream.session == self:
+                await airplay_player.stream.stop(force=True)
+        else:
+            if ffmpeg and not ffmpeg.closed:
+                await ffmpeg.close()
+            if airplay_player.stream and airplay_player.stream.session == self:
+                await airplay_player.stream.stop()
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:
         """Add a sync client to the session as a late joiner.
