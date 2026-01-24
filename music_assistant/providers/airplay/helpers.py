@@ -115,7 +115,7 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
 
 
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken RAOP support."""
+    """Check if a model is known to have broken AirPlay support."""
     for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
         if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
             return True
@@ -270,6 +270,32 @@ def unix_time_to_ntp(unix_timestamp: float) -> int:
     ntp_fraction = int((microseconds << 32) / 1_000_000)
 
     return (ntp_seconds << 32) | ntp_fraction
+
+
+def player_id_to_mac_address(player_id: str) -> str:
+    """Convert a player_id to a MAC address-like string."""
+    # the player_id is the mac address prefixed with "ap"
+    hex_str = player_id.replace("ap", "").upper()
+    return ":".join(hex_str[i : i + 2] for i in range(0, 12, 2))
+
+
+def generate_active_remote_id(mac_address: str) -> str:
+    """
+    Generate an Active-Remote ID for DACP communication.
+
+    The Active-Remote ID is used to match DACP callbacks from devices to the
+    correct stream. This function generates a consistent ID based on the
+    player_id (=macaddress, =device id), converted to uint32).
+
+    :return: Active-Remote ID as decimal string.
+    """
+    # Convert MAC address format to uint32
+    # Remove colons: "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF"
+    hex_str = mac_address.replace(":", "").upper()
+    # Parse as uint64 and truncate to uint32 (lower 32 bits)
+    device_id_u64 = int(hex_str, 16)
+    device_id_u32 = device_id_u64 & 0xFFFFFFFF
+    return str(device_id_u32)
 
 
 def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
