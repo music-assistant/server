@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import warnings
@@ -147,6 +148,18 @@ class ExtendedAnalysisProcessor:
                 duration,
             )
 
+            # Log detailed analysis data for debugging/verification against ground truth
+            self._log_analysis_debug_data(
+                beats=beats,
+                downbeats=downbeats,
+                bpm=bpm,
+                onset_envelope=onset_envelope,
+                sample_rate=sample_rate,
+                hop_length=hop_length,
+                time_signature=time_signature,
+                phrase_boundaries=phrase_boundaries,
+            )
+
             return ExtendedSmartFadesAnalysis(
                 bpm=bpm,
                 beats=beats,
@@ -213,8 +226,10 @@ class ExtendedAnalysisProcessor:
             cv = interval_std / interval_mean if interval_mean > 0 else 1.0
             confidence = max(0.1, 1.0 - cv)
 
-            # Estimate downbeats
-            downbeats = self._estimate_downbeats(beat_times, bpm)
+            # Estimate downbeats using onset strength patterns
+            downbeats = self._estimate_downbeats(
+                beat_times, onset_envelope, sample_rate, hop_length
+            )
 
             return bpm, beat_times, downbeats, float(confidence)
 
@@ -225,41 +240,169 @@ class ExtendedAnalysisProcessor:
     def _estimate_downbeats(
         self,
         beats: npt.NDArray[np.float64],
-        bpm: float,
+        onset_envelope: npt.NDArray[np.float32],
+        sample_rate: int,
+        hop_length: int,
     ) -> npt.NDArray[np.float64]:
-        """Estimate downbeats using musical logic and beat consistency.
+        """Estimate downbeats using onset strength patterns.
+
+        Analyzes the onset strength at each beat position to find which phase
+        offset (0-3) has the strongest accents, indicating the true downbeats.
+        In most music, beat 1 of each bar has stronger onsets (kick drum, bass)
+        than beats 2, 3, or 4.
 
         :param beats: Array of beat times in seconds.
-        :param bpm: Detected BPM.
+        :param onset_envelope: Pre-computed onset strength envelope.
+        :param sample_rate: Audio sample rate in Hz.
+        :param hop_length: Hop length used during feature extraction.
         :return: Array of estimated downbeat times.
         """
-        if len(beats) < 4:
+        if len(beats) < 8:
             return beats[:1] if len(beats) > 0 else np.array([])
 
-        expected_beat_interval = 60.0 / bpm
+        # Convert beat times to frame indices
+        beat_frames = librosa.time_to_frames(beats, sr=sample_rate, hop_length=hop_length)
+        beat_frames = beat_frames[beat_frames < len(onset_envelope)]
+
+        if len(beat_frames) < 8:
+            # Fall back to simple approach if not enough beats
+            return beats[::4]
+
+        # Get onset strength at each beat position
+        beat_strengths = onset_envelope[beat_frames]
+
         best_offset = 0
-        best_consistency = 0.0
+        best_score = -1.0
+        scores: list[tuple[int, float, float, float]] = []  # For debug logging
 
-        # Try different starting offsets to find most consistent downbeat pattern
-        for offset in range(min(4, len(beats))):
-            downbeat_candidates = beats[offset::4]
-
-            if len(downbeat_candidates) < 2:
+        # Try each of the 4 possible downbeat phases
+        for offset in range(min(4, len(beat_frames))):
+            # Get strengths at candidate downbeat positions (every 4th beat starting at offset)
+            downbeat_indices = list(range(offset, len(beat_strengths), 4))
+            if len(downbeat_indices) < 2:
                 continue
 
-            intervals = np.diff(downbeat_candidates)
-            expected_downbeat_interval = 4 * expected_beat_interval
+            downbeat_strengths = beat_strengths[downbeat_indices]
 
-            interval_errors = (
-                np.abs(intervals - expected_downbeat_interval) / expected_downbeat_interval
-            )
-            consistency = 1.0 - np.mean(interval_errors)
+            # Get strengths at non-downbeat positions for this offset
+            other_indices = [i for i in range(len(beat_strengths)) if i % 4 != offset]
+            if not other_indices:
+                continue
 
-            if consistency > best_consistency:
-                best_consistency = float(consistency)
+            other_strengths = beat_strengths[other_indices]
+
+            # Score = ratio of mean downbeat strength to mean other beat strength
+            # Higher score means this offset has stronger accents on its "downbeats"
+            db_mean = float(np.mean(downbeat_strengths))
+            other_mean = float(np.mean(other_strengths))
+            score = db_mean / (other_mean + 1e-8)
+
+            scores.append((offset, score, db_mean, other_mean))
+
+            if score > best_score:
+                best_score = score
                 best_offset = offset
 
+        # Log the scoring for debugging
+        self.logger.debug(
+            "Downbeat phase scoring: %s -> best_offset=%d (score=%.3f)",
+            [(f"off={s[0]}: score={s[1]:.3f}, db={s[2]:.3f}, other={s[3]:.3f}") for s in scores],
+            best_offset,
+            best_score,
+        )
+
         return beats[best_offset::4]
+
+    def _log_analysis_debug_data(
+        self,
+        beats: npt.NDArray[np.float64],
+        downbeats: npt.NDArray[np.float64],
+        bpm: float,
+        onset_envelope: npt.NDArray[np.float32],
+        sample_rate: int,
+        hop_length: int,
+        time_signature: TimeSignature,
+        phrase_boundaries: list[PhraseBoundary],
+    ) -> None:
+        """Log detailed analysis data for debugging and ground truth verification.
+
+        Outputs JSON-formatted data that can be compared against datasets like Harmonix.
+
+        :param beats: Detected beat times in seconds.
+        :param downbeats: Detected downbeat times in seconds.
+        :param bpm: Detected tempo in BPM.
+        :param onset_envelope: Onset strength envelope.
+        :param sample_rate: Audio sample rate in Hz.
+        :param hop_length: Hop length used during feature extraction.
+        :param time_signature: Detected time signature.
+        :param phrase_boundaries: Detected phrase boundaries.
+        """
+        # Get onset strength at each beat position
+        beat_frames = librosa.time_to_frames(beats, sr=sample_rate, hop_length=hop_length)
+        beat_frames = beat_frames[beat_frames < len(onset_envelope)]
+        beat_onset_strengths = onset_envelope[beat_frames].tolist()
+
+        # Determine which beat index corresponds to each downbeat
+        downbeat_indices = []
+        for db_time in downbeats:
+            closest_beat_idx = int(np.argmin(np.abs(beats - db_time)))
+            downbeat_indices.append(closest_beat_idx)
+
+        # Calculate the detected phase offset
+        detected_offset = downbeat_indices[0] % 4 if downbeat_indices else 0
+
+        debug_data = {
+            "bpm": round(bpm, 2),
+            "time_signature": f"{time_signature.beats_per_bar}/4",
+            "time_signature_confidence": round(time_signature.confidence, 3),
+            "detected_downbeat_offset": detected_offset,
+            "num_beats": len(beats),
+            "num_downbeats": len(downbeats),
+            "beats": [round(b, 6) for b in beats.tolist()],
+            "downbeats": [round(d, 6) for d in downbeats.tolist()],
+            "beat_onset_strengths": [round(s, 4) for s in beat_onset_strengths],
+            "phrase_boundaries": [
+                {
+                    "time": round(pb.time, 3),
+                    "confidence": round(pb.confidence, 2),
+                    "type": pb.boundary_type,
+                }
+                for pb in phrase_boundaries
+            ],
+        }
+
+        # Log as JSON for easy parsing
+        self.logger.info(
+            "ANALYSIS_DEBUG_DATA: %s",
+            json.dumps(debug_data, separators=(",", ":")),
+        )
+
+        # Also log a human-readable summary
+        self.logger.info(
+            "Analysis summary: BPM=%.1f, beats=%d, downbeats=%d (offset=%d), "
+            "time_sig=%s, phrases=%d",
+            bpm,
+            len(beats),
+            len(downbeats),
+            detected_offset,
+            f"{time_signature.beats_per_bar}/4",
+            len(phrase_boundaries),
+        )
+
+        # Log onset strengths at first few beat positions for quick inspection
+        if len(beat_onset_strengths) >= 8:
+            strengths_by_phase = {0: [], 1: [], 2: [], 3: []}
+            for i, strength in enumerate(beat_onset_strengths[:32]):  # First 32 beats (8 bars)
+                strengths_by_phase[i % 4].append(strength)
+
+            self.logger.info(
+                "Onset strength by beat position (first 8 bars): "
+                "beat1=%.3f, beat2=%.3f, beat3=%.3f, beat4=%.3f",
+                np.mean(strengths_by_phase[detected_offset]),
+                np.mean(strengths_by_phase[(detected_offset + 1) % 4]),
+                np.mean(strengths_by_phase[(detected_offset + 2) % 4]),
+                np.mean(strengths_by_phase[(detected_offset + 3) % 4]),
+            )
 
     def _estimate_key(
         self,
