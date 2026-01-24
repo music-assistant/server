@@ -109,7 +109,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
                     return prov, ret_id
             # no subsonic mapping has been found in library item, ignore...
             return None, item_id
-        elif provider_instance_id_or_domain.startswith("opensubsonic"):
+        if provider_instance_id_or_domain.startswith("opensubsonic"):
             # found a subsonic mapping, proceed...
             prov = self.mass.get_provider(provider_instance_id_or_domain)
             assert isinstance(prov, OpenSonicProvider)

@@ -148,7 +148,6 @@ class MusicAssistantMediaStream(MediaStream):
             return None
 
         # Get per-player DSP filter parameters
-        # Convert from internal format to output format
         filter_params = get_player_filter_params(
             mass, player_id, self.internal_format, self.output_format
         )
@@ -234,7 +233,7 @@ class SendspinPlayer(Player):
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
 
-    async def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
+    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
@@ -289,7 +288,7 @@ class SendspinPlayer(Player):
             case MediaCommand.UNSHUFFLE if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=False)
 
-    async def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
         if self.synced_to is not None:
             # Only handle group events as the leader, except for:
@@ -302,7 +301,7 @@ class SendspinPlayer(Player):
         match event:
             case GroupCommandEvent(command=command):
                 self.logger.debug("Group command received: %s", command)
-                await self._handle_group_command(command)
+                self.mass.create_task(self._handle_group_command(command))
             case GroupStateChangedEvent(state=state):
                 self.logger.debug("Group state changed to: %s", state)
                 match state:
@@ -322,31 +321,35 @@ class SendspinPlayer(Player):
                     self.update_state()
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.logger.debug("Group member removed: %s", client_id)
-                if client_id == self.player_id:
-                    if len(self._attr_group_members) > 0:
-                        # We were just removed as a leader:
-                        # 1. stop playback on the old group
-                        await group.stop()
-                        # 2. clear our members (since we are now alone)
-                        group_members = [
-                            member for member in self._attr_group_members if member != client_id
-                        ]
-                        self._attr_group_members = []
-                        # 3. assign new leader if there are members left
-                        if len(group_members) > 0 and (
-                            new_leader := self.mass.players.get(group_members[0])
-                        ):
-                            new_leader = cast("SendspinPlayer", new_leader)
-                            new_leader._attr_group_members = group_members[1:]
-                            new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
-                            new_leader.update_state()
-                    self.update_state()
-                elif client_id in self._attr_group_members:
-                    # Someone else left our group
-                    self._attr_group_members.remove(client_id)
-                    self.update_state()
+                self.mass.create_task(self._handle_member_removed(group, client_id))
             case GroupDeletedEvent():
                 pass
+
+    async def _handle_member_removed(self, group: SendspinGroup, client_id: str) -> None:
+        """Handle group member removed event asynchronously."""
+        if client_id == self.player_id:
+            if len(self._attr_group_members) > 0:
+                # We were just removed as a leader:
+                # 1. stop playback on the old group
+                await group.stop()
+                # 2. clear our members (since we are now alone)
+                group_members = [
+                    member for member in self._attr_group_members if member != client_id
+                ]
+                self._attr_group_members = []
+                # 3. assign new leader if there are members left
+                if len(group_members) > 0 and (
+                    new_leader := self.mass.players.get(group_members[0])
+                ):
+                    new_leader = cast("SendspinPlayer", new_leader)
+                    new_leader._attr_group_members = group_members[1:]
+                    new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
+                    new_leader.update_state()
+            self.update_state()
+        elif client_id in self._attr_group_members:
+            # Someone else left our group
+            self._attr_group_members.remove(client_id)
+            self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -392,10 +395,11 @@ class SendspinPlayer(Player):
     async def _run_playback(self, media: PlayerMedia) -> None:
         """Run the actual playback in a background task."""
         try:
+            # Use 32-bit for the main channel: aiosendspin converts per player as needed
             pcm_format = AudioFormat(
-                content_type=ContentType.PCM_S16LE,
+                content_type=ContentType.PCM_S32LE,
                 sample_rate=48000,
-                bit_depth=16,
+                bit_depth=32,
                 channels=2,
             )
             flow_pcm_format = AudioFormat(
@@ -422,7 +426,6 @@ class SendspinPlayer(Player):
             )
 
             # Setup the main channel subscription
-            # aiosendspin only really supports 16-bit for now TODO: upgrade later to 32-bit
             main_channel_gen, main_position = await self.timed_client_stream.get_stream(
                 output_format=pcm_format,
                 filter_params=None,  # TODO: this should probably still include the safety limiter

@@ -75,3 +75,5 @@ PLAYER_SOURCE_MAP = {
         can_seek=True,
     ),
 }
+
+UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1",)

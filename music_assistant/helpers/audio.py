@@ -1136,8 +1136,7 @@ def _get_parts_from_position(
             )
             if i + 1 < len(parts):
                 return parts[i + 1 :], 0
-            else:
-                return parts[i:], int(position)  # last part, cannot skip
+            return parts[i:], int(position)  # last part, cannot skip
 
         return parts[i:], int(position)
 
