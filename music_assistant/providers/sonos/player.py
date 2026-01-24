@@ -49,6 +49,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
+    UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
 )
 
 if TYPE_CHECKING:
@@ -137,7 +138,11 @@ class SonosPlayer(Player):
 
         # collect supported features
         _supported_features = SUPPORTED_FEATURES.copy()
-        if SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]:
+        if (
+            SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]
+            and self.discovery_info["device"]["modelDisplayName"]
+            not in UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS
+        ):
             _supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
         if not self.client.player.has_fixed_volume:
             _supported_features.add(PlayerFeature.VOLUME_SET)
@@ -617,8 +622,7 @@ class SonosPlayer(Player):
                 self._attr_current_media = airplay_player.current_media
                 # return early as we dont need further info
                 return
-            else:
-                self._attr_active_source = SOURCE_AIRPLAY
+            self._attr_active_source = SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION
             and active_service != MusicService.MUSIC_ASSISTANT

@@ -4,6 +4,7 @@
     'album_type': 'album',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -69,6 +70,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'barcode',
@@ -141,6 +143,7 @@
 # ---
 # name: test_parse_artist[artist]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -208,6 +211,7 @@
 # ---
 # name: test_parse_playlist[mix]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -277,6 +281,7 @@
 # ---
 # name: test_parse_playlist[playlist]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -363,6 +368,7 @@
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -428,6 +434,7 @@
         'version': '',
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 180,
     'external_ids': list([

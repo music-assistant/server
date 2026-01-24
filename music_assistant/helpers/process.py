@@ -266,22 +266,26 @@ class AsyncProcess:
                 await self._stdin_feeder_task
 
         # close stdin to signal we're done sending data
-        await asyncio.wait_for(self._stdin_lock.acquire(), 10)
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(self._stdin_lock.acquire(), 5)
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         elif not self.proc.stdin and self.proc.returncode is None:
             self.proc.send_signal(SIGINT)
 
         # ensure we have no more readers active and stdout is drained
-        await asyncio.wait_for(self._stdout_lock.acquire(), 10)
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
             with suppress(Exception):
                 await self.proc.stdout.read(-1)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
-            await asyncio.wait_for(self._stderr_reader_task, 10)
+            with suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(self._stderr_reader_task, 5)
         elif self.proc.stderr and not self.proc.stderr.at_eof():
-            await asyncio.wait_for(self._stderr_lock.acquire(), 10)
+            with suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
             with suppress(Exception):
                 await self.proc.stderr.read(-1)
@@ -289,23 +293,101 @@ class AsyncProcess:
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
         # we need to ensure stdout and stderr are flushed and stdin closed
+        pid = self.proc.pid
+        terminate_attempts = 0
         while self.returncode is None:
             try:
                 # use communicate to flush all pipe buffers
-                await asyncio.wait_for(self.proc.communicate(), 5)
+                await asyncio.wait_for(self.proc.communicate(), 2)
             except TimeoutError:
+                terminate_attempts += 1
                 self.logger.debug(
-                    "Process %s with PID %s did not stop in time. Sending terminate...",
+                    "Process %s with PID %s did not stop in time (attempt %d). Sending SIGKILL...",
                     self.name,
-                    self.proc.pid,
+                    pid,
+                    terminate_attempts,
                 )
-                with suppress(ProcessLookupError):
-                    self.proc.terminate()
+                # Use os.kill for more direct signal delivery
+                with suppress(ProcessLookupError, OSError):
+                    os.kill(pid, 9)  # SIGKILL = 9
+                # Give up after 5 attempts - process may be zombie
+                if terminate_attempts >= 5:
+                    self.logger.warning(
+                        "Process %s (PID %s) did not terminate after %d SIGKILL attempts",
+                        self.name,
+                        pid,
+                        terminate_attempts,
+                    )
+                    break
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Process %s with PID %s stopped with returncode %s",
             self.name,
             self.proc.pid,
+            self.returncode,
+        )
+
+    async def kill(self) -> None:
+        """
+        Immediately kill the process with SIGKILL.
+
+        Use this for forceful termination when the process doesn't respond to
+        normal termination signals. Unlike close(), this doesn't attempt graceful
+        shutdown - it immediately sends SIGKILL.
+        """
+        self._close_called = True
+        if not self.proc or self.returncode is not None:
+            return
+
+        pid = self.proc.pid
+
+        # Cancel stdin feeder task if any
+        if self._stdin_feeder_task and not self._stdin_feeder_task.done():
+            self._stdin_feeder_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._stdin_feeder_task
+
+        # Cancel stderr reader task if any
+        if self._stderr_reader_task and not self._stderr_reader_task.done():
+            self._stderr_reader_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._stderr_reader_task
+
+        # Close all pipes first to prevent any I/O blocking
+        # This helps processes stuck on blocked I/O to receive signals
+        if self.proc.stdin and not self.proc.stdin.is_closing():
+            self.proc.stdin.close()
+        if self.proc.stdout:
+            self.proc.stdout.feed_eof()
+        if self.proc.stderr:
+            self.proc.stderr.feed_eof()
+
+        # Send SIGKILL immediately using os.kill for more direct signal delivery
+        self.logger.debug("Killing process %s with PID %s", self.name, pid)
+        with suppress(ProcessLookupError, OSError):
+            os.kill(pid, 9)  # SIGKILL = 9
+
+        # Wait for process to actually terminate
+        try:
+            await asyncio.wait_for(self.proc.wait(), 2)
+        except TimeoutError:
+            # Try one more time with os.kill
+            with suppress(ProcessLookupError, OSError):
+                os.kill(pid, 9)
+            try:
+                await asyncio.wait_for(self.proc.wait(), 2)
+            except TimeoutError:
+                self.logger.warning(
+                    "Process %s with PID %s did not terminate after SIGKILL - may be zombie",
+                    self.name,
+                    pid,
+                )
+
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Process %s with PID %s killed with returncode %s",
+            self.name,
+            pid,
             self.returncode,
         )
 

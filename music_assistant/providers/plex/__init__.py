@@ -567,7 +567,7 @@ class PlexProvider(MusicProvider):
         )
 
     async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
-        if library_items := await self.mass.music.artists._get_library_items_by_query(
+        if library_items := await self.mass.music.artists.get_library_items_by_query(
             search=artist_name, provider_filter=[self.instance_id]
         ):
             return ItemMapping.from_item(library_items[0])
@@ -589,11 +589,11 @@ class PlexProvider(MusicProvider):
     async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
-        elif plex_media.type == "album":
+        if plex_media.type == "album":
             return await self._parse_album(plex_media)
-        elif plex_media.type == "track":
+        if plex_media.type == "track":
             return await self._parse_track(plex_media)
-        elif plex_media.type == "playlist":
+        if plex_media.type == "playlist":
             return await self._parse_playlist(plex_media)
         return None
 

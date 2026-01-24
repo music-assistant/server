@@ -45,6 +45,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -294,6 +295,7 @@ class StreamsController(CoreController):
                 default_value="GLOBAL",
                 category="advanced",
             ),
+            CONF_ENTRY_ZEROCONF_INTERFACES,
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -587,6 +589,8 @@ class StreamsController(CoreController):
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
+
+        queue.flow_mode_stream_log = []
 
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(queue_player)

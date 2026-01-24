@@ -621,6 +621,33 @@ class PlayerQueuesController(CoreController):
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
+    @api_command("player_queues/move_item_end")
+    def move_item_end(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Move queue item to the end the queue.
+
+        - queue_id: id of the queue to process this request.
+        - queue_item_id: the item_id of the queueitem that needs to be moved.
+        """
+        queue = self._queues[queue_id]
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            raise InvalidDataError(f"Item {queue_item_id} not found in queue")
+        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+            msg = f"{item_index} is already played/buffered"
+            raise IndexError(msg)
+
+        queue_items = self._queue_items[queue_id]
+        if item_index == (len(queue_items) - 1):
+            return
+        queue_items = queue_items.copy()
+
+        new_index = len(self._queue_items[queue_id]) - 1
+
+        # move the item in the list
+        queue_items.insert(new_index, queue_items.pop(item_index))
+        self.update_items(queue_id, queue_items)
+
     @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
@@ -650,6 +677,7 @@ class PlayerQueuesController(CoreController):
         queue.current_index = None
         queue.current_item = None
         queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
@@ -783,7 +811,12 @@ class PlayerQueuesController(CoreController):
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
-        await self.play_index(queue_id, max(current_index - 1, 0), debounce=True)
+        next_index = int(current_index)
+        # restart current track if current track has played longer than 4
+        # otherwise skip to previous track
+        if self._queues[queue_id].elapsed_time < 5:
+            next_index = max(current_index - 1, 0)
+        await self.play_index(queue_id, next_index, debounce=True)
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
@@ -892,6 +925,7 @@ class PlayerQueuesController(CoreController):
         # this way the UI knows immediately that a new item is loading
         queue.current_item = self.get_item(queue_id, index)
         queue.elapsed_time = seek_position
+        queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
@@ -1040,7 +1074,8 @@ class PlayerQueuesController(CoreController):
     async def on_player_register(self, player: Player) -> None:
         """Register PlayerQueue for given player/queue id."""
         queue_id = player.player_id
-        queue = None
+        queue: PlayerQueue | None = None
+        queue_items: list[QueueItem] = []
         # try to restore previous state
         if prev_state := await self.mass.cache.get(
             key=queue_id,
@@ -1055,7 +1090,20 @@ class PlayerQueuesController(CoreController):
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
                 )
-                queue_items = [QueueItem.from_cache(x) for x in prev_items]
+                queue_items = []
+                for idx, item_data in enumerate(prev_items):
+                    qi = QueueItem.from_cache(item_data)
+                    if not qi.media_item:
+                        # Skip items with missing media_item - this can happen if
+                        # MA was killed during shutdown while cache was being written
+                        self.logger.debug(
+                            "Skipping queue item %s (index %d) restored from cache "
+                            "without media_item",
+                            qi.name,
+                            idx,
+                        )
+                        continue
+                    queue_items.append(qi)
                 if queue.enqueued_media_items:
                     # we need to restore the MediaItem objects for the enqueued media items
                     # Items from cache may be dicts that need deserialization
@@ -1076,6 +1124,9 @@ class PlayerQueuesController(CoreController):
                     player.display_name,
                     str(err),
                 )
+                # Reset to clean state on failure
+                queue = None
+                queue_items = []
         if queue is None:
             queue = PlayerQueue(
                 queue_id=queue_id,
@@ -1085,7 +1136,6 @@ class PlayerQueuesController(CoreController):
                 dont_stop_the_music_enabled=False,
                 items=0,
             )
-            queue_items = []
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
@@ -1390,11 +1440,14 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         if items_changed:
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
-            # save items in cache
+            # save items in cache - only cache items with valid media_item
+            cache_data = [
+                x.to_cache() for x in self._queue_items[queue_id] if x.media_item is not None
+            ]
             self.mass.create_task(
                 self.mass.cache.set(
                     key=queue_id,
-                    data=[x.to_cache() for x in self._queue_items[queue_id]],
+                    data=cache_data,
                     provider=self.domain,
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                 )
@@ -2432,6 +2485,10 @@ class PlayerQueuesController(CoreController):
             # only report on media items
             return
         assert media_item.uri is not None  # uri is set in __post_init__
+
+        if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
+            #  Ignore items that had a stream error
+            return
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
