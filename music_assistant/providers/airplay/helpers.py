@@ -272,33 +272,30 @@ def unix_time_to_ntp(unix_timestamp: float) -> int:
     return (ntp_seconds << 32) | ntp_fraction
 
 
-def generate_active_remote_id(discovery_info: AsyncServiceInfo | None) -> str:
-    """Generate an Active-Remote ID for DACP communication.
+def player_id_to_mac_address(player_id: str) -> str:
+    """Convert a player_id to a MAC address-like string."""
+    # the player_id is the mac address prefixed with "ap"
+    hex_str = player_id.replace("ap", "").upper()
+    return ":".join(hex_str[i : i + 2] for i in range(0, 12, 2))
+
+
+def generate_active_remote_id(mac_address: str) -> str:
+    """
+    Generate an Active-Remote ID for DACP communication.
 
     The Active-Remote ID is used to match DACP callbacks from devices to the
-    correct stream. This function generates a consistent ID based on:
-    1. The device's deviceid TXT record (preferred, converted to uint32)
-    2. A random number as fallback
+    correct stream. This function generates a consistent ID based on the
+    player_id (=macaddress, =device id), converted to uint32).
 
-    :param discovery_info: Zeroconf discovery info for the device (can be None).
     :return: Active-Remote ID as decimal string.
     """
-    from random import randint  # noqa: PLC0415
-
-    if discovery_info:
-        # Try to get deviceid from TXT record (format: "AA:BB:CC:DD:EE:FF")
-        deviceid = discovery_info.decoded_properties.get("deviceid")
-        if deviceid:
-            # Convert MAC address format to uint32
-            # Remove colons: "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF"
-            hex_str = deviceid.replace(":", "")
-            # Parse as uint64 and truncate to uint32 (lower 32 bits)
-            device_id_u64 = int(hex_str, 16)
-            device_id_u32 = device_id_u64 & 0xFFFFFFFF
-            return str(device_id_u32)
-
-    # Fallback to random number
-    return str(randint(1000, 8000))
+    # Convert MAC address format to uint32
+    # Remove colons: "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF"
+    hex_str = mac_address.replace(":", "").upper()
+    # Parse as uint64 and truncate to uint32 (lower 32 bits)
+    device_id_u64 = int(hex_str, 16)
+    device_id_u32 = device_id_u64 & 0xFFFFFFFF
+    return str(device_id_u32)
 
 
 def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:

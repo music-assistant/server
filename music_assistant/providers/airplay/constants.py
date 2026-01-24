@@ -89,13 +89,4 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
     ("Juke Audio", "*"),
-    # Apple TV HD (4th gen, 2015) and all Apple TV 4K models support AirPlay 2
-    ("Apple", "Apple TV Gen4"),  # Apple TV HD (4th gen) - AppleTV5,3
-    ("Apple", "Apple TV 4K"),  # Apple TV 4K (1st gen) - AppleTV6,2
-    ("Apple", "Apple TV 4K Gen2"),  # Apple TV 4K (2nd gen) - AppleTV11,1
-    ("Apple", "Apple TV 4K Gen3"),  # Apple TV 4K (3rd gen) - AppleTV14,1
-    # HomePod models also support AirPlay 2
-    ("Apple", "HomePod"),  # HomePod (1st gen and generic)
-    ("Apple", "HomePod 2"),  # HomePod (2nd gen) - AudioAccessory6,1
-    ("Apple", "HomePod Mini"),  # HomePod mini - AudioAccessory5,1
 )

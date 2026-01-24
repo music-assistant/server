@@ -47,8 +47,8 @@ class AirPlayProtocol(ABC):
         self.mass = player.provider.mass
         self.player = player
         self.logger = player.provider.logger.getChild(f"protocol.{self.__class__.__name__}")
-        discovery_info = player.airplay_discovery_info or player.raop_discovery_info
-        self.active_remote_id: str = generate_active_remote_id(discovery_info)
+        mac_address = self.player.device_info.mac_address or self.player.player_id
+        self.active_remote_id: str = generate_active_remote_id(mac_address)
         self.prevent_playback: bool = False
         self._cli_proc: AsyncProcess | None = None
         self.commands_pipe = AsyncNamedPipeWriter(
@@ -89,6 +89,8 @@ class AirPlayProtocol(ABC):
         """
         # always send stop command first
         await self.send_cli_command("ACTION=STOP")
+        if self._cli_proc:
+            await self._cli_proc.write_eof()
         self._stopped = True
         await self.commands_pipe.remove()
         if force:
