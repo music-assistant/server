@@ -30,7 +30,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -89,17 +89,10 @@ class HomeAssistantPlayer(Player):
         hass_supported_features = MediaPlayerEntityFeature(
             hass_state["attributes"]["supported_features"]
         )
-        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
-            self._attr_supported_features.add(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
-        if (
-            MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features
-            or MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features
-        ):
-            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         if MediaPlayerEntityFeature.MEDIA_ANNOUNCE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
         hass_domain = extra_player_data.get("hass_domain")
@@ -119,6 +112,18 @@ class HomeAssistantPlayer(Player):
 
         self.extra_data["hass_supported_features"] = hass_supported_features
         self._hass_attributes: dict[str, Any] = {}
+
+        # Add External source to support next/prev commands when playing external content
+        self._attr_source_list.append(
+            PlayerSource(
+                id="External",
+                name="External Source",
+                passive=True,
+            )
+        )
+        # Set dynamic features (PAUSE, NEXT_PREVIOUS, SEEK) via shared helper
+        self._update_hass_features(hass_supported_features)
+
         self._update_attributes(hass_state["attributes"])
 
     async def get_config_entries(
@@ -382,6 +387,31 @@ class HomeAssistantPlayer(Player):
             self._update_attributes(state["a"])
         self.update_state()
 
+    def _update_hass_features(self, hass_supported_features: MediaPlayerEntityFeature) -> None:
+        """Update player and External source features based on HA supported features."""
+        # Update player supported features for PAUSE and NEXT_PREVIOUS
+        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
+            self._attr_supported_features.add(PlayerFeature.PAUSE)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.PAUSE)
+
+        has_next_prev = (
+            MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features
+            or MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features
+        )
+        if has_next_prev:
+            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.NEXT_PREVIOUS)
+
+        # Update the External source capabilities
+        for source in self._attr_source_list:
+            if source.id == "External":
+                source.can_play_pause = MediaPlayerEntityFeature.PAUSE in hass_supported_features
+                source.can_next_previous = has_next_prev
+                source.can_seek = MediaPlayerEntityFeature.SEEK in hass_supported_features
+                break
+
     def _update_attributes(self, attributes: dict[str, Any]) -> None:
         """Update Player attributes from HA state attributes."""
         self._hass_attributes.update(attributes)
@@ -418,6 +448,11 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
                 else:
                     self._attr_group_members.clear()
+            elif key == "supported_features":
+                # Update supported features dynamically via shared helper
+                hass_supported_features = MediaPlayerEntityFeature(value)
+                self.extra_data["hass_supported_features"] = hass_supported_features
+                self._update_hass_features(hass_supported_features)
 
         # Check for external playback (not from Music Assistant).
         # Without media_content_id we cannot reliably determine the source,
