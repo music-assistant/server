@@ -101,6 +101,7 @@ CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
 CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
+CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
 
 # config default values
@@ -687,6 +688,25 @@ CONF_ENTRY_LIBRARY_SYNC_ARTISTS = ConfigEntry(
     "provider to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
+)
+
+
+CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
+    key=CONF_ZEROCONF_INTERFACES,
+    type=ConfigEntryType.STRING,
+    label="Mdns/Zeroconf discovery interface(s)",
+    description="In normal circumstances, Music Assistant will automatically "
+    "discover all players on the network using multicast discovery on the "
+    "(L2) local network, such as mDNS or UPNP.\n\n"
+    "By default, Music Assistant will only listen on the default interface. "
+    "If you have multiple network interfaces and you want to discover players "
+    "on all interfaces, you can change this setting to 'All interfaces'.",
+    options=[
+        ConfigValueOption("Default interface", "default"),
+        ConfigValueOption("All interfaces", "all"),
+    ],
+    default_value="default",
+    category="advanced",
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",

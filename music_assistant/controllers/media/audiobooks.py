@@ -15,6 +15,7 @@ from music_assistant.helpers.compare import (
     create_safe_string,
     loose_compare_strings,
 )
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
@@ -40,16 +41,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             audiobooks.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = audiobooks.item_id AND media_type = 'audiobook') AS provider_mappings,
+                'item_id', audiobook_pm.provider_item_id,
+                    'provider_domain', audiobook_pm.provider_domain,
+                        'provider_instance', audiobook_pm.provider_instance,
+                        'available', audiobook_pm.available,
+                        'audio_format', json(audiobook_pm.audio_format),
+                        'url', audiobook_pm.url,
+                        'details', audiobook_pm.details,
+                        'in_library', audiobook_pm.in_library,
+                        'is_unique', audiobook_pm.is_unique
+                )) FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = audiobooks.item_id AND audiobook_pm.media_type = 'audiobook') AS provider_mappings,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
@@ -68,8 +69,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -79,12 +78,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
-        result = await self._get_library_items_by_query(
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -100,7 +97,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "WHERE audiobooks.authors LIKE :search or audiobooks.narrators LIKE :search",
             ]
             extra_query_params["search"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,
@@ -152,6 +149,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "duration": item.duration,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -191,6 +189,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table

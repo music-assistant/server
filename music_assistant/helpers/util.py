@@ -17,6 +17,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
@@ -26,7 +27,12 @@ import ifaddr
 from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
+    LIVE_INDICATORS,
+    SOUNDTRACK_INDICATORS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -97,6 +103,15 @@ IGNORE_TITLE_PARTS = (
     "with ",
     "explicit",
 )
+WITH_TITLE_WORDS = (
+    # words that, when following "with", indicate this is part of the song title
+    # not a featuring credit.
+    "someone",
+    "the",
+    "u",
+    "you",
+    "no",
+)
 
 
 def filename_from_string(string: str) -> str:
@@ -146,23 +161,39 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     version = track_version or ""
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
+            # Extract the content without brackets/dashes for checking
+            clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
+
+            # Check if this should be ignored (featuring/explicit parts)
+            should_ignore = False
             for ignore_str in IGNORE_TITLE_PARTS:
-                if ignore_str in title_part.lower():
+                if clean_part.startswith(ignore_str):
+                    # Special handling for "with " - check if followed by title words
+                    if ignore_str == "with ":
+                        # Extract the word after "with "
+                        after_with = (
+                            clean_part[len("with ") :].split()[0]
+                            if len(clean_part) > len("with ")
+                            else ""
+                        )
+                        if after_with in WITH_TITLE_WORDS:
+                            # This is part of the title (e.g., "with you"), don't ignore
+                            break
+                    # Remove this part from the title
                     title = title.replace(title_part, "").strip()
-                    continue
+                    should_ignore = True
+                    break
+
+            if should_ignore:
+                continue
+
+            # Check if this part is a version
             for version_str in VERSION_PARTS:
-                if version_str not in title_part.lower():
-                    continue
-                version = (
-                    title_part.replace("(", "")
-                    .replace(")", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace("-", "")
-                    .strip()
-                )
-                title = title.replace(title_part, "").strip()
-                return (title, version)
+                if version_str in clean_part:
+                    # Preserve original casing for output
+                    version = title_part.strip("()[]- ").strip()
+                    title = title.replace(title_part, "").strip()
+                    return title, version
     return title, version
 
 
@@ -358,7 +389,7 @@ async def get_folder_size(folderpath: str) -> float:
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
                 _fp = os.path.join(dirpath, _file)
-                total_size += os.path.getsize(_fp)
+                total_size += Path(_fp).stat().st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -661,6 +692,9 @@ def validate_announcement_chime_url(url: str) -> bool:
     """Validate announcement chime URL format."""
     if not url or not url.strip():
         return True  # Empty URL is valid
+
+    if url == ANNOUNCE_ALERT_FILE:
+        return True  # Built-in chime file is valid
 
     try:
         parsed = urlparse(url.strip())

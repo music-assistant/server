@@ -10,6 +10,7 @@ import os.path
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -232,37 +233,37 @@ class LocalFileSystemProvider(MusicProvider):
         # searching the filesystem is slow and unreliable,
         # so instead we just query the db...
         if media_types is None or MediaType.TRACK in media_types:
-            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
+            result.tracks = await self.mass.music.tracks.get_library_items_by_query(
                 search=search_query, provider_filter=[self.instance_id], limit=limit
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
-            result.albums = await self.mass.music.albums._get_library_items_by_query(
+            result.albums = await self.mass.music.albums.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
-            result.artists = await self.mass.music.artists._get_library_items_by_query(
+            result.artists = await self.mass.music.artists.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+            result.playlists = await self.mass.music.playlists.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.AUDIOBOOK in media_types:
-            result.audiobooks = await self.mass.music.audiobooks._get_library_items_by_query(
+            result.audiobooks = await self.mass.music.audiobooks.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PODCAST in media_types:
-            result.podcasts = await self.mass.music.podcasts._get_library_items_by_query(
+            result.podcasts = await self.mass.music.podcasts.get_library_items_by_query(
                 search=search_query,
                 provider_filter=[self.instance_id],
                 limit=limit,
@@ -916,6 +917,11 @@ class LocalFileSystemProvider(MusicProvider):
             },
             disc_number=tags.disc or 0,
             track_number=tags.track or 0,
+            date_added=(
+                datetime.fromtimestamp(file_item.created_at, tz=UTC)
+                if file_item.created_at
+                else None
+            ),
         )
 
         if isrc_tags := tags.isrc:
@@ -927,7 +933,11 @@ class LocalFileSystemProvider(MusicProvider):
 
         # album
         album = track.album = (
-            await self._parse_album(track_path=file_item.relative_path, track_tags=tags)
+            await self._parse_album(
+                track_path=file_item.relative_path,
+                track_tags=tags,
+                track_created_at=file_item.created_at,
+            )
             if tags.album
             else None
         )
@@ -1360,8 +1370,15 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return episode
 
-    async def _parse_album(self, track_path: str, track_tags: AudioTags) -> Album:
-        """Parse Album metadata from Track tags."""
+    async def _parse_album(
+        self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
+    ) -> Album:
+        """Parse Album metadata from Track tags.
+
+        :param track_path: Path to the track file.
+        :param track_tags: Audio tags from the track.
+        :param track_created_at: Creation timestamp of the track file (Unix epoch).
+        """
         assert track_tags.album
         # work out if we have an album and/or disc folder
         # track_dir is the folder level where the tracks are located
@@ -1459,6 +1476,9 @@ class LocalFileSystemProvider(MusicProvider):
                     in_library=True,
                 )
             },
+            date_added=(
+                datetime.fromtimestamp(track_created_at, tz=UTC) if track_created_at else None
+            ),
         )
         if track_tags.barcode:
             album.external_ids.add((ExternalID.BARCODE, track_tags.barcode))

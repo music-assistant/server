@@ -28,6 +28,7 @@ from music_assistant.helpers.compare import (
     create_safe_string,
     loose_compare_strings,
 )
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
@@ -50,16 +51,16 @@ class AlbumsController(MediaControllerBase[Album]):
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = albums.item_id AND media_type = 'album') AS provider_mappings,
+                'item_id', album_pm.provider_item_id,
+                    'provider_domain', album_pm.provider_domain,
+                        'provider_instance', album_pm.provider_instance,
+                        'available', album_pm.available,
+                        'audio_format', json(album_pm.audio_format),
+                        'url', album_pm.url,
+                        'details', album_pm.details,
+                        'in_library', album_pm.in_library,
+                        'is_unique', album_pm.is_unique
+                )) FROM provider_mappings album_pm WHERE album_pm.item_id = albums.item_id AND album_pm.media_type = 'album') AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', artists.item_id,
@@ -112,8 +113,6 @@ class AlbumsController(MediaControllerBase[Album]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
         album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """Get in-database albums.
@@ -124,12 +123,10 @@ class AlbumsController(MediaControllerBase[Album]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
         :param album_types: Filter by album types.
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
         # optional album type filter
@@ -161,7 +158,7 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             artist_table_joined = True
             extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -189,7 +186,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
-            for album in await self._get_library_items_by_query(
+            for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
@@ -360,8 +357,10 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        return await self.mass.music.tracks._get_library_items_by_query(
-            extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
+        db_id = int(item_id)  # ensure integer
+        return await self.mass.music.tracks.get_library_items_by_query(
+            extra_query_parts=["WHERE album_tracks.album_id = :album_id"],
+            extra_query_params={"album_id": db_id},
         )
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
@@ -392,6 +391,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -430,6 +430,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table

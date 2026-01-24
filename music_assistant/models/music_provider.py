@@ -757,6 +757,11 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.artists.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.artists.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.artists.set_favorite(library_item.item_id, True)
@@ -791,6 +796,11 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.albums.add_item_to_library(prov_item)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
                     # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.albums.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
                     library_item = await self.mass.music.albums.update_item_in_library(
                         library_item.item_id, prov_item
                     )
@@ -858,10 +868,14 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.audiobooks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.audiobooks.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
-
                 # check if resume_position_ms or fully_played changed
                 if (
                     prov_item.resume_position_ms is not None
@@ -909,10 +923,14 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.playlists.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)
-
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
                 # optionally sync playlist tracks
@@ -985,10 +1003,14 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.tracks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.tracks.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.tracks.set_favorite(library_item.item_id, True)
-
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
@@ -1018,10 +1040,14 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.podcasts.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.podcasts.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.podcasts.set_favorite(library_item.item_id, True)
-
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
 
@@ -1057,10 +1083,14 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.radio.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
+                    # update date_added if it changed
+                    library_item = await self.mass.music.radio.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.radio.set_favorite(library_item.item_id, True)
-
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
 
