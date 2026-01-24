@@ -1384,6 +1384,23 @@ class ConfigController:
             player_config["provider"] = prov.instance_id
             changed = True
 
+        # Migrate AirPlay legacy credentials (ap_credentials) to protocol-specific keys
+        # The old key was used for both RAOP and AirPlay, now we have separate keys
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+            if player_config.get("provider") != "airplay":
+                continue
+            if not (values := player_config.get("values")):
+                continue
+            if "ap_credentials" not in values:
+                continue
+            # Migrate to raop_credentials (RAOP is the default/fallback protocol)
+            # The new code will use the correct key based on the protocol
+            old_creds = values.pop("ap_credentials")
+            if old_creds and "raop_credentials" not in values:
+                values["raop_credentials"] = old_creds
+                LOGGER.info("Migrated AirPlay credentials for player %s", player_id)
+            changed = True
+
         if changed:
             await self._async_save()
 

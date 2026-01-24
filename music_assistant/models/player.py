@@ -846,7 +846,9 @@ class Player(ABC):
         """
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
-            if parent_player := self.mass.players.get(parent_player_id):
+            if parent_player_id != self.player_id and (
+                parent_player := self.mass.players.get(parent_player_id)
+            ):
                 return parent_player.active_source
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
@@ -1331,7 +1333,9 @@ class Player(ABC):
             )
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
-            if parent_player := self.mass.players.get(parent_player_id):
+            if parent_player_id != self.player_id and (
+                parent_player := self.mass.players.get(parent_player_id)
+            ):
                 return parent_player.current_media
         # if a pluginsource is currently active, return those details
         if (

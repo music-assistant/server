@@ -452,7 +452,7 @@ class PlayerController(CoreController):
                 await player.stop()
 
     @api_command("players/cmd/play")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
@@ -489,7 +489,7 @@ class PlayerController(CoreController):
             await self._handle_cmd_resume(player.player_id)
 
     @api_command("players/cmd/pause")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
@@ -647,7 +647,7 @@ class PlayerController(CoreController):
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
@@ -657,7 +657,7 @@ class PlayerController(CoreController):
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
@@ -705,7 +705,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_group_volume(
         self,
         player_id: str,
@@ -935,7 +935,7 @@ class PlayerController(CoreController):
         await player.play_media(media)
 
     @api_command("players/cmd/select_source")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle SELECT SOURCE command on given player.

@@ -135,7 +135,7 @@ jobs:
           echo "✅ Version $VERSION is valid for $CHANNEL channel"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
