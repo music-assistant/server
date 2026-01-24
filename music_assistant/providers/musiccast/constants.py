@@ -73,3 +73,11 @@ MC_CONTROL_SOURCE_IDS.append(
     # tuner can be controlled, will change the station
     "tuner",
 )
+
+# for most sound modes we can just split at '_' and capitalize
+# here are some exceptions:
+MC_SOUND_MODE_FRIENDLY_NAMES = {
+    "2ch_stereo": "2 Channel Stereo",
+    "all_ch_stereo": "All Channels Stereo",
+    "surr_decoder": "Surround Decoder",
+}

@@ -11,7 +11,7 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
-from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSoundMode, PlayerSource
 from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
@@ -32,6 +32,7 @@ from music_assistant.providers.musiccast.constants import (
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
+    MC_SOUND_MODE_FRIENDLY_NAMES,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
@@ -133,6 +134,17 @@ class MusicCastPlayer(Player):
                     can_next_previous=control,
                 )
             )
+
+        # SOUND MODES
+        if self.zone_device.sound_mode_list:
+            self._attr_supported_features.add(PlayerFeature.SELECT_SOUND_MODE)
+            for source_id in self.zone_device.sound_mode_list:
+                friendly_name = MC_SOUND_MODE_FRIENDLY_NAMES.get(source_id) or " ".join(
+                    [x.capitalize() for x in source_id.split("_")]
+                )
+                self._attr_sound_mode_list.append(
+                    PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
+                )
 
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
@@ -269,6 +281,9 @@ class MusicCastPlayer(Player):
                     if not _server_player.upnp_update_helper.controlled_by_mass
                     else None
                 )
+
+        # SOUND MODE
+        self._attr_active_sound_mode = self.zone_device.sound_mode_id
 
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
@@ -527,6 +542,10 @@ class MusicCastPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Select source command."""
         await self._cmd_run(self.zone_device.select_source, source)
+
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """Select sound Mode Command."""
+        await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
 
     async def ungroup(self) -> None:
         """Ungroup command."""

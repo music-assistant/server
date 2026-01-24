@@ -39,6 +39,7 @@ from music_assistant_models.player import (
     EXTRA_ATTRIBUTES_TYPES,
     DeviceInfo,
     PlayerMedia,
+    PlayerSoundMode,
     PlayerSource,
 )
 from music_assistant_models.player import Player as PlayerState
@@ -135,6 +136,7 @@ class Player(ABC):
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
+    _attr_sound_mode_list: list[PlayerSoundMode]
     _attr_available: bool = True
     _attr_name: str | None = None
     _attr_powered: bool | None = None
@@ -144,6 +146,7 @@ class Player(ABC):
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: float | None = None
     _attr_active_source: str | None = None
+    _attr_active_sound_mode: str | None = None
     _attr_current_media: PlayerMedia | None = None
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
@@ -163,6 +166,7 @@ class Player(ABC):
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
         self._attr_source_list = []
+        self._attr_sound_mode_list = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self._player_id = player_id
@@ -560,6 +564,18 @@ class Player(ABC):
             "select_source needs to be implemented when PlayerFeature.SELECT_SOURCE is set"
         )
 
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """
+        Handle SELECT SOUND MODE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOUND_MODE is supported.
+
+        :param source: The sound_mode(id) to select, as defined in the sound_mode_list.
+        """
+        raise NotImplementedError(
+            "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
+        )
+
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -873,6 +889,18 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         return self.__attr_source_list or UniqueList()
+
+    @property
+    @final
+    def active_sound_mode(self) -> str | None:
+        """Return active sound mode of this player."""
+        return self._attr_active_sound_mode
+
+    @cached_property
+    @final
+    def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
+        """Return available PlayerSoundModes for Player."""
+        return UniqueList(self._attr_sound_mode_list)
 
     @cached_property
     @final
@@ -1254,6 +1282,8 @@ class Player(ABC):
             synced_to=self.synced_to,
             active_source=self.active_source,
             source_list=self.source_list,
+            active_sound_mode=self.active_sound_mode,
+            sound_mode_list=self.sound_mode_list,
             active_group=self.active_group,
             current_media=self.current_media,
             name=self.display_name,
