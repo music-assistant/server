@@ -62,7 +62,7 @@ from music_assistant.constants import (
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION

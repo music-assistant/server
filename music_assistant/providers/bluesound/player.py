@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
@@ -62,14 +62,15 @@ class BluesoundPlayer(Player):
         self.dynamic_poll_count: int = 0
         self._listen_task: asyncio.Task | None = None
         # Set base player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
         self._attr_name = name
         self._attr_device_info = DeviceInfo(
             model=discovery_info.get("model", "BluOS Device"),
             manufacturer="BluOS",
-            ip_address=ip_address,
         )
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        if mac_address := discovery_info.get("mac"):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_available = True
         self._attr_source_list = []
         self._attr_needs_poll = True

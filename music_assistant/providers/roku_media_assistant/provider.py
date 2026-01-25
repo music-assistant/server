@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from async_upnp_client.search import async_search
+from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 from rokuecp import Roku
 
@@ -155,7 +156,7 @@ class MediaAssistantprovider(PlayerProvider):
                     # nothing to do, device is already connected
                     return
                 # update description url to newly discovered one
-                roku_player.device_info.ip_address = ip
+                roku_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip)
             else:
                 roku_player = MediaAssistantPlayer(
                     provider=self,
@@ -169,7 +170,18 @@ class MediaAssistantprovider(PlayerProvider):
                     model_id=device.info.model_number,
                     manufacturer=device.info.brand,
                 )
-                roku_player._attr_device_info.ip_address = ip
+                roku_player._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip)
+                roku_player._attr_device_info.add_identifier(
+                    IdentifierType.SERIAL_NUMBER, device.info.serial_number
+                )
+                if device.info.ethernet_mac:
+                    roku_player._attr_device_info.add_identifier(
+                        IdentifierType.MAC_ADDRESS, device.info.ethernet_mac
+                    )
+                elif device.info.wifi_mac:
+                    roku_player._attr_device_info.add_identifier(
+                        IdentifierType.MAC_ADDRESS, device.info.wifi_mac
+                    )
 
                 self.roku_players[player_id] = roku_player
             await roku_player.setup()

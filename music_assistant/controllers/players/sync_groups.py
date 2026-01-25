@@ -43,7 +43,7 @@ from music_assistant.models.player import GroupPlayer, Player
 if TYPE_CHECKING:
     from music_assistant.models.player_provider import PlayerProvider
 
-    from .player_controller import PlayerController
+    from .controller import PlayerController
 
 
 SUPPORT_DYNAMIC_LEADER = {
@@ -126,10 +126,10 @@ class SyncGroupPlayer(GroupPlayer):
         return self._attr_supported_features
 
     @property
-    def playback_state(self) -> PlaybackState:
+    def _playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         if self.powered:
-            return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+            return self.sync_leader._playback_state if self.sync_leader else PlaybackState.IDLE
         return PlaybackState.IDLE
 
     @cached_property
@@ -145,14 +145,14 @@ class SyncGroupPlayer(GroupPlayer):
         return False
 
     @property
-    def elapsed_time(self) -> float | None:
+    def _elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
-        return self.sync_leader.elapsed_time if self.sync_leader else None
+        return self.sync_leader._elapsed_time if self.sync_leader else None
 
     @property
-    def elapsed_time_last_updated(self) -> float | None:
+    def _elapsed_time_last_updated(self) -> float | None:
         """Return when the elapsed time was last updated."""
-        return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
+        return self.sync_leader._elapsed_time_last_updated if self.sync_leader else None
 
     @property
     def _current_media(self) -> PlayerMedia | None:
@@ -172,7 +172,7 @@ class SyncGroupPlayer(GroupPlayer):
         return []
 
     @property
-    def can_group_with(self) -> set[str]:
+    def _can_group_with(self) -> set[str]:
         """
         Return the id's of players this player can group with.
 
@@ -180,7 +180,7 @@ class SyncGroupPlayer(GroupPlayer):
         or just the provider's instance_id if all players can group with each other.
         """
         if self.is_dynamic and (leader := self.sync_leader):
-            return leader.can_group_with
+            return leader._can_group_with
         if self.is_dynamic:
             return {self.provider.instance_id}
         return set()

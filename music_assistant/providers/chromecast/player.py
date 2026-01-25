@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -75,8 +76,13 @@ class ChromecastPlayer(Player):
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        else:
+        elif self._is_google_device(cast_info):
+            # Google devices (Chromecast, Nest, Google Home) have native Cast support
             player_type = PlayerType.PLAYER
+        else:
+            # Non-Google devices are generic Chromecast receivers
+            # Will be wrapped in a UniversalPlayer
+            player_type = PlayerType.PROTOCOL
         self.cc = chromecast
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
@@ -85,6 +91,7 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
@@ -107,9 +114,13 @@ class ChromecastPlayer(Player):
 
         self._attr_device_info = DeviceInfo(
             model=self.cast_info.model_name,
-            ip_address=f"{self.cast_info.host}:{self.cast_info.port}",
             manufacturer=self.cast_info.manufacturer or "",
         )
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+        self._attr_device_info.add_identifier(
+            IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+        )
+        self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         assert provider.mz_mgr is not None  # for type checking
         status_listener = CastStatusListener(self, provider.mz_mgr)
         self.status_listener = status_listener
@@ -136,6 +147,20 @@ class ChromecastPlayer(Player):
                 self.sendspin_player_id,
             )
         )
+
+    @staticmethod
+    def _is_google_device(cast_info: ChromecastInfo) -> bool:
+        """Check if a device is a Google device with native Cast support.
+
+        Google devices (Chromecast, Nest, Google Home) have native Cast support
+        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+        support should be exposed as PlayerType.PROTOCOL.
+        """
+        if not cast_info.manufacturer:
+            # If no manufacturer, check model name for Google devices
+            model = cast_info.model_name.lower() if cast_info.model_name else ""
+            return any(google in model for google in ("chromecast", "google", "nest", "home"))
+        return cast_info.manufacturer.lower() == "google"
 
     @property
     def sendspin_mode_enabled(self) -> bool:
@@ -510,7 +535,7 @@ class ChromecastPlayer(Player):
             return
         if self.active_cast_group:
             return
-        if self.playback_state != PlaybackState.PLAYING:
+        if self._attr_playback_state != PlaybackState.PLAYING:
             return
         if not (current_media := self.current_media):
             return
@@ -632,13 +657,14 @@ class ChromecastPlayer(Player):
         # handle stereo pairs
         if self.cast_info.is_multichannel_group:
             self._attr_type = PlayerType.STEREO_PAIR
-            self.group_members.clear()
+            self._attr_group_members.clear()
         # handle cast groups
         if self.cast_info.is_audio_group and not self.cast_info.is_multichannel_group:
             assert self.mz_controller is not None  # for type checking
             self._attr_type = PlayerType.GROUP
             self._attr_group_members = [str(UUID(x)) for x in self.mz_controller.members]
             self._attr_supported_features = {
+                PlayerFeature.PLAY_MEDIA,
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.PAUSE,
@@ -651,7 +677,7 @@ class ChromecastPlayer(Player):
         self._attr_volume_muted = status.volume_muted
         new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
         self._attr_powered = new_powered
-        if self._attr_powered and not new_powered and self._attr_type == PlayerType.GROUP:
+        if self._attr_powered and not new_powered and self.type == PlayerType.GROUP:
             # group is being powered off, update group childs
             for child_id in self.group_members:
                 if child := self.mass.players.get(child_id):
@@ -745,11 +771,11 @@ class ChromecastPlayer(Player):
                     assert isinstance(child, ChromecastPlayer)  # for type checking
                     if not child.cast_info.is_multichannel_group:
                         continue
-                    child._attr_playback_state = self.playback_state
-                    child._attr_current_media = self.current_media
-                    child._attr_elapsed_time = self.elapsed_time
-                    child._attr_elapsed_time_last_updated = self.elapsed_time_last_updated
-                    child._attr_active_source = self.active_source
+                    child._attr_playback_state = self._attr_playback_state
+                    child._attr_current_media = self._attr_current_media
+                    child._attr_elapsed_time = self._attr_elapsed_time
+                    child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
+                    child._attr_active_source = self._active_source
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
@@ -777,9 +803,10 @@ class ChromecastPlayer(Player):
             self._attr_available = new_available
             self._attr_device_info = DeviceInfo(
                 model=self.cast_info.model_name,
-                ip_address=f"{self.cast_info.host}:{self.cast_info.port}",
                 manufacturer=self.cast_info.manufacturer or "",
             )
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+            self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
             self.mass.loop.call_soon_threadsafe(self.update_state)
 
             if new_available and self.type == PlayerType.PLAYER:

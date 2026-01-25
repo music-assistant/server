@@ -36,7 +36,6 @@ from music_assistant_models.enums import (
     ImageType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.media_items import AudioFormat
@@ -205,8 +204,8 @@ class SendspinPlayer(Player):
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
         self._attr_name = sendspin_client.name
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,

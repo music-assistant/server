@@ -44,7 +44,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.players.player_controller import PlayerController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -749,10 +749,26 @@ class MusicAssistant:
             await self.config.create_builtin_provider_config(prov_manifest.domain)
 
         # load all configured (and enabled) providers
+        # builtin providers are loaded first (and awaited) before loading the rest
         prov_configs = await self.config.get_provider_configs(include_values=True)
+        builtin_configs: list[ProviderConfig] = []
+        other_configs: list[ProviderConfig] = []
         for prov_conf in prov_configs:
             if not prov_conf.enabled:
                 continue
+            manifest = self._provider_manifests.get(prov_conf.domain)
+            if manifest and manifest.builtin:
+                builtin_configs.append(prov_conf)
+            else:
+                other_configs.append(prov_conf)
+
+        # load builtin providers first and wait for them to complete
+        await asyncio.gather(
+            *[self.load_provider(conf.instance_id, allow_retry=True) for conf in builtin_configs]
+        )
+
+        # load remaining providers concurrently via tasks
+        for prov_conf in other_configs:
             # Use a task so we can load multiple providers at once.
             # If a provider fails, that will not block the loading of other providers.
             self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))

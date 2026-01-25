@@ -7,7 +7,13 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -42,6 +48,7 @@ from .constants import (
 from .helpers import (
     get_primary_ip_address_from_zeroconf,
     is_airplay2_preferred_model,
+    is_apple_device,
     is_broken_airplay_model,
     player_id_to_mac_address,
 )
@@ -96,16 +103,17 @@ class AirPlayPlayer(Player):
         self._active_pairing: AirPlayPairing | None = None
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         # Set (static) player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_name = display_name
         self._attr_available = True
+        mac_address = player_id_to_mac_address(player_id)
         self._attr_device_info = DeviceInfo(
             model=model,
             manufacturer=manufacturer,
         )
-        self._attr_device_info.ip_address = address
-        self._attr_device_info.mac_address = player_id_to_mac_address(player_id)
+        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
@@ -114,6 +122,14 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
+
+        # Set player type based on manufacturer:
+        # - Apple devices (HomePod, Apple TV, Mac) have native AirPlay support -> PLAYER
+        # - Non-Apple devices are generic AirPlay receivers -> PROTOCOL (wrapped in UniversalPlayer)
+        if is_apple_device(manufacturer):
+            self._attr_type = PlayerType.PLAYER
+        else:
+            self._attr_type = PlayerType.PROTOCOL
 
     @property
     def protocol(self) -> StreamingProtocol:
@@ -644,7 +660,7 @@ class AirPlayPlayer(Player):
         if cur_address != new_address:
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
             self.address = cur_address
-            self._attr_device_info.ip_address = new_address
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_address)
         self.update_state()
 
     def set_state_from_stream(

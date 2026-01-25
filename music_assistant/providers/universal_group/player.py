@@ -40,7 +40,12 @@ from .ugp_stream import UGPStream
 if TYPE_CHECKING:
     from .provider import UniversalGroupProvider
 
-BASE_FEATURES = {PlayerFeature.POWER, PlayerFeature.VOLUME_SET, PlayerFeature.MULTI_DEVICE_DSP}
+BASE_FEATURES = {
+    PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.POWER,
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.MULTI_DEVICE_DSP,
+}
 
 
 class UniversalGroupPlayer(GroupPlayer):
@@ -152,7 +157,10 @@ class UniversalGroupPlayer(GroupPlayer):
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
         # always stop at power off
-        if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        if not powered and self._attr_playback_state in (
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
+        ):
             await self.stop()
 
         # optimistically set the group state

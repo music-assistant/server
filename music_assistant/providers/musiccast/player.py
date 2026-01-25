@@ -10,7 +10,12 @@ from aiohttp.client_exceptions import ClientError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+)
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from propcache import under_cached_property as cached_property
 
@@ -89,6 +94,7 @@ class MusicCastPlayer(Player):
     def set_static_attributes(self) -> None:
         """Set static properties."""
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,  # for non MA control, see pause method
@@ -105,6 +111,14 @@ class MusicCastPlayer(Player):
             model=self.physical_device.device.data.model_name or "unknown model",
             software_version=(self.physical_device.device.data.system_version or "unknown version"),
         )
+        if device_ip := self.physical_device.device.device.ip:
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device_ip)
+        if device_id := self.physical_device.device.data.device_id:
+            self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
+            # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
+            if len(device_id) == 12:
+                mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
 
         # polling
         self._attr_needs_poll = True

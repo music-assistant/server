@@ -176,12 +176,6 @@ class AirPlayProvider(PlayerProvider):
         ):
             volume = FALLBACK_VOLUME
 
-        # Append airplay to the default name for non-apple devices
-        # to make it easier for users to distinguish
-        is_apple = manufacturer.lower() == "apple"
-        if not is_apple and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
-
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)
         if self.mass.players.get(player_id):

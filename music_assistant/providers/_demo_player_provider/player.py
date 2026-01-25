@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -22,8 +22,8 @@ class DemoPlayer(Player):
         super().__init__(provider, player_id)
         # init some static variables
         self._attr_name = f"Demo Player {player_id}"
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -54,7 +54,7 @@ class DemoPlayer(Player):
         # OPTIONAL
         # used in conjunction with the needs_poll property.
         # this should return the interval in seconds to poll the player for state updates.
-        return 5 if self.playback_state == PlaybackState.PLAYING else 30
+        return 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     @property
     def _source_list(self) -> list[PlayerSource]:

@@ -274,6 +274,7 @@ class AlexaPlayer(Player):
         super().__init__(provider, player_id)
         self.device = device
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }

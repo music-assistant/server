@@ -18,9 +18,9 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
@@ -67,8 +67,6 @@ CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
 class SqueezelitePlayer(Player):
     """Squeezelite Player implementation."""
 
-    _attr_type = PlayerType.PLAYER
-
     def __init__(
         self,
         provider: SqueezelitePlayerProvider,
@@ -81,6 +79,7 @@ class SqueezelitePlayer(Player):
         self._provider: SqueezelitePlayerProvider = provider
         # Set static player attributes
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
@@ -339,7 +338,7 @@ class SqueezelitePlayer(Player):
         if (
             (players_added or player_ids_to_remove)
             and self.current_media
-            and self.playback_state == PlaybackState.PLAYING
+            and self._attr_playback_state == PlaybackState.PLAYING
         ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
@@ -377,8 +376,9 @@ class SqueezelitePlayer(Player):
             model=self.client.device_model,
             manufacturer=self.client.device_type,
         )
-        self._attr_device_info.ip_address = self.client.device_address
-        self._attr_device_info.mac_address = self.client.player_id
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.client.device_address)
+        # player_id is the MAC address in slimproto
+        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.client.player_id)
         if (
             old_state != PlaybackState.PLAYING
             and self._attr_playback_state == PlaybackState.PLAYING
@@ -465,7 +465,7 @@ class SqueezelitePlayer(Player):
 
     def _handle_player_heartbeat(self) -> None:
         """Process SlimClient elapsed_time update."""
-        if self.playback_state != PlaybackState.PLAYING:
+        if self._attr_playback_state != PlaybackState.PLAYING:
             # ignore server heartbeats when not playing
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)

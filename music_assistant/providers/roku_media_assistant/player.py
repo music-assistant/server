@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
 from music_assistant.models.player import Player, PlayerMedia
@@ -38,8 +38,8 @@ class MediaAssistantPlayer(Player):
         self.roku = roku
         self.queued = queued
         self._attr_name = roku_name
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,  # if the player can be turned on/off
             PlayerFeature.PAUSE,
             PlayerFeature.VOLUME_MUTE,
@@ -290,8 +290,8 @@ class MediaAssistantPlayer(Player):
                 if "position" in media_state:
                     try:
                         position = int(media_state["position"].split(" ", 1)[0]) / 1000
-                        if self.elapsed_time is not None:
-                            if abs(position - self.elapsed_time) > 10:
+                        if self._attr_elapsed_time is not None:
+                            if abs(position - self._attr_elapsed_time) > 10:
                                 self._attr_current_media = self.queued
                         self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = time.time()

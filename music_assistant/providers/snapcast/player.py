@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
@@ -76,8 +76,11 @@ class SnapCastPlayer(Player):
             model=self.snap_client._client.get("host").get("os"),
             manufacturer=self.snap_client._client.get("host").get("arch"),
         )
-        self._attr_device_info.ip_address = self.snap_client._client.get("host").get("ip")
+        self._attr_device_info.add_identifier(
+            IdentifierType.IP_ADDRESS, self.snap_client._client.get("host").get("ip")
+        )
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -278,7 +281,7 @@ class SnapCastPlayer(Player):
             await self.volume_set(orig_volume_level)
 
         # and restore the group to either the default or the music stream
-        if self.playback_state == PlaybackState.IDLE:
+        if self._attr_playback_state == PlaybackState.IDLE:
             new_stream_name = "default"
         else:
             new_stream_name = self._get_stream_name(SnapCastStreamType.MUSIC)
@@ -410,7 +413,7 @@ class SnapCastPlayer(Player):
             if child_player_id == self.player_id:
                 continue
             if mass_child_player := self.mass.players.get(child_player_id):
-                mass_child_player._attr_playback_state = self.playback_state
+                mass_child_player._attr_playback_state = self._attr_playback_state
                 mass_child_player.update_state()
 
     def _get_active_snapstream(self) -> Snapstream | None:

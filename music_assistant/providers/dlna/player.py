@@ -6,18 +6,20 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate
+from urllib.parse import urlparse
 
+import defusedxml.ElementTree as DefusedET
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import DeviceInfo, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import Player
+from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
 
@@ -57,7 +59,16 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
 
 
 class DLNAPlayer(Player):
-    """DLNA Player."""
+    """DLNA Player.
+
+    All DLNA players are considered generic protocol endpoints (PlayerType.PROTOCOL)
+    and will be wrapped in a UniversalPlayer. Devices with native provider support
+    (e.g., Sonos) are handled by their respective providers and will link to
+    the DLNA player as a protocol output.
+    """
+
+    # All DLNA devices are generic protocol endpoints - no vendor has native DLNA support in MA
+    _attr_type = PlayerType.PROTOCOL
 
     def __init__(
         self,
@@ -123,6 +134,26 @@ class DLNAPlayer(Player):
                     model=self.device.model_name,
                     manufacturer=self.device.manufacturer,
                 )
+                # Add UDN (player_id) as UUID identifier for matching with other protocols
+                # Strip the "uuid:" prefix if present for proper matching
+                uuid_value = self.player_id
+                if uuid_value.lower().startswith("uuid:"):
+                    uuid_value = uuid_value[5:]
+                self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
+                # Try to extract MAC address from UUID
+                # Many UPnP devices embed MAC in the last 12 chars of UUID
+                # e.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
+                mac_address = self._extract_mac_from_uuid(uuid_value)
+                if mac_address:
+                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+                # Try to extract just the IP from the URL for matching
+                ip_address = self.device.device.presentation_url or self.description_url
+                with suppress(ValueError):
+                    parsed = urlparse(ip_address)
+                    if parsed.hostname:
+                        self._attr_device_info.add_identifier(
+                            IdentifierType.IP_ADDRESS, parsed.hostname
+                        )
 
     def _handle_event(
         self,
@@ -174,13 +205,18 @@ class DLNAPlayer(Player):
     def _set_player_features(self) -> None:
         """Set Player Features based on config values and capabilities."""
         assert self.device is not None  # for type checking
-        supported_features: set[PlayerFeature] = {
+        supported_features: set[PlayerFeature] = set()
+
+        # Only add PLAY_MEDIA if the device actually supports playback
+        # Passive speakers (like stereo pair satellites) don't have play capability
+        if self.device.has_play_media:
+            supported_features.add(PlayerFeature.PLAY_MEDIA)
             # there is no way to check if a dlna player support enqueuing
             # so we simply assume it does and if it doesn't
             # you'll find out at playback time and we log a warning
-            PlayerFeature.ENQUEUE,
-            PlayerFeature.GAPLESS_PLAYBACK,
-        }
+            supported_features.add(PlayerFeature.ENQUEUE)
+            supported_features.add(PlayerFeature.GAPLESS_PLAYBACK)
+
         if self.device.has_volume_level:
             supported_features.add(PlayerFeature.VOLUME_SET)
         if self.device.has_volume_mute:
@@ -189,11 +225,73 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.PAUSE)
         self._attr_supported_features = supported_features
 
-    async def setup(self) -> None:
-        """Set up player in MA."""
+    async def setup(self) -> bool:
+        """Set up player in MA.
+
+        :return: True if setup was successful, False if device should be ignored.
+        """
         await self._device_connect()
+
+        if self.device and not self.device.has_play_media:
+            self.logger.debug("Ignoring %s - no play capability", self.device.name)
+            return False
+
+        if self.device and await self._is_sonos_passive_speaker():
+            self.logger.debug("Ignoring %s - passive stereo pair speaker", self.device.name)
+            return False
+
         self.set_static_attributes()
         await self.mass.players.register_or_update(self)
+        return True
+
+    async def _is_sonos_passive_speaker(self) -> bool:
+        """Check if this is a Sonos passive stereo pair speaker.
+
+        Stereo pair satellites have play capability but are marked as Invisible
+        in the ZoneGroupTopology. We need to filter these out as they can't be
+        controlled directly.
+        """
+        if not self.device:
+            return False
+
+        manufacturer = (self.device.manufacturer or "").lower()
+        if "sonos" not in manufacturer:
+            return False
+
+        # ZoneGroupTopology is on the root device, not the MediaRenderer embedded device
+        upnp_device = self.device.profile_device.root_device
+
+        zone_topology_service = None
+        for service in upnp_device.all_services:
+            if "ZoneGroupTopology" in service.service_type:
+                zone_topology_service = service
+                break
+
+        if not zone_topology_service:
+            return False
+
+        try:
+            action = zone_topology_service.action("GetZoneGroupState")
+            if not action:
+                return False
+
+            result = await action.async_call()
+            zone_group_state_xml = result.get("ZoneGroupState", "")
+            if not zone_group_state_xml:
+                return False
+
+            # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
+            our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
+
+            root = DefusedET.fromstring(zone_group_state_xml)
+            for member in root.iter("ZoneGroupMember"):
+                if member.get("UUID", "").upper() == our_uuid.upper():
+                    return str(member.get("Invisible", "0")) == "1"
+
+        except (UpnpError, DefusedET.ParseError) as err:
+            self.logger.debug("Error checking Sonos zone topology: %s", err)
+
+        return False
 
     def set_static_attributes(self) -> None:
         """Set static attributes."""
@@ -384,3 +482,33 @@ class DLNAPlayer(Player):
             raise PlayerUnavailableError from err
         finally:
             self.force_poll = False
+
+    @staticmethod
+    def _extract_mac_from_uuid(uuid_value: str) -> str | None:
+        """Try to extract MAC address from UUID.
+
+        Many UPnP devices embed the MAC address in the last 12 hex characters of the UUID.
+        E.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
+
+        :param uuid_value: The UUID string (without 'uuid:' prefix).
+        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
+        """
+        # Remove dashes and get last 12 hex characters
+        hex_chars = uuid_value.replace("-", "")
+        if len(hex_chars) < 12:
+            return None
+
+        mac_hex = hex_chars[-12:]
+
+        # Validate it looks like a MAC (all hex characters)
+        try:
+            int(mac_hex, 16)
+        except ValueError:
+            return None
+
+        # Check if it could be a valid MAC (not all zeros or all ones)
+        if mac_hex in ("000000000000", "ffffffffffff", "FFFFFFFFFFFF"):
+            return None
+
+        # Format as XX:XX:XX:XX:XX:XX
+        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))

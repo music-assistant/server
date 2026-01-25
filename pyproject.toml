@@ -110,6 +110,9 @@ max-statements = 50
 platform = "linux"
 python_version = "3.12"
 
+# Path to the local models package for type checking during development
+mypy_path = "../models"
+
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
 

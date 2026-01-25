@@ -17,11 +17,9 @@ The playerstate is the object that is exposed to the outside world (via the API)
 from __future__ import annotations
 
 import asyncio
-import functools
 import time
-from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast, overload
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.constants import (
@@ -78,10 +76,16 @@ from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.player import Player, PlayerMedia, PlayerState
+from music_assistant.models.player import (
+    Player,
+    PlayerMedia,
+    PlayerState,
+)
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
+from .helpers import AnnounceData, handle_player_command
+from .protocol_linking import ProtocolLinkingMixin
 from .sync_groups import SyncGroupController, SyncGroupPlayer
 
 if TYPE_CHECKING:
@@ -95,108 +99,7 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_PLAYER_POWER = 1
 
 
-class AnnounceData(TypedDict):
-    """Announcement data."""
-
-    announcement_url: str
-    pre_announce: bool
-    pre_announce_url: str
-
-
-@overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
-    func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]: ...
-
-
-@overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
-    func: None = None,
-    *,
-    lock: bool = False,
-) -> Callable[
-    [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
-    Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
-]: ...
-
-
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
-    func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
-    *,
-    lock: bool = False,
-) -> (
-    Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
-    | Callable[
-        [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
-        Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
-    ]
-):
-    """Check and log commands to players.
-
-    :param func: The function to wrap (when used without parentheses).
-    :param lock: If True, acquire a lock per player_id and function name before executing.
-    """
-
-    def decorator(
-        fn: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
-    ) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]:
-        @functools.wraps(fn)
-        async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> None:
-            """Log and handle_player_command commands to players."""
-            player_id = kwargs.get("player_id") or args[0]
-            assert isinstance(player_id, str)  # for type checking
-            if (player := self._players.get(player_id)) is None or not player.available:
-                # player not existent
-                self.logger.warning(
-                    "Ignoring command %s for unavailable player %s",
-                    fn.__name__,
-                    player_id,
-                )
-                return
-
-            current_user = get_current_user()
-            if (
-                current_user
-                and current_user.player_filter
-                and player.player_id not in current_user.player_filter
-            ):
-                msg = (
-                    f"{current_user.username} does not have access to player {player.display_name}"
-                )
-                raise InsufficientPermissions(msg)
-
-            self.logger.debug(
-                "Handling command %s for player %s (%s)",
-                fn.__name__,
-                player.display_name,
-                f"by user {current_user.username}" if current_user else "unauthenticated",
-            )
-
-            async def execute() -> None:
-                try:
-                    await fn(self, *args, **kwargs)
-                except Exception as err:
-                    raise PlayerCommandFailed(str(err)) from err
-
-            if lock:
-                # Acquire a lock specific to player_id and function name
-                lock_key = f"{fn.__name__}_{player_id}"
-                if lock_key not in self._player_command_locks:
-                    self._player_command_locks[lock_key] = asyncio.Lock()
-                async with self._player_command_locks[lock_key]:
-                    await execute()
-            else:
-                await execute()
-
-        return wrapper
-
-    # Support both @handle_player_command and @handle_player_command(lock=True)
-    if func is not None:
-        return decorator(func)
-    return decorator
-
-
-class PlayerController(CoreController):
+class PlayerController(ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
 
     domain: str = "players"
@@ -215,6 +118,12 @@ class PlayerController(CoreController):
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
         self._sync_groups: SyncGroupController = SyncGroupController(self)
+        # Lock to prevent race conditions during player registration
+        self._register_lock = asyncio.Lock()
+        # Lock to prevent race conditions during universal player creation
+        self._universal_player_locks: dict[str, asyncio.Lock] = {}
+        # Track pending protocol player evaluations (delayed to allow all protocols to register)
+        self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -224,6 +133,10 @@ class PlayerController(CoreController):
         """Cleanup on exit."""
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+        # Cancel all pending protocol evaluations
+        for handle in self._pending_protocol_evaluations.values():
+            handle.cancel()
+        self._pending_protocol_evaluations.clear()
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -246,6 +159,7 @@ class PlayerController(CoreController):
         return_disabled: bool = False,
         provider_filter: str | None = None,
         return_sync_groups: bool = True,
+        return_protocol_players: bool = False,
     ) -> list[Player]:
         """
         Return all registered players.
@@ -255,6 +169,8 @@ class PlayerController(CoreController):
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
         :param provider_filter [str]: Optional filter by provider lookup key.
+        :param return_sync_groups [bool]: Include sync group players.
+        :param return_protocol_players [bool]: Include protocol players (hidden by default).
 
         :return: List of Player objects.
         """
@@ -272,6 +188,7 @@ class PlayerController(CoreController):
             and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (not user_filter or player.player_id in user_filter)
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
+            and (return_protocol_players or player.type != PlayerType.PROTOCOL)
         ]
 
     @api_command("players/all")
@@ -280,6 +197,7 @@ class PlayerController(CoreController):
         return_unavailable: bool = True,
         return_disabled: bool = False,
         provider_filter: str | None = None,
+        return_protocol_players: bool = False,
     ) -> list[PlayerState]:
         """
         Return PlayerState for all registered players.
@@ -287,6 +205,7 @@ class PlayerController(CoreController):
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
         :param provider_filter [str]: Optional filter by provider lookup key.
+        :param return_protocol_players [bool]: Include protocol players (hidden by default).
 
         :return: List of PlayerState objects.
         """
@@ -296,6 +215,7 @@ class PlayerController(CoreController):
                 return_unavailable=return_unavailable,
                 return_disabled=return_disabled,
                 provider_filter=provider_filter,
+                return_protocol_players=return_protocol_players,
             )
         ]
 
@@ -716,8 +636,8 @@ class PlayerController(CoreController):
 
         Will set a new (overall) volume level to a group player or syncgroup.
 
-        :param group_player: dedicated group player or syncleader to handle the command.
-        :param volume_level: volume level (0..100) to set to the group.
+        :param player_id: Player ID of group player or syncleader to handle the command.
+        :param volume_level: Volume level (0..100) to set to the group.
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checker
@@ -830,11 +750,11 @@ class PlayerController(CoreController):
         """
         Handle playback of an announcement (url) on given player.
 
-        - player_id: player_id of the player to handle the command.
-        - url: URL of the announcement to play.
-        - pre_announce: optional bool if pre-announce should be used.
-        - volume_level: optional volume level to set for the announcement.
-        - pre_announce_url: optional custom URL to use for the pre-announce chime.
+        :param player_id: Player ID of the player to handle the command.
+        :param url: URL of the announcement to play.
+        :param pre_announce: Optional bool if pre-announce should be used.
+        :param volume_level: Optional volume level to set for the announcement.
+        :param pre_announce_url: Optional custom URL to use for the pre-announce chime.
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
@@ -850,7 +770,20 @@ class PlayerController(CoreController):
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
             # determine if the player has native announcements support
+            # or if any linked protocol has announcement support
+            announce_player: Player = player
             native_announce_support = PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
+            if not native_announce_support:
+                for linked in player._attr_linked_protocols:
+                    if protocol_player := self.get(linked.player_id):
+                        if (
+                            protocol_player.available
+                            and PlayerFeature.PLAY_ANNOUNCEMENT
+                            in protocol_player.supported_features
+                        ):
+                            announce_player = protocol_player
+                            native_announce_support = True
+                            break
             # determine pre-announce from (group)player config
             if pre_announce is None and "tts" in url:
                 conf_pre_announce = self.mass.config.get_raw_player_config_value(
@@ -909,10 +842,10 @@ class PlayerController(CoreController):
                 title="Announcement",
                 custom_data=dict(announce_data),
             )
-            # handle native announce support
+            # handle native announce support (player or linked protocol)
             if native_announce_support:
                 announcement_volume = self.get_announcement_volume(player_id, volume_level)
-                await player.play_announcement(announcement, announcement_volume)
+                await announce_player.play_announcement(announcement, announcement_volume)
                 return
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
@@ -932,7 +865,19 @@ class PlayerController(CoreController):
             await self._handle_cmd_power(player.player_id, True)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
-        await player.play_media(media)
+
+        # Select best output protocol for playback
+        target_player, protocol_id = self._select_best_output_protocol(player)
+
+        if target_player.player_id != player.player_id:
+            # Playing via linked protocol - update active output protocol
+            player._attr_active_output_protocol = protocol_id
+            player.update_state()
+            await target_player.play_media(media)
+        else:
+            # Native playback
+            player._attr_active_output_protocol = "native"
+            await player.play_media(media)
 
     @api_command("players/cmd/select_source")
     @handle_player_command
@@ -1151,7 +1096,7 @@ class PlayerController(CoreController):
         Join given player(s) to target player.
 
         Will add the given player(s) to the target player (sync leader or group player).
-        NOTE: This is a (deprecated) alias for cmd_set_members.
+        This is a (deprecated) alias for cmd_set_members.
         """
         await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
 
@@ -1212,10 +1157,10 @@ class PlayerController(CoreController):
         """
         Create a new (permanent) Group Player.
 
-        :param provider: The provider(id) to create the group player for
-        :param name: Name of the new group player
-        :param members: List of player ids to add to the group
-        :param dynamic: Whether the group is dynamic (members can change)
+        :param provider: The provider (id) to create the group player for.
+        :param name: Name of the new group player.
+        :param members: List of player ids to add to the group.
+        :param dynamic: Whether the group is dynamic (members can change).
         """
         if not (provider_instance := self.mass.get_provider(provider)):
             raise ProviderUnavailableError(f"Provider {provider} not found")
@@ -1234,11 +1179,7 @@ class PlayerController(CoreController):
 
     @api_command("players/remove_group_player", required_role="admin")
     async def remove_group_player(self, player_id: str) -> None:
-        """
-        Remove a group player.
-
-        :param player_id: ID of the group player to remove.
-        """
+        """Remove a group player."""
         if not (player := self.get(player_id)):
             # we simply permanently delete the player by wiping its config
             self.mass.config.remove(f"players/{player_id}")
@@ -1256,10 +1197,9 @@ class PlayerController(CoreController):
         Add the currently playing item/track on given player to the favorites.
 
         This tries to resolve the currently playing media to an actual media item
-        and add that to the favorites in the library.
-
-        Will raise an error if the player is not currently playing anything
-        or if the currently playing media can not be resolved to a media item.
+        and add that to the favorites in the library. Will raise an error if the
+        player is not currently playing anything or if the currently playing media
+        can not be resolved to a media item.
         """
         player = self._get_player_with_redirect(player_id)
         # handle mass player queue active
@@ -1323,50 +1263,63 @@ class PlayerController(CoreController):
         """Register a player on the Player Controller."""
         if self.mass.closing:
             return
-        player_id = player.player_id
 
-        if player_id in self._players:
-            msg = f"Player {player_id} is already registered!"
-            raise AlreadyRegisteredError(msg)
+        # Use lock to prevent race conditions during concurrent player registrations
+        async with self._register_lock:
+            player_id = player.player_id
 
-        # ignore disabled players
-        if not player.enabled:
-            return
+            if player_id in self._players:
+                msg = f"Player {player_id} is already registered!"
+                raise AlreadyRegisteredError(msg)
 
-        # register throttler for this player
-        self._player_throttlers[player_id] = Throttler(1, 0.05)
+            # ignore disabled players
+            if not player.enabled:
+                return
 
-        # restore 'fake' power state from cache if available
-        cached_value = await self.mass.cache.get(
-            key=player.player_id,
-            provider=self.domain,
-            category=CACHE_CATEGORY_PLAYER_POWER,
-            default=False,
-        )
-        if cached_value is not None:
-            player.extra_data[ATTR_FAKE_POWER] = cached_value
+            # register throttler for this player
+            self._player_throttlers[player_id] = Throttler(1, 0.05)
 
-        # finally actually register it
-        self._players[player_id] = player
+            # restore 'fake' power state from cache if available
+            cached_value = await self.mass.cache.get(
+                key=player.player_id,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_POWER,
+                default=False,
+            )
+            if cached_value is not None:
+                player.extra_data[ATTR_FAKE_POWER] = cached_value
 
-        # ensure we fetch and set the latest/full config for the player
-        player_config = await self.mass.config.get_player_config(player_id)
-        player.set_config(player_config)
-        # call hook after the player is registered and config is set
-        await player.on_config_updated()
+            # finally actually register it
+            self._players[player_id] = player
 
-        self.logger.info(
-            "Player registered: %s/%s",
-            player_id,
-            player.display_name,
-        )
-        # signal event that a player was added
-        # update state without signaling event first (to ensure all attributes are set correctly)
-        player.update_state(signal_event=False)
-        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+            # ensure we fetch and set the latest/full config for the player
+            player_config = await self.mass.config.get_player_config(player_id)
+            player.set_config(player_config)
+            # call hook after the player is registered and config is set
+            await player.on_config_updated()
 
-        # register playerqueue for this player
-        await self.mass.player_queues.on_player_register(player)
+            # Handle protocol linking
+            self._evaluate_protocol_links(player)
+
+            self.logger.info(
+                "Player (type %s) registered: %s/%s",
+                player.type.value,
+                player_id,
+                player.display_name,
+            )
+            # signal event that a player was added
+            # update state without signaling event first (ensure all attributes are set)
+            player.update_state(signal_event=False)
+            self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+
+            # register playerqueue for this player
+            # Skip if this is a protocol player pending evaluation (queue created when promoted)
+            if (
+                player.type != PlayerType.PROTOCOL
+                and player.player_id not in self._pending_protocol_evaluations
+            ):
+                await self.mass.player_queues.on_player_register(player)
+
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1394,18 +1347,14 @@ class PlayerController(CoreController):
         """
         Unregister a player from the player controller.
 
-        Called (by a PlayerProvider) when a player is removed
-        or no longer available (for a longer period of time).
-
-        This will remove the player from the player controller and
-        optionally remove the player's config from the mass config.
-
-        - player_id: player_id of the player to unregister.
-        - permanent: if True, remove the player permanently by deleting
-        the player's config from the mass config. If False, the player config will not be removed,
-        allowing for re-registration (with the same config) later.
-
+        Called (by a PlayerProvider) when a player is removed or no longer available
+        (for a longer period of time). This will remove the player from the player
+        controller and optionally remove the player's config from the mass config.
         If the player is not registered, this will silently be ignored.
+
+        :param player_id: Player ID of the player to unregister.
+        :param permanent: If True, remove the player permanently by deleting its config.
+                          If False, the player config will not be removed.
         """
         player = self._players.get(player_id)
         if player is None:
@@ -1415,8 +1364,9 @@ class PlayerController(CoreController):
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
-            # player permanent removal: delete its config
+            # player permanent removal: cleanup protocol links, delete config
             # and signal PLAYER_REMOVED event
+            self._cleanup_protocol_links(player)
             self.delete_player_config(player_id)
             self.logger.info("Player removed: %s", player.name)
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
@@ -1890,6 +1840,8 @@ class PlayerController(CoreController):
                 continue
             if player.player_id in _player.group_members:
                 yield _player
+
+    # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)
 
     async def _play_announcement(  # noqa: PLR0915
         self,

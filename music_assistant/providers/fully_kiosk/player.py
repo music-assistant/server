@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.constants import (
@@ -39,14 +39,13 @@ class FullyKioskPlayer(Player):
         super().__init__(provider, player_id)
         self.fully_kiosk = fully_kiosk
         # Set player attributes
-        self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        self._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
         self._attr_name = self.fully_kiosk.deviceInfo["deviceName"]
         self._attr_device_info = DeviceInfo(
             model=self.fully_kiosk.deviceInfo["deviceModel"],
             manufacturer=self.fully_kiosk.deviceInfo["deviceManufacturer"],
         )
-        self._attr_device_info.ip_address = address
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_available = True
         self._attr_needs_poll = True
         self._attr_poll_interval = 10
