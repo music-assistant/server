@@ -375,9 +375,10 @@ class SqueezelitePlayer(Player):
         self._attr_volume_muted = self.client.muted
         self._attr_device_info = DeviceInfo(
             model=self.client.device_model,
-            ip_address=self.client.device_address,
             manufacturer=self.client.device_type,
         )
+        self._attr_device_info.ip_address = self.client.device_address
+        self._attr_device_info.mac_address = self.client.player_id
         if (
             old_state != PlaybackState.PLAYING
             and self._attr_playback_state == PlaybackState.PLAYING

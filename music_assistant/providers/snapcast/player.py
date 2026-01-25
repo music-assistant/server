@@ -74,9 +74,9 @@ class SnapCastPlayer(Player):
         self._attr_available = self.snap_client.connected
         self._attr_device_info = DeviceInfo(
             model=self.snap_client._client.get("host").get("os"),
-            ip_address=self.snap_client._client.get("host").get("ip"),
             manufacturer=self.snap_client._client.get("host").get("arch"),
         )
+        self._attr_device_info.ip_address = self.snap_client._client.get("host").get("ip")
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,

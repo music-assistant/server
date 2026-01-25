@@ -102,9 +102,9 @@ class AirPlayPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=model,
             manufacturer=manufacturer,
-            ip_address=address,
-            mac_address=player_id_to_mac_address(player_id),
         )
+        self._attr_device_info.ip_address = address
+        self._attr_device_info.mac_address = player_id_to_mac_address(player_id)
         self._attr_supported_features = {
             PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,

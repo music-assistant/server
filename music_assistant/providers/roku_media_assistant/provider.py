@@ -168,8 +168,8 @@ class MediaAssistantprovider(PlayerProvider):
                     model=device.info.model_name if device.info.model_name is not None else "",
                     model_id=device.info.model_number,
                     manufacturer=device.info.brand,
-                    ip_address=ip,
                 )
+                roku_player._attr_device_info.ip_address = ip
 
                 self.roku_players[player_id] = roku_player
             await roku_player.setup()

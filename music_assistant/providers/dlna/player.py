@@ -121,7 +121,6 @@ class DLNAPlayer(Player):
                 # connect was successful, update device info
                 self._attr_device_info = DeviceInfo(
                     model=self.device.model_name,
-                    ip_address=self.device.device.presentation_url or self.description_url,
                     manufacturer=self.device.manufacturer,
                 )
 

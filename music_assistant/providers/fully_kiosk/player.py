@@ -45,8 +45,8 @@ class FullyKioskPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=self.fully_kiosk.deviceInfo["deviceModel"],
             manufacturer=self.fully_kiosk.deviceInfo["deviceManufacturer"],
-            ip_address=address,
         )
+        self._attr_device_info.ip_address = address
         self._attr_available = True
         self._attr_needs_poll = True
         self._attr_poll_interval = 10

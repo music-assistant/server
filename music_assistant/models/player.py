@@ -22,6 +22,7 @@ from music_assistant_models.config_entries import (
     PlayerConfig,
 )
 from music_assistant_models.constants import (
+    EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
@@ -35,12 +36,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import (
-    EXTRA_ATTRIBUTES_TYPES,
-    DeviceInfo,
-    PlayerMedia,
-    PlayerSource,
-)
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.player import Player as PlayerState
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property

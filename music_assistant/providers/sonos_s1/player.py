@@ -80,8 +80,8 @@ class SonosPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=soco.speaker_info["model_name"],
             manufacturer="Sonos",
-            ip_address=soco.ip_address,
         )
+        self._attr_device_info.ip_address = soco.ip_address
         self._attr_needs_poll = True
         self._attr_poll_interval = 5
         self._attr_available = True
@@ -315,8 +315,8 @@ class SonosPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
-            ip_address=ip_address,
         )
+        self._attr_device_info.ip_address = ip_address
         self.update_player()
 
     async def _check_availability(self) -> None:
