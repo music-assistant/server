@@ -81,12 +81,13 @@ class HeosPlayer(Player):
 
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
-        self._attr_device_info = DeviceInfo(
+        _device_info = DeviceInfo(
             model=model,
             software_version=self._device.version,
-            ip_address=self._device.ip_address,
             manufacturer=manufacturer,
         )
+        _device_info.ip_address = self._device.ip_address
+        self._attr_device_info = _device_info
         self._attr_can_group_with = {self.provider.instance_id}
         self._attr_available = self._device.available
         self._attr_name = self._device.name
