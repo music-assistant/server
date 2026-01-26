@@ -91,7 +91,7 @@ async def webdav_propfind(
             if resp.status == 404:
                 LOGGER.debug("WebDAV resource not found: %s", url)
                 return []
-            elif resp.status >= 400:
+            if resp.status >= 400:
                 raise SetupFailedError(
                     f"WebDAV PROPFIND failed with status {resp.status} for {url}"
                 )
