@@ -146,9 +146,15 @@ class PandoraProvider(MusicProvider):
             ) from err
 
     async def _api_request(
-        self, method: str, url: str, data: dict[str, Any] | None = None
+        self, method: str, url: str, data: dict[str, Any] | None = None, retry: bool = True
     ) -> dict[str, Any]:
-        """Make an API request to Pandora."""
+        """Make an API request to Pandora.
+
+        :param method: HTTP method (GET, POST, etc.)
+        :param url: API endpoint URL
+        :param data: Optional JSON data to send
+        :param retry: Whether to retry once on 401 authentication errors
+        """
         if not self._csrf_token or not self._auth_token:
             raise LoginFailed("Not authenticated with Pandora")
 
@@ -160,30 +166,14 @@ class PandoraProvider(MusicProvider):
             ) as response:
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
-                    # Auth token expired, re-authenticate and retry once
-                    username = str(self.config.get_value(CONF_USERNAME))
-                    password = str(self.config.get_value(CONF_PASSWORD))
-                    await self._authenticate(username, password)
-
-                    # Retry request with new token
-                    headers = create_auth_headers(self._csrf_token, self._auth_token)
-                    async with self.mass.http_session.request(
-                        method, url, json=data, headers=headers
-                    ) as retry_response:
-                        if retry_response.status == 401:
-                            raise LoginFailed("Pandora authentication failed after retry")
-                        if retry_response.status == 404:
-                            raise MediaNotFoundError("Resource not found")
-                        if retry_response.status >= 500:
-                            raise ProviderUnavailableError("Pandora server error")
-                        if retry_response.status >= 400:
-                            raise InvalidDataError(
-                                f"Pandora API error: HTTP {retry_response.status}"
-                            )
-
-                        result: dict[str, Any] = await retry_response.json()
-                        handle_pandora_error(result)
-                        return result
+                    if retry:
+                        # Auth token expired, re-authenticate and retry once
+                        username = str(self.config.get_value(CONF_USERNAME))
+                        password = str(self.config.get_value(CONF_PASSWORD))
+                        await self._authenticate(username, password)
+                        return await self._api_request(method, url, data, retry=False)
+                    else:
+                        raise LoginFailed("Pandora authentication failed after retry")
 
                 if response.status == 404:
                     raise MediaNotFoundError("Resource not found")
