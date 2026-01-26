@@ -551,6 +551,7 @@ class SonosPlayer(Player):
         if SOURCE_MAPPING.get(audio_source) and audio_source in LINEIN_SOURCES:
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
+            self._attr_active_source = audio_source
             return
 
         current_media = PlayerMedia(
