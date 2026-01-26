@@ -199,6 +199,7 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     default_value="stereo",
     label="Output Channel Mode",
     category="audio",
+    requires_reload=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
@@ -208,6 +209,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     default_value=True,
     description="Enable volume normalization (EBU-R128 based)",
     category="audio",
+    requires_reload=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
@@ -219,6 +221,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
     category="advanced",
+    requires_reload=True,
 )
 
 CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
@@ -228,6 +231,7 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
     default_value=True,
     description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
     category="audio",
+    requires_reload=True,
 )
 
 
@@ -247,6 +251,7 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",
     category="audio",
+    requires_reload=True,
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
@@ -260,6 +265,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="standard_crossfade",
     category="audio",
+    requires_reload=True,
 )
 
 
@@ -281,6 +287,7 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     "into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n "
     "Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
     category="advanced",
+    requires_reload=True,
 )
 
 CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 = ConfigEntry.from_dict(
@@ -317,6 +324,7 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     "and you always hear the audio too early or late on this player, "
     "you can shift the audio a bit.",
     category="advanced",
+    requires_reload=True,
 )
 
 
@@ -419,6 +427,7 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     category="advanced",
     description="The sample rates (and bit depths) supported by this player.\n"
     "Content with unsupported sample rates will be automatically resampled.",
+    requires_reload=True,
 )
 
 
@@ -436,6 +445,7 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     description="This is considered to be a very advanced setting, only adjust this if needed, "
     "for example if your player stops playing halfway streams or if you experience "
     "other playback related issues. In most cases the default setting is fine.",
+    requires_reload=True,
 )
 
 CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
@@ -481,6 +491,7 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
     "even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by "
     "online radio stations to show you what is playing. \n\nBe aware that not all players support "
     "this correctly. If you experience issues with playback, try disabling this setting.",
+    requires_reload=True,
 )
 
 CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
@@ -513,6 +524,7 @@ CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     "experience audio glitches during transitioning between tracks.",
     default_value=False,
     category="advanced",
+    requires_reload=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
