@@ -69,7 +69,7 @@ class Provider:
         # default implementation: perform a full reload on any config change
         # override in your provider if you need more fine-grained control
         # such as checking the changed_keys set and only reload when 'requires_reload' keys changed
-        if changed_keys == {CONF_LOG_LEVEL}:
+        if changed_keys == {f"values/{CONF_LOG_LEVEL}"}:
             # only log level changed, no need to reload
             self._set_log_level_from_config(config)
         else:

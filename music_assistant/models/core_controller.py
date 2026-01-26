@@ -65,7 +65,7 @@ class CoreController:
         """Handle logic when the config is updated."""
         # default implementation: perform a full reload on any config change
         # TODO: only reload when 'requires_reload' keys changed
-        if changed_keys == {CONF_LOG_LEVEL}:
+        if changed_keys == {f"values/{CONF_LOG_LEVEL}"}:
             # only log level changed, no need to reload
             log_value = str(config.get_value(CONF_LOG_LEVEL))
             self._set_logger(log_value)
