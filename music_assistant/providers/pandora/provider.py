@@ -172,8 +172,7 @@ class PandoraProvider(MusicProvider):
                         password = str(self.config.get_value(CONF_PASSWORD))
                         await self._authenticate(username, password)
                         return await self._api_request(method, url, data, retry=False)
-                    else:
-                        raise LoginFailed("Pandora authentication failed after retry")
+                    raise LoginFailed("Pandora authentication failed after retry")
 
                 if response.status == 404:
                     raise MediaNotFoundError("Resource not found")
