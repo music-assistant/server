@@ -72,7 +72,10 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    get_sendspin_player_id,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
@@ -155,10 +158,12 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 return
 
             current_user = get_current_user()
+            current_sendspin_player = get_sendspin_player_id()
             if (
                 current_user
                 and current_user.player_filter
                 and player.player_id not in current_user.player_filter
+                and player.player_id != current_sendspin_player
             ):
                 msg = (
                     f"{current_user.username} does not have access to player {player.display_name}"
@@ -264,13 +269,18 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         return [
             player
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
             and (provider_filter is None or player.provider.instance_id == provider_filter)
-            and (not user_filter or player.player_id in user_filter)
+            and (
+                not user_filter
+                or player.player_id in user_filter
+                or player.player_id == current_sendspin_player
+            )
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
 
@@ -344,7 +354,13 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
-        if current_user and user_filter and player_id not in user_filter:
+        current_sendspin_player = get_sendspin_player_id()
+        if (
+            current_user
+            and user_filter
+            and player_id not in user_filter
+            and player_id != current_sendspin_player
+        ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
         if player := self.get(player_id, raise_unavailable):
@@ -374,8 +390,14 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         if player := self.get_player_by_name(name):
-            if current_user and user_filter and player.player_id not in user_filter:
+            if (
+                current_user
+                and user_filter
+                and player.player_id not in user_filter
+                and player.player_id != current_sendspin_player
+            ):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
             return player.state
