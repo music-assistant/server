@@ -268,8 +268,7 @@ class DLNAPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+        return [*PLAYER_CONFIG_ENTRIES]
 
     # async def on_player_config_change(
     #     self,

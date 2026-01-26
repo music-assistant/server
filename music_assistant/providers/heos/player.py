@@ -10,17 +10,11 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, const
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import create_sample_rates_config_entry
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
-from .constants import (
-    HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
-    HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
-)
+from .constants import HEOS_MEDIA_TYPE_TO_MEDIA_TYPE, HEOS_PLAY_STATE_TO_PLAYBACK_STATE
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -44,6 +38,11 @@ class HeosPlayer(Player):
 
     _heos: Heos
     _device: PyHeosPlayer
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
 
     def __init__(self, provider: HeosPlayerProvider, device: PyHeosPlayer) -> None:
         """Initialize the Player."""
@@ -296,7 +295,6 @@ class HeosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
             # Gen 1 devices, like HEOS Link, only support up to 48kHz/16bit
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
@@ -304,5 +302,4 @@ class HeosPlayer(Player):
                 max_bit_depth=24,
                 safe_max_bit_depth=16,
             ),
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
         ]

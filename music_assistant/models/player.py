@@ -15,26 +15,13 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast, final
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-    PlayerConfig,
-)
 from music_assistant_models.constants import (
     EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    HidePlayerOption,
-    MediaType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-)
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.player import Player as PlayerState
@@ -46,75 +33,21 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
-    CONF_ENTRY_ANNOUNCE_VOLUME,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-    CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_EXPOSE_PLAYER_TO_HA,
-    CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED,
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HIDE_PLAYER_IN_UI,
-    CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT,
-    CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_OUTPUT_CHANNELS,
-    CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAYER_ICON,
-    CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_SAMPLE_RATES,
-    CONF_ENTRY_SMART_FADES_MODE,
-    CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
-    CONF_HIDE_PLAYER_IN_UI,
+    CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
-    CONF_PRE_ANNOUNCE_CHIME_URL,
+    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
 )
-from music_assistant.helpers.util import (
-    get_changed_dataclass_values,
-    validate_announcement_chime_url,
-)
+from music_assistant.helpers.util import get_changed_dataclass_values
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+
     from .player_provider import PlayerProvider
-
-
-CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
-    key=CONF_PRE_ANNOUNCE_CHIME_URL,
-    type=ConfigEntryType.STRING,
-    label="Custom (pre)announcement chime URL",
-    description="URL to a custom audio file to play before announcements.\n"
-    "Leave empty to use the default chime.\n"
-    "Supports http:// and https:// URLs pointing to "
-    "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
-    "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
-    category="announcements",
-    required=False,
-    depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
-    depends_on_value=True,
-    validate=lambda val: validate_announcement_chime_url(cast("str", val)),
-)
-
-BASE_CONFIG_ENTRIES = [
-    # config entries that are valid for all player types
-    CONF_ENTRY_PLAYER_ICON,
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_SMART_FADES_MODE,
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_OUTPUT_LIMITER,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL,
-    CONF_ENTRY_HTTP_PROFILE,
-]
 
 
 class Player(ABC):
@@ -211,17 +144,22 @@ class Player(ABC):
         """Return the current playback state of the player."""
         return self._attr_playback_state
 
-    @cached_property
-    def flow_mode(self) -> bool:
+    @property
+    def requires_flow_mode(self) -> bool:
         """
         Return if the player needs flow mode.
 
         Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
-        or has a flow mode config entry set to True.
+        or has crossfade enabled without gapless support.
         """
-        if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
+        if PlayerFeature.ENQUEUE not in self.supported_features:
+            # without enqueue support, flow mode is required
             return True
-        return PlayerFeature.ENQUEUE not in self.supported_features
+        return (
+            # player has crossfade enabled without gapless support - flow mode is required
+            PlayerFeature.GAPLESS_PLAYBACK not in self.supported_features
+            and str(self._config.get_value(CONF_SMART_FADES_MODE)) != "disabled"
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -588,42 +526,16 @@ class Player(ABC):
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player.
+        """
+        Return all (provider/player specific) Config Entries for the player.
 
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        # Return all base config entries for a player.
-        # Feel free to override but ensure to include the base entries by calling super() first.
+        # Return any (player/provider specific) config entries for a player.
         # To override the default config entries, simply define an entry with the same key
         # and it will be used instead of the default one.
-        return [
-            # config entries that are valid for all players
-            *BASE_CONFIG_ENTRIES,
-            # add player control entries
-            *self._create_player_control_config_entries(),
-            CONF_ENTRY_AUTO_PLAY,
-            # audio-related config entries
-            CONF_ENTRY_SAMPLE_RATES,
-            CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_OUTPUT_CHANNELS,
-            # add default entries for announce feature
-            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-            CONF_ENTRY_ANNOUNCE_VOLUME,
-            CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
-            CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
-            # add default entries to hide player in UI and expose to HA
-            (
-                CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT
-                if self.hidden_by_default
-                else CONF_ENTRY_HIDE_PLAYER_IN_UI
-            ),
-            (
-                CONF_ENTRY_EXPOSE_PLAYER_TO_HA
-                if self.expose_to_ha_by_default
-                else CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED
-            ),
-        ]
+        return []
 
     async def on_config_updated(self) -> None:
         """
@@ -979,16 +891,13 @@ class Player(ABC):
 
     @cached_property
     @final
-    def hide_player_in_ui(self) -> set[HidePlayerOption]:
+    def hide_in_ui(self) -> bool:
         """
         Return the hide player in UI options.
 
         This is a convenience property based on the config entry.
         """
-        return {
-            HidePlayerOption(x)
-            for x in cast("list[str]", self._config.get_value(CONF_HIDE_PLAYER_IN_UI, []))
-        }
+        return bool(self._config.get_value(CONF_HIDE_IN_UI, self.hidden_by_default))
 
     @cached_property
     @final
@@ -1011,6 +920,19 @@ class Player(ABC):
         player currently has a Music Assistant Queue as active source.
         """
         return bool(self.mass.players.get_active_queue(self))
+
+    @cached_property
+    @final
+    def flow_mode(self) -> bool:
+        """
+        Return if the player needs flow mode.
+
+        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
+        or has a flow mode config entry set to True.
+        """
+        if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
+            return True
+        return PlayerFeature.ENQUEUE not in self.supported_features
 
     @property
     @final
@@ -1127,85 +1049,6 @@ class Player(ABC):
                 f"Player {self.display_name} does not support feature {feature.name}"
             )
 
-    def _create_player_control_config_entries(
-        self,
-    ) -> list[ConfigEntry]:
-        """Create config entries for player controls."""
-        all_controls = self.mass.players.player_controls()
-        power_controls = [x for x in all_controls if x.supports_power]
-        volume_controls = [x for x in all_controls if x.supports_volume]
-        mute_controls = [x for x in all_controls if x.supports_mute]
-        # work out player supported features
-        supports_power = PlayerFeature.POWER in self.supported_features
-        supports_volume = PlayerFeature.VOLUME_SET in self.supported_features
-        supports_mute = PlayerFeature.VOLUME_MUTE in self.supported_features
-        # create base options per control type (and add defaults like native and fake)
-        base_power_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
-        ]
-        if supports_power:
-            base_power_options.append(
-                ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
-            )
-        base_volume_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-        ]
-        if supports_volume:
-            base_volume_options.append(
-                ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
-            )
-        base_mute_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
-        ]
-        if supports_mute:
-            base_mute_options.append(
-                ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
-            )
-        # return final config entries for all options
-        return [
-            # Power control config entry
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                label="Power Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_power else PLAYER_CONTROL_NONE,
-                required=True,
-                options=[
-                    *base_power_options,
-                    *(ConfigValueOption(x.name, x.id) for x in power_controls),
-                ],
-                category="player_controls",
-            ),
-            # Volume control config entry
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROL,
-                type=ConfigEntryType.STRING,
-                label="Volume Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_volume else PLAYER_CONTROL_NONE,
-                required=True,
-                options=[
-                    *base_volume_options,
-                    *(ConfigValueOption(x.name, x.id) for x in volume_controls),
-                ],
-                category="player_controls",
-            ),
-            # Mute control config entry
-            ConfigEntry(
-                key=CONF_MUTE_CONTROL,
-                type=ConfigEntryType.STRING,
-                label="Mute Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_mute else PLAYER_CONTROL_NONE,
-                required=True,
-                options=[
-                    *base_mute_options,
-                    *[ConfigValueOption(x.name, x.id) for x in mute_controls],
-                ],
-                category="player_controls",
-            ),
-        ]
-
     def _get_player_media_checksum(self) -> str:
         """Return a checksum for the current media."""
         if not (media := self.current_media):
@@ -1254,7 +1097,7 @@ class Player(ABC):
             current_media=self.current_media,
             name=self.display_name,
             enabled=self.enabled,
-            hide_in_ui="always" in self.hide_player_in_ui,
+            hide_in_ui=self.hide_in_ui,
             expose_to_ha=self.expose_to_ha,
             icon=self.icon,
             group_volume=self.group_volume,
@@ -1552,61 +1395,6 @@ class GroupPlayer(Player):
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation: groups can't be synced
         return None
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player.
-
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
-        """
-        # Return all base config entries for a group player.
-        # Feel free to override but ensure to include the base entries by calling super() first.
-        # To override the default config entries, simply define an entry with the same key
-        # and it will be used instead of the default one.
-        return [
-            *BASE_CONFIG_ENTRIES,
-            CONF_ENTRY_PLAYER_ICON_GROUP,
-            # add player control entries as hidden entries
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_POWER_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_VOLUME_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_MUTE_CONTROL,
-                # disable mute control for group players for now
-                # TODO: work out if all child players support mute control
-                default_value=PLAYER_CONTROL_NONE,
-                hidden=True,
-            ),
-            CONF_ENTRY_AUTO_PLAY,
-            # add default entries to hide player in UI and expose to HA
-            (
-                CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT
-                if self.hidden_by_default
-                else CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER
-            ),
-            (
-                CONF_ENTRY_EXPOSE_PLAYER_TO_HA
-                if self.expose_to_ha_by_default
-                else CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED
-            ),
-        ]
 
     async def volume_set(self, volume_level: int) -> None:
         """

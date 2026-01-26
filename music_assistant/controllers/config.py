@@ -18,13 +18,26 @@ from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
     MULTI_VALUE_SPLITTER,
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
     CoreConfig,
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
+from music_assistant_models.constants import (
+    PLAYER_CONTROL_FAKE,
+    PLAYER_CONTROL_NATIVE,
+    PLAYER_CONTROL_NONE,
+)
+from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -34,10 +47,15 @@ from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
     CONF_CORE,
-    CONF_DEPRECATED_CROSSFADE,
-    CONF_DEPRECATED_EQ_BASS,
-    CONF_DEPRECATED_EQ_MID,
-    CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_ANNOUNCE_VOLUME,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_ALBUMS,
     CONF_ENTRY_LIBRARY_SYNC_ARTISTS,
@@ -48,6 +66,11 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
@@ -55,27 +78,41 @@ from music_assistant.constants import (
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
+    CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_SMART_FADES_MODE,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_EXPOSE_PLAYER_TO_HA,
+    CONF_HIDE_IN_UI,
+    CONF_MUTE_CONTROL,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
     CONF_PLAYERS,
+    CONF_POWER_CONTROL,
+    CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
+    CONF_VOLUME_CONTROL,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
+    NON_HTTP_PROVIDERS,
 )
+from music_assistant.controllers.players.sync_groups import SyncGroupPlayer
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
-from music_assistant.helpers.util import load_provider_module
+from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
 from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.core_controller import CoreController
+    from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 5
@@ -526,7 +563,9 @@ class ConfigController:
                 # pass action and values to get_config_entries
                 if values is None:
                     values = raw_conf.get("values", {})
-                conf_entries = await player.get_config_entries(action=action, values=values)
+                conf_entries = await self.get_player_config_entries(
+                    player_id, action=action, values=values
+                )
             else:
                 # handle unavailable player and/or provider
                 conf_entries = []
@@ -558,7 +597,14 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
 
-        all_entries = await player.get_config_entries(action=action, values=values)
+        player_entries = await player.get_config_entries(action=action, values=values)
+        default_entries = self._get_default_player_config_entries(player)
+        player_entries_keys = {entry.key for entry in player_entries}
+        all_entries = [
+            *player_entries,
+            # ignore default entries that were overridden by the player specific ones
+            *[x for x in default_entries if x.key not in player_entries_keys],
+        ]
         # set current value from stored values
         for entry in all_entries:
             if entry.value is None:
@@ -752,51 +798,8 @@ class ConfigController:
             return DSPConfig.from_dict(raw_conf)
         # return default DSP config
         dsp_config = DSPConfig()
-
-        deprecated_eq_bass = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_DEPRECATED_EQ_BASS, 0
-        )
-        deprecated_eq_mid = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_DEPRECATED_EQ_MID, 0
-        )
-        deprecated_eq_treble = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_DEPRECATED_EQ_TREBLE, 0
-        )
-        if deprecated_eq_bass != 0 or deprecated_eq_mid != 0 or deprecated_eq_treble != 0:
-            # the user previously used the now deprecated EQ settings:
-            # add a tone control filter with the old values, reset the deprecated values and
-            # save this as the new DSP config
-            # TODO: remove this in a future release
-            dsp_config.enabled = True
-            dsp_config.filters.append(
-                ToneControlFilter(
-                    enabled=True,
-                    bass_level=float(deprecated_eq_bass)
-                    if isinstance(deprecated_eq_bass, (int, float, str))
-                    else 0.0,
-                    mid_level=float(deprecated_eq_mid)
-                    if isinstance(deprecated_eq_mid, (int, float, str))
-                    else 0.0,
-                    treble_level=float(deprecated_eq_treble)
-                    if isinstance(deprecated_eq_treble, (int, float, str))
-                    else 0.0,
-                )
-            )
-
-            deprecated_eq_keys = [
-                CONF_DEPRECATED_EQ_BASS,
-                CONF_DEPRECATED_EQ_MID,
-                CONF_DEPRECATED_EQ_TREBLE,
-            ]
-            for key in deprecated_eq_keys:
-                if self.mass.config.get_raw_player_config_value(player_id, key, 0) != 0:
-                    self.mass.config.set_raw_player_config_value(player_id, key, 0)
-
-            self.set(f"{CONF_PLAYER_DSP}/{player_id}", dsp_config.to_dict())
-        else:
-            # The DSP config does not do anything by default, so we disable it
-            dsp_config.enabled = False
-
+        # The DSP config does not do anything by default, so we disable it
+        dsp_config.enabled = False
         return dsp_config
 
     @api_command("config/players/dsp/save", required_role="admin")
@@ -1336,18 +1339,6 @@ class ConfigController:
                 self._data[CONF_PROVIDERS]["sendspin"] = provider_config
                 changed = True
 
-        # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if not (values := player_config.get("values")):
-                continue
-            if (crossfade := values.pop(CONF_DEPRECATED_CROSSFADE, None)) is None:
-                continue
-            # Check if player has old crossfade enabled but no smart fades mode set
-            if crossfade is True and CONF_SMART_FADES_MODE not in values:
-                # Set smart fades mode to standard_crossfade
-                values[CONF_SMART_FADES_MODE] = "standard_crossfade"
-                changed = True
-
         # Migrate smart_fades mode value to smart_crossfade
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
@@ -1534,3 +1525,194 @@ class ConfigController:
             # correct any multi-instance provider mappings
             self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
         return config
+
+    def _get_default_player_config_entries(self, player: Player) -> list[ConfigEntry]:
+        """Return the default player config entries."""
+        entries: list[ConfigEntry] = []
+        # default protocol-player config entries
+        if player.type == PlayerType.PROTOCOL:
+            # bare minimum: only playback related entries
+            entries += [
+                CONF_ENTRY_OUTPUT_CHANNELS,
+            ]
+            if not player.requires_flow_mode:
+                entries.append(CONF_ENTRY_FLOW_MODE)
+            if player.provider.domain not in NON_HTTP_PROVIDERS:
+                entries += [
+                    CONF_ENTRY_SAMPLE_RATES,
+                    CONF_ENTRY_OUTPUT_CODEC,
+                    CONF_ENTRY_HTTP_PROFILE,
+                    CONF_ENTRY_ENABLE_ICY_METADATA,
+                ]
+            return entries
+
+        # some base entries for all player types
+        entries += [
+            CONF_ENTRY_SMART_FADES_MODE,
+            CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+            CONF_ENTRY_OUTPUT_LIMITER,
+            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+            CONF_ENTRY_TTS_PRE_ANNOUNCE,
+            ConfigEntry(
+                key=CONF_PRE_ANNOUNCE_CHIME_URL,
+                type=ConfigEntryType.STRING,
+                label="Custom (pre)announcement chime URL",
+                description="URL to a custom audio file to play before announcements.\n"
+                "Leave empty to use the default chime.\n"
+                "Supports http:// and https:// URLs pointing to "
+                "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
+                "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
+                category="announcements",
+                required=False,
+                depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                depends_on_value=True,
+                validate=lambda val: validate_announcement_chime_url(cast("str", val)),
+            ),
+            # add player control entries
+            *self._create_player_control_config_entries(player),
+            # add entry to hide player in UI
+            ConfigEntry(
+                key=CONF_HIDE_IN_UI,
+                type=ConfigEntryType.BOOLEAN,
+                label="Hide this player in the user interface",
+                default_value=player.hidden_by_default,
+                category="advanced",
+            ),
+            # add entry to expose player to HA
+            ConfigEntry(
+                key=CONF_EXPOSE_PLAYER_TO_HA,
+                type=ConfigEntryType.BOOLEAN,
+                label="Expose this player to Home Assistant",
+                description="Expose this player to the Home Assistant integration. \n"
+                "If disabled, this player will not be imported into Home Assistant.",
+                category="advanced",
+                default_value=player.expose_to_ha_by_default,
+            ),
+        ]
+
+        # group-player config entries
+        if player.type == PlayerType.GROUP:
+            is_dedicated_group_player = (
+                not isinstance(player, SyncGroupPlayer)
+                and player.provider.domain != "universal_group"
+            )
+            entries += [
+                CONF_ENTRY_PLAYER_ICON_GROUP,
+            ]
+            if is_dedicated_group_player and not player.requires_flow_mode:
+                entries.append(CONF_ENTRY_FLOW_MODE)
+            if is_dedicated_group_player and player.provider.domain not in NON_HTTP_PROVIDERS:
+                entries += [
+                    CONF_ENTRY_SAMPLE_RATES,
+                    CONF_ENTRY_OUTPUT_CODEC,
+                    CONF_ENTRY_HTTP_PROFILE,
+                    CONF_ENTRY_ENABLE_ICY_METADATA,
+                ]
+            return entries
+
+        # normal player (or stereo pair) config entries
+        entries += [
+            CONF_ENTRY_PLAYER_ICON,
+            CONF_ENTRY_OUTPUT_CHANNELS,
+            # add default entries for announce feature
+            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+            CONF_ENTRY_ANNOUNCE_VOLUME,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+        ]
+        # add flow mode config entry for players that not already explicitly enable it
+        if not player.requires_flow_mode:
+            entries.append(CONF_ENTRY_FLOW_MODE)
+        # add HTTP streaming config entries for non-http players
+        if player.provider.domain not in NON_HTTP_PROVIDERS:
+            entries += [
+                CONF_ENTRY_SAMPLE_RATES,
+                CONF_ENTRY_OUTPUT_CODEC,
+                CONF_ENTRY_HTTP_PROFILE,
+                CONF_ENTRY_ENABLE_ICY_METADATA,
+            ]
+
+        return entries
+
+    def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
+        """Create config entries for player controls."""
+        all_controls = self.mass.players.player_controls()
+        power_controls = [x for x in all_controls if x.supports_power]
+        volume_controls = [x for x in all_controls if x.supports_volume]
+        mute_controls = [x for x in all_controls if x.supports_mute]
+        # work out player supported features
+        supports_power = PlayerFeature.POWER in player.supported_features
+        supports_volume = PlayerFeature.VOLUME_SET in player.supported_features
+        supports_mute = PlayerFeature.VOLUME_MUTE in player.supported_features
+        # create base options per control type (and add defaults like native and fake)
+        base_power_options: list[ConfigValueOption] = [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+            ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
+        ]
+        if supports_power:
+            base_power_options.append(
+                ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
+            )
+        base_volume_options: list[ConfigValueOption] = [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+        ]
+        if supports_volume:
+            base_volume_options.append(
+                ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
+            )
+        base_mute_options: list[ConfigValueOption] = [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+            ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
+        ]
+        if supports_mute:
+            base_mute_options.append(
+                ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
+            )
+        # return final config entries for all options
+        return [
+            # Power control config entry
+            ConfigEntry(
+                key=CONF_POWER_CONTROL,
+                type=ConfigEntryType.STRING,
+                label="Power Control",
+                default_value=PLAYER_CONTROL_NATIVE if supports_power else PLAYER_CONTROL_NONE,
+                required=True,
+                options=[
+                    *base_power_options,
+                    *(ConfigValueOption(x.name, x.id) for x in power_controls),
+                ],
+                category="player_controls",
+                hidden=player.type == PlayerType.GROUP,
+            ),
+            # Volume control config entry
+            ConfigEntry(
+                key=CONF_VOLUME_CONTROL,
+                type=ConfigEntryType.STRING,
+                label="Volume Control",
+                default_value=PLAYER_CONTROL_NATIVE if supports_volume else PLAYER_CONTROL_NONE,
+                required=True,
+                options=[
+                    *base_volume_options,
+                    *(ConfigValueOption(x.name, x.id) for x in volume_controls),
+                ],
+                category="player_controls",
+                hidden=player.type == PlayerType.GROUP,
+            ),
+            # Mute control config entry
+            ConfigEntry(
+                key=CONF_MUTE_CONTROL,
+                type=ConfigEntryType.STRING,
+                label="Mute Control",
+                default_value=PLAYER_CONTROL_NATIVE if supports_mute else PLAYER_CONTROL_NONE,
+                required=True,
+                options=[
+                    *base_mute_options,
+                    *[ConfigValueOption(x.name, x.id) for x in mute_controls],
+                ],
+                category="player_controls",
+                hidden=player.type == PlayerType.GROUP,
+            ),
+            # auto-play on power on control config entry
+            CONF_ENTRY_AUTO_PLAY,
+        ]

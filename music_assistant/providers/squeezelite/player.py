@@ -27,11 +27,7 @@ from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
-    CONF_ENTRY_DEPRECATED_EQ_BASS,
-    CONF_ENTRY_DEPRECATED_EQ_MID,
-    CONF_ENTRY_DEPRECATED_EQ_TREBLE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-    CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
     INTERNAL_PCM_FORMAT,
@@ -158,10 +154,6 @@ class SqueezelitePlayer(Player):
         return [
             *base_entries,
             *preset_entries,
-            CONF_ENTRY_DEPRECATED_EQ_BASS,
-            CONF_ENTRY_DEPRECATED_EQ_MID,
-            CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-            CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_SYNC_ADJUST,
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,

@@ -233,13 +233,6 @@ class ChromecastPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-
-        # Check if Sendspin provider is available
-        sendspin_available = any(
-            prov.domain == "sendspin" for prov in self.mass.get_providers("player")
-        )
-
         # Sendspin mode config entry
         sendspin_config = ConfigEntry(
             key=CONF_USE_SENDSPIN_MODE,
@@ -252,7 +245,7 @@ class ChromecastPlayer(Player):
             "NOTE: Requires the Sendspin provider to be enabled.",
             required=False,
             default_value=False,
-            hidden=not sendspin_available or self.type == PlayerType.GROUP,
+            hidden=self.type == PlayerType.GROUP,
         )
 
         # Sync delay config entry (only visible when sendspin provider is available)
@@ -267,7 +260,7 @@ class ChromecastPlayer(Player):
             required=False,
             default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
             range=(-1000, 1000),
-            hidden=not sendspin_available or self.type == PlayerType.GROUP,
+            hidden=self.type == PlayerType.GROUP,
             immediate_apply=True,
         )
 
@@ -287,18 +280,16 @@ class ChromecastPlayer(Player):
                 ConfigValueOption("Opus (lossy, experimental)", "opus"),
                 ConfigValueOption("PCM (lossless, uncompressed)", "pcm"),
             ],
-            hidden=not sendspin_available or self.type == PlayerType.GROUP,
+            hidden=self.type == PlayerType.GROUP,
         )
 
         if self.type == PlayerType.GROUP:
             return [
-                *base_entries,
                 *CAST_PLAYER_CONFIG_ENTRIES,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
-            *base_entries,
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
             sendspin_config,
