@@ -16,7 +16,7 @@ aioslimproto==3.1.4
 aiosonos==0.1.9
 aiosqlite==0.22.1
 aiovban>=0.6.3
-alexapy==1.29.14
+alexapy==1.29.15
 async-upnp-client==0.46.2
 audible==0.10.0
 auntie-sounds==1.1.7
