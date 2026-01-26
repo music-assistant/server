@@ -142,7 +142,7 @@ class SendspinProxyHandler:
             return None
 
         # Set the sendspin player_id on the user's websocket client(s)
-        # This allows the player controller to auto-whitelist this player
+        # This allows the player controller to auto-whitelist this (web)player
         # without modifying the user's player_filter list
         client_id = auth_data.get("client_id")
         if client_id:
