@@ -11,6 +11,8 @@ from soco.core import (
     MUSIC_SRC_TV,
 )
 
+from music_assistant.models.player import PlayerSource
+
 # Configuration Keys
 CONF_NETWORK_SCAN = "network_scan"
 CONF_HOUSEHOLD_ID = "household_id"
@@ -46,6 +48,41 @@ SOURCE_MAPPING = {
 }
 
 LINEIN_SOURCES = (MUSIC_SRC_TV, MUSIC_SRC_LINE_IN)
+
+PLAYER_SOURCE_MAP = {
+    SOURCE_LINEIN: PlayerSource(
+        id=SOURCE_LINEIN,
+        name="Line-in",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    SOURCE_TV: PlayerSource(
+        id=SOURCE_TV,
+        name="TV",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    SOURCE_AIRPLAY: PlayerSource(
+        id=SOURCE_AIRPLAY,
+        name="AirPlay",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=True,
+        can_seek=True,
+    ),
+    SOURCE_SPOTIFY_CONNECT: PlayerSource(
+        id=SOURCE_SPOTIFY_CONNECT,
+        name="Spotify Connect",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=True,
+        can_seek=True,
+    ),
+}
 
 # Playback State Mapping
 PLAYBACK_STATE_MAP = {

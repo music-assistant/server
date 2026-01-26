@@ -35,6 +35,7 @@ from .constants import (
     LINEIN_SOURCES,
     NEVER_TIME,
     PLAYER_FEATURES,
+    PLAYER_SOURCE_MAP,
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
@@ -548,10 +549,12 @@ class SonosPlayer(Player):
         uri = track_info["uri"]
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if SOURCE_MAPPING.get(audio_source) and audio_source in LINEIN_SOURCES:
+        if (source_id := SOURCE_MAPPING.get(audio_source)) and audio_source in LINEIN_SOURCES:
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
-            self._attr_active_source = audio_source
+            self._attr_active_source = source_id
+            if source_id not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
             return
 
         current_media = PlayerMedia(
