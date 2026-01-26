@@ -9,13 +9,14 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import logging
 import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import IO, TYPE_CHECKING, Final, cast
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -119,6 +120,15 @@ CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
 
+# Test mode for smart fades PCM capture - set SMART_FADES_TEST_MODE=1 to enable
+# SMART_FADES_TEST_MODE: Final[bool] = os.environ.get("SMART_FADES_TEST_MODE", "").lower() in (
+#     "1",
+#     "true",
+#     "yes",
+# )
+SMART_FADES_TEST_MODE = True
+SMART_FADES_TEST_DIR: Final[str] = "smart_fades_test/songs"
+
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
     """Parse PCM info from a codec/content_type string."""
@@ -140,6 +150,18 @@ class CrossfadeData:
     pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
     fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
     queue_item_id: str
+
+
+@dataclass
+class PCMCaptureSession:
+    """Data class for tracking a PCM capture session (test mode)."""
+
+    file_path: str
+    file_handle: IO[bytes]
+    item_id: str
+    sample_rate: int
+    channels: int
+    bit_depth: int
 
 
 class StreamsController(CoreController):
@@ -170,6 +192,8 @@ class StreamsController(CoreController):
         self._extended_analysis_processor = ExtendedAnalysisProcessor(
             self.logger.getChild("extended_analysis")
         )
+        # PCM capture for testing smart fades (enabled via SMART_FADES_TEST_MODE env var)
+        self._pcm_captures: dict[str, PCMCaptureSession] = {}
 
     @property
     def base_url(self) -> str:
@@ -1039,6 +1063,9 @@ class StreamsController(CoreController):
                     queue_track, queue, pcm_format
                 )
 
+            # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
+            pcm_capture_key = self._start_pcm_capture(queue_track, pcm_format)
+
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
@@ -1099,6 +1126,10 @@ class StreamsController(CoreController):
                     # Process accumulated audio if threshold reached
                     if feature_extractor.should_process():
                         self.mass.create_task(feature_extractor.process_pending())
+
+                # Write chunk to PCM capture file (test mode)
+                if pcm_capture_key:
+                    self._write_pcm_capture(pcm_capture_key, chunk)
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -1164,6 +1195,11 @@ class StreamsController(CoreController):
                     self._finalize_feature_extraction(feature_extractor, pcm_format)
                 )
                 feature_extractor = None  # Prevent double finalization
+
+            # Finalize PCM capture (test mode)
+            if pcm_capture_key:
+                self._finalize_pcm_capture(pcm_capture_key)
+                pcm_capture_key = None
 
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
@@ -1553,6 +1589,9 @@ class StreamsController(CoreController):
         if smart_fades_mode != SmartFadesMode.DISABLED:
             feature_extractor = await self._start_feature_extraction(queue_item, queue, pcm_format)
 
+        # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
+        pcm_capture_key = self._start_pcm_capture(queue_item, pcm_format)
+
         buffer = b""
         bytes_written = 0
         # calculate crossfade buffer size
@@ -1618,6 +1657,10 @@ class StreamsController(CoreController):
                 if feature_extractor.should_process():
                     self.mass.create_task(feature_extractor.process_pending())
 
+            # Write chunk to PCM capture file (test mode)
+            if pcm_capture_key:
+                self._write_pcm_capture(pcm_capture_key, chunk)
+
             # ALWAYS APPEND CHUNK TO BUFFER
             buffer += chunk
             del chunk
@@ -1672,6 +1715,11 @@ class StreamsController(CoreController):
         if feature_extractor and not feature_extractor.is_aborted:
             self.mass.create_task(self._finalize_feature_extraction(feature_extractor, pcm_format))
             feature_extractor = None  # Prevent double finalization
+
+        # Finalize PCM capture (test mode)
+        if pcm_capture_key:
+            self._finalize_pcm_capture(pcm_capture_key)
+            pcm_capture_key = None
 
         if crossfade_data:
             # edge case: we did not get enough data to send the crossfade data
@@ -2215,3 +2263,84 @@ class StreamsController(CoreController):
         finally:
             # Clean up accumulator
             extractor.accumulator.clear()
+
+    def _start_pcm_capture(
+        self,
+        queue_item: QueueItem,
+        pcm_format: AudioFormat,
+    ) -> str | None:
+        """Start capturing PCM audio to disk for testing (if test mode enabled).
+
+        :param queue_item: The queue item being streamed.
+        :param pcm_format: PCM format of the audio stream.
+        :return: Capture key if started, None otherwise.
+        """
+        if not SMART_FADES_TEST_MODE:
+            return None
+
+        streamdetails = queue_item.streamdetails
+        if not streamdetails:
+            return None
+
+        # Create directory if it doesn't exist
+        os.makedirs(SMART_FADES_TEST_DIR, exist_ok=True)
+
+        # Build filename: {item_id}_{sample_rate}_{channels}_{bit_depth}.pcm
+        item_id = streamdetails.item_id.replace("/", "_").replace("\\", "_")
+        sr = pcm_format.sample_rate
+        ch = pcm_format.channels
+        bd = pcm_format.bit_depth
+        filename = f"{item_id}_{sr}_{ch}_{bd}.pcm"
+        file_path = os.path.join(SMART_FADES_TEST_DIR, filename)
+
+        # Don't overwrite existing captures
+        if os.path.exists(file_path):
+            self.logger.debug("PCM capture already exists: %s", file_path)
+            return None
+
+        try:
+            file_handle = open(file_path, "wb")  # noqa: SIM115
+            capture_key = f"{queue_item.queue_id}:{queue_item.queue_item_id}"
+            self._pcm_captures[capture_key] = PCMCaptureSession(
+                file_path=file_path,
+                file_handle=file_handle,
+                item_id=streamdetails.item_id,
+                sample_rate=pcm_format.sample_rate,
+                channels=pcm_format.channels,
+                bit_depth=pcm_format.bit_depth,
+            )
+            self.logger.info("Started PCM capture: %s", file_path)
+            return capture_key
+        except OSError as e:
+            self.logger.warning("Failed to start PCM capture: %s", e)
+            return None
+
+    def _write_pcm_capture(self, capture_key: str, chunk: bytes) -> None:
+        """Write a chunk to the PCM capture file.
+
+        :param capture_key: The capture session key.
+        :param chunk: Raw PCM audio bytes.
+        """
+        session = self._pcm_captures.get(capture_key)
+        if session and session.file_handle:
+            with contextlib.suppress(OSError):
+                session.file_handle.write(chunk)
+
+    def _finalize_pcm_capture(self, capture_key: str) -> None:
+        """Finalize a PCM capture session.
+
+        :param capture_key: The capture session key.
+        """
+        session = self._pcm_captures.pop(capture_key, None)
+        if session and session.file_handle:
+            try:
+                session.file_handle.close()
+                self.logger.info(
+                    "PCM capture complete: %s (format: %dHz/%dch/%dbit)",
+                    session.file_path,
+                    session.sample_rate,
+                    session.channels,
+                    session.bit_depth,
+                )
+            except OSError:
+                pass

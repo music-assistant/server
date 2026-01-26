@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import librosa
 import numpy as np
 import numpy.typing as npt
+from scipy import signal
 
 from music_assistant.controllers.streams.smart_fades.feature_accumulator import (
     FeatureAccumulator,
@@ -24,8 +25,8 @@ class StreamingFeatureExtractor:
     """Extracts audio features incrementally as PCM audio streams.
 
     This class processes PCM audio chunks and extracts lightweight features
-    (onset envelope, chroma, RMS, spectral centroid) that can be accumulated
-    without holding the entire audio in memory.
+    (onset envelope, chroma, RMS, spectral centroid, low-frequency RMS) that
+    can be accumulated without holding the entire audio in memory.
 
     Key implementation details:
     - Accumulates raw audio bytes, processes in batches via asyncio.to_thread
@@ -213,6 +214,10 @@ class StreamingFeatureExtractor:
             # 4. Spectral centroid
             await asyncio.sleep(0)  # Yield to event loop
             await asyncio.to_thread(self._extract_centroid, mono_audio)
+
+            # 5. Low-frequency RMS (for kick drum / downbeat detection)
+            await asyncio.sleep(0)  # Yield to event loop
+            await asyncio.to_thread(self._extract_low_freq_rms, mono_audio)
         except Exception as e:
             self.logger.warning("Feature extraction failed: %s", e)
         finally:
@@ -308,6 +313,32 @@ class StreamingFeatureExtractor:
         except Exception as e:
             self.logger.debug("Spectral centroid extraction failed: %s", e)
 
+    def _extract_low_freq_rms(self, mono_audio: npt.NDArray[np.float32]) -> None:
+        """Extract low-frequency RMS energy for kick drum detection (runs in thread pool).
+
+        Applies a low-pass filter at 200Hz to isolate bass content, then computes
+        frame-wise RMS. Kick drums have high energy below 200Hz, snares do not.
+        """
+        try:
+            # Design low-pass Butterworth filter at 200Hz
+            nyquist = self.sample_rate / 2
+            cutoff = 200 / nyquist
+            sos = signal.butter(4, cutoff, btype="low", output="sos")
+
+            # Apply filter
+            filtered = signal.sosfilt(sos, mono_audio).astype(np.float32)
+
+            # Compute RMS of filtered signal
+            low_freq_rms = librosa.feature.rms(
+                y=filtered,
+                frame_length=self.n_fft,
+                hop_length=self.hop_length,
+                center=False,
+            )
+            self.accumulator.add_low_freq_rms(np.asarray(low_freq_rms, dtype=np.float32))
+        except Exception as e:
+            self.logger.debug("Low-freq RMS extraction failed: %s", e)
+
     def should_abort(self) -> bool:
         """Check if extraction should be aborted due to user action.
 
@@ -397,6 +428,8 @@ class StreamingFeatureExtractor:
                     await asyncio.to_thread(self._extract_rms, mono_audio)
                     await asyncio.sleep(0)
                     await asyncio.to_thread(self._extract_centroid, mono_audio)
+                    await asyncio.sleep(0)
+                    await asyncio.to_thread(self._extract_low_freq_rms, mono_audio)
             except Exception as e:
                 self.logger.warning("Final feature extraction failed: %s", e)
         else:

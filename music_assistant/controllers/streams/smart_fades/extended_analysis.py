@@ -25,20 +25,25 @@ if TYPE_CHECKING:
         FeatureAccumulator,
     )
 
-# Krumhansl-Schmuckler key profiles for key estimation
-# These represent the expected distribution of pitch classes in major/minor keys
-# Values from Krumhansl & Kessler (1982)
+# Shaath key profiles - Krumhansl-based, tuned for pop/electronic music
+# Source: Essentia library (https://essentia.upf.edu/reference/std_Key.html)
 MAJOR_PROFILE = np.array(
-    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+    [6.6, 2.0, 3.5, 2.3, 4.6, 4.0, 2.5, 5.2, 2.4, 3.7, 2.3, 3.4],
     dtype=np.float64,
 )
 MINOR_PROFILE = np.array(
-    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+    [6.5, 2.7, 3.5, 5.4, 2.6, 3.5, 2.5, 5.2, 4.0, 2.7, 4.3, 3.2],
     dtype=np.float64,
 )
 
 # Pitch class names for key root identification
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# Number of initial beats to skip when estimating downbeat phase.
+# Based on OBTAIN paper's 5-second transient period where tempo estimation
+# is unreliable. Intros often have atypical rhythmic patterns that skew
+# phase detection. 8 beats ≈ 4 bars ≈ 7.5 seconds at 128 BPM.
+SKIP_INITIAL_BEATS = 8
 
 
 class ExtendedAnalysisProcessor:
@@ -88,13 +93,20 @@ class ExtendedAnalysisProcessor:
             chroma = accumulator.get_chroma()
             rms = accumulator.get_rms()
             spectral_centroid = accumulator.get_spectral_centroid()
+            low_freq_rms = accumulator.get_low_freq_rms()
 
             # Yield to event loop
             await asyncio.sleep(0)
 
             # Beat tracking (heavy - ~0.75s)
             bpm, beats, downbeats, confidence = await asyncio.to_thread(
-                self._beat_tracking, onset_envelope, sample_rate, hop_length
+                self._beat_tracking,
+                onset_envelope,
+                low_freq_rms,
+                chroma,
+                spectral_centroid,
+                sample_rate,
+                hop_length,
             )
 
             if bpm is None or beats is None or downbeats is None:
@@ -112,8 +124,13 @@ class ExtendedAnalysisProcessor:
             # Yield to event loop
             await asyncio.sleep(0)
 
-            # Key estimation (fast)
-            musical_key = await asyncio.to_thread(self._estimate_key, chroma)
+            # Key estimation (fast) - use bass-weighted chroma for better accuracy
+            downbeat_frames = librosa.time_to_frames(
+                downbeats, sr=sample_rate, hop_length=hop_length
+            )
+            musical_key = await asyncio.to_thread(
+                self._estimate_key, chroma, low_freq_rms, downbeat_frames
+            )
 
             # Yield to event loop
             await asyncio.sleep(0)
@@ -154,6 +171,8 @@ class ExtendedAnalysisProcessor:
                 downbeats=downbeats,
                 bpm=bpm,
                 onset_envelope=onset_envelope,
+                chroma=chroma,
+                low_freq_rms=low_freq_rms,
                 sample_rate=sample_rate,
                 hop_length=hop_length,
                 time_signature=time_signature,
@@ -183,12 +202,18 @@ class ExtendedAnalysisProcessor:
     def _beat_tracking(
         self,
         onset_envelope: npt.NDArray[np.float32],
+        low_freq_rms: npt.NDArray[np.float32],
+        chroma: npt.NDArray[np.float32],
+        spectral_centroid: npt.NDArray[np.float64],
         sample_rate: int,
         hop_length: int,
     ) -> tuple[float | None, npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float]:
         """Perform beat tracking using pre-computed onset envelope.
 
         :param onset_envelope: Pre-computed onset strength envelope.
+        :param low_freq_rms: Low-frequency RMS for kick detection, shape (1, n_frames).
+        :param chroma: Chroma features for harmonic analysis, shape (12, n_frames).
+        :param spectral_centroid: Spectral centroid for timbre analysis, shape (1, n_frames).
         :param sample_rate: Audio sample rate in Hz.
         :param hop_length: Hop length used during feature extraction.
         :return: Tuple of (bpm, beat_times, downbeat_times, confidence).
@@ -219,6 +244,22 @@ class ExtendedAnalysisProcessor:
             # Extract BPM value
             bpm = float(tempo.item()) if hasattr(tempo, "item") else float(tempo)
 
+            # BPM halving heuristic: librosa often detects double-time (octave error)
+            # If BPM > 155, assume it's doubled and take every 2nd beat
+            if bpm > 155:
+                original_bpm = bpm
+                bpm = bpm / 2
+                beat_frames = beat_frames[::2]
+                beat_times = librosa.frames_to_time(
+                    beat_frames, sr=sample_rate, hop_length=hop_length
+                )
+                self.logger.debug(
+                    "Applied BPM halving: %.1f -> %.1f BPM (%d beats)",
+                    original_bpm,
+                    bpm,
+                    len(beat_times),
+                )
+
             # Calculate confidence based on beat interval consistency
             intervals = np.diff(beat_times)
             interval_std = np.std(intervals)
@@ -226,9 +267,15 @@ class ExtendedAnalysisProcessor:
             cv = interval_std / interval_mean if interval_mean > 0 else 1.0
             confidence = max(0.1, 1.0 - cv)
 
-            # Estimate downbeats using onset strength patterns
+            # Estimate downbeats using multi-feature scoring
             downbeats = self._estimate_downbeats(
-                beat_times, onset_envelope, sample_rate, hop_length
+                beat_times,
+                onset_envelope,
+                low_freq_rms,
+                chroma,
+                spectral_centroid,
+                sample_rate,
+                hop_length,
             )
 
             return bpm, beat_times, downbeats, float(confidence)
@@ -241,18 +288,28 @@ class ExtendedAnalysisProcessor:
         self,
         beats: npt.NDArray[np.float64],
         onset_envelope: npt.NDArray[np.float32],
+        low_freq_rms: npt.NDArray[np.float32],
+        chroma: npt.NDArray[np.float32],
+        spectral_centroid: npt.NDArray[np.float64],
         sample_rate: int,
         hop_length: int,
     ) -> npt.NDArray[np.float64]:
-        """Estimate downbeats using onset strength patterns.
+        """Estimate downbeats using beat-synchronous pattern matching.
 
-        Analyzes the onset strength at each beat position to find which phase
-        offset (0-3) has the strongest accents, indicating the true downbeats.
-        In most music, beat 1 of each bar has stronger onsets (kick drum, bass)
-        than beats 2, 3, or 4.
+        Uses phase-aware features to distinguish beat 1 from beat 3:
+        1. Harmonic novelty: Chord changes happen on beat 1, not beat 3
+        2. Bass energy: Kick drums (present on beats 1 and 3)
+        3. Onset strength: General accent patterns
+        4. Spectral contrast: Kick vs snare discrimination
+
+        Key insight: Frame-level features are phase-invariant (kick on 1 AND 3).
+        We need bar-level pattern matching to find where harmonic changes cluster.
 
         :param beats: Array of beat times in seconds.
-        :param onset_envelope: Pre-computed onset strength envelope.
+        :param onset_envelope: Onset strength envelope.
+        :param low_freq_rms: Low-frequency RMS energy, shape (1, n_frames).
+        :param chroma: Chroma features, shape (12, n_frames).
+        :param spectral_centroid: Spectral centroid, shape (1, n_frames).
         :param sample_rate: Audio sample rate in Hz.
         :param hop_length: Hop length used during feature extraction.
         :return: Array of estimated downbeat times.
@@ -260,58 +317,567 @@ class ExtendedAnalysisProcessor:
         if len(beats) < 8:
             return beats[:1] if len(beats) > 0 else np.array([])
 
-        # Convert beat times to frame indices
-        beat_frames = librosa.time_to_frames(beats, sr=sample_rate, hop_length=hop_length)
-        beat_frames = beat_frames[beat_frames < len(onset_envelope)]
-
-        if len(beat_frames) < 8:
-            # Fall back to simple approach if not enough beats
-            return beats[::4]
-
-        # Get onset strength at each beat position
-        beat_strengths = onset_envelope[beat_frames]
-
-        best_offset = 0
-        best_score = -1.0
-        scores: list[tuple[int, float, float, float]] = []  # For debug logging
-
-        # Try each of the 4 possible downbeat phases
-        for offset in range(min(4, len(beat_frames))):
-            # Get strengths at candidate downbeat positions (every 4th beat starting at offset)
-            downbeat_indices = list(range(offset, len(beat_strengths), 4))
-            if len(downbeat_indices) < 2:
-                continue
-
-            downbeat_strengths = beat_strengths[downbeat_indices]
-
-            # Get strengths at non-downbeat positions for this offset
-            other_indices = [i for i in range(len(beat_strengths)) if i % 4 != offset]
-            if not other_indices:
-                continue
-
-            other_strengths = beat_strengths[other_indices]
-
-            # Score = ratio of mean downbeat strength to mean other beat strength
-            # Higher score means this offset has stronger accents on its "downbeats"
-            db_mean = float(np.mean(downbeat_strengths))
-            other_mean = float(np.mean(other_strengths))
-            score = db_mean / (other_mean + 1e-8)
-
-            scores.append((offset, score, db_mean, other_mean))
-
-            if score > best_score:
-                best_score = score
-                best_offset = offset
-
-        # Log the scoring for debugging
-        self.logger.debug(
-            "Downbeat phase scoring: %s -> best_offset=%d (score=%.3f)",
-            [(f"off={s[0]}: score={s[1]:.3f}, db={s[2]:.3f}, other={s[3]:.3f}") for s in scores],
-            best_offset,
-            best_score,
+        # Flatten arrays if 2D
+        low_freq_flat = low_freq_rms.flatten() if low_freq_rms.ndim == 2 else low_freq_rms
+        centroid_flat = (
+            spectral_centroid.flatten() if spectral_centroid.ndim == 2 else spectral_centroid
         )
 
-        return beats[best_offset::4]
+        if len(low_freq_flat) == 0 or len(onset_envelope) == 0:
+            self.logger.warning("Missing feature data, falling back to simple downbeats")
+            return beats[::4]
+
+        # Convert beat times to frame indices
+        beat_frames = librosa.time_to_frames(beats, sr=sample_rate, hop_length=hop_length)
+
+        # Find valid frame range across all features
+        max_frame = min(
+            len(onset_envelope),
+            len(low_freq_flat),
+            len(centroid_flat),
+            chroma.shape[1] if chroma.ndim == 2 else len(chroma),
+        )
+        beat_frames = beat_frames[beat_frames < max_frame]
+
+        if len(beat_frames) < 8:
+            return beats[::4]
+
+        # Skip initial beats for phase estimation (intro often has atypical patterns)
+        # Based on OBTAIN paper's 5-second transient period where tempo estimation
+        # needs time to stabilize. We keep full beat_frames for final output,
+        # but use only stable region for phase scoring.
+        skip_beats = min(SKIP_INITIAL_BEATS, len(beat_frames) // 2)  # Don't skip more than half
+        stable_frames = beat_frames[skip_beats:]
+
+        if len(stable_frames) < 8:
+            # Not enough beats after skipping, use all beats
+            stable_frames = beat_frames
+            skip_beats = 0
+
+        # Extract features at stable beat positions
+        beat_bass = low_freq_flat[stable_frames]
+
+        # Compute harmonic novelty: chroma distance between consecutive beats
+        # This is the KEY phase-aware feature - chord changes happen on beat 1
+        harmonic_novelty = self._compute_harmonic_novelty_at_beats(chroma, stable_frames)
+
+        # Compute chroma flux (frame-level) for comparison
+        beat_chroma_flux = self._compute_chroma_flux_at_beats(chroma, stable_frames)
+
+        # Detect major energy transitions (beat drops) for phrase anchoring
+        energy_transitions = self._detect_energy_transitions(
+            low_freq_rms, beats, sample_rate, hop_length
+        )
+
+        # Use beat-synchronous pattern matching for phase detection
+        best_offset, all_scores = self._score_bar_patterns(
+            beat_bass=beat_bass,
+            harmonic_novelty=harmonic_novelty,
+            beat_chroma_flux=beat_chroma_flux,
+            beats=beats,
+            energy_transitions=energy_transitions,
+        )
+
+        # Log detailed scoring
+        self.logger.debug(
+            "Downbeat phase scoring (beat-synchronous): skipped=%d beats, using %d stable beats, "
+            "energy_transitions=%d, scores: %s -> best_offset=%d",
+            skip_beats,
+            len(stable_frames),
+            len(energy_transitions),
+            [
+                f"off={int(s['offset'])}: harmonic={s['harmonic']:.3f}, bass={s['bass']:.3f}, "
+                f"pattern={s['pattern']:.3f}, phrase={s.get('phrase', 0):.3f}, combined={s['combined']:.3f}"
+                for s in all_scores
+            ],
+            best_offset,
+        )
+
+        # Select every 4th beat starting from best_offset
+        # Apply +1 beat correction: acoustic features tend to detect the anticipation beat (beat 4)
+        # rather than the actual downbeat (beat 1). Shifting by 1 corrects this.
+        corrected_offset = (best_offset + 1) % 4
+
+        self.logger.debug(
+            "Applying +1 beat phase correction: %d -> %d",
+            best_offset,
+            corrected_offset,
+        )
+
+        return beats[corrected_offset::4]
+
+    def _detect_energy_transitions(
+        self,
+        low_freq_rms: npt.NDArray[np.float32],
+        beats: npt.NDArray[np.float64],
+        sample_rate: int,
+        hop_length: int,
+    ) -> list[float]:
+        """Detect major energy transitions (beat drops) for phrase anchoring.
+
+        Beat drops and phrase boundaries are reliably on beat 1 (downbeat).
+        By detecting these, we can anchor our phase selection.
+
+        :param low_freq_rms: Low-frequency RMS energy, shape (1, n_frames).
+        :param beats: Beat times in seconds.
+        :param sample_rate: Audio sample rate.
+        :param hop_length: Hop length used during feature extraction.
+        :return: List of transition times (in seconds).
+        """
+        rms_flat = low_freq_rms.flatten() if low_freq_rms.ndim == 2 else low_freq_rms
+        if len(rms_flat) < 100 or len(beats) < 16:
+            return []
+
+        frames_per_second = sample_rate / hop_length
+        transitions: list[float] = []
+
+        # Check each beat for energy change (compare 2 bars before vs 2 bars after)
+        # Use a 4-beat window (roughly 2 seconds at 120 BPM)
+        window_beats = 4
+        window_frames = int(window_beats * (60.0 / 120.0) * frames_per_second)  # Approximate
+
+        for beat_time in beats:
+            frame_idx = int(beat_time * frames_per_second)
+
+            if frame_idx < window_frames or frame_idx >= len(rms_flat) - window_frames:
+                continue
+
+            rms_before = float(np.mean(rms_flat[frame_idx - window_frames : frame_idx]))
+            rms_after = float(np.mean(rms_flat[frame_idx : frame_idx + window_frames]))
+
+            # Look for significant upward transitions (beat drops)
+            if rms_before > 1e-8:
+                change_ratio = (rms_after - rms_before) / rms_before
+                # Only major transitions (>50% energy increase)
+                if change_ratio > 0.5:
+                    transitions.append(beat_time)
+
+        return transitions
+
+    def _compute_harmonic_novelty_at_beats(
+        self, chroma: npt.NDArray[np.float32], beat_frames: npt.NDArray[np.int64]
+    ) -> npt.NDArray[np.float32]:
+        """Compute harmonic novelty (chroma distance) between consecutive beats.
+
+        This is a key phase-aware feature: chord changes cluster on beat 1,
+        not beat 3. Beat 3 typically has the same chord as beat 1.
+
+        :param chroma: Chroma features, shape (12, n_frames).
+        :param beat_frames: Frame indices of beats.
+        :return: Harmonic novelty at each beat position.
+        """
+        novelty = np.zeros(len(beat_frames), dtype=np.float32)
+
+        for i in range(1, len(beat_frames)):
+            curr_frame = beat_frames[i]
+            prev_frame = beat_frames[i - 1]
+
+            if curr_frame < chroma.shape[1] and prev_frame < chroma.shape[1]:
+                # L2 distance between chroma vectors
+                diff = chroma[:, curr_frame] - chroma[:, prev_frame]
+                novelty[i] = float(np.linalg.norm(diff))
+
+        return novelty
+
+    def _score_bar_patterns(
+        self,
+        beat_bass: npt.NDArray[np.float32],
+        harmonic_novelty: npt.NDArray[np.float32],
+        beat_chroma_flux: npt.NDArray[np.float32],
+        beats: npt.NDArray[np.float64],
+        energy_transitions: list[float],
+    ) -> tuple[int, list[dict[str, float | int]]]:
+        """Score each phase offset using beat-synchronous pattern matching.
+
+        Instead of scoring individual frames, we reshape features into bars
+        and score the 4-beat pattern. Beat 1 should have highest harmonic
+        novelty (chord changes) compared to beat 3.
+
+        :param beat_bass: Bass energy at each beat.
+        :param harmonic_novelty: Harmonic novelty at each beat.
+        :param beat_chroma_flux: Chroma flux at each beat.
+        :param beats: All beat times in seconds.
+        :param energy_transitions: Times of major energy transitions (beat drops).
+        :return: Tuple of (best_offset, all_scores).
+        """
+        all_scores: list[dict[str, float | int]] = []
+
+        for offset in range(4):
+            # For this offset, calculate scores using bar-level patterns
+
+            # 1. Harmonic novelty score: beat 1 should have MORE harmonic change than beat 3
+            # This is the KEY discriminative feature
+            harmonic_score = self._compute_beat1_vs_beat3_ratio(harmonic_novelty, offset)
+
+            # 2. Bass score: ratio of downbeat bass to other beats
+            bass_score = self._compute_feature_ratio(beat_bass, offset)
+
+            # 3. Pattern score: analyze the 4-beat pattern shape
+            # Expected: beat 1 high novelty, beat 2 low, beat 3 moderate, beat 4 low
+            pattern_score = self._score_pattern_shape(harmonic_novelty, beat_bass, offset)
+
+            # 4. Traditional chroma flux ratio (for comparison)
+            chroma_score = self._compute_feature_ratio(beat_chroma_flux, offset)
+
+            # 5. Phrase alignment: how well do candidate downbeats align with energy transitions?
+            # This is a strong anchor - beat drops should be on beat 1
+            phrase_score = self._score_phrase_alignment(beats, energy_transitions, offset)
+
+            # Weighted combination - phrase anchoring is very reliable when transitions exist
+            # Give phrase score significant weight when available
+            if energy_transitions:
+                combined = (
+                    0.30 * harmonic_score  # Chord changes on beat 1
+                    + 0.20 * pattern_score  # Bar-level pattern shape
+                    + 0.15 * bass_score  # Kick drum energy
+                    + 0.10 * chroma_score  # Frame-level chroma flux
+                    + 0.25 * phrase_score  # Phrase boundary alignment (strong anchor)
+                )
+            else:
+                combined = (
+                    0.40 * harmonic_score  # Chord changes on beat 1 (key feature)
+                    + 0.25 * pattern_score  # Bar-level pattern shape
+                    + 0.20 * bass_score  # Kick drum energy
+                    + 0.15 * chroma_score  # Frame-level chroma flux
+                )
+
+            all_scores.append(
+                {
+                    "offset": offset,
+                    "harmonic": harmonic_score,
+                    "bass": bass_score,
+                    "pattern": pattern_score,
+                    "chroma": chroma_score,
+                    "phrase": phrase_score,
+                    "combined": combined,
+                }
+            )
+
+        # Sort by combined score
+        all_scores.sort(key=lambda x: x["combined"], reverse=True)
+
+        best = all_scores[0]
+        second_best = all_scores[1] if len(all_scores) > 1 else all_scores[0]
+
+        # Calculate confidence margin
+        margin = (best["combined"] - second_best["combined"]) / (best["combined"] + 1e-8)
+
+        # If margin is very low, use multi-bar confirmation
+        # Note: Set to 0.05 (5%) - stricter threshold since combined score is usually reliable
+        if margin < 0.05 and len(all_scores) >= 2:
+            best_offset = self._multi_bar_vote(harmonic_novelty, beat_bass, all_scores)
+            self.logger.debug(
+                "Low confidence (margin=%.1f%%), using multi-bar vote -> offset=%d",
+                margin * 100,
+                best_offset,
+            )
+        else:
+            best_offset = int(best["offset"])
+
+        return best_offset, all_scores
+
+    def _compute_beat1_vs_beat3_ratio(
+        self, feature: npt.NDArray[np.float32], offset: int
+    ) -> float:
+        """Compute ratio of feature at beat 1 vs beat 3 positions.
+
+        This is the key metric for distinguishing downbeats from beat 3.
+        Chord changes (harmonic novelty) should be higher on beat 1.
+
+        :param feature: Feature values at each beat position.
+        :param offset: Phase offset (0-3) to test as downbeat.
+        :return: Ratio score (higher = beat 1 has more of this feature than beat 3).
+        """
+        n_beats = len(feature)
+        if n_beats < 8:
+            return 1.0
+
+        # Beat 1 positions (candidate downbeats)
+        beat1_indices = list(range(offset, n_beats, 4))
+        # Beat 3 positions (2 beats after each beat 1)
+        beat3_offset = (offset + 2) % 4
+        beat3_indices = list(range(beat3_offset, n_beats, 4))
+
+        if len(beat1_indices) < 2 or len(beat3_indices) < 2:
+            return 1.0
+
+        # Use median for robustness
+        beat1_median = float(np.median(feature[beat1_indices]))
+        beat3_median = float(np.median(feature[beat3_indices]))
+
+        # Ratio: higher means beat 1 has more of this feature
+        return beat1_median / (beat3_median + 1e-8)
+
+    def _score_pattern_shape(
+        self,
+        harmonic_novelty: npt.NDArray[np.float32],
+        beat_bass: npt.NDArray[np.float32],
+        offset: int,
+    ) -> float:
+        """Score how well the 4-beat pattern matches expected downbeat pattern.
+
+        Expected pattern for 4/4 with offset being beat 1:
+        - Beat 1: High harmonic novelty (chord change), high bass (kick)
+        - Beat 2: Low novelty, moderate bass (snare)
+        - Beat 3: Low novelty (same chord), high bass (kick)
+        - Beat 4: Low novelty, moderate bass (snare)
+
+        :param harmonic_novelty: Harmonic novelty at each beat.
+        :param beat_bass: Bass energy at each beat.
+        :param offset: Phase offset to test.
+        :return: Pattern match score (higher = better match).
+        """
+        n_beats = len(harmonic_novelty)
+        n_complete_bars = (n_beats - offset) // 4
+
+        if n_complete_bars < 2:
+            return 1.0
+
+        # Aggregate features by beat position within bar
+        pos_harmonic: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
+        pos_bass: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
+
+        for bar_idx in range(n_complete_bars):
+            for beat_in_bar in range(4):
+                global_idx = offset + bar_idx * 4 + beat_in_bar
+                if global_idx < n_beats:
+                    pos_harmonic[beat_in_bar].append(harmonic_novelty[global_idx])
+                    pos_bass[beat_in_bar].append(beat_bass[global_idx])
+
+        # Calculate mean for each position
+        mean_harmonic = {pos: np.mean(vals) if vals else 0.0 for pos, vals in pos_harmonic.items()}
+        mean_bass = {pos: np.mean(vals) if vals else 0.0 for pos, vals in pos_bass.items()}
+
+        # Score: beat 0 (our candidate beat 1) should have highest harmonic novelty
+        # And beat 0 + beat 2 should have higher bass than beat 1 + beat 3 (kick pattern)
+
+        # Harmonic pattern score: beat 0 > beat 2
+        harmonic_pattern = mean_harmonic[0] / (mean_harmonic[2] + 1e-8)
+
+        # Bass pattern score: (beat 0 + beat 2) > (beat 1 + beat 3) - kick on 1 and 3
+        kick_bass = (mean_bass[0] + mean_bass[2]) / 2
+        snare_bass = (mean_bass[1] + mean_bass[3]) / 2
+        bass_pattern = kick_bass / (snare_bass + 1e-8)
+
+        # Combined pattern score
+        return 0.7 * harmonic_pattern + 0.3 * bass_pattern
+
+    def _score_phrase_alignment(
+        self,
+        beats: npt.NDArray[np.float64],
+        energy_transitions: list[float],
+        offset: int,
+        tolerance: float = 0.1,
+    ) -> float:
+        """Score how well candidate downbeats align with energy transitions.
+
+        Energy transitions (beat drops) should align with beat 1 (downbeat).
+        This is a strong structural anchor for phase detection.
+
+        :param beats: All beat times in seconds.
+        :param energy_transitions: Times of major energy transitions.
+        :param offset: Phase offset (0-3) to test as downbeat.
+        :param tolerance: Time tolerance in seconds for matching.
+        :return: Alignment score (higher = better alignment).
+        """
+        if not energy_transitions or len(beats) < 8:
+            return 1.0  # Neutral score when no transitions
+
+        # Get candidate downbeats for this offset
+        candidate_downbeats = beats[offset::4]
+
+        if len(candidate_downbeats) == 0:
+            return 1.0
+
+        # Count how many energy transitions align with candidate downbeats
+        alignments = 0
+        for trans_time in energy_transitions:
+            # Find closest candidate downbeat
+            distances = np.abs(candidate_downbeats - trans_time)
+            min_dist = float(np.min(distances))
+            if min_dist < tolerance:
+                alignments += 1
+
+        # Score: proportion of transitions that align
+        # Bonus: more alignments = more confident
+        if len(energy_transitions) > 0:
+            alignment_rate = alignments / len(energy_transitions)
+            # Scale so that good alignment gives scores > 1.0
+            return 0.5 + alignment_rate  # Range: 0.5 to 1.5
+        return 1.0
+
+    def _multi_bar_vote(
+        self,
+        harmonic_novelty: npt.NDArray[np.float32],
+        beat_bass: npt.NDArray[np.float32],
+        all_scores: list[dict[str, float | int]],
+    ) -> int:
+        """Use multi-bar voting when phase scores are too close.
+
+        Score each bar independently, then use majority vote.
+        This reduces the impact of anomalous bars (fills, breaks).
+
+        :param harmonic_novelty: Harmonic novelty at each beat.
+        :param beat_bass: Bass energy at each beat.
+        :param all_scores: Pre-computed offset scores.
+        :return: Best offset according to multi-bar vote.
+        """
+        n_beats = len(harmonic_novelty)
+        n_complete_bars = n_beats // 4
+
+        if n_complete_bars < 4:
+            # Not enough bars for voting, use combined score
+            return int(all_scores[0]["offset"])
+
+        votes: dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
+
+        # Score each bar independently
+        for bar_start in range(0, n_complete_bars * 4 - 3, 4):
+            bar_harmonic = harmonic_novelty[bar_start : bar_start + 4]
+            bar_bass = beat_bass[bar_start : bar_start + 4]
+
+            # For this bar, which position has highest harmonic novelty?
+            # That's likely beat 1
+            if len(bar_harmonic) == 4:
+                # Weight by both harmonic novelty and bass energy
+                combined_score = bar_harmonic + 0.3 * bar_bass
+                best_pos = int(np.argmax(combined_score))
+                # This position should be beat 1, so offset = (4 - best_pos) % 4
+                # Actually, if best_pos is the local winner, then offset that makes
+                # best_pos align with position 0 is: offset = best_pos (mod 4 arithmetic)
+                winning_offset = best_pos % 4
+                votes[winning_offset] += 1
+
+        # Find offset with most votes
+        max_votes = max(votes.values())
+        top_offsets = [off for off, v in votes.items() if v == max_votes]
+
+        self.logger.debug(
+            "Multi-bar vote: votes=%s, max_votes=%d, top_offsets=%s",
+            dict(votes),
+            max_votes,
+            top_offsets,
+        )
+
+        if len(top_offsets) == 1:
+            return top_offsets[0]
+
+        # Tiebreak: use combined score from pre-computed scores
+        for score_dict in all_scores:
+            if int(score_dict["offset"]) in top_offsets:
+                return int(score_dict["offset"])
+
+        return int(all_scores[0]["offset"])
+
+    def _compute_feature_ratio(self, beat_feature: npt.NDArray[np.float32], offset: int) -> float:
+        """Compute ratio of feature at downbeat positions vs other beats.
+
+        :param beat_feature: Feature values at each beat position.
+        :param offset: Phase offset (0-3) to test as downbeat.
+        :return: Ratio score (higher = stronger at this offset).
+        """
+        downbeat_indices = list(range(offset, len(beat_feature), 4))
+        other_indices = [i for i in range(len(beat_feature)) if i % 4 != offset]
+
+        if len(downbeat_indices) < 2 or not other_indices:
+            return 1.0
+
+        # Use median for robust estimation (resistant to outliers)
+        db_median = float(np.median(beat_feature[downbeat_indices]))
+        other_median = float(np.median(beat_feature[other_indices]))
+
+        return db_median / (other_median + 1e-8)
+
+    def _compute_chroma_flux_at_beats(
+        self, chroma: npt.NDArray[np.float32], beat_frames: npt.NDArray[np.int64]
+    ) -> npt.NDArray[np.float32]:
+        """Compute chroma flux (harmonic change) at each beat position.
+
+        Chroma flux is the L2 norm of the difference between consecutive
+        chroma vectors. Higher flux indicates harmonic changes, which often
+        occur at downbeats (chord changes at bar boundaries).
+
+        :param chroma: Chroma features, shape (12, n_frames).
+        :param beat_frames: Frame indices of beats.
+        :return: Chroma flux at each beat position.
+        """
+        chroma_flux = np.zeros(len(beat_frames), dtype=np.float32)
+
+        for i, frame in enumerate(beat_frames):
+            if frame > 0 and frame < chroma.shape[1]:
+                # Compare current frame to a few frames before the beat
+                # to capture the harmonic change leading into the beat
+                lookback = min(3, frame)
+                diff = chroma[:, frame] - chroma[:, frame - lookback]
+                chroma_flux[i] = float(np.linalg.norm(diff))
+
+        return chroma_flux
+
+    def _compute_spectral_contrast_score(
+        self,
+        beat_bass: npt.NDArray[np.float32],
+        beat_centroid: npt.NDArray[np.float64],
+        offset: int,
+    ) -> float:
+        """Compute spectral contrast score to distinguish kick vs snare.
+
+        Kick drums are "dark" (high bass, low centroid) while snares are
+        "bright" (low bass, high centroid). This ratio helps distinguish
+        beat 1 (kick) from beat 2/4 (snare).
+
+        :param beat_bass: Bass energy at each beat.
+        :param beat_centroid: Spectral centroid at each beat.
+        :param offset: Phase offset (0-3) to test as downbeat.
+        :return: Spectral contrast score.
+        """
+        # Compute bass-to-brightness ratio (higher = more kick-like)
+        bass_brightness_ratio = beat_bass / (beat_centroid + 1e-8)
+
+        downbeat_indices = list(range(offset, len(bass_brightness_ratio), 4))
+        # Compare against beat 2 position (where snare typically is)
+        beat2_offset = (offset + 1) % 4
+        beat2_indices = list(range(beat2_offset, len(bass_brightness_ratio), 4))
+
+        if len(downbeat_indices) < 2 or len(beat2_indices) < 2:
+            return 1.0
+
+        # Use median for robust estimation (resistant to outliers)
+        db_ratio_median = float(np.median(bass_brightness_ratio[downbeat_indices]))
+        beat2_ratio_median = float(np.median(bass_brightness_ratio[beat2_indices]))
+
+        # Higher score = this offset has more kick-like beats relative to beat 2
+        return db_ratio_median / (beat2_ratio_median + 1e-8)
+
+    def _consensus_vote(self, all_scores: list[dict[str, float | int]]) -> int:
+        """Use consensus voting when feature scores are too close.
+
+        Each feature votes for the offset with its highest score.
+        Bass gets double weight as the most reliable feature.
+        Ties are broken by combined score (our best overall estimate).
+
+        :param all_scores: List of score dicts with offset and feature scores.
+        :return: Best offset according to consensus.
+        """
+        votes: dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
+        feature_weights = {"bass": 2, "onset": 1, "chroma": 1, "spectral": 1}
+
+        for feature in ["bass", "onset", "chroma", "spectral"]:
+            best_for_feature = max(all_scores, key=lambda x: x[feature])
+            offset = int(best_for_feature["offset"])
+            votes[offset] += feature_weights[feature]
+
+        # Find offset with most votes
+        max_votes = max(votes.values())
+        top_offsets = [off for off, v in votes.items() if v == max_votes]
+
+        if len(top_offsets) == 1:
+            return top_offsets[0]
+
+        # Tiebreak: use combined score (our best overall estimate)
+        # Filter to only tied offsets, then pick highest combined
+        tied_scores = [s for s in all_scores if int(s["offset"]) in top_offsets]
+        best_combined = max(tied_scores, key=lambda x: x["combined"])
+        return int(best_combined["offset"])
 
     def _log_analysis_debug_data(
         self,
@@ -319,6 +885,8 @@ class ExtendedAnalysisProcessor:
         downbeats: npt.NDArray[np.float64],
         bpm: float,
         onset_envelope: npt.NDArray[np.float32],
+        chroma: npt.NDArray[np.float32],
+        low_freq_rms: npt.NDArray[np.float32],
         sample_rate: int,
         hop_length: int,
         time_signature: TimeSignature,
@@ -332,6 +900,8 @@ class ExtendedAnalysisProcessor:
         :param downbeats: Detected downbeat times in seconds.
         :param bpm: Detected tempo in BPM.
         :param onset_envelope: Onset strength envelope.
+        :param chroma: Chroma features, shape (12, n_frames).
+        :param low_freq_rms: Low-frequency RMS energy, shape (1, n_frames).
         :param sample_rate: Audio sample rate in Hz.
         :param hop_length: Hop length used during feature extraction.
         :param time_signature: Detected time signature.
@@ -342,6 +912,23 @@ class ExtendedAnalysisProcessor:
         beat_frames = beat_frames[beat_frames < len(onset_envelope)]
         beat_onset_strengths = onset_envelope[beat_frames].tolist()
 
+        # Get low-frequency energy at each beat position
+        low_freq_flat = low_freq_rms.flatten() if low_freq_rms.ndim == 2 else low_freq_rms
+        valid_lf_frames = beat_frames[beat_frames < len(low_freq_flat)]
+        beat_bass_energy = (
+            low_freq_flat[valid_lf_frames].tolist() if len(valid_lf_frames) > 0 else []
+        )
+
+        # Compute chroma flux at each beat position
+        chroma_flux: list[float] = []
+        valid_chroma_frames = beat_frames[beat_frames < chroma.shape[1]]
+        for frame in valid_chroma_frames:
+            if frame > 0:
+                diff = chroma[:, frame] - chroma[:, frame - 1]
+                chroma_flux.append(float(np.linalg.norm(diff)))
+            else:
+                chroma_flux.append(0.0)
+
         # Determine which beat index corresponds to each downbeat
         downbeat_indices = []
         for db_time in downbeats:
@@ -350,6 +937,11 @@ class ExtendedAnalysisProcessor:
 
         # Calculate the detected phase offset
         detected_offset = downbeat_indices[0] % 4 if downbeat_indices else 0
+
+        # Get chroma values at each beat position (12 pitch classes per beat)
+        beat_chroma: list[list[float]] = []
+        for frame in valid_chroma_frames:
+            beat_chroma.append([round(float(v), 4) for v in chroma[:, frame]])
 
         debug_data = {
             "bpm": round(bpm, 2),
@@ -361,6 +953,9 @@ class ExtendedAnalysisProcessor:
             "beats": [round(b, 6) for b in beats.tolist()],
             "downbeats": [round(d, 6) for d in downbeats.tolist()],
             "beat_onset_strengths": [round(s, 4) for s in beat_onset_strengths],
+            "beat_bass_energy": [round(s, 6) for s in beat_bass_energy],
+            "beat_chroma_flux": [round(c, 4) for c in chroma_flux],
+            "beat_chroma": beat_chroma,  # Shape: (n_beats, 12) - pitch classes C to B
             "phrase_boundaries": [
                 {
                     "time": round(pb.time, 3),
@@ -389,36 +984,54 @@ class ExtendedAnalysisProcessor:
             len(phrase_boundaries),
         )
 
-        # Log onset strengths at first few beat positions for quick inspection
-        if len(beat_onset_strengths) >= 8:
-            strengths_by_phase = {0: [], 1: [], 2: [], 3: []}
-            for i, strength in enumerate(beat_onset_strengths[:32]):  # First 32 beats (8 bars)
-                strengths_by_phase[i % 4].append(strength)
+        # Log bass energy by beat position for quick inspection
+        if len(beat_bass_energy) >= 8:
+            bass_by_phase: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
+            for i in range(min(32, len(beat_bass_energy))):
+                bass_by_phase[i % 4].append(beat_bass_energy[i])
 
             self.logger.info(
-                "Onset strength by beat position (first 8 bars): "
-                "beat1=%.3f, beat2=%.3f, beat3=%.3f, beat4=%.3f",
-                np.mean(strengths_by_phase[detected_offset]),
-                np.mean(strengths_by_phase[(detected_offset + 1) % 4]),
-                np.mean(strengths_by_phase[(detected_offset + 2) % 4]),
-                np.mean(strengths_by_phase[(detected_offset + 3) % 4]),
+                "Bass energy by beat position (first 8 bars): "
+                "beat1=%.6f, beat2=%.6f, beat3=%.6f, beat4=%.6f",
+                float(np.mean(bass_by_phase[detected_offset])),
+                float(np.mean(bass_by_phase[(detected_offset + 1) % 4])),
+                float(np.mean(bass_by_phase[(detected_offset + 2) % 4])),
+                float(np.mean(bass_by_phase[(detected_offset + 3) % 4])),
             )
 
     def _estimate_key(
         self,
         chroma: npt.NDArray[np.float32],
+        low_freq_rms: npt.NDArray[np.float32] | None = None,
+        downbeat_frames: npt.NDArray[np.int64] | None = None,
     ) -> MusicalKey | None:
-        """Estimate musical key using Krumhansl-Schmuckler profiles.
+        """Estimate musical key using Shaath profiles with bass-weighted chroma.
+
+        Uses Shaath key profiles (tuned for pop/electronic music) and optionally
+        weights chroma frames by low-frequency energy to emphasize bass notes,
+        which are strong indicators of chord roots.
 
         :param chroma: Chroma features, shape (12, n_frames).
+        :param low_freq_rms: Low-frequency RMS energy, shape (1, n_frames).
+        :param downbeat_frames: Frame indices of downbeats for fallback weighting.
         :return: Estimated key with confidence, or None if estimation fails.
         """
         if chroma.shape[1] < 10:
             return None
 
         try:
-            # Average chroma across time
-            chroma_avg = np.mean(chroma, axis=1)
+            # Weight chroma by bass energy if available (bass notes indicate chord roots)
+            if low_freq_rms is not None and low_freq_rms.shape[1] == chroma.shape[1]:
+                weights = low_freq_rms.flatten()
+                weights = weights / (np.sum(weights) + 1e-8)  # Normalize to sum to 1
+                chroma_avg = np.sum(chroma * weights, axis=1)
+            elif downbeat_frames is not None and len(downbeat_frames) > 4:
+                # Fallback: use downbeat-only chroma (tonic chord on beat 1)
+                valid_frames = downbeat_frames[downbeat_frames < chroma.shape[1]]
+                chroma_avg = np.mean(chroma[:, valid_frames], axis=1)
+            else:
+                # Simple average across time
+                chroma_avg = np.mean(chroma, axis=1)
 
             # Normalize
             chroma_norm = chroma_avg / (np.linalg.norm(chroma_avg) + 1e-8)

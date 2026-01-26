@@ -13,15 +13,16 @@ import numpy.typing as npt
 class FeatureAccumulator:
     """Thread-safe accumulator for audio features extracted during streaming.
 
-    Stores lightweight feature data (onset envelope, chroma, RMS, spectral centroid)
-    incrementally as audio streams, allowing full-song analysis without holding
-    entire PCM audio in memory.
+    Stores lightweight feature data (onset envelope, chroma, RMS, spectral centroid,
+    low-frequency RMS) incrementally as audio streams, allowing full-song analysis
+    without holding entire PCM audio in memory.
 
-    Memory usage is approximately 280KB/minute of audio:
+    Memory usage is approximately 320KB/minute of audio:
     - Onset envelope: ~40KB/min (float32, ~170 frames/sec)
     - Chroma: ~120KB/min (12 x float32 per frame)
     - RMS: ~40KB/min (float32 per frame)
     - Spectral centroid: ~80KB/min (float64 per frame)
+    - Low-freq RMS: ~40KB/min (float32 per frame)
     """
 
     # Feature chunks accumulated during streaming
@@ -29,6 +30,7 @@ class FeatureAccumulator:
     chroma_chunks: list[npt.NDArray[np.float32]] = field(default_factory=list)
     rms_chunks: list[npt.NDArray[np.float32]] = field(default_factory=list)
     spectral_centroid_chunks: list[npt.NDArray[np.float64]] = field(default_factory=list)
+    low_freq_rms_chunks: list[npt.NDArray[np.float32]] = field(default_factory=list)
 
     # Track total samples processed for duration calculation
     total_samples: int = 0
@@ -69,6 +71,14 @@ class FeatureAccumulator:
         """
         with self._lock:
             self.spectral_centroid_chunks.append(centroid)
+
+    def add_low_freq_rms(self, low_freq_rms: npt.NDArray[np.float32]) -> None:
+        """Add low-frequency RMS energy chunk.
+
+        :param low_freq_rms: Low-freq RMS values for this chunk, shape (1, n_frames).
+        """
+        with self._lock:
+            self.low_freq_rms_chunks.append(low_freq_rms)
 
     def add_samples_processed(self, num_samples: int) -> None:
         """Track total samples processed for duration calculation.
@@ -118,6 +128,16 @@ class FeatureAccumulator:
                 return np.zeros((1, 0), dtype=np.float64)
             return np.concatenate(self.spectral_centroid_chunks, axis=1)
 
+    def get_low_freq_rms(self) -> npt.NDArray[np.float32]:
+        """Get concatenated low-frequency RMS energy.
+
+        :return: Full low-freq RMS array, shape (1, total_frames).
+        """
+        with self._lock:
+            if not self.low_freq_rms_chunks:
+                return np.zeros((1, 0), dtype=np.float32)
+            return np.concatenate(self.low_freq_rms_chunks, axis=1)
+
     def get_duration(self) -> float:
         """Get total duration in seconds.
 
@@ -134,6 +154,7 @@ class FeatureAccumulator:
             self.chroma_chunks.clear()
             self.rms_chunks.clear()
             self.spectral_centroid_chunks.clear()
+            self.low_freq_rms_chunks.clear()
             self.total_samples = 0
 
     def has_sufficient_data(self, min_duration_seconds: float = 5.0) -> bool:
