@@ -67,8 +67,8 @@ class BluesoundPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=discovery_info.get("model", "BluOS Device"),
             manufacturer="BluOS",
-            ip_address=ip_address,
         )
+        self._attr_device_info.ip_address = ip_address
         self._attr_available = True
         self._attr_source_list = []
         self._attr_needs_poll = True
