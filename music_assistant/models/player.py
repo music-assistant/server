@@ -1254,7 +1254,7 @@ class Player(ABC):
             current_media=self.current_media,
             name=self.display_name,
             enabled=self.enabled,
-            hide_player_in_ui=self.hide_player_in_ui,
+            hide_in_ui="always" in self.hide_player_in_ui,
             expose_to_ha=self.expose_to_ha,
             icon=self.icon,
             group_volume=self.group_volume,
