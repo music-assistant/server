@@ -51,7 +51,7 @@ pkce==1.0.3
 plexapi==4.17.2
 podcastparser==0.6.11
 propcache>=0.2.1
-py-opensonic==8.0.1
+py-opensonic==8.1.1
 pyblu==2.0.5
 pycares==4.11.0
 PyChromecast==14.0.9
