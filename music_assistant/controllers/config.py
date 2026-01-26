@@ -1430,7 +1430,8 @@ class ConfigController:
         """Update ProviderConfig."""
         config = await self.get_provider_config(instance_id)
         changed_keys = config.update(values)
-        available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
+        prov_instance = self.mass.get_provider(instance_id)
+        available = prov_instance.available if prov_instance else False
         if not changed_keys and (config.enabled == available):
             # no changes
             return config
@@ -1441,7 +1442,13 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
         self.set(conf_key, raw_conf)
-        if config.enabled:
+        if config.enabled and prov_instance is None:
+            await self.mass.load_provider_config(config)
+        if config.enabled and prov_instance and available:
+            # update config for existing/loaded provider instance
+            await prov_instance.update_config(config, changed_keys)
+        elif config.enabled:
+            # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)
         else:
             # disable provider
