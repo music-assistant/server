@@ -269,7 +269,7 @@ class GPodder(MusicProvider):
             assert nc_url is not None
             self._client.init_nc(base_url=nc_url, nc_token=str(nc_token))
         else:
-            self.update_config_value(CONF_USING_GPODDER, True)
+            self._update_config_value(CONF_USING_GPODDER, True)
             if _username is None or _password is None or _device_id is None:
                 raise LoginFailed("Must provide username, password and device_id.")
             username = str(_username)

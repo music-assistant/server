@@ -270,7 +270,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Adding radio %s to stored radios", item.item_id)
         stored_radios = [*stored_radios, item.item_id]
-        self.update_config_value(CONF_STORED_RADIOS, stored_radios)
+        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -282,7 +282,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Removing radio %s from stored radios", prov_item_id)
         stored_radios = [x for x in stored_radios if x != prov_item_id]
-        self.update_config_value(CONF_STORED_RADIOS, stored_radios)
+        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
         return True
 
     @use_cache(3600 * 6)  # Cache for 6 hours
