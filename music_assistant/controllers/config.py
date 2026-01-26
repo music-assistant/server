@@ -533,19 +533,26 @@ class ConfigController:
         self, provider: str | None = None, include_values: bool = False
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
-        return [
-            await self.get_player_config(raw_conf["player_id"])
-            if include_values
-            else cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
-            for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
-            # filter out unavailable providers (only if we requested the full info)
-            if (
-                not include_values
-                or raw_conf["provider"] in get_global_cache_value("available_providers", [])
-            )
+        result: list[PlayerConfig] = []
+        for raw_conf in list(self.get(CONF_PLAYERS, {}).values()):
+            # filter out unavailable providers
+            if raw_conf["provider"] not in get_global_cache_value("available_providers", []):
+                continue
             # optional provider filter
-            and (provider in (None, raw_conf["provider"]))
-        ]
+            if provider is not None and raw_conf["provider"] != provider:
+                continue
+            # filter out unavailable players
+            # (unless disabled, otherwise there is no way to re-enable them)
+            player = self.mass.players.get(raw_conf["player_id"], False)
+            if (not player or not player.available) and raw_conf.get("enabled", True):
+                continue
+
+            if include_values:
+                result.append(await self.get_player_config(raw_conf["player_id"]))
+            else:
+                raw_conf["default_name"] = player.display_name if player else raw_conf.get("name")
+                result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
+        return result
 
     @api_command("config/players/get")
     async def get_player_config(
@@ -570,7 +577,6 @@ class ConfigController:
                 # handle unavailable player and/or provider
                 conf_entries = []
                 raw_conf["available"] = False
-                raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
             return cast("PlayerConfig", PlayerConfig.parse(conf_entries, raw_conf))
         msg = f"No config found for player id {player_id}"
