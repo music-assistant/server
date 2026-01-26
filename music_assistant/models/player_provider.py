@@ -24,7 +24,7 @@ class PlayerProvider(Provider):
         """Call (by config manager) when a player gets enabled."""
         # default implementation: trigger discovery - feel free to override
         task_id = f"discover_players_{self.instance_id}"
-        self.mass.call_later(5, self.mass.run_provider_discovery, task_id=task_id)
+        self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
 
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""

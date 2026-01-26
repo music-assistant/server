@@ -761,10 +761,10 @@ class ConfigController:
         try:
             # validate/handle the update in the player manager
             await self.mass.players.on_player_config_change(config, changed_keys)
-        except Exception as ex:
+        except Exception:
             # rollback on error
             self.set(conf_key, old_config.to_raw())
-            raise ex from ex
+            raise
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,

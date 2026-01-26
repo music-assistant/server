@@ -49,7 +49,7 @@ class HeosPlayerProvider(PlayerProvider):
         try:
             # Populate source lists
             await self._populate_sources()
-            await self.discover_players()
+            # NOTE: players are discovered via discovery method (called automatically by core)
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e

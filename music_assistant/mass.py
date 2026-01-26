@@ -712,7 +712,7 @@ class MusicAssistant:
         """
         provider = self.get_provider(instance_id, return_unavailable=False)
         if not provider:
-            raise KeyError(f"Player provider with instance ID {instance_id} not found")
+            raise KeyError(f"Provider with instance ID {instance_id} not found")
         if provider.manifest.mdns_discovery:
             if provider.instance_id not in self._mdns_locks:
                 self._mdns_locks[provider.instance_id] = asyncio.Lock()
