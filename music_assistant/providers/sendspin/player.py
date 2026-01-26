@@ -358,11 +358,16 @@ class SendspinPlayer(Player):
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        if player_client := self.api.player:
-            if muted:
-                player_client.mute()
-            else:
-                player_client.unmute()
+        if self.synced_to is not None:
+            # This player is a group member — mute only this player
+            if player_client := self.api.player:
+                if muted:
+                    player_client.mute()
+                else:
+                    player_client.unmute()
+        else:
+            # This player is the leader (or solo) — mute the entire group
+            self.api.group.set_mute(muted)
 
     async def stop(self) -> None:
         """Stop command."""
