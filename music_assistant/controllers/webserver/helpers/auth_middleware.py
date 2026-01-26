@@ -43,8 +43,10 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         ingress_username = request.headers.get("X-Remote-User-Name")
         ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
 
-        # Require all Ingress headers to be present for security
-        if not (ingress_user_id and ingress_username):
+        # Alternative auth providers may not provide username
+        ma_username = ingress_username or ingress_user_id
+
+        if not ingress_user_id:
             return None
 
         # Try to find existing user linked to this HA user ID
@@ -52,7 +54,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
             AuthProviderType.HOME_ASSISTANT, ingress_user_id
         )
         if not user:
-            user = await mass.webserver.auth.get_user_by_username(ingress_username)
+            user = await mass.webserver.auth.get_user_by_username(ma_username)
             if not user:
                 # New user - fetch details from HA
                 ha_username, ha_display_name, avatar_url = await get_ha_user_details(
@@ -60,7 +62,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
                 )
                 role = await get_ha_user_role(mass, ingress_user_id)
                 user = await mass.webserver.auth.create_user(
-                    username=ha_username or ingress_username,
+                    username=ha_username or ma_username,
                     role=role,
                     display_name=ha_display_name or ingress_display_name,
                     avatar_url=avatar_url,

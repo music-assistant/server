@@ -361,7 +361,10 @@ class WebsocketClientHandler:
         ingress_username = self.request.headers.get("X-Remote-User-Name")
         ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
 
-        if ingress_user_id and ingress_username:
+        # Alternative auth providers may not provide username
+        ma_username = ingress_username or ingress_user_id
+
+        if ingress_user_id:
             # Try to find existing user linked to this HA user ID
             user = await self.webserver.auth.get_user_by_provider_link(
                 AuthProviderType.HOME_ASSISTANT, ingress_user_id
@@ -369,7 +372,7 @@ class WebsocketClientHandler:
 
             if not user:
                 # Check if a user with this username already exists
-                user = await self.webserver.auth.get_user_by_username(ingress_username)
+                user = await self.webserver.auth.get_user_by_username(ma_username)
 
                 if not user:
                     # New user - fetch details from HA
@@ -379,7 +382,7 @@ class WebsocketClientHandler:
                     # Auto-create user for Ingress (they're already authenticated by HA)
                     role = await get_ha_user_role(self.mass, ingress_user_id)
                     user = await self.webserver.auth.create_user(
-                        username=ha_username or ingress_username,
+                        username=ha_username or ma_username,
                         role=role,
                         display_name=ha_display_name or ingress_display_name,
                         avatar_url=avatar_url,
