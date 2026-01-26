@@ -1761,31 +1761,40 @@ class PlayerController(CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        player = self.get(config.player_id)
+        player_provider = self.mass.get_provider(config.provider)
         player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
-        # signal player provider that the player got enabled/disabled
-        if player_provider := self.mass.get_provider(config.provider):
-            assert isinstance(player_provider, PlayerProvider)  # for type checking
-            if ATTR_ENABLED in changed_keys and not config.enabled:
-                player_provider.on_player_disabled(config.player_id)
-            elif ATTR_ENABLED in changed_keys and config.enabled:
-                player_provider.on_player_enabled(config.player_id)
-        if not (player := self.get(config.player_id)):
-            return  # guard against player not being registered (yet)
-        resume_queue: PlayerQueue | None = (
-            self.mass.player_queues.get(player.active_source) if player.active_source else None
-        )
-        if player_disabled and player.available:
+        player_enabled = ATTR_ENABLED in changed_keys and config.enabled
+
+        if player_disabled and player and player.available:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
                 await self._handle_cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
+
+        # signal player provider that the player got enabled/disabled
+        if (player_enabled or player_disabled) and player_provider:
+            assert isinstance(player_provider, PlayerProvider)  # for type checking
+            if player_disabled:
+                player_provider.on_player_disabled(config.player_id)
+            elif player_enabled:
+                player_provider.on_player_enabled(config.player_id)
+            return  # enabling/disabling a player will be handled by the provider
+
+        if not player:
+            return  # guard against player not being registered (yet)
+
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.active_source) if player.active_source else None
+        )
+
         # ensure player state gets updated with any updated config
         player.set_config(config)
         await player.on_config_updated()
         player.update_state()
         # if the PlayerQueue was playing, restart playback
-        if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
+        if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             requires_restart = any(
                 v for v in config.values.values() if v.key in changed_keys and v.requires_reload
             )

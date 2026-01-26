@@ -270,19 +270,6 @@ class DLNAPlayer(Player):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [*PLAYER_CONFIG_ENTRIES]
 
-    # async def on_player_config_change(
-    #     self,
-    #     config: PlayerConfig,
-    #     changed_keys: set[str],
-    # ) -> None:
-    #     """Call (by config manager) when the configuration of a player changes."""
-    #     if dlna_player := self.dlnaplayers.get(config.player_id):
-    #         # reset player features based on config values
-    #         self._set_player_features(dlna_player)
-    #     else:
-    #         # run discovery to catch any re-enabled players
-    #         self.mass.create_task(self.discover_players())
-
     # COMMANDS
     @catch_request_errors
     async def stop(self) -> None:

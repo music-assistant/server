@@ -49,10 +49,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # relevant or leave out completely if not needed.
         # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
         self.logger.info("DemoPlayerProvider loaded")
-        await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -77,6 +74,7 @@ class DemoPlayerprovider(PlayerProvider):
         # OPTIONAL
         # this is an optional method that you can implement if
         # you want to do something special when a player is enabled.
+        super().on_player_enabled(player_id)
 
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""
@@ -84,6 +82,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # you want to do something special when a player is disabled.
         # e.g. you can stop polling the player or disconnect from it.
+        super().on_player_disabled(player_id)
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""

@@ -7,6 +7,7 @@ import base64
 import contextlib
 import logging
 import os
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -749,15 +750,21 @@ class ConfigController:
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
         config = await self.get_player_config(player_id)
+        old_config = deepcopy(config)
         changed_keys = config.update(values)
         if not changed_keys:
             # no changes
             return config
-        # validate/handle the update in the player manager
-        await self.mass.players.on_player_config_change(config, changed_keys)
-        # actually store changes (if the above did not raise)
+        # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
+        try:
+            # validate/handle the update in the player manager
+            await self.mass.players.on_player_config_change(config, changed_keys)
+        except Exception as ex:
+            # rollback on error
+            self.set(conf_key, old_config.to_raw())
+            raise ex from ex
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
