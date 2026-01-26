@@ -1085,7 +1085,7 @@ class ConfigController:
         self.save(immediate=True)
         try:
             controller: CoreController = getattr(self.mass, domain)
-            await controller.reload(config)
+            await controller.update_config(config, changed_keys)
         except asyncio.CancelledError:
             pass
         except Exception:
