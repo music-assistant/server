@@ -485,7 +485,7 @@ class AppleMusicProvider(MusicProvider):
         return (name.strip() or "Folder").replace("/", "-").replace("|", "-")
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from spotify."""
+        """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self._get_all_items(endpoint, include="catalog", extend="editorialNotes"):
             if item and item["id"]:
