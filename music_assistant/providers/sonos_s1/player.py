@@ -565,6 +565,7 @@ class SonosPlayer(Player):
             image_url=track_info.get("album_art"),
         )
         self._attr_current_media = current_media
+        self._attr_active_source = None
         self._update_media_position(track_info, force_update=update_position)
 
     def _update_media_position(

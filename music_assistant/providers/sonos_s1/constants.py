@@ -24,6 +24,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.SELECT_SOURCE,
 )
 
 # Source Mapping
