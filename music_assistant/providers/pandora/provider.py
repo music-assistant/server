@@ -146,9 +146,15 @@ class PandoraProvider(MusicProvider):
             ) from err
 
     async def _api_request(
-        self, method: str, url: str, data: dict[str, Any] | None = None
+        self, method: str, url: str, data: dict[str, Any] | None = None, retry: bool = True
     ) -> dict[str, Any]:
-        """Make an API request to Pandora."""
+        """Make an API request to Pandora.
+
+        :param method: HTTP method (GET, POST, etc.)
+        :param url: API endpoint URL
+        :param data: Optional JSON data to send
+        :param retry: Whether to retry once on 401 authentication errors
+        """
         if not self._csrf_token or not self._auth_token:
             raise LoginFailed("Not authenticated with Pandora")
 
@@ -160,7 +166,14 @@ class PandoraProvider(MusicProvider):
             ) as response:
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
-                    raise LoginFailed("Pandora session expired")
+                    if retry:
+                        # Auth token expired, re-authenticate and retry once
+                        username = str(self.config.get_value(CONF_USERNAME))
+                        password = str(self.config.get_value(CONF_PASSWORD))
+                        await self._authenticate(username, password)
+                        return await self._api_request(method, url, data, retry=False)
+                    raise LoginFailed("Pandora authentication failed after retry")
+
                 if response.status == 404:
                     raise MediaNotFoundError("Resource not found")
                 if response.status >= 500:
@@ -347,15 +360,15 @@ class PandoraProvider(MusicProvider):
         # Get or create session with LRU eviction
         session = self._get_or_create_session(station_id)
 
-        # If we don't have this music track yet, fetch more fragments
-        while music_track_num >= len(session.track_map):
-            next_fragment_idx = len(session.fragments)
-            await self._get_fragment_data(session, next_fragment_idx)
-
-        # Look up the actual fragment/track position
-        fragment_idx, track_idx = session.track_map[music_track_num]
-
         try:
+            # If we don't have this music track yet, fetch more fragments
+            while music_track_num >= len(session.track_map):
+                next_fragment_idx = len(session.fragments)
+                await self._get_fragment_data(session, next_fragment_idx)
+
+            # Look up the actual fragment/track position
+            fragment_idx, track_idx = session.track_map[music_track_num]
+
             # Ensure fragment is loaded
             if fragment_idx >= len(session.fragments) or not session.fragments[fragment_idx]:
                 await self._get_fragment_data(session, fragment_idx)
@@ -387,6 +400,9 @@ class PandoraProvider(MusicProvider):
         except (MediaNotFoundError, InvalidDataError) as err:
             self.logger.error("Stream error: %s", err)
             return web.Response(status=404, text="Stream unavailable")
+        except ProviderUnavailableError as err:
+            self.logger.error("Pandora service unavailable: %s", err)
+            return web.Response(status=503, text="Service temporarily unavailable")
 
     def _get_or_create_session(self, station_id: str) -> PandoraStationSession:
         """Get or create a session, with LRU eviction if needed."""
