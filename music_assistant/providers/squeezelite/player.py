@@ -93,10 +93,13 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
+        self._plugin_source_active: bool = False
         # TEMP: patch slimclient send_strm to adjust buffer thresholds
         # this can be removed when we did a new release of aioslimproto with this change
         # after this has been tested in beta for a while
-        client._send_strm = lambda *args, **kwargs: _patched_send_strm(client, *args, **kwargs)
+        client._send_strm = lambda *args, **kwargs: _patched_send_strm(
+            client, self, *args, **kwargs
+        )
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player is registered or the config was updated."""
@@ -197,6 +200,7 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self._plugin_source_active = False
         # Clean up any existing multi-client stream
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -429,6 +433,10 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+        source_id = media.source_id or (media.custom_data or {}).get("source_id")
+        self._plugin_source_active = (
+            source_id is not None and self.mass.players.get_plugin_source(source_id) is not None
+        )
         await slimplayer.play_url(
             url=url,
             mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
@@ -704,6 +712,7 @@ async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> 
 
 async def _patched_send_strm(  # noqa: PLR0913
     self: SlimClient,
+    player: SqueezelitePlayer,
     command: bytes = b"q",
     autostart: bytes = b"0",
     codec_details: bytes = b"p1321",
@@ -719,8 +728,11 @@ async def _patched_send_strm(  # noqa: PLR0913
     httpreq: bytes = b"",
 ) -> None:
     """Create stream request message based on given arguments."""
-    threshold = 64  # KB of input buffer data before autostart or notify
-    output_threshold = 1  # amount of output buffer data before playback starts, in tenths of second
+    if player._plugin_source_active:
+        threshold = 64  # KB of input buffer data before autostart or notify
+        output_threshold = (
+            1  # amount of output buffer data before playback starts, in tenths of second
+        )
     data = struct.pack(
         "!cc5sBcBcBBBLHL",
         command,
