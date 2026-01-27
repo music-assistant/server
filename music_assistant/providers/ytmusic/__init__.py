@@ -122,6 +122,7 @@ YT_PERSONAL_PLAYLISTS = (
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
+DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -623,7 +624,7 @@ class YoutubeMusicProvider(MusicProvider):
         stream_format = await self._get_stream_format(item_id=item_id)
         self.logger.debug("Found stream_format: %s for song %s", stream_format["format"], item_id)
         url = stream_format["url"]
-        expiration = 3600
+        expiration = DEFAULT_STREAM_URL_EXPIRATION
         if parsed := parse_qs(urlparse(url).query):
             if expire_ts := parsed.get("expire", [None])[0]:
                 expiration = int(expire_ts) - int(time.time())
