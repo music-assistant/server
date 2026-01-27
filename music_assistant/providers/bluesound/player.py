@@ -15,10 +15,8 @@ from pyblu.entities import Input, PairedPlayer, Preset
 from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 
 from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
-    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
@@ -34,6 +32,8 @@ from music_assistant.providers.bluesound.const import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+
     from .provider import BluesoundDiscoveryInfo, BluesoundPlayerProvider
 
 
@@ -77,6 +77,11 @@ class BluesoundPlayer(Player):
         self._attr_poll_interval = IDLE_POLL_INTERVAL
         self._attr_can_group_with = {provider.instance_id}
 
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
     async def setup(self) -> None:
         """Set up the player."""
         # Add volume support if available
@@ -92,7 +97,6 @@ class BluesoundPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
@@ -100,11 +104,7 @@ class BluesoundPlayer(Player):
                 max_bit_depth=24,
                 safe_max_bit_depth=24,
             ),
-            CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            ConfigEntry.from_dict(
-                {**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "default_value": "full"}
-            ),
+            CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
         ]
 
     async def disconnect(self) -> None:

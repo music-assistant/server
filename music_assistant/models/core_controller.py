@@ -61,6 +61,22 @@ class CoreController:
         self._set_logger(log_level)
         await self.setup(config)
 
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        # default implementation: perform a full reload on any config change
+        # TODO: only reload when 'requires_reload' keys changed
+        if changed_keys == {f"values/{CONF_LOG_LEVEL}"}:
+            # only log level changed, no need to reload
+            log_value = str(config.get_value(CONF_LOG_LEVEL))
+            self._set_logger(log_value)
+        else:
+            self.logger.info(
+                "Config updated, reloading %s core controller",
+                self.manifest.name,
+            )
+            task_id = f"core_reload_{self.domain}"
+            self.mass.call_later(1, self.reload, config, task_id=task_id)
+
     def _set_logger(self, log_level: str | None = None) -> None:
         """Set the logger settings."""
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)

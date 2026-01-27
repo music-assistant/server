@@ -93,11 +93,10 @@ class DemoPlayer(Player):
         # OPTIONAL
         # this method is optional and should be implemented if you need player specific
         # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
-        default_entries = await super().get_config_entries(action=action, values=values)
+        # you can leave this method out completely.
+        # note that the config controller will always add a set of default config entries
+        # if you want, you can override those by specifying the same key as a default entry.
         return [
-            *default_entries,
             # example of a player specific config entry
             # you can also override a default entry by specifying the same key
             # as a default entry, but with a different type or default value.

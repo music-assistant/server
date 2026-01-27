@@ -15,15 +15,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 
-from music_assistant.constants import (
-    CONF_ENTRY_DEPRECATED_EQ_BASS,
-    CONF_ENTRY_DEPRECATED_EQ_MID,
-    CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    CONF_ENTRY_SYNC_ADJUST,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -148,6 +140,11 @@ class AirPlayPlayer(Player):
         return super().available
 
     @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
+    @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected elapsed time accounting for stream session restarts."""
         if not self.stream or not self.stream.session:
@@ -165,8 +162,7 @@ class AirPlayPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
-
+        base_entries: list[ConfigEntry] = []
         require_pairing = self._requires_pairing()
 
         # Handle pairing actions
@@ -175,15 +171,10 @@ class AirPlayPlayer(Player):
 
         # Add pairing config entries for Apple TV and macOS devices
         if require_pairing:
-            base_entries = [*self._get_pairing_config_entries(values), *base_entries]
+            base_entries = [*self._get_pairing_config_entries(values)]
 
         # Regular AirPlay config entries
         base_entries += [
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_EQ_BASS,
-            CONF_ENTRY_DEPRECATED_EQ_MID,
-            CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
             ConfigEntry(
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,

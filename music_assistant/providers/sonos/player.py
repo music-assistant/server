@@ -32,7 +32,6 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
-    CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
@@ -172,8 +171,6 @@ class SonosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
-            CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players

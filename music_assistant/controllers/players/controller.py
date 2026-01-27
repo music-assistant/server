@@ -70,17 +70,16 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    get_sendspin_player_id,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.player import (
-    Player,
-    PlayerMedia,
-    PlayerState,
-)
+from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
@@ -180,13 +179,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         return [
             player
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
             and (provider_filter is None or player.provider.instance_id == provider_filter)
-            and (not user_filter or player.player_id in user_filter)
+            and (
+                not user_filter
+                or player.player_id in user_filter
+                or player.player_id == current_sendspin_player
+            )
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
             and (return_protocol_players or player.type != PlayerType.PROTOCOL)
         ]
@@ -264,7 +268,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
-        if current_user and user_filter and player_id not in user_filter:
+        current_sendspin_player = get_sendspin_player_id()
+        if (
+            current_user
+            and user_filter
+            and player_id not in user_filter
+            and player_id != current_sendspin_player
+        ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
         if player := self.get(player_id, raise_unavailable):
@@ -294,8 +304,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         if player := self.get_player_by_name(name):
-            if current_user and user_filter and player.player_id not in user_filter:
+            if (
+                current_user
+                and user_filter
+                and player.player_id not in user_filter
+                and player.player_id != current_sendspin_player
+            ):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
             return player.state
@@ -1711,53 +1727,49 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        player = self.get(config.player_id)
+        player_provider = self.mass.get_provider(config.provider)
         player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
-        # signal player provider that the player got enabled/disabled
-        if player_provider := self.mass.get_provider(config.provider):
-            assert isinstance(player_provider, PlayerProvider)  # for type checking
-            if ATTR_ENABLED in changed_keys and not config.enabled:
-                player_provider.on_player_disabled(config.player_id)
-            elif ATTR_ENABLED in changed_keys and config.enabled:
-                player_provider.on_player_enabled(config.player_id)
-        if not (player := self.get(config.player_id)):
-            return  # guard against player not being registered (yet)
-        resume_queue: PlayerQueue | None = (
-            self.mass.player_queues.get(player.active_source) if player.active_source else None
-        )
-        if player_disabled and player.available:
+        player_enabled = ATTR_ENABLED in changed_keys and config.enabled
+
+        if player_disabled and player and player.available:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
                 await self._handle_cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
+
+        # signal player provider that the player got enabled/disabled
+        if (player_enabled or player_disabled) and player_provider:
+            assert isinstance(player_provider, PlayerProvider)  # for type checking
+            if player_disabled:
+                player_provider.on_player_disabled(config.player_id)
+            elif player_enabled:
+                player_provider.on_player_enabled(config.player_id)
+            return  # enabling/disabling a player will be handled by the provider
+
+        if not player:
+            return  # guard against player not being registered (yet)
+
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.active_source) if player.active_source else None
+        )
+
         # ensure player state gets updated with any updated config
         player.set_config(config)
         await player.on_config_updated()
         player.update_state()
         # if the PlayerQueue was playing, restart playback
-        # TODO: add restart_stream property to ConfigEntry and use that instead of immediate_apply
-        # to check if we need to restart playback
-        if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
-            config_entries = await player.get_config_entries()
-            has_value_changes = False
-            all_immediate_apply = True
-            for key in changed_keys:
-                if not key.startswith("values/"):
-                    continue  # skip root values like "enabled", "name"
-                has_value_changes = True
-                actual_key = key.removeprefix("values/")
-                entry = next((e for e in config_entries if e.key == actual_key), None)
-                if entry is None or not entry.immediate_apply:
-                    all_immediate_apply = False
-                    break
-
-            if has_value_changes and all_immediate_apply:
-                # All changed config entries have immediate_apply=True, so no need to restart
-                # the playback
-                return
-            # always stop first to ensure the player uses the new config
-            await self.mass.player_queues.stop(resume_queue.queue_id)
-            self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
+        if resume_queue and resume_queue.state == PlaybackState.PLAYING:
+            requires_restart = any(
+                v for v in config.values.values() if v.key in changed_keys and v.requires_reload
+            )
+            if requires_restart:
+                # always stop first to ensure the player uses the new config
+                await self.mass.player_queues.stop(resume_queue.queue_id)
+                self.mass.call_later(
+                    1, self.mass.player_queues.resume, resume_queue.queue_id, False
+                )
 
     async def on_player_dsp_change(self, player_id: str) -> None:
         """Call (by config manager) when the DSP settings of a player change."""

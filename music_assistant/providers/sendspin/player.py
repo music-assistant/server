@@ -29,7 +29,6 @@ from aiosendspin.server.group import (
 )
 from aiosendspin.server.metadata import Metadata
 from aiosendspin.server.stream import AudioCodec, MediaStream
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
@@ -42,15 +41,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    CONF_ENTRY_SAMPLE_RATES,
-    CONF_OUTPUT_CHANNELS,
-    CONF_OUTPUT_CODEC,
-    INTERNAL_PCM_FORMAT,
-)
+from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_OUTPUT_CODEC, INTERNAL_PCM_FORMAT
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -72,7 +63,6 @@ SUPPORTED_GROUP_COMMANDS = [
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
-    from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
@@ -190,6 +180,11 @@ class SendspinPlayer(Player):
     timed_client_stream: TimedClientStream | None = None
     is_web_player: bool = False
 
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
     def __init__(self, provider: SendspinProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
@@ -231,6 +226,7 @@ class SendspinPlayer(Player):
             "PWA ("  # The PWA App
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
+        self._attr_hidden_by_default = self.is_web_player
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin server."""
@@ -593,21 +589,6 @@ class SendspinPlayer(Player):
 
         # Send metadata to the group
         self.api.group.set_metadata(metadata)
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries(action=action, values=values)
-        return [
-            *default_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-            ConfigEntry.from_dict({**CONF_ENTRY_SAMPLE_RATES.to_dict(), "hidden": True}),
-        ]
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""

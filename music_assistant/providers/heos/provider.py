@@ -8,10 +8,7 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 
-from music_assistant.constants import (
-    CONF_IP_ADDRESS,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_ENABLED, CONF_IP_ADDRESS, VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
 
@@ -24,6 +21,7 @@ class HeosPlayerProvider(PlayerProvider):
     _heos: Heos
     _music_source_list: list[PlayerSource] = []
     _input_source_list: list[MediaItem] = []
+    _discovery_running: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -51,13 +49,7 @@ class HeosPlayerProvider(PlayerProvider):
         try:
             # Populate source lists
             await self._populate_sources()
-
-            # Build player configs
-            devices = await self._heos.get_players()
-            for device in devices.values():
-                heos_player = HeosPlayer(self, device)
-
-                await heos_player.setup()
+            # NOTE: players are discovered via discovery method (called automatically by core)
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e
@@ -126,17 +118,31 @@ class HeosPlayerProvider(PlayerProvider):
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
-    def on_player_disabled(self, player_id: str) -> None:
-        """Unregister player when it is disabled, cleans up connections."""
-        # Clean up event handling connection
-        self.mass.create_task(self.mass.players.unregister(player_id))
+    async def discover_players(self) -> None:
+        """Discover players for this provider."""
+        if self._discovery_running:
+            return  # discovery already running
+        try:
+            self._discovery_running = True
+            self.logger.debug("Discovering HEOS players")
+            devices = await self._heos.get_players()
+            already_registered = {p.player_id for p in self.players}
+            for device in devices.values():
+                player_id = str(device.player_id)
+                if player_id in already_registered:
+                    continue  # already registered
+                # ignore disabled players in discovery
+                player_enabled = self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_ENABLED, default=True
+                )
+                if not player_enabled:
+                    continue
+                self.logger.info("Discovered new HEOS player: %s (%s)", device.name, player_id)
 
-    # TODO: Re-enable when MA lifecycles get updated.
-    # Currently a race-condition prevents `register_or_update` to finish because Enabled is still false  # noqa: E501
-    # def on_player_enabled(self, player_id: str) -> None:
-    #     """Reregister player when it is enabled."""
-    #     self.logger.debug("Attempting player re-enabling")
-    #     if device := self._device_map.get(player_id):
-    #         # Reinstantiate the player
-    #         heos_player = HeosPlayer(self, device)
-    #         self.mass.create_task(heos_player.setup())
+                heos_player = HeosPlayer(self, device)
+                await heos_player.setup()
+        finally:
+            self._discovery_running = False
+        # reschedule discovery
+        task_id = f"discover_players_{self.instance_id}"
+        self.mass.call_later(600, self.discover_players, task_id=task_id)

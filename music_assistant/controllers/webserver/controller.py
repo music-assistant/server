@@ -413,6 +413,49 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
+    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on websocket clients for a specific user.
+
+        This is called by the sendspin proxy when a client connects, allowing
+        the player controller to auto-whitelist the player for that user's session.
+
+        :param user_id: The user ID to set the sendspin player for.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._authenticated_user and client._authenticated_user.user_id == user_id:
+                client._sendspin_player_id = player_id
+                self.logger.debug(
+                    "Set sendspin player %s for websocket client of user %s",
+                    player_id,
+                    client._authenticated_user.username,
+                )
+
+    def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on a websocket client for a WebRTC session.
+
+        This is called by the WebRTC gateway when it extracts the client_id from
+        the sendspin auth message, allowing auto-whitelisting of the player.
+
+        :param session_id: The WebRTC session ID.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._webrtc_session_id == session_id:
+                client._sendspin_player_id = player_id
+                username = (
+                    client._authenticated_user.username
+                    if client._authenticated_user
+                    else "unauthenticated"
+                )
+                self.logger.debug(
+                    "Set sendspin player %s for WebRTC session %s (user: %s)",
+                    player_id,
+                    session_id,
+                    username,
+                )
+                return
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
