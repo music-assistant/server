@@ -8,7 +8,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption, MediaType
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
