@@ -32,6 +32,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     DURATION_SECONDS,
+    LINEIN_SOURCE_IDS,
     LINEIN_SOURCES,
     NEVER_TIME,
     PLAYER_FEATURES,
@@ -151,7 +152,12 @@ class SonosPlayer(Player):
                 self.player_id,
             )
             return
-        await asyncio.to_thread(self.soco.stop)
+        if self._attr_active_source in LINEIN_SOURCE_IDS:
+            # Play an invalid URI to force stop line-in sources
+            with contextlib.suppress(SoCoException):
+                await asyncio.to_thread(self.soco.play_uri, "")
+        else:
+            await asyncio.to_thread(self.soco.stop)
         self.mass.call_later(2, self.poll)
         self.update_state()
 
@@ -553,6 +559,7 @@ class SonosPlayer(Player):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = source_id
+            self._attr_current_media = None
             if source_id not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
             return
