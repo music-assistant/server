@@ -680,13 +680,16 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/volume_set")
     @handle_player_command
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    async def cmd_volume_set(
+        self, player_id: str, volume_level: int, preserve_mute: bool = False
+    ) -> None:
         """Send VOLUME_SET command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
+        :param preserve_mute: if True, do not auto-unmute the player.
         """
-        await self._handle_cmd_volume_set(player_id, volume_level)
+        await self._handle_cmd_volume_set(player_id, volume_level, preserve_mute=preserve_mute)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -791,6 +794,32 @@ class PlayerController(CoreController):
             step_size = 5
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
+
+    @api_command("players/cmd/group_volume_mute")
+    @handle_player_command
+    async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME_MUTE command to all players in a group.
+
+        - player_id: player_id of the group player or sync leader.
+        - muted: bool if group should be muted.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checker
+        if player.type == PlayerType.GROUP or player.group_members:
+            # dedicated group player or sync leader
+            coros = []
+            for child_player in self.iter_group_members(
+                player, only_powered=True, exclude_self=False
+            ):
+                coros.append(self.cmd_volume_mute(child_player.player_id, muted))
+            await asyncio.gather(*coros)
+            return
+        if player.synced_to and (sync_leader := self.get(player.synced_to)):
+            # redirect to sync leader
+            await self.cmd_group_volume_mute(sync_leader.player_id, muted)
+            return
+        # treat as normal player mute
+        await self.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/volume_mute")
     @handle_player_command
@@ -1665,7 +1694,8 @@ class PlayerController(CoreController):
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
             # Use private method to skip permission check - already validated on group
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
+            # preserve_mute=True so group volume changes don't unmute individual players
+            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume, preserve_mute=True))
         await asyncio.gather(*coros)
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
@@ -2340,7 +2370,9 @@ class PlayerController(CoreController):
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    async def _handle_cmd_volume_set(
+        self, player_id: str, volume_level: int, preserve_mute: bool = False
+    ) -> None:
         """
         Handle Player volume set command.
 
@@ -2359,7 +2391,8 @@ class PlayerController(CoreController):
             )
 
         if (
-            player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            not preserve_mute
+            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.volume_muted
         ):
             # if player is muted, we unmute it first
