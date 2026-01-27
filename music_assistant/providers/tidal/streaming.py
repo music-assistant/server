@@ -106,12 +106,7 @@ class TidalStreamingManager:
         return StreamDetails(
             item_id=track.item_id,
             provider=self.provider.instance_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-                sample_rate=stream_data.get("sampleRate", 44100),
-                bit_depth=stream_data.get("bitDepth", 16),
-                channels=2,
-            ),
+            audio_format=resolved_audio_format,
             stream_type=StreamType.HTTP,
             duration=track.duration,
             path=url,

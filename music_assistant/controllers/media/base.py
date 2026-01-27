@@ -648,7 +648,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             raise MediaNotFoundError(msg)
 
-        # guard against nulls for NOT NULL columns when called from API
+        # guard against nulls for NOT NULL columns
         if available is None:
             available = UNSET
         if in_library is None:
