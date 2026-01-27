@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
@@ -71,6 +72,36 @@ class TidalStreamingManager:
             content_type = ContentType.try_parse(codec)
         else:
             content_type = ContentType.MP4
+
+        resolved_audio_format = AudioFormat(
+            content_type=content_type,
+            sample_rate=stream_data.get("sampleRate", 44100),
+            bit_depth=stream_data.get("bitDepth", 16),
+            channels=2,
+        )
+        # Best-effort: update provider mapping's stored audio_format (patch-only).
+        # This should never break playback if it fails.
+        with suppress(Exception):
+            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                track.item_id, self.provider.instance_id
+            )
+            if lib_track:
+                cur_mapping = next(
+                    (
+                        m
+                        for m in lib_track.provider_mappings
+                        if m.provider_instance == self.provider.instance_id
+                        and m.item_id == track.item_id
+                    ),
+                    None,
+                )
+                if cur_mapping and cur_mapping.audio_format != resolved_audio_format:
+                    await self.mass.music.tracks.update_provider_mapping(
+                        item_id=lib_track.item_id,
+                        provider_instance_id=self.provider.instance_id,
+                        provider_item_id=track.item_id,
+                        audio_format=resolved_audio_format,
+                    )
 
         return StreamDetails(
             item_id=track.item_id,

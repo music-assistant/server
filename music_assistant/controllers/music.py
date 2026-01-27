@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
@@ -66,7 +67,7 @@ from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFAD
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
-from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
@@ -1664,6 +1665,36 @@ class MusicController(CoreController):
         """Remove provider mapping from the given library item."""
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
+
+    async def update_provider_mapping(
+        self,
+        media_type: MediaType,
+        db_id: str | int,
+        provider_instance_id: str,
+        provider_item_id: str,
+        *,
+        available: bool | Any = UNSET,
+        in_library: bool | Any = UNSET,
+        is_unique: bool | None | Any = UNSET,
+        url: str | None | Any = UNSET,
+        details: str | None | Any = UNSET,
+        audio_format: Any = UNSET,
+    ) -> None:
+        """System-only: patch an existing provider mapping row."""
+        if get_current_user() is not None:
+            raise InsufficientPermissions("update_provider_mapping is system-only")
+        ctrl = self.get_controller(media_type)
+        await ctrl.update_provider_mapping(
+            item_id=db_id,
+            provider_instance_id=provider_instance_id,
+            provider_item_id=provider_item_id,
+            available=available,
+            in_library=in_library,
+            is_unique=is_unique,
+            url=url,
+            details=details,
+            audio_format=audio_format,
+        )
 
     @api_command("music/match_providers")
     async def match_providers(self, media_type: MediaType, db_id: str) -> None:
