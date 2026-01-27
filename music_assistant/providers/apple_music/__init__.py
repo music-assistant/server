@@ -22,7 +22,6 @@ import pathlib
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -108,21 +107,11 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
-ROOT_PLAYLIST_FOLDER_ID = "p.playlistsroot"
-
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
-
-
-@dataclass(slots=True)
-class AppleMusicPlaylistFolder:
-    """Representation of an Apple Music playlist folder."""
-
-    item_id: str
-    name: str
 
 
 async def setup(

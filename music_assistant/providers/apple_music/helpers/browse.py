@@ -119,8 +119,7 @@ async def _fetch_playlist_folder_children(
                 )
                 playlist_obj = _playlist_without_global_id(playlist_obj)
             else:
-                _apply_library_id(playlist, playlist_id, provider)
-                playlists.append(playlist)
+                playlists.append(_apply_library_id(playlist, playlist_id, provider))
                 continue
         playlists.append(provider._parse_playlist(playlist_obj, is_favourite))
     playlists.sort(key=lambda item: (item.name or "").casefold())
@@ -144,22 +143,28 @@ def _playlist_without_global_id(playlist_obj: dict[str, Any]) -> dict[str, Any]:
     return new_obj
 
 
-def _apply_library_id(playlist: Playlist, library_id: str, provider: AppleMusicProvider) -> None:
-    """Force a playlist object to keep the library ID for future lookups.
+def _apply_library_id(
+    playlist: Playlist, library_id: str, provider: AppleMusicProvider
+) -> Playlist:
+    """Return a copy of `playlist` that always points to the library endpoint.
 
-    Even if the catalog fetch succeeds we always prefer the library ID because
-    it supports editing/favorites. We rewrite both the `item_id` and the mapping
-    for this provider instance so later `get_playlist` calls hit the library endpoint.
+    `get_playlist` is cached, so mutating the original object would leak those
+    changes to other consumers of the cached catalog playlist.  Instead we clone
+    the dataclass with `replace`, swap the ids for this provider instance, and
+    keep the cached object untouched.
     """
-    playlist.item_id = library_id
-    playlist.provider = provider.instance_id
     new_mappings: set[ProviderMapping] = set()
     for mapping in playlist.provider_mappings:
         if mapping.provider_instance == provider.instance_id:
             new_mappings.add(replace(mapping, item_id=library_id))
         else:
             new_mappings.add(mapping)
-    playlist.provider_mappings = new_mappings
+    return replace(
+        playlist,
+        item_id=library_id,
+        provider=provider.instance_id,
+        provider_mappings=new_mappings,
+    )
 
 
 async def browse_playlists(
