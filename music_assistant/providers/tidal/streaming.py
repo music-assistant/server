@@ -81,7 +81,7 @@ class TidalStreamingManager:
         )
         # Best-effort: update provider mapping's stored audio_format (patch-only).
         # This should never break playback if it fails.
-        with suppress(Exception):
+        with suppress(MediaNotFoundError):
             lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
                 track.item_id, self.provider.instance_id
             )
