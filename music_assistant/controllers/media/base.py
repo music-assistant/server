@@ -16,7 +16,13 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    MediaItemType,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -626,7 +632,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         is_unique: bool | None | Any = UNSET,
         url: str | None | Any = UNSET,
         details: str | None | Any = UNSET,
-        audio_format: Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
     ) -> None:
         """Update an existing provider mapping for a library item."""
         db_id = int(item_id)  # ensure integer

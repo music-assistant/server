@@ -25,7 +25,6 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
-    InsufficientPermissions,
     InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
@@ -1681,8 +1680,6 @@ class MusicController(CoreController):
         audio_format: Any = UNSET,
     ) -> None:
         """System-only: patch an existing provider mapping row."""
-        if get_current_user() is not None:
-            raise InsufficientPermissions("update_provider_mapping is system-only")
         ctrl = self.get_controller(media_type)
         await ctrl.update_provider_mapping(
             item_id=db_id,
