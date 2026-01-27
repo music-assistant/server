@@ -72,6 +72,7 @@ from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.apple_music.helpers import browse_playlists
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -374,115 +375,8 @@ class AppleMusicProvider(MusicProvider):
         sub_path = path.split("://", 1)[1]
         path_parts = [part for part in sub_path.split("/") if part]
         if path_parts and path_parts[0] == "playlists":
-            if len(path_parts) == 1:
-                return await self._browse_playlist_root()
-            folder_id = self._extract_playlist_folder_id(path_parts[1:])
-            if folder_id:
-                return await self._browse_playlist_folder(path, folder_id)
-            return await self._browse_playlist_root()
+            return await browse_playlists(self, path, path_parts)
         return await super().browse(path)
-
-    async def _browse_playlist_root(self) -> Sequence[MediaItemType | BrowseFolder]:
-        """Return the root playlist listing with folders."""
-        folders, playlists = await self._fetch_playlist_folder_children()
-        base_path = f"{self.instance_id}://playlists"
-        folder_nodes = self._folder_nodes(folders, base_path)
-        return folder_nodes + playlists
-
-    async def _browse_playlist_folder(
-        self, current_path: str, folder_id: str
-    ) -> Sequence[MediaItemType | BrowseFolder]:
-        """Return the contents of a playlist folder."""
-        folders, playlists = await self._fetch_playlist_folder_children(folder_id)
-        folder_nodes = self._folder_nodes(folders, current_path.rstrip("/"))
-        return folder_nodes + playlists
-
-    def _extract_playlist_folder_id(self, path_parts: list[str]) -> str | None:
-        """Extract the active folder id from a playlist browse path."""
-        if not path_parts:
-            return None
-        last_segment = path_parts[-1]
-        if "|" in last_segment:
-            return last_segment.rsplit("|", 1)[1]
-        return last_segment
-
-    async def _fetch_playlist_folder_children(
-        self, folder_id: str | None = None
-    ) -> tuple[list[AppleMusicPlaylistFolder], list[Playlist]]:
-        """Fetch folders and playlists for the requested Apple Music folder."""
-        apple_folder_id = folder_id or ROOT_PLAYLIST_FOLDER_ID
-        endpoint = f"me/library/playlist-folders/{apple_folder_id}/children"
-        try:
-            children = await self._get_all_items(endpoint)
-        except MediaNotFoundError:
-            children = []
-        folders: list[AppleMusicPlaylistFolder] = []
-        playlist_entries: list[dict[str, Any]] = []
-        library_playlist_ids: list[str] = []
-        for child in children:
-            child_id = child.get("id")
-            if not child_id:
-                continue
-            child_type = child.get("type")
-            attributes = child.get("attributes") or {}
-            if child_type == "library-playlist-folders":
-                folders.append(
-                    AppleMusicPlaylistFolder(
-                        item_id=child_id,
-                        name=attributes.get("name") or "Folder",
-                    )
-                )
-            elif child_type == "library-playlists":
-                playlist_entries.append(child)
-                if self.is_library_id(child_id):
-                    library_playlist_ids.append(child_id)
-        ratings: dict[str, Any] = {}
-        if library_playlist_ids:
-            ratings = await self._get_ratings(library_playlist_ids, MediaType.PLAYLIST)
-        playlists: list[Playlist] = []
-        for playlist_obj in playlist_entries:
-            playlist_id = playlist_obj.get("id")
-            is_favourite = ratings.get(playlist_id)
-            attributes = playlist_obj.get("attributes") or {}
-            play_params = attributes.get("playParams") or {}
-            global_id = play_params.get("globalId")
-            if attributes.get("hasCatalog") and global_id and not self.is_library_id(global_id):
-                try:
-                    playlists.append(await self.get_playlist(global_id, is_favourite))
-                    continue
-                except MediaNotFoundError:
-                    self.logger.debug(
-                        "Catalog playlist %s not found, falling back to library metadata",
-                        global_id,
-                    )
-            playlists.append(self._parse_playlist(playlist_obj, is_favourite))
-        playlists.sort(key=lambda item: (item.name or "").casefold())
-        folders.sort(key=lambda folder: folder.name.casefold())
-        return folders, playlists
-
-    def _folder_nodes(
-        self, folders: list[AppleMusicPlaylistFolder], base_path: str
-    ) -> list[BrowseFolder]:
-        """Convert folder metadata returned by the API into browse nodes."""
-        normalized_base = base_path.rstrip("/")
-        items: list[BrowseFolder] = []
-        for folder in folders:
-            folder_name = folder.name or "Folder"
-            segment_name = self._folder_path_segment(folder_name)
-            segment = f"{segment_name}|{folder.item_id}"
-            items.append(
-                BrowseFolder(
-                    item_id=f"folder:{folder.item_id}",
-                    provider=self.instance_id,
-                    path=f"{normalized_base}/{segment}",
-                    name=folder_name,
-                )
-            )
-        return items
-
-    def _folder_path_segment(self, name: str) -> str:
-        """Return human-readable, path-safe breadcrumb text."""
-        return (name.strip() or "Folder").replace("/", "-").replace("|", "-")
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
@@ -603,11 +497,19 @@ class AppleMusicProvider(MusicProvider):
     @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
-        if not self.is_library_id(prov_playlist_id):
-            endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
-        else:
+        response: dict[str, Any] | None = None
+        if self.is_library_id(prov_playlist_id):
             endpoint = f"me/library/playlists/{prov_playlist_id}"
-        response = await self._get_data(endpoint)
+            try:
+                response = await self._get_data(endpoint)
+            except MediaNotFoundError:
+                self.logger.debug(
+                    "Library playlist %s not found, falling back to catalog lookup",
+                    prov_playlist_id,
+                )
+        if response is None:
+            endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
+            response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 
     @use_cache()
