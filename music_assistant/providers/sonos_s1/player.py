@@ -20,13 +20,7 @@ from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-    CONF_ENTRY_OUTPUT_CODEC,
-    VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL, create_sample_rates_config_entry
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -80,8 +74,8 @@ class SonosPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=soco.speaker_info["model_name"],
             manufacturer="Sonos",
-            ip_address=soco.ip_address,
         )
+        self._attr_device_info.ip_address = soco.ip_address
         self._attr_needs_poll = True
         self._attr_poll_interval = 5
         self._attr_available = True
@@ -131,14 +125,10 @@ class SonosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-            CONF_ENTRY_OUTPUT_CODEC,
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100, 48000],
                 supported_bit_depths=[16],
-                hidden=False,
+                hidden=True,
             ),
         ]
 
@@ -315,8 +305,8 @@ class SonosPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
-            ip_address=ip_address,
         )
+        self._attr_device_info.ip_address = ip_address
         self.update_player()
 
     async def _check_availability(self) -> None:

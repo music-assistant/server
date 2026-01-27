@@ -24,7 +24,6 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
@@ -72,6 +71,11 @@ class UniversalGroupPlayer(GroupPlayer):
                 f"/ugp/{self.player_id}.mp3", self._serve_ugp_stream
             )
         )
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"/ugp/{self.player_id}.aac", self._serve_ugp_stream
+            )
+        )
         # allow grouping with all providers, except the ugp provider itself
         self._attr_can_group_with = {
             x.instance_id
@@ -79,6 +83,11 @@ class UniversalGroupPlayer(GroupPlayer):
             if x.instance_id != self.provider.instance_id
         }
         self._set_attributes()
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
@@ -103,8 +112,6 @@ class UniversalGroupPlayer(GroupPlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
-            # default entries for player groups
-            *await super().get_config_entries(action=action, values=values),
             # add universal group specific entries
             CONFIG_ENTRY_UGP_NOTE,
             ConfigEntry(
@@ -130,7 +137,6 @@ class UniversalGroupPlayer(GroupPlayer):
                 required=False,
             ),
             CONF_ENTRY_SAMPLE_RATES_UGP,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
         ]
 
     async def stop(self) -> None:

@@ -14,11 +14,7 @@ from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
 from snapcast.control.stream import Snapstream
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-)
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -53,6 +49,11 @@ class SnapCastPlayer(Player):
         self._stream_task: asyncio.Task[None] | None = None
 
     @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
+    @property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).
@@ -74,9 +75,9 @@ class SnapCastPlayer(Player):
         self._attr_available = self.snap_client.connected
         self._attr_device_info = DeviceInfo(
             model=self.snap_client._client.get("host").get("os"),
-            ip_address=self.snap_client._client.get("host").get("ip"),
             manufacturer=self.snap_client._client.get("host").get("arch"),
         )
+        self._attr_device_info.ip_address = self.snap_client._client.get("host").get("ip")
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,
@@ -292,12 +293,8 @@ class SnapCastPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Player config."""
-        base_entries = await super().get_config_entries(action=action, values=values)
         return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         ]
 
     def _handle_player_update(self, snap_client: Snapclient) -> None:

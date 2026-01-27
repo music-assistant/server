@@ -17,6 +17,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
@@ -26,7 +27,12 @@ import ifaddr
 from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
+    LIVE_INDICATORS,
+    SOUNDTRACK_INDICATORS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -383,7 +389,7 @@ async def get_folder_size(folderpath: str) -> float:
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
                 _fp = os.path.join(dirpath, _file)
-                total_size += os.path.getsize(_fp)
+                total_size += Path(_fp).stat().st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -686,6 +692,9 @@ def validate_announcement_chime_url(url: str) -> bool:
     """Validate announcement chime URL format."""
     if not url or not url.strip():
         return True  # Empty URL is valid
+
+    if url == ANNOUNCE_ALERT_FILE:
+        return True  # Built-in chime file is valid
 
     try:
         parsed = urlparse(url.strip())

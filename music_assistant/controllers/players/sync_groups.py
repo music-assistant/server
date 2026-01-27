@@ -65,6 +65,7 @@ OPTIONAL_FEATURES = {
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.MULTI_DEVICE_DSP,
 }
 
 
@@ -111,11 +112,15 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
-        if self.sync_leader:
+        members = self.group_members
+        reference_player: Player | None = self.sync_leader or (
+            self.mass.players.get(members[0]) if members else None
+        )
+        if reference_player:
             base_features = self._attr_supported_features.copy()
             # add features supported by the sync leader
             for feature in OPTIONAL_FEATURES:
-                if feature in self.sync_leader.supported_features:
+                if feature in reference_player.supported_features:
                     base_features.add(feature)
             return base_features
         return self._attr_supported_features
@@ -125,19 +130,13 @@ class SyncGroupPlayer(GroupPlayer):
         """Return the current playback state of the player."""
         if self.powered:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
-        else:
-            return PlaybackState.IDLE
+        return PlaybackState.IDLE
 
-    @cached_property
-    def flow_mode(self) -> bool:
-        """
-        Return if the player needs flow mode.
-
-        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
-        or has a flow mode config entry set to True.
-        """
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player needs flow mode."""
         if leader := self.sync_leader:
-            return leader.flow_mode
+            return leader.requires_flow_mode
         return False
 
     @property
@@ -177,10 +176,9 @@ class SyncGroupPlayer(GroupPlayer):
         """
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
-        elif self.is_dynamic:
+        if self.is_dynamic:
             return {self.provider.instance_id}
-        else:
-            return set()
+        return set()
 
     async def get_config_entries(
         self,
@@ -189,9 +187,7 @@ class SyncGroupPlayer(GroupPlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries: list[ConfigEntry] = [
-            # default entries for player groups
-            *await super().get_config_entries(action=action, values=values),
-            # add syncgroup specific entries
+            # syncgroup specific entries
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,

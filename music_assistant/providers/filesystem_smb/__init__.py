@@ -187,7 +187,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         subfolder = str(self.config.get_value(CONF_SUBFOLDER))
         if subfolder:
             return subfolder
-        elif share:
+        if share:
             return share
         return None
 

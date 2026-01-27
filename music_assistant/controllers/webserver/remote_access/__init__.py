@@ -118,16 +118,21 @@ class RemoteAccessManager:
         mode = "optimized" if self._using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
+        sendspin_url = f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
+
         self.gateway = WebRTCGateway(
             http_session=self.mass.http_session,
             remote_id=self._remote_id,
             certificate=self._certificate,
             signaling_url=SIGNALING_SERVER_URL,
             local_ws_url=local_ws_url,
+            sendspin_url=sendspin_url,
             ice_servers=ice_servers,
             # Pass callback to get fresh ICE servers for each client connection
             # This ensures TURN credentials are always valid
             ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            # Pass callback to set sendspin player on websocket client
+            set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
         )
 
         await self.gateway.start()

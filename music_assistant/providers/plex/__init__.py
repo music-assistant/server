@@ -589,11 +589,11 @@ class PlexProvider(MusicProvider):
     async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
-        elif plex_media.type == "album":
+        if plex_media.type == "album":
             return await self._parse_album(plex_media)
-        elif plex_media.type == "track":
+        if plex_media.type == "track":
             return await self._parse_track(plex_media)
-        elif plex_media.type == "playlist":
+        if plex_media.type == "playlist":
             return await self._parse_playlist(plex_media)
         return None
 

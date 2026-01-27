@@ -52,6 +52,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.images import create_collage, get_image_thumb
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -354,7 +355,7 @@ class MetaDataController(CoreController):
             if media_item.image and media_item.image.type == img_type:
                 if media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
-                elif not media_item.image.remotely_accessible:
+                if not media_item.image.remotely_accessible:
                     return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need
@@ -428,7 +429,10 @@ class MetaDataController(CoreController):
             image_format = "png" if path.lower().endswith(".png") else "jpg"
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            path = os.path.join(self._collage_images_dir, path.split("/collage/")[-1])
+            collage_rel = path.split("/collage/")[-1]
+            if not is_safe_path(collage_rel):
+                raise FileNotFoundError("Invalid collage path")
+            path = os.path.join(self._collage_images_dir, collage_rel)
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )

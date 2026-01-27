@@ -21,14 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_DEPRECATED_CROSSFADE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -53,6 +46,9 @@ CONF_ALEXA_LANGUAGE = "alexa_language"
 ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_de-DE": "sag music assistant spiele audio",
     "play_audio_en-US": "ask music assistant to play audio",
+    "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
+    "play_audio_fr-FR": "music assistant",
+    "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -280,6 +276,11 @@ class AlexaPlayer(Player):
         self._attr_available = True
 
     @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
+    @property
     def api(self) -> AlexaAPI:
         """Get the AlexaAPI instance for this player."""
         provider = cast("AlexaProvider", self.provider)
@@ -376,21 +377,6 @@ class AlexaPlayer(Player):
         self._attr_current_media = media
         self.update_state()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
-
 
 class AlexaProvider(PlayerProvider):
     """Implementation of an Alexa Device Provider."""
@@ -425,6 +411,8 @@ class AlexaProvider(PlayerProvider):
         if devices is None:
             return
 
+        alexa_locale = str(self.config.get_value(CONF_ALEXA_LANGUAGE, "en-US"))
+
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
                 dev_name = device["accountName"]
@@ -435,7 +423,7 @@ class AlexaProvider(PlayerProvider):
                 device_object.device_serial_number = device["serialNumber"]
                 device_object._device_family = device["deviceOwnerCustomerId"]
                 device_object._cluster_members = device["clusterMembers"]
-                device_object._locale = "en-US"
+                device_object._locale = alexa_locale
                 self.devices[player_id] = device_object
 
                 # Create AlexaPlayer instance
