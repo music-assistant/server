@@ -28,7 +28,5 @@ IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
 IMAGE_SIZE_LARGE = "1000x1000"
 
-# Cache TTL (in seconds)
-CACHE_TTL_ARTIST: Final[int] = 3600 * 24 * 7  # 7 days
-CACHE_TTL_ALBUM: Final[int] = 3600 * 24 * 30  # 30 days
-CACHE_TTL_PLAYLIST: Final[int] = 3600 * 3  # 3 hours
+# ID separators
+PLAYLIST_ID_SPLITTER: Final[str] = ":"

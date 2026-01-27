@@ -25,18 +25,14 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import YandexMusicClient
-from .constants import CONF_TOKEN
+from .constants import CONF_TOKEN, PLAYLIST_ID_SPLITTER
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
-
-    from music_assistant.mass import MusicAssistant
 
 
 class YandexMusicProvider(MusicProvider):
@@ -113,7 +109,20 @@ class YandexMusicProvider(MusicProvider):
         """
         result = SearchResults()
 
-        search_result = await self.client.search(search_query, search_type="all", limit=limit)
+        # Determine search type based on requested media types
+        # Map MediaType to Yandex API search type
+        type_mapping = {
+            MediaType.TRACK: "track",
+            MediaType.ALBUM: "album",
+            MediaType.ARTIST: "artist",
+            MediaType.PLAYLIST: "playlist",
+        }
+        requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
+
+        # Use specific type if only one requested, otherwise search all
+        search_type = requested_types[0] if len(requested_types) == 1 else "all"
+
+        search_result = await self.client.search(search_query, search_type=search_type, limit=limit)
         if not search_result:
             return result
 
@@ -201,8 +210,8 @@ class YandexMusicProvider(MusicProvider):
         :raises MediaNotFoundError: If playlist not found.
         """
         # Parse the playlist ID (format: owner_id:kind)
-        if ":" in prov_playlist_id:
-            owner_id, kind = prov_playlist_id.split(":", 1)
+        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
+            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
         else:
             owner_id = str(self.client.user_id)
             kind = prov_playlist_id
@@ -246,8 +255,8 @@ class YandexMusicProvider(MusicProvider):
         :return: List of Track objects.
         """
         # Parse the playlist ID (format: owner_id:kind)
-        if ":" in prov_playlist_id:
-            owner_id, kind = prov_playlist_id.split(":", 1)
+        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
+            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
         else:
             owner_id = str(self.client.user_id)
             kind = prov_playlist_id

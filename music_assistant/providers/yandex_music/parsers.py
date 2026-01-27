@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .constants import CONF_QUALITY, IMAGE_SIZE_LARGE, QUALITY_LOSSLESS
+from .constants import IMAGE_SIZE_LARGE
 
 if TYPE_CHECKING:
     from yandex_music import Album as YandexAlbum
@@ -36,11 +36,15 @@ if TYPE_CHECKING:
 
 
 def _get_content_type(provider: YandexMusicProvider) -> ContentType:
-    """Get content type based on provider quality setting."""
-    quality = provider.config.get_value(CONF_QUALITY)
-    if quality == QUALITY_LOSSLESS:
-        return ContentType.FLAC
-    return ContentType.MP3
+    """Get content type based on provider quality setting.
+
+    :param provider: The Yandex Music provider instance.
+    :return: ContentType.UNKNOWN as actual codec is determined at stream time.
+    """
+    # Actual codec is determined when getting stream details
+    # Suppress unused argument warning
+    _ = provider
+    return ContentType.UNKNOWN
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:

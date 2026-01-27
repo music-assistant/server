@@ -103,7 +103,7 @@ class YandexMusicStreamingManager:
         :return: ContentType enum value.
         """
         if not codec:
-            return ContentType.MP3
+            return ContentType.UNKNOWN
 
         codec_lower = codec.lower()
         if codec_lower == "flac":
@@ -113,5 +113,4 @@ class YandexMusicStreamingManager:
         if codec_lower == "aac":
             return ContentType.AAC
 
-        # Default to MP3 for unknown codecs
-        return ContentType.MP3
+        return ContentType.UNKNOWN
