@@ -44,7 +44,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
     CONF_CORE,
@@ -531,23 +530,30 @@ class ConfigController:
 
     @api_command("config/players")
     async def get_player_configs(
-        self, provider: str | None = None, include_values: bool = False
+        self,
+        provider: str | None = None,
+        include_values: bool = False,
+        include_unavailable: bool = True,
+        include_disabled: bool = True,
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
         for raw_conf in list(self.get(CONF_PLAYERS, {}).values()):
-            # filter out unavailable providers
-            if raw_conf["provider"] not in get_global_cache_value("available_providers", []):
-                continue
             # optional provider filter
             if provider is not None and raw_conf["provider"] != provider:
                 continue
             # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
             player = self.mass.players.get(raw_conf["player_id"], False)
-            if (not player or not player.available) and raw_conf.get("enabled", True):
+            if (
+                not include_unavailable
+                and (not player or not player.available)
+                and raw_conf.get("enabled", True)
+            ):
                 continue
-
+            # filter out disabled players
+            if not include_disabled and not raw_conf.get("enabled", True):
+                continue
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:

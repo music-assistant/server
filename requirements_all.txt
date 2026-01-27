@@ -16,7 +16,7 @@ aioslimproto==3.1.4
 aiosonos==0.1.9
 aiosqlite==0.22.1
 aiovban>=0.6.3
-alexapy==1.29.14
+alexapy==1.29.15
 async-upnp-client==0.46.2
 audible==0.10.0
 auntie-sounds==1.1.7
@@ -51,7 +51,7 @@ pkce==1.0.3
 plexapi==4.17.2
 podcastparser==0.6.11
 propcache>=0.2.1
-py-opensonic==8.0.1
+py-opensonic==8.1.1
 pyblu==2.0.5
 pycares==4.11.0
 PyChromecast==14.0.9
