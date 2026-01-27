@@ -584,13 +584,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     @api_command("players/cmd/volume_set")
     @handle_player_command
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    async def cmd_volume_set(
+        self, player_id: str, volume_level: int, preserve_mute: bool = False
+    ) -> None:
         """Send VOLUME_SET command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
+        :param preserve_mute: if True, do not auto-unmute the player.
         """
-        await self._handle_cmd_volume_set(player_id, volume_level)
+        await self._handle_cmd_volume_set(player_id, volume_level, preserve_mute=preserve_mute)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -714,6 +717,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             ):
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
+            return
+        if player.synced_to and (sync_leader := self.get_player(player.synced_to)):
+            # redirect to sync leader
+            await self.cmd_group_volume_mute(sync_leader.player_id, muted)
+            return
+        # treat as normal player mute
+        await self.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/volume_mute")
     @handle_player_command
