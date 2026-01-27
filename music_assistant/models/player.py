@@ -13,6 +13,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast, final
 
 from music_assistant_models.constants import (
@@ -48,6 +49,33 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
 
     from .player_provider import PlayerProvider
+
+
+# Protocol priority values (lower = more preferred)
+PROTOCOL_PRIORITY = {
+    "sendspin": 10,
+    "squeezelite": 20,
+    "chromecast": 30,
+    "airplay": 40,
+    "dlna": 50,
+}
+
+
+@dataclass(slots=True)
+class LinkedProtocol:
+    """Internal tracking of a linked protocol player.
+
+    Links a protocol player (from a protocol provider) to a native Player
+    for unified playback routing.
+
+    :param player_id: The player_id of the protocol player.
+    :param protocol_domain: The protocol domain (e.g., 'airplay', 'chromecast').
+    :param priority: Priority for this protocol (lower = more preferred).
+    """
+
+    player_id: str
+    protocol_domain: str
+    priority: int
 
 
 class Player(ABC):
