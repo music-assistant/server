@@ -534,6 +534,7 @@ class ConfigController:
         provider: str | None = None,
         include_values: bool = False,
         include_unavailable: bool = True,
+        include_disabled: bool = True,
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
@@ -549,6 +550,9 @@ class ConfigController:
                 and (not player or not player.available)
                 and raw_conf.get("enabled", True)
             ):
+                continue
+            # filter out disabled players
+            if not include_disabled and not raw_conf.get("enabled", True):
                 continue
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
