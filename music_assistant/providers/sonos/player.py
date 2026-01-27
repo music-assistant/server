@@ -386,6 +386,23 @@ class SonosPlayer(Player):
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
 
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            # We cannot use play_stream_url for announcements because Sonos treats those
+            # as duration less radio streams and will retry/loop them.
+            if not media.duration and media.custom_data:
+                announcement_url = media.custom_data.get("announcement_url", media.uri)
+                media_info = await async_parse_tags(announcement_url, require_duration=True)
+                media.duration = media_info.duration
+            media.queue_item_id = "announcement"
+            self.sonos_queue.items = [media]
+            self.sonos_queue.last_updated = time.time()
+            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            await self.client.player.group.play_cloud_queue(
+                cloud_queue_url,
+                item_id=media.queue_item_id,
+            )
+            return
+
         if (
             not self.flow_mode and media.source_id and media.queue_item_id
         ) or media.media_type == MediaType.PLUGIN_SOURCE:
