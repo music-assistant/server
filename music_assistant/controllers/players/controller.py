@@ -718,10 +718,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
             return
-        if player.synced_to and (sync_leader := self.get_player(player.synced_to)):
-            # redirect to sync leader
-            await self.cmd_group_volume_mute(sync_leader.player_id, muted)
-            return
         # treat as normal player mute
         await self.cmd_volume_mute(player_id, muted)
 
