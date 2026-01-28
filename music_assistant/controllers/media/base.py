@@ -627,6 +627,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         item_id: str | int,
         provider_instance_id: str,
         provider_item_id: str,
+        *,
         available: bool | Any = UNSET,
         in_library: bool | Any = UNSET,
         is_unique: bool | None | Any = UNSET,

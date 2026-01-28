@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
@@ -1677,7 +1678,7 @@ class MusicController(CoreController):
         is_unique: bool | None | Any = UNSET,
         url: str | None | Any = UNSET,
         details: str | None | Any = UNSET,
-        audio_format: Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
     ) -> None:
         """System-only: patch an existing provider mapping row."""
         ctrl = self.get_controller(media_type)
