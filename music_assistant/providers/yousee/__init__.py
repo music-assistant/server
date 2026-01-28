@@ -84,7 +84,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
 }
 
-VARIOUS_ARTISTS_ID = 1776
+VARIOUS_ARTISTS_ID = "1776"
 
 PAGE_SIZE = 50
 # to avoid infinite loops, this effectively limits any album/playlist to
@@ -499,7 +499,7 @@ class YouSeeMusikProvider(MusicProvider):
             yield await self._parse_playlist(item)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_artist(self, prov_artist_id: str) -> Artist:  # type: ignore[empty-body]
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         query = """
             query Catalog($id: ID!, $imageSize: Int = 512) {
@@ -521,7 +521,7 @@ class YouSeeMusikProvider(MusicProvider):
         return self._parse_artist(result["data"]["catalog"]["artist"])
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:  # type: ignore[empty-body]
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         query = """
             query Catalog($id: ID!, $imageSize: Int = 512, $first: Int = 50, $after: String) {
@@ -561,7 +561,7 @@ class YouSeeMusikProvider(MusicProvider):
         return albums
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         query = """
             query Catalog($id: ID!, $imageSize: Int = 512, $first: Int = 25) {
@@ -619,7 +619,7 @@ class YouSeeMusikProvider(MusicProvider):
         return tracks
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[empty-body]
+    async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         query = """
             query Catalog($id: ID!, $imageSize: Int = 512) {
@@ -660,7 +660,7 @@ class YouSeeMusikProvider(MusicProvider):
         return await self._parse_album(result["data"]["catalog"]["album"])
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_track(self, prov_track_id: str) -> Track:  # type: ignore[empty-body]
+    async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         query = """
         query getTrack($id: ID!,  $imageSize: Int = 512) {
@@ -705,7 +705,7 @@ class YouSeeMusikProvider(MusicProvider):
         return await self._parse_track(result["data"]["catalog"]["track"])
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[empty-body]
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         query = """
         query getPlaylist($id: ID!,  $imageSize: Int = 512) {
@@ -732,7 +732,7 @@ class YouSeeMusikProvider(MusicProvider):
         return await self._parse_playlist(result["data"]["playlists"]["playlist"])
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_album_tracks(  # type: ignore[empty-body]
+    async def get_album_tracks(
         self,
         prov_album_id: str,
     ) -> list[Track]:
@@ -795,7 +795,7 @@ class YouSeeMusikProvider(MusicProvider):
         return tracks
 
     @use_cache(3600 * 3)  # Cache for 3 hours
-    async def get_playlist_tracks(  # type: ignore[empty-body]
+    async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
         page: int = 0,
@@ -889,7 +889,7 @@ class YouSeeMusikProvider(MusicProvider):
 
         result = await self._post_graphql(query, variables)
 
-        return (
+        return bool(
             result.get("data", {})
             .get("favorites", {})
             .get(f"add{media_type_str}", {})
@@ -923,7 +923,7 @@ class YouSeeMusikProvider(MusicProvider):
 
         result = await self._post_graphql(query, variables)
 
-        return (
+        return bool(
             result.get("data", {})
             .get("favorites", {})
             .get(f"remove{media_type_str}", {})
@@ -984,7 +984,7 @@ class YouSeeMusikProvider(MusicProvider):
                 f"Could not remove tracks from playlist {prov_playlist_id}: {positions_to_remove}"
             )
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[empty-body]
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         query = """
             mutation createPlaylist($title: String!, $imageSize: Int = 512) {
@@ -1014,9 +1014,7 @@ class YouSeeMusikProvider(MusicProvider):
         return await self._parse_playlist(result["data"]["playlists"]["create"]["playlist"])
 
     @use_cache(3600 * 24)  # Cache for 24 hours
-    async def get_similar_tracks(  # type: ignore[empty-body]
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         query = """
             query similarTracks($id: ID!, $first: Int = 25, $imageSize: Int = 512) {
@@ -1134,7 +1132,8 @@ class YouSeeMusikProvider(MusicProvider):
             "playbackUrl": streamdetails.path,
             "playbackContext": next(
                 iter((await self.get_track(streamdetails.item_id)).provider_mappings)
-            ).details,  # TODO Is there a better way to obtain the playbackContext? This does not seem intended.
+            ).details,  # TODO Is there a better way to obtain the playbackContext?
+            # ^ This does not seem intended.
             "playedSeconds": int(seconds_streamed),
             "playedAt": iso_from_utc_timestamp(utc_timestamp()),
         }
@@ -1671,7 +1670,7 @@ class YouSeeMusikProvider(MusicProvider):
             if len(result.get("errors", [])) > 0:
                 raise YouSeeGraphQLError(result)
 
-            return result
+            return dict(result)
 
     async def _paginate_graphql(
         self,
