@@ -13,7 +13,7 @@ dependencies = [
   "aiodns>=3.2.0",
   # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes
   # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
-  "pycares==4.11.0",
+  "pycares==5.0.1",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
   "aiohttp==3.13.3",

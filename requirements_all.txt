@@ -53,7 +53,7 @@ podcastparser==0.6.11
 propcache>=0.2.1
 py-opensonic==8.1.1
 pyblu==2.0.5
-pycares==4.11.0
+pycares==5.0.1
 PyChromecast==14.0.9
 pycryptodome==3.23.0
 pyheos==1.0.6
