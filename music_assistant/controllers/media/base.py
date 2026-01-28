@@ -673,9 +673,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if details is not UNSET:
             updates["details"] = details
         if audio_format is not UNSET:
-            updates["audio_format"] = (
-                None if audio_format is None else serialize_to_json(audio_format)
-            )
+            updates["audio_format"] = serialize_to_json(audio_format)
 
         if not updates:
             return

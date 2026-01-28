@@ -1,6 +1,8 @@
 """Test Tidal Streaming Manager."""
 
+from collections.abc import Coroutine
 from sqlite3 import OperationalError
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -389,9 +391,9 @@ async def test_get_stream_details_schedules_background_mapping_update(
         streaming_manager, "_async_update_provider_mapping_audio_format", _fake_worker
     )
 
-    captured_coros: list[object] = []
+    captured_coros: list[Coroutine[Any, Any, None]] = []
 
-    def _fake_create_task(coro: object) -> None:
+    def _fake_create_task(coro: Coroutine[Any, Any, None]) -> None:
         # Don't schedule; just capture the coroutine so the test can await it.
         captured_coros.append(coro)
 
@@ -402,7 +404,7 @@ async def test_get_stream_details_schedules_background_mapping_update(
     assert len(captured_coros) == 1
 
     # Execute the captured coroutine (safe because we patched the worker)
-    await captured_coros[0]  # type: ignore[misc]
+    await captured_coros[0]
 
     assert created == [("123", stream_details.audio_format)]
 
