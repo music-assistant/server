@@ -65,14 +65,23 @@ class Provider:
         Override this method in your provider implementation if you need
         to perform any additional setup logic after the provider is registered and
         the self.config was loaded, and whenever the config changes.
+
+        The default implementation reloads the provider on any config change
+        (except log-level-only changes), since provider reloads are lightweight
+        and most providers cache config values at setup time.
         """
-        # default implementation: perform a full reload on any config change
-        # override in your provider if you need more fine-grained control
-        # such as checking the changed_keys set and only reload when 'requires_reload' keys changed
-        if changed_keys == {f"values/{CONF_LOG_LEVEL}"}:
-            # only log level changed, no need to reload
+        # always update the stored config so dynamic reads pick up new values
+        self.config = config
+
+        # update log level if changed
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
             self._set_log_level_from_config(config)
-        else:
+
+        # reload if any non-log-level value keys changed
+        value_keys_changed = {
+            k for k in changed_keys if k.startswith("values/") and k != f"values/{CONF_LOG_LEVEL}"
+        }
+        if value_keys_changed:
             self.logger.info(
                 "Config updated, reloading provider %s (instance_id=%s)",
                 self.domain,

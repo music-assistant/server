@@ -25,7 +25,6 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
-    CONF_AUTH_ALLOW_SELF_REGISTRATION,
     DB_TABLE_PLAYLOG,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
@@ -40,7 +39,6 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
     LoginProvider,
-    LoginProviderConfig,
     normalize_username,
 )
 from music_assistant.helpers.api import api_command
@@ -81,10 +79,6 @@ class AuthenticationManager:
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
-        # Get auth settings from config
-        allow_self_registration = self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION)
-        assert isinstance(allow_self_registration, bool)
-
         # Setup database
         db_path = self.mass.storage_path + "/auth.db"
         self.database = DatabaseConnection(db_path)
@@ -97,8 +91,8 @@ class AuthenticationManager:
         jwt_secret = await self._get_or_create_jwt_secret()
         self.jwt_helper = JWTHelper(jwt_secret)
 
-        # Setup login providers based on config
-        await self._setup_login_providers(allow_self_registration)
+        # Setup login providers
+        await self._setup_login_providers()
 
         self._has_users = await self._has_non_system_users()
 
@@ -286,15 +280,10 @@ class AuthenticationManager:
         self.logger.info("Generated new JWT secret key")
         return jwt_secret
 
-    async def _setup_login_providers(self, allow_self_registration: bool) -> None:
-        """
-        Set up available login providers based on configuration.
-
-        :param allow_self_registration: Whether to allow self-registration via OAuth.
-        """
+    async def _setup_login_providers(self) -> None:
+        """Set up available login providers based on configuration."""
         # Always enable built-in provider
-        builtin_config: LoginProviderConfig = {"allow_self_registration": False}
-        self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", builtin_config)
+        self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
 
         # Home Assistant OAuth provider
         # Automatically enabled if HA provider (plugin) is configured
@@ -308,10 +297,7 @@ class AuthenticationManager:
             # Get URL from the HA provider config
             ha_url = ha_provider.config.get_value("url")
             assert isinstance(ha_url, str)
-            ha_config: HomeAssistantProviderConfig = {
-                "ha_url": ha_url,
-                "allow_self_registration": allow_self_registration,
-            }
+            ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
             self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                 self.mass, "homeassistant", ha_config
             )
@@ -336,18 +322,10 @@ class AuthenticationManager:
         if ha_provider:
             # HA provider exists and is available - ensure OAuth provider is registered
             if "homeassistant" not in self.login_providers:
-                # Get allow_self_registration config
-                allow_self_registration = bool(
-                    self.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION, True)
-                )
-
                 # Get URL from the HA provider config
                 ha_url = ha_provider.config.get_value("url")
                 assert isinstance(ha_url, str)
-                ha_config: HomeAssistantProviderConfig = {
-                    "ha_url": ha_url,
-                    "allow_self_registration": allow_self_registration,
-                }
+                ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
                 self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                     self.mass, "homeassistant", ha_config
                 )

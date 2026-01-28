@@ -524,7 +524,6 @@ CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     "experience audio glitches during transitioning between tracks.",
     default_value=False,
     category="advanced",
-    requires_reload=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
