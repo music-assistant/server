@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING
 
@@ -82,7 +81,7 @@ class TidalStreamingManager:
         )
 
         # Never block or fail playback on DB issues.
-        asyncio.create_task(
+        self.mass.create_task(
             self._async_update_provider_mapping_audio_format(
                 provider_track_id=track.item_id,
                 resolved_audio_format=resolved_audio_format,

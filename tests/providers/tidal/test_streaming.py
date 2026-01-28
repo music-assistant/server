@@ -1,6 +1,5 @@
 """Test Tidal Streaming Manager."""
 
-import asyncio
 from sqlite3 import OperationalError
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -390,19 +389,22 @@ async def test_get_stream_details_schedules_background_mapping_update(
         streaming_manager, "_async_update_provider_mapping_audio_format", _fake_worker
     )
 
-    # Patch asyncio.create_task to run nothing and just capture the passed coroutine
     captured_coros: list[object] = []
 
     def _fake_create_task(coro: object) -> None:
+        # Don't schedule; just capture the coroutine so the test can await it.
         captured_coros.append(coro)
-        # do not schedule; avoid "coroutine was never awaited" warnings by closing it
-        coro.close()  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
+    provider_mock.mass.create_task = _fake_create_task
 
-    await streaming_manager.get_stream_details("123")
+    stream_details = await streaming_manager.get_stream_details("123")
 
     assert len(captured_coros) == 1
+
+    # Execute the captured coroutine (safe because we patched the worker)
+    await captured_coros[0]  # type: ignore[misc]
+
+    assert created == [("123", stream_details.audio_format)]
 
 
 async def test_async_update_provider_mapping_audio_format_no_library_item(
