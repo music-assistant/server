@@ -486,19 +486,11 @@ class AppleMusicProvider(MusicProvider):
     @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
-        response: dict[str, Any] | None = None
-        if self.is_library_id(prov_playlist_id):
-            endpoint = f"me/library/playlists/{prov_playlist_id}"
-            try:
-                response = await self._get_data(endpoint)
-            except MediaNotFoundError:
-                self.logger.debug(
-                    "Library playlist %s not found, falling back to catalog lookup",
-                    prov_playlist_id,
-                )
-        if response is None:
+        if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
-            response = await self._get_data(endpoint)
+        else:
+            endpoint = f"me/library/playlists/{prov_playlist_id}"
+        response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 
     @use_cache()
