@@ -8,10 +8,12 @@ on:
     branches:
       - stable
       - dev
+      - feature/**
   pull_request:
     branches:
       - stable
       - dev
+      - feature/**
   workflow_dispatch:
   workflow_call:
     inputs:
