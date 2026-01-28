@@ -1666,6 +1666,13 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
 
+    @api_command("music/match_providers")
+    async def match_providers(self, media_type: MediaType, db_id: str) -> None:
+        """Search for mappings on all providers for the given library item."""
+        ctrl = self.get_controller(media_type)
+        db_item = await ctrl.get_library_item(db_id)
+        await ctrl.match_providers(db_item)
+
     async def update_provider_mapping(
         self,
         media_type: MediaType,
@@ -1693,13 +1700,6 @@ class MusicController(CoreController):
             details=details,
             audio_format=audio_format,
         )
-
-    @api_command("music/match_providers")
-    async def match_providers(self, media_type: MediaType, db_id: str) -> None:
-        """Search for mappings on all providers for the given library item."""
-        ctrl = self.get_controller(media_type)
-        db_item = await ctrl.get_library_item(db_id)
-        await ctrl.match_providers(db_item)
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""
