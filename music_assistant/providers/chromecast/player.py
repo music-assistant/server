@@ -580,6 +580,7 @@ class ChromecastPlayer(Player):
 
     async def _launch_app(self) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
+        loop = asyncio.get_running_loop()
         event = asyncio.Event()
 
         if self.config.get_value(CONF_USE_MASS_APP, True):
@@ -591,7 +592,7 @@ class ChromecastPlayer(Player):
             return  # already active
 
         def launched_callback(success: bool, response: dict[str, Any] | None) -> None:  # noqa: ARG001
-            self.mass.loop.call_soon_threadsafe(event.set)
+            loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
             # Quit the previous app before starting splash screen or media player
@@ -604,7 +605,7 @@ class ChromecastPlayer(Player):
                 callback_function=launched_callback,
             )
 
-        await self.mass.loop.run_in_executor(None, launch)
+        await loop.run_in_executor(None, launch)
         await event.wait()
 
     ### Callbacks from Chromecast Statuslistener
@@ -814,6 +815,7 @@ class ChromecastPlayer(Player):
 
         :return: True if app launched successfully, False otherwise.
         """
+        loop = asyncio.get_running_loop()
         event = asyncio.Event()
         launch_success = False
 
@@ -828,7 +830,7 @@ class ChromecastPlayer(Player):
                 self.logger.warning("Failed to launch Sendspin Cast App: %s", response)
             else:
                 self.logger.debug("Sendspin Cast App launched successfully.")
-            self.mass.loop.call_soon_threadsafe(event.set)
+            loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
             # Quit the previous app before starting sendspin receiver
@@ -845,7 +847,7 @@ class ChromecastPlayer(Player):
                 callback_function=launched_callback,
             )
 
-        await self.mass.loop.run_in_executor(None, launch)
+        await loop.run_in_executor(None, launch)
         try:
             await asyncio.wait_for(event.wait(), timeout=10.0)
         except TimeoutError:
