@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+import asyncio
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
@@ -79,29 +80,14 @@ class TidalStreamingManager:
             bit_depth=stream_data.get("bitDepth", 16),
             channels=2,
         )
-        # Best-effort: update provider mapping's stored audio_format (patch-only).
-        # This should never break playback if it fails.
-        with suppress(MediaNotFoundError):
-            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                track.item_id, self.provider.instance_id
+
+        # Never block or fail playback on DB issues.
+        asyncio.create_task(
+            self._async_update_provider_mapping_audio_format(
+                provider_track_id=track.item_id,
+                resolved_audio_format=resolved_audio_format,
             )
-            if lib_track:
-                cur_mapping = next(
-                    (
-                        m
-                        for m in lib_track.provider_mappings
-                        if m.provider_instance == self.provider.instance_id
-                        and m.item_id == track.item_id
-                    ),
-                    None,
-                )
-                if cur_mapping and cur_mapping.audio_format != resolved_audio_format:
-                    await self.mass.music.tracks.update_provider_mapping(
-                        item_id=lib_track.item_id,
-                        provider_instance_id=self.provider.instance_id,
-                        provider_item_id=track.item_id,
-                        audio_format=resolved_audio_format,
-                    )
+        )
 
         return StreamDetails(
             item_id=track.item_id,
@@ -113,6 +99,53 @@ class TidalStreamingManager:
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _async_update_provider_mapping_audio_format(
+        self,
+        provider_track_id: str,
+        resolved_audio_format: AudioFormat,
+    ) -> None:
+        """Persist resolved audio format on the provider mapping (best-effort)."""
+        try:
+            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                provider_track_id, self.provider.instance_id
+            )
+            if not lib_track:
+                return
+
+            cur_mapping = next(
+                (
+                    m
+                    for m in lib_track.provider_mappings
+                    if m.provider_instance == self.provider.instance_id
+                    and m.item_id == provider_track_id
+                ),
+                None,
+            )
+            if not cur_mapping or cur_mapping.audio_format == resolved_audio_format:
+                return
+
+            await self.mass.music.tracks.update_provider_mapping(
+                item_id=lib_track.item_id,
+                provider_instance_id=self.provider.instance_id,
+                provider_item_id=provider_track_id,
+                audio_format=resolved_audio_format,
+            )
+        except (MediaNotFoundError, OperationalError, AssertionError) as err:
+            self.provider.logger.debug(
+                "Failed to persist audio_format on provider mapping for Tidal track %s "
+                "(provider_instance=%s): %s",
+                provider_track_id,
+                self.provider.instance_id,
+                err,
+            )
+        except Exception:
+            self.provider.logger.exception(
+                "Unexpected error while persisting audio_format on provider mapping for "
+                "Tidal track %s (provider_instance=%s)",
+                provider_track_id,
+                self.provider.instance_id,
+            )
 
     async def _get_track_by_isrc(self, item_id: str) -> Track | None:
         """Lookup track by ISRC with caching."""
