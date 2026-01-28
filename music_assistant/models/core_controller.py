@@ -66,7 +66,7 @@ class CoreController:
         # always update the stored config so dynamic reads pick up new values
         self.config = config
 
-        # update log level if changed
+        # apply log level change dynamically (doesn't require reload)
         if f"values/{CONF_LOG_LEVEL}" in changed_keys:
             log_value = str(config.get_value(CONF_LOG_LEVEL))
             self._set_logger(log_value)

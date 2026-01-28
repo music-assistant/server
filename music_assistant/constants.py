@@ -159,6 +159,7 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     ],
     default_value="GLOBAL",
     category="advanced",
+    requires_reload=False,  # applied dynamically via _set_logger()
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
@@ -172,6 +173,7 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
     category="advanced",
+    requires_reload=True,
 )
 
 
@@ -524,6 +526,7 @@ CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     "experience audio glitches during transitioning between tracks.",
     default_value=False,
     category="advanced",
+    requires_reload=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
@@ -582,6 +585,7 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     ],
     default_value="default",
     category="advanced",
+    requires_reload=True,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",

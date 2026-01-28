@@ -525,9 +525,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
     @property
     def allow_self_registration(self) -> bool:
         """Return whether self-registration is allowed, read dynamically from config."""
-        return bool(
-            self.mass.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION)
-        )
+        return bool(self.mass.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION))
 
     @property
     def provider_type(self) -> AuthProviderType:
