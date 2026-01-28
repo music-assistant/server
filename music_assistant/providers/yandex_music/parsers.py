@@ -174,8 +174,6 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
             album.metadata.release_date = datetime.fromisoformat(album_obj.release_date)
 
     # Parse metadata
-    if album_obj.track_count:
-        album.metadata.track_count = album_obj.track_count
     if album_obj.genre:
         album.metadata.genres = {album_obj.genre}
 
@@ -286,8 +284,6 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
     # Metadata
     if track_obj.content_warning:
         track.metadata.explicit = track_obj.content_warning == "explicit"
-    if track_obj.lyrics_available:
-        track.metadata.has_lyrics = True
 
     return track
 
@@ -339,8 +335,6 @@ def parse_playlist(
     # Metadata
     if playlist_obj.description:
         playlist.metadata.description = playlist_obj.description
-    if playlist_obj.track_count:
-        playlist.metadata.track_count = playlist_obj.track_count
 
     # Add cover image
     if playlist_obj.cover:

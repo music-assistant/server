@@ -130,7 +130,7 @@ class YandexMusicProvider(MusicProvider):
         if MediaType.TRACK in media_types and search_result.tracks:
             for track in search_result.tracks.results[:limit]:
                 try:
-                    result.tracks.append(parse_track(self, track))
+                    result.tracks = [*result.tracks, parse_track(self, track)]
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing track: %s", err)
 
@@ -138,7 +138,7 @@ class YandexMusicProvider(MusicProvider):
         if MediaType.ALBUM in media_types and search_result.albums:
             for album in search_result.albums.results[:limit]:
                 try:
-                    result.albums.append(parse_album(self, album))
+                    result.albums = [*result.albums, parse_album(self, album)]
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing album: %s", err)
 
@@ -146,7 +146,7 @@ class YandexMusicProvider(MusicProvider):
         if MediaType.ARTIST in media_types and search_result.artists:
             for artist in search_result.artists.results[:limit]:
                 try:
-                    result.artists.append(parse_artist(self, artist))
+                    result.artists = [*result.artists, parse_artist(self, artist)]
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing artist: %s", err)
 
@@ -154,7 +154,7 @@ class YandexMusicProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types and search_result.playlists:
             for playlist in search_result.playlists.results[:limit]:
                 try:
-                    result.playlists.append(parse_playlist(self, playlist))
+                    result.playlists = [*result.playlists, parse_playlist(self, playlist)]
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing playlist: %s", err)
 

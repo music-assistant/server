@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -131,7 +131,7 @@ class YandexMusicClient:
             result = await client.users_playlists_list()
             if result is None:
                 return []
-            return result
+            return cast(list[YandexPlaylist], result)
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err

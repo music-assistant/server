@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
@@ -12,6 +12,8 @@ from music_assistant_models.streamdetails import StreamDetails
 from .constants import QUALITY_LOSSLESS
 
 if TYPE_CHECKING:
+    from yandex_music import DownloadInfo
+
     from .provider import YandexMusicProvider
 
 
@@ -47,7 +49,8 @@ class YandexMusicStreamingManager:
 
         # Select best quality based on config
         quality = self.provider.config.get_value("quality")
-        selected_info = self._select_best_quality(download_infos, quality)
+        quality_str = str(quality) if quality is not None else None
+        selected_info = self._select_best_quality(download_infos, quality_str)
 
         if not selected_info or not selected_info.direct_link:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
@@ -70,7 +73,9 @@ class YandexMusicStreamingManager:
             allow_seek=True,
         )
 
-    def _select_best_quality(self, download_infos: list, preferred_quality: str | None):
+    def _select_best_quality(
+        self, download_infos: list[Any], preferred_quality: str | None
+    ) -> DownloadInfo | None:
         """Select the best quality download info.
 
         :param download_infos: List of DownloadInfo objects.
