@@ -20,7 +20,10 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version, try_parse_int
-from music_assistant.providers.yousee.constants import PLAYBACK_QUALITY_KBPS, VARIOUS_ARTISTS_ID
+from music_assistant.providers.yousee.constants import (
+    CONF_QUALITY,
+    VARIOUS_ARTISTS_ID,
+)
 
 if TYPE_CHECKING:
     from music_assistant.providers.yousee.api_client import JsonLike
@@ -42,7 +45,7 @@ async def parse_track(provider: YouSeeMusikProvider, track_obj: JsonLike) -> Tra
                 available=track_obj.get("availableToStream", True),
                 audio_format=AudioFormat(
                     content_type=ContentType.MP4,
-                    bit_rate=PLAYBACK_QUALITY_KBPS,
+                    bit_rate=try_parse_int(provider.config.get_value(CONF_QUALITY)),
                 ),
                 url=track_obj.get("share"),
             )
@@ -134,7 +137,7 @@ async def parse_album(provider: YouSeeMusikProvider, album_obj: JsonLike) -> Alb
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.MP4,
-                    bit_rate=PLAYBACK_QUALITY_KBPS,
+                    bit_rate=try_parse_int(provider.config.get_value(CONF_QUALITY)),
                 ),
                 url=album_obj.get("share"),
             )

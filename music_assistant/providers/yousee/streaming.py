@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from base64 import b64encode
 from typing import TYPE_CHECKING
 
@@ -11,7 +12,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import iso_from_utc_timestamp, utc_timestamp
-from music_assistant.providers.yousee.constants import PLAYBACK_QUALITY_KBPS, PLAYBACK_QUALITY_NAME
+from music_assistant.providers.yousee.constants import CONF_QUALITY
 
 if TYPE_CHECKING:
     from music_assistant.providers.yousee.provider import YouSeeMusikProvider
@@ -40,7 +41,10 @@ class YouSeeStreamingManager:
         if media_type != MediaType.TRACK:
             raise MediaNotFoundError(f"Streaming of media type {media_type} is not supported")
 
-        variables = {"id": item_id, "quality": PLAYBACK_QUALITY_NAME}
+        variables = {
+            "id": item_id,
+            "quality": f"KBPS_{self.provider.config.get_value(CONF_QUALITY)}",
+        }
 
         result = await self.api.post_graphql(query, variables)
 
@@ -48,12 +52,15 @@ class YouSeeStreamingManager:
         if not playback_url:
             raise ResourceTemporarilyUnavailable(f"Track {item_id} is not available for streaming")
 
+        matches = re.search(r"mp4-(\d+)kbps", playback_url)
+        returned_playback_quality = int(matches.group(1)) if matches else None
+
         return StreamDetails(
             provider=self.provider.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.MP4,
-                bit_rate=PLAYBACK_QUALITY_KBPS,
+                bit_rate=returned_playback_quality,
             ),
             media_type=MediaType.TRACK,
             stream_type=StreamType.HLS,

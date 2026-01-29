@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ProviderFeature,
@@ -14,6 +14,7 @@ from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
 )
+from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.provider import YouSeeMusikProvider
 
 if TYPE_CHECKING:
@@ -81,5 +82,16 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_QUALITY,
+            type=ConfigEntryType.INTEGER,
+            label="Stream Quality",
+            description="The streaming quality to use for playback",
+            default_value=320,
+            options=[
+                ConfigValueOption('"High" - MP4 320kbps', 320),
+                ConfigValueOption('"Normal" - MP4 192kbps', 192),
+            ],
         ),
     )
