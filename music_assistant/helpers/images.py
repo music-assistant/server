@@ -6,6 +6,7 @@ import asyncio
 import itertools
 import os
 import random
+import re
 import urllib.parse
 from base64 import b64decode
 from collections.abc import Iterable
@@ -49,7 +50,7 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
         if path:
             # The path may be double URL-encoded, decode it
             decoded_path = urllib.parse.unquote_plus(path)
-            if "%" in decoded_path:
+            if re.search(r"%[0-9A-Fa-f]{2}", decoded_path):
                 decoded_path = urllib.parse.unquote_plus(decoded_path)
             return (decoded_path, provider)
     except (KeyError, ValueError, IndexError):
@@ -59,14 +60,22 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
     return None
 
 
-async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
+async def get_image_data(
+    mass: MusicAssistant, path_or_url: str, provider: str, *, _depth: int = 0
+) -> bytes:
     """
     Retrieve image data from a path or URL.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path, URL, or base64 data URI.
     :param provider: The provider ID that can resolve the image.
+    :param _depth: Internal recursion depth counter (do not set manually).
     """
+    max_recursion_depth = 5
+    if _depth > max_recursion_depth:
+        msg = f"Maximum recursion depth exceeded when fetching image: {path_or_url}"
+        raise FileNotFoundError(msg)
+
     # TODO: add local cache here !
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
@@ -77,12 +86,16 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
                 path_or_url = resolved_image
     # handle HTTP location
     if path_or_url.startswith("http"):
-        # Check if this is an imageproxy URL pointing to our own server
-        # This can happen when the server's external URL is not reachable from within
-        if imageproxy_params := _extract_imageproxy_params(path_or_url):
-            extracted_path, extracted_provider = imageproxy_params
-            # Recursively fetch the original image directly
-            return await get_image_data(mass, extracted_path, extracted_provider)
+        # Handle imageproxy URLs pointing to our own server
+        parsed_url = urllib.parse.urlparse(path_or_url)
+        url_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        server_base_urls = {mass.webserver.base_url, mass.streams.base_url}
+        if url_host in server_base_urls:
+            if imageproxy_params := _extract_imageproxy_params(path_or_url):
+                extracted_path, extracted_provider = imageproxy_params
+                return await get_image_data(
+                    mass, extracted_path, extracted_provider, _depth=_depth + 1
+                )
         try:
             async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
                 return await resp.read()
