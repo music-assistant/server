@@ -38,6 +38,15 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import (
         MediaType,
     )
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        MediaItemType,
+        Playlist,
+        RecommendationFolder,
+        SearchResults,
+        Track,
+    )
     from music_assistant_models.streamdetails import StreamDetails
 
 
