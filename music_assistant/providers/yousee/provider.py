@@ -8,16 +8,14 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import (
     LoginFailed,
 )
-
-# It seems like this import is needed outside of TYPE_CHECKING, otherwise we run into runtime issues
 from music_assistant_models.media_items import (
-    Album,  # noqa: TC002
-    Artist,  # noqa: TC002
-    MediaItemType,  # noqa: TC002
-    Playlist,  # noqa: TC002
-    RecommendationFolder,  # noqa: TC002
-    SearchResults,  # noqa: TC002
-    Track,  # noqa: TC002
+    Album,
+    Artist,
+    MediaItemType,
+    Playlist,
+    RecommendationFolder,
+    SearchResults,
+    Track,
 )
 
 from music_assistant.constants import (
