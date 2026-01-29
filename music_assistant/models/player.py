@@ -921,18 +921,18 @@ class Player(ABC):
         """
         return bool(self.mass.players.get_active_queue(self))
 
-    @cached_property
+    @property
     @final
     def flow_mode(self) -> bool:
         """
         Return if the player needs flow mode.
 
-        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
-        or has a flow mode config entry set to True.
+        Will use 'requires_flow_mode' unless overridden by flow_mode config.
         """
         if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
+            # flow mode explicitly enabled in config
             return True
-        return PlayerFeature.ENQUEUE not in self.supported_features
+        return self.requires_flow_mode
 
     @property
     @final
