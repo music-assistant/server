@@ -1,6 +1,7 @@
 """All constants for Music Assistant."""
 
 import pathlib
+from copy import deepcopy
 from typing import Final, cast
 
 from music_assistant_models.config_entries import (
@@ -821,7 +822,7 @@ def create_sample_rates_config_entry(
         supported_bit_depths = [16]
     final_supported_sample_rates = supported_sample_rates or []
     final_supported_bit_depths = supported_bit_depths or []
-    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
+    conf_entry = deepcopy(CONF_ENTRY_SAMPLE_RATES)
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []

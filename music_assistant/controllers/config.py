@@ -387,9 +387,6 @@ class ConfigController:
             LOGGER.exception(msg)
             return []
 
-        if values is None:
-            values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
-
         # add dynamic optional config entries that depend on features
         if instance_id and (provider := self.mass.get_provider(instance_id)):
             supported_features = provider.supported_features
@@ -461,10 +458,14 @@ class ConfigController:
                 self.mass, instance_id=instance_id, action=action, values=values
             ),
         ]
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @api_command("config/providers/save", required_role="admin")
@@ -606,9 +607,6 @@ class ConfigController:
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
 
-        if values is None:
-            values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
-
         player_entries = await player.get_config_entries(action=action, values=values)
         default_entries = self._get_default_player_config_entries(player)
         player_entries_keys = {entry.key for entry in player_entries}
@@ -617,10 +615,14 @@ class ConfigController:
             # ignore default entries that were overridden by the player specific ones
             *[x for x in default_entries if x.key not in player_entries_keys],
         ]
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @overload
@@ -689,6 +691,10 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
+            if not unpack_splitted_values:
+                return raw_value
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
             if default is not None:
@@ -1046,6 +1052,9 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_core_config_value(domain, key)) is not None:
+            return raw_value
         conf = await self.get_core_config(domain)
         if key not in conf.values:
             if default is not None:
@@ -1072,17 +1081,19 @@ class ConfigController:
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        if values is None:
-            values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
         all_entries = list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @api_command("config/core/save", required_role="admin")
