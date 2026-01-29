@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
@@ -68,20 +69,7 @@ class HeosPlayerProvider(PlayerProvider):
             if result is None:
                 return
 
-            for removed_player_id in result.removed_player_ids:
-                await self.mass.players.unregister(str(removed_player_id))
-
-            for new_player_id in result.added_player_ids:
-                try:
-                    device = await self._heos.get_player_info(new_player_id)
-                    heos_player = HeosPlayer(self, device)
-
-                    await heos_player.setup()
-                except HeosError as e:
-                    self.logger.error(
-                        "Error adding new HEOS player with id %s: %s", new_player_id, e
-                    )
-                    continue
+            await self.discover_players()
 
     async def _populate_sources(self) -> None:
         """Build source list based on data from controller."""
@@ -120,22 +108,28 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
-        if self._discovery_running:
-            return  # discovery already running
+        if self._discovery_running or not self._heos:
+            return  # discovery already running or not set up
+
         try:
             self._discovery_running = True
             self.logger.debug("Discovering HEOS players")
             devices = await self._heos.get_players()
-            already_registered = {p.player_id for p in self.players}
             for device in devices.values():
                 player_id = str(device.player_id)
-                if player_id in already_registered:
-                    continue  # already registered
-                # ignore disabled players in discovery
+                if player := self.mass.players.get(player_id):
+                    self.logger.debug(
+                        "Updating existing HEOS player: %s (%s)", device.name, player_id
+                    )
+                    # Update properties such as name or availability
+                    cast("HeosPlayer", player).set_static_attributes()
+                    continue
+
                 player_enabled = self.mass.config.get_raw_player_config_value(
                     player_id, CONF_ENABLED, default=True
                 )
                 if not player_enabled:
+                    self.logger.debug("Skipping disabled player: %s (%s)", device.name, player_id)
                     continue
                 self.logger.info("Discovered new HEOS player: %s (%s)", device.name, player_id)
 
@@ -143,6 +137,3 @@ class HeosPlayerProvider(PlayerProvider):
                 await heos_player.setup()
         finally:
             self._discovery_running = False
-        # reschedule discovery
-        task_id = f"discover_players_{self.instance_id}"
-        self.mass.call_later(600, self.discover_players, task_id=task_id)

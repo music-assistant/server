@@ -63,13 +63,12 @@ class HeosPlayer(Player):
 
         await self.mass.players.register_or_update(self)
 
-        if self.enabled:
-            self._on_unload_callbacks.append(
-                self._device.add_on_player_event(self._player_event_received)
-            )
+        self._on_unload_callbacks.append(
+            self._device.add_on_player_event(self._player_event_received)
+        )
 
-            await self.build_group_list()
-            await self.build_source_list()
+        await self.build_group_list()
+        await self.build_source_list()
 
     def set_static_attributes(self) -> None:
         """Set all player static attributes."""
@@ -90,6 +89,8 @@ class HeosPlayer(Player):
         self._attr_can_group_with = {self.provider.instance_id}
         self._attr_available = self._device.available
         self._attr_name = self._device.name
+
+        self.update_state()
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
