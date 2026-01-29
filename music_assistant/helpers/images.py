@@ -6,6 +6,7 @@ import asyncio
 import itertools
 import os
 import random
+import urllib.parse
 from base64 import b64decode
 from collections.abc import Iterable
 from io import BytesIO
@@ -28,8 +29,44 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
+def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
+    """
+    Extract path and provider from an imageproxy URL.
+
+    :param url: The URL to check for imageproxy format.
+    :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
+    """
+    if "/imageproxy?" not in url:
+        return None
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+
+        path = query_params.get("path", [None])[0]
+        provider = query_params.get("provider", ["builtin"])[0]
+
+        if path:
+            # The path may be double URL-encoded, decode it
+            decoded_path = urllib.parse.unquote_plus(path)
+            if "%" in decoded_path:
+                decoded_path = urllib.parse.unquote_plus(decoded_path)
+            return (decoded_path, provider)
+    except (KeyError, ValueError, IndexError):
+        # URL parsing failed, not an imageproxy URL
+        pass
+
+    return None
+
+
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
-    """Create thumbnail from image url."""
+    """
+    Retrieve image data from a path or URL.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: The image path, URL, or base64 data URI.
+    :param provider: The provider ID that can resolve the image.
+    """
     # TODO: add local cache here !
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
@@ -40,11 +77,18 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
                 path_or_url = resolved_image
     # handle HTTP location
     if path_or_url.startswith("http"):
+        # Check if this is an imageproxy URL pointing to our own server
+        # This can happen when the server's external URL is not reachable from within
+        if imageproxy_params := _extract_imageproxy_params(path_or_url):
+            extracted_path, extracted_provider = imageproxy_params
+            # Recursively fetch the original image directly
+            return await get_image_data(mass, extracted_path, extracted_provider)
         try:
             async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
                 return await resp.read()
         except ClientError as err:
-            raise FileNotFoundError from err
+            msg = f"Failed to fetch image from {path_or_url}: {err}"
+            raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.split(",")[-1])
