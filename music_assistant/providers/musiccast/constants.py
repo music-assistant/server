@@ -1,9 +1,6 @@
 """Constants for the MusicCast provider."""
 
-from music_assistant_models.config_entries import ConfigEntry
-
 from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
     create_sample_rates_config_entry,
@@ -11,18 +8,9 @@ from music_assistant.constants import (
 
 # Constants for players
 # both the http profile and icy didn't matter for me testing it.
-CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_FLOW_MODE.to_dict(),
-        "default_value": False,
-        "value": False,
-        "hidden": True,
-    }
-)
 PLAYER_CONFIG_ENTRIES = [
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 ]
 # player id is {device_id}{ZONE_SPLITTER}{zone_name}
