@@ -47,6 +47,10 @@ class YouSeeAuthManager:
         self.provider = provider
         self.logger = provider.logger
 
+    def invalidate(self) -> None:
+        """Invalidate current access token."""
+        self._access_token = None
+
     @lock
     async def auth_token(self) -> YouSeeAccessToken | None:
         """Authenticate and return access token."""

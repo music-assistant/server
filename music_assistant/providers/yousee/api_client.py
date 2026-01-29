@@ -8,6 +8,7 @@ from music_assistant_models.errors import (
     LoginFailed,
 )
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.providers.yousee.constants import MAX_PAGES_PAGINATED, PAGE_SIZE
@@ -49,7 +50,6 @@ class YouSeeAPIClient:
         self, query: str, variables: JsonLike, _headers: JsonLike | None = None
     ) -> JsonLike:
         """Post GraphQL query to YouSee endpoint with authorization."""
-        # TODO: Is this the right way to do determine locale?
         # Should we allow a separate language select in provider config?
         locale = self.mass.metadata.locale.split("_")[0]
 
@@ -64,7 +64,7 @@ class YouSeeAPIClient:
         ) as resp:
             if resp.status in {401, 403}:
                 # Invalidate token
-                self._access_token = None
+                self.auth.invalidate()
                 raise LoginFailed("Authentication with YouSee failed")
 
             resp.raise_for_status()
@@ -88,7 +88,7 @@ class YouSeeAPIClient:
         has_more = True
         i = 0
         while has_more and (i < MAX_PAGES_PAGINATED):
-            self.logger.debug("Paginating GraphQL query, page %s", i + 1)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Paginating GraphQL query, page %s", i + 1)
             vars_with_pagination = variables | {
                 variables_first_key: PAGE_SIZE,
                 variables_after_key: after,

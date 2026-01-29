@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.yousee.constants import IMAGE_SIZE
 from music_assistant.providers.yousee.parsers import (
     parse_album,
@@ -60,7 +61,7 @@ class YouSeeLibraryManager:
         async for item in self.api.paginate_graphql(
             query, variables, ["data", "me", "favorites", "artists"]
         ):
-            self.logger.debug("Parsing artist item: %s", item)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Parsing artist item: %s", item)
             yield parse_artist(self.provider, item)
 
     async def get_albums(self) -> AsyncGenerator[Album, None]:
@@ -95,7 +96,7 @@ class YouSeeLibraryManager:
         async for item in self.api.paginate_graphql(
             query, variables, ["data", "me", "favorites", "albums"]
         ):
-            self.logger.debug("Parsing album item: %s", item)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Parsing album item: %s", item)
             yield await parse_album(self.provider, item)
 
     async def get_tracks(self) -> AsyncGenerator[Track, None]:
@@ -147,7 +148,7 @@ class YouSeeLibraryManager:
         async for item in self.api.paginate_graphql(
             query, variables, ["data", "me", "favorites", "tracks"]
         ):
-            self.logger.debug("Parsing track item: %s", item)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Parsing track item: %s", item)
             yield await parse_track(self.provider, item)
 
     async def get_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -179,7 +180,7 @@ class YouSeeLibraryManager:
         async for item in self.api.paginate_graphql(
             query, variables, ["data", "me", "playlists", "combinedPlaylists"]
         ):
-            self.logger.debug("Parsing playlist item: %s", item)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Parsing playlist item: %s", item)
             yield await parse_playlist(self.provider, item)
 
     async def add_item(self, item: MediaItemType) -> bool:
