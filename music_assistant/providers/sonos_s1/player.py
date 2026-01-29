@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerState, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
@@ -210,9 +210,11 @@ class SonosPlayer(Player):
             media.uri = media.uri.replace(".flac", ".mp3")
 
         didl_metadata = create_didl_metadata(media)
+        is_announcement = media.media_type == MediaType.ANNOUNCEMENT
+        force_radio = False if is_announcement else not media.duration
 
         await asyncio.to_thread(
-            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=not media.duration
+            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=force_radio
         )
         self.mass.call_later(2, self.poll)
 
