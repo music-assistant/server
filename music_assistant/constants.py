@@ -1,6 +1,7 @@
 """All constants for Music Assistant."""
 
 import pathlib
+from copy import deepcopy
 from typing import Final, cast
 
 from music_assistant_models.config_entries import (
@@ -169,6 +170,7 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     ],
     default_value="GLOBAL",
     category="advanced",
+    requires_reload=False,  # applied dynamically via _set_logger()
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
@@ -182,6 +184,7 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
     category="advanced",
+    requires_reload=True,
 )
 
 
@@ -593,6 +596,7 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     ],
     default_value="default",
     category="advanced",
+    requires_reload=True,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
@@ -828,7 +832,7 @@ def create_sample_rates_config_entry(
         supported_bit_depths = [16]
     final_supported_sample_rates = supported_sample_rates or []
     final_supported_bit_depths = supported_bit_depths or []
-    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
+    conf_entry = deepcopy(CONF_ENTRY_SAMPLE_RATES)
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []

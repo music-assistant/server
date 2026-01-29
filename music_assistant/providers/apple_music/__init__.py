@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -47,6 +48,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -69,6 +71,7 @@ from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.apple_music.helpers import browse_playlists
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -104,7 +107,6 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
-
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
@@ -355,8 +357,18 @@ class AppleMusicProvider(MusicProvider):
             ]
         return searchresult
 
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Apple Music with support for playlist folders."""
+        if not path or "://" not in path:
+            return await super().browse(path)
+        sub_path = path.split("://", 1)[1]
+        path_parts = [part for part in sub_path.split("/") if part]
+        if path_parts and path_parts[0] == "playlists":
+            return await browse_playlists(self, path, path_parts)
+        return await super().browse(path)
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from spotify."""
+        """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self._get_all_items(endpoint, include="catalog", extend="editorialNotes"):
             if item and item["id"]:
@@ -478,7 +490,6 @@ class AppleMusicProvider(MusicProvider):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}"
-        endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 

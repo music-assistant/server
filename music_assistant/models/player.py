@@ -118,11 +118,7 @@ class Player(ABC):
         self._player_id = player_id
         self._provider = provider
         self.mass.config.create_default_player_config(
-            player_id,
-            self.provider_id,
-            player_type=self.type,
-            name=self.name,
-            enabled=self.enabled_by_default,
+            player_id, self.provider_id, self.type, self.name, self.enabled_by_default
         )
         self._config = self.mass.config.get_base_player_config(player_id, self.provider_id)
         self._extra_data: dict[str, Any] = {}
@@ -1053,18 +1049,18 @@ class Player(ABC):
         """
         return bool(self.mass.players.get_active_queue(self))
 
-    @cached_property
+    @property
     @final
     def flow_mode(self) -> bool:
         """
         Return if the player needs flow mode.
 
-        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
-        or has a flow mode config entry set to True.
+        Will use 'requires_flow_mode' unless overridden by flow_mode config.
         """
         if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
+            # flow mode explicitly enabled in config
             return True
-        return PlayerFeature.ENQUEUE not in self.supported_features
+        return self.requires_flow_mode
 
     @property
     @final
@@ -1218,8 +1214,8 @@ class Player(ABC):
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
             self.mass.config.set_player_default_name(self.player_id, self.name)
-        # persist the playertype if it changed
-        if self.type != self.config.player_type:
+        # persist the player type if it changed
+        if self.type != self._config.player_type:
             self.mass.config.set_player_type(self.player_id, self.type)
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:

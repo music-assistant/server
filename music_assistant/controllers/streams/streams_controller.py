@@ -262,6 +262,7 @@ class StreamsController(CoreController):
                 "otherwise audio streaming will not work.",
                 required=False,
                 category="advanced",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -272,6 +273,7 @@ class StreamsController(CoreController):
                 "Make sure that this server can be reached "
                 "on the given IP and TCP port by players on the local network.",
                 category="advanced",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -285,6 +287,7 @@ class StreamsController(CoreController):
                 "not be adjusted in regular setups.",
                 category="advanced",
                 required=False,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SMART_FADES_LOG_LEVEL,

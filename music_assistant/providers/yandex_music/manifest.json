@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "yandex_music",
+  "stage": "beta",
+  "name": "Yandex Music",
+  "description": "Stream music from Yandex Music service.",
+  "codeowners": ["@TrudenBoy"],
+  "documentation": "https://music-assistant.io/music-providers/yandex/",
+  "requirements": ["yandex-music==2.2.0"],
+  "multi_instance": true
+}

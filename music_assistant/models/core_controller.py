@@ -63,13 +63,22 @@ class CoreController:
 
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
-        # default implementation: perform a full reload on any config change
-        # TODO: only reload when 'requires_reload' keys changed
-        if changed_keys == {f"values/{CONF_LOG_LEVEL}"}:
-            # only log level changed, no need to reload
+        # always update the stored config so dynamic reads pick up new values
+        self.config = config
+
+        # apply log level change dynamically (doesn't require reload)
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
             log_value = str(config.get_value(CONF_LOG_LEVEL))
             self._set_logger(log_value)
-        else:
+
+        # reload if any changed value entry has requires_reload set to True
+        needs_reload = any(
+            (entry := config.values.get(key.removeprefix("values/"))) is not None
+            and entry.requires_reload is True
+            for key in changed_keys
+            if key.startswith("values/")
+        )
+        if needs_reload:
             self.logger.info(
                 "Config updated, reloading %s core controller",
                 self.manifest.name,
