@@ -10,10 +10,15 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, Playlist, SearchResults, Track
 
-from music_assistant.providers.yousee.constants import GET_POPULAR_TRACKS_LIMIT, IMAGE_SIZE
+from music_assistant.providers.yousee.api_client import JsonLike
+from music_assistant.providers.yousee.constants import (
+    GET_POPULAR_TRACKS_LIMIT,
+    IMAGE_SIZE,
+)
 from music_assistant.providers.yousee.parsers import (
     parse_album,
     parse_artist,
+    parse_lyrics,
     parse_playlist,
     parse_track,
 )
@@ -324,6 +329,40 @@ class YouSeeMediaManager:
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return await parse_album(self.provider, result["data"]["catalog"]["album"])
 
+    async def _get_lyrics(self, prov_track_id: str) -> list[JsonLike]:
+        """Attempt to retrieve lyrics for the given track id."""
+        query = """
+            query Lyric($id: ID!, $first: Int = 50, $after: String) {
+                catalog {
+                    track(id: $id) {
+                        lyrics {
+                            lrc(first: $first, after: $after) {
+                                pageInfo {
+                                    hasNextPage
+                                    endCursor
+                                }
+                                items {
+                                    startInMs
+                                    durationInMs
+                                    line
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        """
+        variables = {"id": prov_track_id}
+
+        lines = []
+
+        async for line in self.api.paginate_graphql(
+            query, variables, ["data", "catalog", "track", "lyrics", "lrc"]
+        ):
+            lines.append(line)
+
+        return lines
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         query = """
@@ -340,6 +379,9 @@ class YouSeeMediaManager:
                     isrc
                     share
                     cover(size: $imageSize)
+                    lyrics {
+                        id
+                    }
                     album {
                         id
                         title
@@ -365,7 +407,21 @@ class YouSeeMediaManager:
         result = await self.api.post_graphql(query, variables)
         if not result or not result.get("data", {}).get("catalog", {}).get("track"):
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
-        return await parse_track(self.provider, result["data"]["catalog"]["track"])
+
+        track = await parse_track(self.provider, result["data"]["catalog"]["track"])
+
+        if result["data"]["catalog"]["track"].get("lyrics"):
+            lyrics = await self._get_lyrics(prov_track_id)
+            parsed_lyrics, parsed_lrc_lyrics = await parse_lyrics(lyrics)
+
+            if parsed_lyrics:
+                self.logger.debug("Attached lyrics to track")
+                track.metadata.lyrics = parsed_lyrics
+            if parsed_lrc_lyrics:
+                self.logger.debug("Attached LRC lyrics to track")
+                track.metadata.lrc_lyrics = parsed_lrc_lyrics
+
+        return track
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""

@@ -67,16 +67,7 @@ class YouSeeStreamingManager:
         self,
         streamdetails: StreamDetails,
     ) -> None:
-        """
-        Handle callback when given streamdetails completed streaming.
-
-        To get the number of seconds streamed, see streamdetails.seconds_streamed.
-        To get the number of seconds seeked/skipped, see streamdetails.seek_position.
-        Note that seconds_streamed is the total streamed seconds, so without seeked time.
-
-        NOTE: Due to internal and player buffering,
-        this may be called in advance of the actual completion.
-        """
+        """Handle callback when given streamdetails completed streaming."""
         mutation = """
             mutation reportPlayback($report: ReportPlaybackInput!) {
                 reportPlayback(report: $report) {
