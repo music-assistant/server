@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
+from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENABLED, CONF_IP_ADDRESS, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
 
 from .player import HeosPlayer
+
+if TYPE_CHECKING:
+    from zeroconf.asyncio import AsyncServiceInfo
 
 
 class HeosPlayerProvider(PlayerProvider):
@@ -22,7 +27,8 @@ class HeosPlayerProvider(PlayerProvider):
     _heos: Heos
     _music_source_list: list[PlayerSource] = []
     _input_source_list: list[MediaItem] = []
-    _discovery_running: bool = False
+    _player_discovery_running: bool = False
+    _controller_discovery_running: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -31,26 +37,41 @@ class HeosPlayerProvider(PlayerProvider):
         else:
             logging.getLogger("pyheos").setLevel(self.logger.level + 10)
 
-        self._heos = Heos(
-            HeosOptions(
-                str(self.config.get_value(CONF_IP_ADDRESS)),
-                auto_reconnect=True,
-            )
-        )
+        if ip_address := self.config.get_value(CONF_IP_ADDRESS):
+            # Manual IP path
+            ip_address = cast("str", ip_address)
+            await self._setup_controller(ip_address)
+
+    async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
+        """Set up the HEOS controller."""
+        self._heos = Heos(HeosOptions(controller_ip, auto_reconnect=True, auto_failover=True))
 
         try:
             await self._heos.connect()
 
-            self._heos.add_on_controller_event(self._handle_controller_event)
+            system_info = await self._heos.get_system_info()
+            preferred_ips: list[str] | None = [
+                host.ip_address for host in system_info.preferred_hosts if host.ip_address
+            ]
+            if preferred_ips and controller_ip not in preferred_ips:
+                if connect_preferred:
+                    await self._heos.disconnect()
+                    # Set up controller with preferred host instead
+                    return await self._setup_controller(preferred_ips[0], connect_preferred=False)
+
+                # Just log a warning, it still works but might be less reliable
+                self.logger.warning(f"Configured IP {controller_ip} is not a preferred HEOS host")
         except HeosError as e:
             self.logger.error(f"Failed to connect to HEOS controller: {e}")
             raise SetupFailedError("Failed to connect to HEOS controller") from e
 
         # Initialize library values
         try:
-            # Populate source lists
+            self._heos.add_on_controller_event(self._handle_controller_event)
             await self._populate_sources()
-            # NOTE: players are discovered via discovery method (called automatically by core)
+
+            # Explicitly discover players now, in case we are set up from discovery
+            await self.discover_players()
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e
@@ -108,11 +129,11 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
-        if self._discovery_running or not self._heos:
+        if self._player_discovery_running or not self._heos:
             return  # discovery already running or not set up
 
         try:
-            self._discovery_running = True
+            self._player_discovery_running = True
             self.logger.debug("Discovering HEOS players")
             devices = await self._heos.get_players()
             for device in devices.values():
@@ -136,4 +157,31 @@ class HeosPlayerProvider(PlayerProvider):
                 heos_player = HeosPlayer(self, device)
                 await heos_player.setup()
         finally:
-            self._discovery_running = False
+            self._player_discovery_running = False
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Discovery via mdns."""
+        self.logger.info("Discovered HEOS device %s via mDNS with info: %s", name, info)
+        if self._heos or self._controller_discovery_running:
+            # We're already set up or in the process of setting up
+            return
+
+        if state_change == ServiceStateChange.Removed:
+            return
+        if info is None:
+            return
+
+        device_ip = get_primary_ip_address_from_zeroconf(info)
+        if device_ip is None:
+            return
+
+        self._controller_discovery_running = True
+
+        try:
+            await self._setup_controller(device_ip, True)
+        except SetupFailedError:
+            self.logger.error("Failed to set up HEOS controller at %s discovered via mDNS")
+        finally:
+            self._controller_discovery_running = False
