@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
+
+    _attr_type = PlayerType.PROTOCOL
 
     def __init__(
         self,
@@ -80,6 +82,8 @@ class SnapCastPlayer(Player):
         self._attr_device_info.add_identifier(
             IdentifierType.IP_ADDRESS, self.snap_client._client.get("host").get("ip")
         )
+        if mac_address := self.snap_client._client.get("host").get("mac"):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,

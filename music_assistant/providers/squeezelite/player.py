@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
@@ -58,6 +59,16 @@ if TYPE_CHECKING:
 
 
 CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
+
+PLAYER_DEVICE_TYPES = {
+    # list of device types that are considered real hardware players
+    "squeezebox",
+    "squeezebox2",
+    "transporter",
+    "receiver",
+    "controller",
+    "boom",
+}
 
 
 class SqueezelitePlayer(Player):
@@ -361,6 +372,11 @@ class SqueezelitePlayer(Player):
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
         # Update player state from slim player
+        self._attr_type = (
+            PlayerType.PLAYER
+            if self.client.device_type in PLAYER_DEVICE_TYPES
+            else PlayerType.PROTOCOL
+        )
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
         self._attr_powered = self.client.powered

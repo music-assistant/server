@@ -106,6 +106,9 @@ CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
 CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
+CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
+CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -205,7 +208,7 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    category="audio",
+    category="advanced",
     requires_reload=True,
 )
 
@@ -237,7 +240,7 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
     label="Enable limiting to prevent clipping",
     default_value=True,
     description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
-    category="audio",
+    category="advanced",
     requires_reload=True,
 )
 

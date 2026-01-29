@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     ImageType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
     RepeatMode,
 )
 from music_assistant_models.media_items import AudioFormat
@@ -170,6 +171,8 @@ class MusicAssistantMediaStream(MediaStream):
 
 class SendspinPlayer(Player):
     """A sendspin audio player in Music Assistant."""
+
+    _attr_type = PlayerType.PROTOCOL
 
     api: SendspinClient
     unsub_event_cb: Callable[[], None]

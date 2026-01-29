@@ -13,7 +13,6 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast, final
 
 from music_assistant_models.constants import (
@@ -38,7 +37,9 @@ from music_assistant.constants import (
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
+    CONF_LINKED_PROTOCOL_PLAYER_IDS,
     CONF_MUTE_CONTROL,
+    CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
@@ -59,23 +60,6 @@ PROTOCOL_PRIORITY = {
     "airplay": 40,
     "dlna": 50,
 }
-
-
-@dataclass(slots=True)
-class LinkedProtocol:
-    """Internal tracking of a linked protocol player.
-
-    Links a protocol player (from a protocol provider) to a native Player
-    for unified playback routing.
-
-    :param player_id: The player_id of the protocol player.
-    :param protocol_domain: The protocol domain (e.g., 'airplay', 'chromecast').
-    :param priority: Priority for this protocol (lower = more preferred).
-    """
-
-    player_id: str
-    protocol_domain: str
-    priority: int
 
 
 class Player(ABC):
@@ -109,7 +93,7 @@ class Player(ABC):
     _attr_enabled_by_default: bool = True
 
     # Protocol-related attributes
-    _attr_linked_protocols: list[LinkedProtocol]  # Linked protocol players
+    _attr_linked_protocols: list[OutputProtocol]  # Linked protocol players
     _attr_protocol_parent_id: str | None = None  # For protocol players: parent player_id
     _attr_active_output_protocol: str | None = None  # Currently active output protocol ID
 
@@ -134,7 +118,11 @@ class Player(ABC):
         self._player_id = player_id
         self._provider = provider
         self.mass.config.create_default_player_config(
-            player_id, self.provider_id, self.name, self.enabled_by_default
+            player_id,
+            self.provider_id,
+            player_type=self.type,
+            name=self.name,
+            enabled=self.enabled_by_default,
         )
         self._config = self.mass.config.get_base_player_config(player_id, self.provider_id)
         self._extra_data: dict[str, Any] = {}
@@ -960,7 +948,7 @@ class Player(ABC):
         else:
             # No active protocol: add from all linked protocols
             for linked in self._attr_linked_protocols:
-                if protocol_player := self.mass.players.get(linked.player_id):
+                if protocol_player := self.mass.players.get(linked.output_protocol_id):
                     result.update(protocol_player._can_group_with)
         return result
 
@@ -1088,9 +1076,82 @@ class Player(ABC):
 
     @property
     @final
-    def linked_protocols(self) -> list[LinkedProtocol]:
-        """Return the linked protocol players for this player."""
-        return self._attr_linked_protocols
+    def output_protocols(self) -> list[OutputProtocol]:
+        """
+        Return all output options for this player.
+
+        Includes:
+        - Native playback (if player supports PLAY_MEDIA and is not a protocol/universal player)
+        - Active protocol players from _attr_linked_protocols
+        - Disabled protocols from cached linked_protocol_player_ids in config
+
+        Each entry has an available flag indicating current availability.
+        """
+        result: list[OutputProtocol] = []
+        is_universal_player = self.provider.domain == "universal_player"
+        has_play_media = PlayerFeature.PLAY_MEDIA in self._attr_supported_features
+
+        # Add native playback option if applicable
+        if self.type != PlayerType.PROTOCOL and not is_universal_player and has_play_media:
+            result.append(
+                OutputProtocol(
+                    output_protocol_id="native",
+                    name=self.provider.name,
+                    protocol_domain=self.provider.domain,
+                    priority=0,  # Native is always highest priority
+                    available=self.available,
+                    is_native=True,
+                )
+            )
+
+        # Add active protocol players
+        active_ids: set[str] = set()
+        for linked in self._attr_linked_protocols:
+            active_ids.add(linked.output_protocol_id)
+            # Check if the protocol player is actually available
+            protocol_player = self.mass.players.get(linked.output_protocol_id)
+            is_available = protocol_player.available if protocol_player else False
+            # Use provider name if available, else domain title
+            if protocol_player:
+                name = protocol_player.provider.name
+            else:
+                name = linked.protocol_domain.title() if linked.protocol_domain else "Unknown"
+            result.append(
+                OutputProtocol(
+                    output_protocol_id=linked.output_protocol_id,
+                    name=name,
+                    protocol_domain=linked.protocol_domain,
+                    priority=linked.priority,
+                    available=is_available,
+                )
+            )
+
+        # Add disabled protocols from cache
+        cached_protocol_ids: list[str] = self.mass.config.get(
+            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}",
+            [],
+        )
+        for protocol_id in cached_protocol_ids:
+            if protocol_id in active_ids:
+                continue  # Already included above
+            # Get stored config to determine protocol domain
+            if raw_conf := self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}"):
+                provider_id = raw_conf.get("provider", "")
+                protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
+                priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
+                result.append(
+                    OutputProtocol(
+                        output_protocol_id=protocol_id,
+                        name=protocol_domain.title(),
+                        protocol_domain=protocol_domain,
+                        priority=priority,
+                        available=False,  # Disabled protocols are not available
+                    )
+                )
+
+        # Sort by priority (lower = more preferred)
+        result.sort(key=lambda o: o.priority)
+        return result
 
     @property
     @final
@@ -1105,7 +1166,7 @@ class Player(ABC):
         return self._attr_active_output_protocol
 
     @final
-    def get_linked_protocol(self, protocol_domain: str) -> LinkedProtocol | None:
+    def get_linked_protocol(self, protocol_domain: str) -> OutputProtocol | None:
         """Get a linked protocol by domain."""
         for linked in self._attr_linked_protocols:
             if linked.protocol_domain == protocol_domain:
@@ -1123,49 +1184,10 @@ class Player(ABC):
     def get_preferred_protocol_player(self) -> Player | None:
         """Get the best available protocol player by priority."""
         for linked in sorted(self._attr_linked_protocols, key=lambda x: x.priority):
-            if protocol_player := self.mass.players.get(linked.player_id):
+            if protocol_player := self.mass.players.get(linked.output_protocol_id):
                 if protocol_player.available:
                     return protocol_player
         return None
-
-    @final
-    def _build_output_protocols(self) -> list[OutputProtocol]:
-        """Build the output protocols list for this player."""
-        output_protocols: list[OutputProtocol] = []
-        is_universal_player = self.provider.domain == "universal_player"
-        has_play_media = PlayerFeature.PLAY_MEDIA in self._attr_supported_features
-
-        # Case 1: Native player (not a protocol player, not universal)
-        # Show "native" if it has PLAY_MEDIA capability
-        if self.type != PlayerType.PROTOCOL and not is_universal_player and has_play_media:
-            output_protocols.append(
-                OutputProtocol(
-                    output_protocol_id="native",
-                    name=self.provider.name,
-                    is_native=True,
-                    protocol_domain=self.provider.domain,
-                    priority=0,  # Native is always highest priority when available
-                    available=self.available,
-                )
-            )
-
-        # Case 2: Add protocol outputs from linked protocols
-        for linked in self._attr_linked_protocols:
-            protocol_player = self.mass.players.get(linked.player_id)
-            output_protocols.append(
-                OutputProtocol(
-                    output_protocol_id=linked.player_id,
-                    name=linked.protocol_domain.title(),  # "Airplay", "Chromecast", etc.
-                    is_native=False,
-                    protocol_domain=linked.protocol_domain,
-                    priority=linked.priority,
-                    available=protocol_player.available if protocol_player else False,
-                )
-            )
-
-        # Sort by priority (lower = more preferred)
-        output_protocols.sort(key=lambda o: o.priority)
-        return output_protocols
 
     @final
     def update_state(self, force_update: bool = False, signal_event: bool = True) -> None:
@@ -1196,6 +1218,9 @@ class Player(ABC):
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
             self.mass.config.set_player_default_name(self.player_id, self.name)
+        # persist the playertype if it changed
+        if self.type != self.config.player_type:
+            self.mass.config.set_player_type(self.player_id, self.type)
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:
             return
@@ -1341,7 +1366,7 @@ class Player(ABC):
             power_control=self.power_control,
             volume_control=self.volume_control,
             mute_control=self.mute_control,
-            output_protocols=self._build_output_protocols(),
+            output_protocols=self.output_protocols,
             active_output_protocol=self._attr_active_output_protocol,
         )
 

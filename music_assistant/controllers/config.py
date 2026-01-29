@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_ENABLED,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
@@ -92,6 +93,9 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_CATEGORY_PREFIX,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
@@ -392,7 +396,9 @@ class ConfigController:
             return []
 
         if values is None:
-            values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
+            values = deepcopy(
+                self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
+            )
 
         # add dynamic optional config entries that depend on features
         if instance_id and (provider := self.mass.get_provider(instance_id)):
@@ -466,10 +472,16 @@ class ConfigController:
             ),
         ]
         # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
-        return all_entries
+        # deep copy ALL entries to avoid mutating shared/constant ConfigEntry objects
+        # (downstream code like ProviderConfig.parse/update may modify entry.value)
+        result_entries = []
+        for orig_entry in all_entries:
+            entry = deepcopy(orig_entry)
+            stored_value = values.get(entry.key)
+            if entry.value is None and stored_value is not None:
+                entry.value = stored_value
+            result_entries.append(entry)
+        return result_entries
 
     @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
@@ -551,6 +563,12 @@ class ConfigController:
                 and raw_conf.get("enabled", True)
             ):
                 continue
+            # filter out protocol players
+            # their configuration is handled differently as part of their parent player
+            if raw_conf.get("player_type") == PlayerType.PROTOCOL or (
+                player and player.type == PlayerType.PROTOCOL
+            ):
+                continue
             # filter out disabled players
             if not include_disabled and not raw_conf.get("enabled", True):
                 continue
@@ -568,26 +586,27 @@ class ConfigController:
     async def get_player_config(
         self,
         player_id: str,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
+        include_protocols_config: bool = True,
     ) -> PlayerConfig:
         """Return (full) configuration for a single player."""
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            raw_conf = deepcopy(raw_conf)
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
                 raw_conf["provider"] = player.provider.instance_id
-                # pass action and values to get_config_entries
-                if values is None:
-                    values = raw_conf.get("values", {})
                 conf_entries = await self.get_player_config_entries(
-                    player_id, action=action, values=values
+                    player_id,
+                    include_protocols_config=include_protocols_config,
                 )
             else:
                 # handle unavailable player and/or provider
                 conf_entries = []
                 raw_conf["available"] = False
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
+            # clear values from raw_conf - PlayerConfig.parse should use entry values/defaults
+            # this prevents stale/corrupted stored values from being used
+            raw_conf.pop("values", None)
             return cast("PlayerConfig", PlayerConfig.parse(conf_entries, raw_conf))
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
@@ -598,6 +617,7 @@ class ConfigController:
         player_id: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
+        include_protocols_config: bool = True,
     ) -> list[ConfigEntry]:
         """
         Return Config entries to configure a player.
@@ -610,22 +630,43 @@ class ConfigController:
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
 
-        if values is None:
-            values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
-
-        player_entries = await player.get_config_entries(action=action, values=values)
         default_entries = self._get_default_player_config_entries(player)
+
+        # inject protocol player config entries if needed
+        # this basically injects virtual config entries for each protocol output
+        # this feels a bit of a hack to do it this way but it keeps the UI logic simple
+        # and maximizes api client compatibility because you can configure the whole player
+        # including its protocols from a single config endpoint without needing special handling
+        # for protocol players in the UI/api clients
+        if include_protocols_config and (
+            protocol_entries := await self._create_output_protocol_config_entries(
+                player, action=action, values=values
+            )
+        ):
+            player_entries = protocol_entries
+        else:
+            player_entries = await player.get_config_entries(action=action, values=values)
+
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
             *player_entries,
             # ignore default entries that were overridden by the player specific ones
             *[x for x in default_entries if x.key not in player_entries_keys],
         ]
+
         # set current value from stored values
-        for entry in all_entries:
+        # deep copy ALL entries to avoid mutating shared/constant ConfigEntry objects
+        # (downstream code like PlayerConfig.parse/update may modify entry.value)
+        if not values:
+            return all_entries
+        result_entries = []
+        for orig_entry in all_entries:
+            entry = deepcopy(orig_entry)
+            stored_value = values.get(entry.key)
             if entry.value is None:
-                entry.value = values.get(entry.key, None)
-        return all_entries
+                entry.value = stored_value
+            result_entries.append(entry)
+        return result_entries
 
     @overload
     async def get_player_config_value(
@@ -755,7 +796,8 @@ class ConfigController:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
-        config = await self.get_player_config(player_id)
+        values = await self._update_output_protocol_settings(values)
+        config = await self.get_player_config(player_id, include_protocols_config=False)
         old_config = deepcopy(config)
         changed_keys = config.update(values)
         if not changed_keys:
@@ -808,6 +850,54 @@ class ConfigController:
         """Set (or update) the default name for a player."""
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
+
+    def set_player_type(self, player_id: str, player_type: PlayerType) -> None:
+        """Set (or update) the type for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/player_type"
+        self.set(conf_key, player_type)
+
+    def create_default_player_config(
+        self,
+        player_id: str,
+        provider: str,
+        player_type: PlayerType,
+        name: str | None = None,
+        enabled: bool = True,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> None:
+        """
+        Create default/empty PlayerConfig.
+
+        This is meant as helper to create default configs when a player is registered.
+        Called by the player manager on player register.
+        """
+        # return early if the config already exists
+        if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # update default name if needed
+            if name and name != existing_conf.get("default_name"):
+                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            # update player_type if needed
+            if existing_conf.get("player_type") != player_type:
+                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            return
+        # config does not yet exist, create a default one
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        default_conf = PlayerConfig(
+            values={},
+            provider=provider,
+            player_id=player_id,
+            enabled=enabled,
+            name=name,
+            default_name=name,
+            player_type=player_type,
+        )
+        default_conf_raw = default_conf.to_raw()
+        if values is not None:
+            default_conf_raw["values"] = values
+        self.set(
+            conf_key,
+            default_conf_raw,
+        )
 
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
@@ -886,44 +976,6 @@ class ConfigController:
         self.mass.signal_event(
             EventType.DSP_PRESETS_UPDATED,
             data=all_presets,
-        )
-
-    def create_default_player_config(
-        self,
-        player_id: str,
-        provider: str,
-        name: str | None = None,
-        enabled: bool = True,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> None:
-        """
-        Create default/empty PlayerConfig.
-
-        This is meant as helper to create default configs when a player is registered.
-        Called by the player manager on player register.
-        """
-        # return early if the config already exists
-        if self.get(f"{CONF_PLAYERS}/{player_id}"):
-            # update default name if needed
-            if name:
-                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            return
-        # config does not yet exist, create a default one
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        default_conf = PlayerConfig(
-            values={},
-            provider=provider,
-            player_id=player_id,
-            enabled=enabled,
-            name=name,
-            default_name=name,
-        )
-        default_conf_raw = default_conf.to_raw()
-        if values is not None:
-            default_conf_raw["values"] = values
-        self.set(
-            conf_key,
-            default_conf_raw,
         )
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
@@ -1074,10 +1126,16 @@ class ConfigController:
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
         # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
-        return all_entries
+        # deep copy ALL entries to avoid mutating shared/constant ConfigEntry objects
+        # (downstream code like CoreConfig.parse/update may modify entry.value)
+        result_entries = []
+        for orig_entry in all_entries:
+            entry = deepcopy(orig_entry)
+            stored_value = values.get(entry.key)
+            if entry.value is None and stored_value is not None:
+                entry.value = stored_value
+            result_entries.append(entry)
+        return result_entries
 
     @api_command("config/core/save", required_role="admin")
     async def save_core_config(
@@ -1573,7 +1631,8 @@ class ConfigController:
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
-            return entries
+            # return deep copies of all entries to avoid mutating shared/constant ConfigEntry objects
+            return [deepcopy(entry) for entry in entries]
 
         # some base entries for all player types
         entries += [
@@ -1662,7 +1721,8 @@ class ConfigController:
                 CONF_ENTRY_ENABLE_ICY_METADATA,
             ]
 
-        return entries
+        # return deep copies of all entries to avoid mutating shared/constant ConfigEntry objects
+        return [deepcopy(entry) for entry in entries]
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
@@ -1745,3 +1805,151 @@ class ConfigController:
             # auto-play on power on control config entry
             CONF_ENTRY_AUTO_PLAY,
         ]
+
+    async def _create_output_protocol_config_entries(
+        self,
+        player: Player,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """
+        Create config entry for preferred output protocol.
+
+        Returns empty list if there are no output protocol options (native only or no protocols).
+        The player.output_protocols property includes native, active, and disabled protocols,
+        with the available flag indicating their status.
+        """
+        all_entries: list[ConfigEntry] = []
+        output_protocols = player.output_protocols
+
+        # Only show config if there are multiple output options
+        if len(output_protocols) <= 1:
+            return all_entries
+
+        # Build options from available output protocols only
+        # First option is "auto" which selects the best available protocol
+        options: list[ConfigValueOption] = [
+            ConfigValueOption(title="Auto (best available)", value="auto"),
+        ]
+
+        # Add each available output protocol as an option, sorted by priority
+        for protocol in sorted(output_protocols, key=lambda p: p.priority):
+            if provider_manifest := self.mass.get_provider_manifest(protocol.protocol_domain):
+                protocol_name = provider_manifest.name
+            else:
+                protocol_name = protocol.protocol_domain.upper()
+            if protocol.available:
+                # Use "native" for native playback, otherwise use protocol domain
+                domain = protocol.protocol_domain
+                title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
+                value = "native" if protocol.is_native else domain
+                options.append(ConfigValueOption(title=title, value=value))
+
+        all_entries.append(
+            ConfigEntry(
+                key=CONF_PREFERRED_OUTPUT_PROTOCOL,
+                type=ConfigEntryType.STRING,
+                label="Preferred Output Protocol",
+                description="Select the preferred protocol for audio playback to this device.",
+                default_value="auto",
+                required=True,
+                options=options,
+                category="generic",
+                requires_reload=False,
+            )
+        )
+
+        # Add config entries for all protocol players/outputs
+        for protocol in output_protocols:
+            domain = protocol.protocol_domain
+            if provider_manifest := self.mass.get_provider_manifest(protocol.protocol_domain):
+                protocol_name = provider_manifest.name
+            else:
+                protocol_name = protocol.protocol_domain.upper()
+            protocol_player_enabled = self.get_raw_player_config_value(
+                protocol.output_protocol_id, CONF_ENABLED, True
+            )
+            protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
+            protocol_enabled_key = f"{protocol_prefix}enabled"
+            protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
+            if not protocol.is_native:
+                all_entries.append(
+                    ConfigEntry(
+                        key=protocol_enabled_key,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Enable",
+                        description="Enable or disable this output protocol for the player.",
+                        value=protocol_player_enabled,
+                        default_value=protocol_player_enabled,
+                        category=protocol_category,
+                        immediate_apply=True,
+                        requires_reload=False,
+                    )
+                )
+            if protocol.is_native:
+                # add protocol-specific entries from native player
+                protocol_entries = await player.get_config_entries(action=action, values=values)
+                for proto_entry in protocol_entries:
+                    # deep copy to avoid mutating shared/constant ConfigEntry objects
+                    entry = deepcopy(proto_entry)
+                    entry.category = protocol_category
+                    all_entries.append(entry)
+
+            elif protocol_player := self.mass.players.get(protocol.output_protocol_id):
+                # we grab the config entries from the protocol player
+                # and then prefix them to avoid key collisions
+                if action and protocol_prefix in action:
+                    protocol_action = action.replace(protocol_prefix, "")
+                else:
+                    protocol_action = None
+                if values:
+                    # extract only relevant values for this protocol player
+                    protocol_values = {
+                        key.replace(protocol_prefix, ""): val
+                        for key, val in values.items()
+                        if key.startswith(protocol_prefix)
+                    }
+                else:
+                    protocol_values = None
+                protocol_entries = await protocol_player.get_config_entries(
+                    action=protocol_action, values=protocol_values
+                )
+                raw_values: dict[str, ConfigValueType] = self.get(
+                    f"{CONF_PLAYERS}/{protocol.output_protocol_id}/values", {}
+                )
+
+                for proto_entry in protocol_entries:
+                    # deep copy to avoid mutating shared/constant ConfigEntry objects
+                    entry = deepcopy(proto_entry)
+                    entry.category = protocol_category
+                    # get value before prefixing the key (raw_values has unprefixed keys)
+                    entry.value = raw_values.get(entry.key, entry.default_value)
+                    entry.key = f"{protocol_prefix}{entry.key}"
+                    entry.depends_on = None if protocol.is_native else protocol_enabled_key
+                    entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
+                    all_entries.append(entry)
+
+        return all_entries
+
+    async def _update_output_protocol_settings(
+        self, values: dict[str, ConfigValueType]
+    ) -> dict[str, ConfigValueType]:
+        """
+        Update output protocol related settings for a player based on config values.
+
+        Returns updated values dict with output protocol related entries removed.
+        """
+        protocol_values: dict[str, dict[str, ConfigValueType]] = {}
+        for key, value in list(values.items()):
+            if CONF_PROTOCOL_KEY_SPLITTER not in key:
+                continue
+            # extract protocol player id and actual key
+            protocol_player_id, actual_key = key.split(CONF_PROTOCOL_KEY_SPLITTER)
+            if protocol_player_id not in protocol_values:
+                protocol_values[protocol_player_id] = {}
+            protocol_values[protocol_player_id][actual_key] = value
+            # remove from main values dict
+            del values[key]
+        for protocol_player_id, proto_values in protocol_values.items():
+            await self.save_player_config(protocol_player_id, proto_values)
+        return values

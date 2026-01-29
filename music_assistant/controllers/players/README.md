@@ -168,8 +168,11 @@ Protocol players are matched to the same physical device using identifiers in or
 1. **MAC_ADDRESS** - Most reliable, unique to the network interface
 2. **SERIAL_NUMBER** - Unique device serial number
 3. **UUID** - Universally unique identifier
+4. **player_id** - Fallback for players without identifiers (e.g., Sendspin)
 
 **Note:** IP_ADDRESS is intentionally NOT used for matching as it can change with DHCP and cause incorrect matches between different devices.
+
+**Fallback behavior:** Protocol players that don't expose any identifiers (like Sendspin clients) will still get wrapped in a Universal Player using their player_id as the device key. This ensures all protocol players get a consistent user-facing interface.
 
 ### Output Protocol Selection
 
@@ -272,6 +275,7 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
 - `MAC_ADDRESS` - Most reliable, unique to network interface
 - `SERIAL_NUMBER` - Unique device serial number
 - `UUID` - Universally unique identifier
+- `player_id` - Fallback when no identifiers available
 
 **Note:** `IP_ADDRESS` is NOT used for matching as it can change with DHCP.
 

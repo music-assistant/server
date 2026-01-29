@@ -12,11 +12,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import IdentifierType, PlayerType
+
 from music_assistant.constants import CONF_PLAYERS
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_LINKED_PROTOCOL_IDS, UNIVERSAL_PLAYER_PREFIX
+from .constants import (
+    CONF_DEVICE_IDENTIFIERS,
+    CONF_DEVICE_INFO,
+    CONF_LINKED_PROTOCOL_IDS,
+    UNIVERSAL_PLAYER_PREFIX,
+)
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
@@ -54,29 +61,42 @@ class UniversalPlayerProvider(PlayerProvider):
 
         The stored protocol_player_ids enable fast matching when protocol players
         register - they can be linked immediately without waiting for identifier matching.
+        Device identifiers are also restored to enable matching new protocol players.
         """
         # Get stored config values
         config = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if not config:
             return
 
-        # Get stored protocol player IDs for fast matching
+        # Get stored values
         values = config.get("values", {})
         stored_protocol_ids = values.get(CONF_LINKED_PROTOCOL_IDS, [])
+        stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
+        stored_device_info = values.get(CONF_DEVICE_INFO, {})
 
-        # Create with minimal device info - identifiers will be populated
-        # when protocol players connect and their identifiers are merged
+        # Restore device info with stored values or defaults
         device_info = DeviceInfo(
-            model="Universal Player",
-            manufacturer="Music Assistant",
+            model=stored_device_info.get("model", "Universal Player"),
+            manufacturer=stored_device_info.get("manufacturer", "Music Assistant"),
         )
+
+        # Restore identifiers (convert string keys back to IdentifierType enum)
+        for id_type_str, value in stored_identifiers.items():
+            try:
+                id_type = IdentifierType(id_type_str)
+                device_info.add_identifier(id_type, value)
+            except ValueError:
+                self.logger.warning(
+                    "Unknown identifier type %s for player %s", id_type_str, player_id
+                )
 
         name = config.get("name", f"Universal Player {player_id}")
 
         self.logger.debug(
-            "Restoring universal player %s with stored protocol IDs: %s",
+            "Restoring universal player %s with %d protocol IDs and %d identifiers",
             player_id,
-            stored_protocol_ids,
+            len(stored_protocol_ids),
+            len(stored_identifiers),
         )
 
         player = UniversalPlayer(
@@ -84,7 +104,7 @@ class UniversalPlayerProvider(PlayerProvider):
             player_id=player_id,
             name=name,
             device_info=device_info,
-            protocol_player_ids=list(stored_protocol_ids),  # Store expected protocol IDs
+            protocol_player_ids=list(stored_protocol_ids),
         )
         await self.mass.players.register_or_update(player)
 
@@ -119,20 +139,33 @@ class UniversalPlayerProvider(PlayerProvider):
                 # Merge identifiers from new device_info
                 for id_type, value in device_info.identifiers.items():
                     existing.device_info.add_identifier(id_type, value)
-                # Persist updated protocol IDs to config
-                await self._save_protocol_ids(player_id, existing._protocol_player_ids)
+                # Persist updated data to config
+                await self._save_player_data(player_id, existing)
                 existing.update_state()
             return existing
 
-        # Create config for the new player with stored protocol IDs
+        # Create config for the new player (complex values saved separately after)
         self.mass.config.create_default_player_config(
             player_id=player_id,
             provider=self.instance_id,
+            player_type=PlayerType.GROUP,
             name=name,
             enabled=True,
             values={
                 CONF_LINKED_PROTOCOL_IDS: protocol_player_ids,
             },
+        )
+
+        # Save device identifiers and info to config (these are nested dicts,
+        # not supported by ConfigValueType, so we save them directly)
+        base_key = f"{CONF_PLAYERS}/{player_id}/values"
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_IDENTIFIERS}",
+            {k.value: v for k, v in device_info.identifiers.items()},
+        )
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_INFO}",
+            {"model": device_info.model, "manufacturer": device_info.manufacturer},
         )
 
         self.logger.info(
@@ -163,6 +196,38 @@ class UniversalPlayerProvider(PlayerProvider):
             protocol_player_ids,
         )
 
+    async def _save_player_data(self, player_id: str, player: UniversalPlayer) -> None:
+        """Save all player data to config for persistence across restarts."""
+        base_key = f"{CONF_PLAYERS}/{player_id}/values"
+
+        # Save protocol IDs
+        self.mass.config.set(
+            f"{base_key}/{CONF_LINKED_PROTOCOL_IDS}",
+            player._protocol_player_ids,
+        )
+
+        # Save identifiers (convert IdentifierType enum keys to strings)
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_IDENTIFIERS}",
+            {k.value: v for k, v in player.device_info.identifiers.items()},
+        )
+
+        # Save device info (model, manufacturer)
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_INFO}",
+            {
+                "model": player.device_info.model,
+                "manufacturer": player.device_info.manufacturer,
+            },
+        )
+
+        self.logger.debug(
+            "Saved player data for %s: %d protocols, %d identifiers",
+            player_id,
+            len(player._protocol_player_ids),
+            len(player.device_info.identifiers),
+        )
+
     async def add_protocol_to_universal_player(
         self, player_id: str, protocol_player_id: str
     ) -> None:
@@ -177,7 +242,8 @@ class UniversalPlayerProvider(PlayerProvider):
         """
         if player := self.get_universal_player(player_id):
             player.add_protocol_player(protocol_player_id)
-            await self._save_protocol_ids(player_id, player._protocol_player_ids)
+            # Save all player data (protocol IDs, identifiers, device info)
+            await self._save_player_data(player_id, player)
             player.update_state()
 
     async def remove_universal_player(self, player_id: str) -> None:

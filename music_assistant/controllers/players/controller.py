@@ -791,7 +791,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             native_announce_support = PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
             if not native_announce_support:
                 for linked in player._attr_linked_protocols:
-                    if protocol_player := self.get(linked.player_id):
+                    if protocol_player := self.get(linked.output_protocol_id):
                         if (
                             protocol_player.available
                             and PlayerFeature.PLAY_ANNOUNCEMENT
@@ -1315,6 +1315,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await player.on_config_updated()
 
             # Handle protocol linking
+            # First enrich identifiers with real MAC (resolves virtual MACs via ARP)
+            await self._enrich_player_identifiers(player)
             self._evaluate_protocol_links(player)
 
             self.logger.info(
@@ -1326,7 +1328,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # signal event that a player was added
             # update state without signaling event first (ensure all attributes are set)
             player.update_state(signal_event=False)
-            self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+            if player.type != PlayerType.PROTOCOL:
+                self.mass.signal_event(
+                    EventType.PLAYER_ADDED, object_id=player.player_id, data=player
+                )
 
             # register playerqueue for this player
             # Skip if this is a protocol player pending evaluation (queue created when promoted)
@@ -1385,15 +1390,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self._cleanup_protocol_links(player)
             self.delete_player_config(player_id)
             self.logger.info("Player removed: %s", player.name)
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+            if player.type != PlayerType.PROTOCOL:
+                self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
         else:
             # temporary unavailable: mark player as unavailable
             # note: the player will be re-registered later if it comes back online
             player.state.available = False
             self.logger.info("Player unavailable: %s", player.name)
-            self.mass.signal_event(
-                EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
-            )
+            if player.type != PlayerType.PROTOCOL:
+                self.mass.signal_event(
+                    EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
+                )
 
     @api_command("players/remove", required_role="admin")
     async def remove(self, player_id: str) -> None:
@@ -1498,7 +1505,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
         # signal player update on the eventbus
-        self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
+        if player.type != PlayerType.PROTOCOL:
+            self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
         if skip_forward and not force_update:
             return

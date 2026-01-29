@@ -160,7 +160,7 @@ class ChromecastPlayer(Player):
             # If no manufacturer, check model name for Google devices
             model = cast_info.model_name.lower() if cast_info.model_name else ""
             return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() == "google"
+        return cast_info.manufacturer.lower() in ("google", "google inc.")
 
     @property
     def sendspin_mode_enabled(self) -> bool:

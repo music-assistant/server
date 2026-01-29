@@ -296,8 +296,8 @@ class TestGetDeviceKeyFromPlayers:
 
         assert device_key == "uuid12345678123412341234123456789abc"
 
-    def test_device_key_from_ip_returns_none(self, mock_mass):
-        """Test that device key returns None for IP-only players (IP not used)."""
+    def test_device_key_from_ip_falls_back_to_player_id(self, mock_mass):
+        """Test that device key falls back to player_id for IP-only players (IP not used)."""
         controller = PlayerController(mock_mass)
 
         provider = MockProvider("airplay")
@@ -310,8 +310,26 @@ class TestGetDeviceKeyFromPlayers:
 
         device_key = controller._get_device_key_from_players([player])
 
-        # IP address is not used for device key generation
-        assert device_key is None
+        # IP address is not used for device key - falls back to player_id
+        # This allows protocol players without MAC/UUID to still get a UniversalPlayer
+        assert device_key == "ap_123456"
+
+    def test_device_key_from_no_identifiers_falls_back_to_player_id(self, mock_mass):
+        """Test that device key falls back to player_id when no identifiers at all."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("sendspin")
+        player = MockPlayer(
+            provider,
+            "sendspin-device-abc",
+            "Test Player",
+            # No identifiers at all (like Sendspin protocol players)
+        )
+
+        device_key = controller._get_device_key_from_players([player])
+
+        # Falls back to player_id when no MAC/UUID identifiers
+        assert device_key == "sendspindeviceabc"
 
 
 class TestGetCleanPlayerName:
