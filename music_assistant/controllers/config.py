@@ -580,7 +580,6 @@ class ConfigController:
     async def get_player_config(
         self,
         player_id: str,
-        include_protocols_config: bool = True,
     ) -> PlayerConfig:
         """Return (full) configuration for a single player."""
         raw_conf: dict[str, Any]
@@ -589,19 +588,21 @@ class ConfigController:
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
                 raw_conf["provider"] = player.provider.instance_id
-                conf_entries = await self.get_player_config_entries(
+                config_entries = await self.get_player_config_entries(
                     player_id,
-                    include_protocols_config=include_protocols_config,
                 )
+                # also grab (raw) values for protocol outputs
+                if protocol_values := await self._get_output_protocol_config_values(config_entries):
+                    if "values" not in raw_conf:
+                        raw_conf["values"] = {}
+                    raw_conf["values"].update(protocol_values)
             else:
                 # handle unavailable player and/or provider
-                conf_entries = []
+                config_entries = []
                 raw_conf["available"] = False
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
-            # clear values from raw_conf - PlayerConfig.parse should use entry values/defaults
-            # this prevents stale/corrupted stored values from being used
-            raw_conf.pop("values", None)
-            return cast("PlayerConfig", PlayerConfig.parse(conf_entries, raw_conf))
+
+            return cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
@@ -611,7 +612,6 @@ class ConfigController:
         player_id: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-        include_protocols_config: bool = True,
     ) -> list[ConfigEntry]:
         """
         Return Config entries to configure a player.
@@ -624,25 +624,31 @@ class ConfigController:
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
 
-        # get player(protocol) specific entries
-        player_entries = await self._get_player_config_entries(player, action=action, values=values)
-        # get default entries which are common for all players
-        default_entries = self._get_default_player_config_entries(player)
-
-        # inject protocol player config entries if needed
-        # this basically injects virtual config entries for each protocol output
-        # this feels a bit of a hack to do it this way but it keeps the UI logic simple
-        # and maximizes api client compatibility because you can configure the whole player
-        # including its protocols from a single config endpoint without needing special handling
-        # for protocol players in the UI/api clients
-        if include_protocols_config and (
-            protocol_entries := await self._create_output_protocol_config_entries(
+        default_entries: list[ConfigEntry]
+        player_entries: list[ConfigEntry]
+        if player.type == PlayerType.PROTOCOL:
+            default_entries = []
+            player_entries = await self._get_player_config_entries(
                 player, action=action, values=values
             )
-        ):
-            player_entries = protocol_entries
         else:
-            player_entries = await player.get_config_entries(action=action, values=values)
+            # get default entries which are common for all (non protocol)players
+            default_entries = self._get_default_player_config_entries(player)
+
+            # get player(protocol) specific entries
+            # this basically injects virtual config entries for each protocol output
+            # this feels maybe a bit of a hack to do it this way but it keeps the UI logic simple
+            # and maximizes api client compatibility because you can configure the whole player
+            # including its protocols from a single config endpoint without needing special handling
+            # for protocol players in the UI/api clients
+            if protocol_entries := await self._create_output_protocol_config_entries(
+                player, action=action, values=values
+            ):
+                player_entries = protocol_entries
+            else:
+                player_entries = await self._get_player_config_entries(
+                    player, action=action, values=values
+                )
 
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
@@ -792,8 +798,8 @@ class ConfigController:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
-        values = await self._update_output_protocol_settings(values)
-        config = await self.get_player_config(player_id, include_protocols_config=False)
+        values = await self._update_output_protocol_config(values)
+        config = await self.get_player_config(player_id)
         old_config = deepcopy(config)
         changed_keys = config.update(values)
         if not changed_keys:
@@ -1901,7 +1907,9 @@ class ConfigController:
                 )
             if protocol.is_native:
                 # add protocol-specific entries from native player
-                protocol_entries = await player.get_config_entries(action=action, values=values)
+                protocol_entries = await self._get_player_config_entries(
+                    player, action=action, values=values
+                )
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -1924,19 +1932,13 @@ class ConfigController:
                     }
                 else:
                     protocol_values = None
-                protocol_entries = await protocol_player.get_config_entries(
-                    action=protocol_action, values=protocol_values
+                protocol_entries = await self._get_player_config_entries(
+                    protocol_player, action=protocol_action, values=protocol_values
                 )
-                raw_values: dict[str, ConfigValueType] = self.get(
-                    f"{CONF_PLAYERS}/{protocol.output_protocol_id}/values", {}
-                )
-
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
                     entry.category = protocol_category
-                    # get value before prefixing the key (raw_values has unprefixed keys)
-                    entry.value = raw_values.get(entry.key, entry.default_value)
                     entry.key = f"{protocol_prefix}{entry.key}"
                     entry.depends_on = None if protocol.is_native else protocol_enabled_key
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
@@ -1944,11 +1946,11 @@ class ConfigController:
 
         return all_entries
 
-    async def _update_output_protocol_settings(
+    async def _update_output_protocol_config(
         self, values: dict[str, ConfigValueType]
     ) -> dict[str, ConfigValueType]:
         """
-        Update output protocol related settings for a player based on config values.
+        Update output protocol related config for a player based on config values.
 
         Returns updated values dict with output protocol related entries removed.
         """
@@ -1965,4 +1967,28 @@ class ConfigController:
             del values[key]
         for protocol_player_id, proto_values in protocol_values.items():
             await self.save_player_config(protocol_player_id, proto_values)
+            if proto_values.get(CONF_ENABLED):
+                # wait max 10 seconds for protocol to become available
+                for _ in range(10):
+                    protocol_player = self.mass.players.get(protocol_player_id)
+                    if protocol_player is not None:
+                        break
+                    await asyncio.sleep(1)
+            # wait max 10 seconds for protocol
+        return values
+
+    async def _get_output_protocol_config_values(
+        self,
+        entries: list[ConfigEntry],
+    ) -> dict[str, ConfigValueType]:
+        """Extract output protocol related config values for given (parent) player entries."""
+        values: dict[str, ConfigValueType] = {}
+        for entry in entries:
+            if CONF_PROTOCOL_KEY_SPLITTER not in entry.key:
+                continue
+            protocol_player_id, actual_key = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER)
+            stored_value = self.get_raw_player_config_value(protocol_player_id, actual_key)
+            if stored_value is None:
+                continue
+            values[entry.key] = stored_value
         return values
