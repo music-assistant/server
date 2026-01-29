@@ -1403,6 +1403,17 @@ class ConfigController:
             LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
             changed = True
 
+        # Remove corrupt player configurations that are missing the required 'provider' key
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if "provider" in player_config:
+                continue
+            self._data[CONF_PLAYERS].pop(player_id, None)
+            # Also remove any DSP config for this player
+            if CONF_PLAYER_DSP in self._data:
+                self._data[CONF_PLAYER_DSP].pop(player_id, None)
+            LOGGER.warning("Removed corrupt player configuration (missing provider): %s", player_id)
+            changed = True
+
         # migrate player configs: always use instance_id for provider
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if "provider" not in player_config:
