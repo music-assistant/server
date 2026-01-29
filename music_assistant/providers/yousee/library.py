@@ -129,7 +129,6 @@ class YouSeeLibraryManager:
                             share
                             genre
                             isrc
-                            playbackContext
                             featuredArtists {
                                 items {
                                     id

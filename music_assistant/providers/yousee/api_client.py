@@ -50,7 +50,6 @@ class YouSeeAPIClient:
         self, query: str, variables: JsonLike, _headers: JsonLike | None = None
     ) -> JsonLike:
         """Post GraphQL query to YouSee endpoint with authorization."""
-        # Should we allow a separate language select in provider config?
         locale = self.mass.metadata.locale.split("_")[0]
 
         async with self.mass.http_session.post(

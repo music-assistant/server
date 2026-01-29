@@ -64,7 +64,6 @@ class YouSeeMediaManager:
                             share
                             genre
                             isrc
-                            playbackContext
                             featuredArtists {
                                 items {
                                     id
@@ -260,7 +259,6 @@ class YouSeeMediaManager:
                                     }
                                 }
                                 share
-                                playbackContext
                                 genre
                             }
                         }
@@ -340,7 +338,6 @@ class YouSeeMediaManager:
                     releaseDate
                     availableToStream
                     isrc
-                    playbackContext
                     share
                     cover(size: $imageSize)
                     album {
@@ -427,7 +424,6 @@ class YouSeeMediaManager:
                                     }
                                 }
                                 share
-                                playbackContext
                                 genre
                             }
                             pageInfo {
@@ -490,7 +486,6 @@ class YouSeeMediaManager:
                                 }
                             }
                             share
-                            playbackContext
                             genre
                         }
                         pageInfo {
@@ -553,7 +548,6 @@ class YouSeeMediaManager:
                                     }
                                 }
                                 share
-                                playbackContext
                                 genre
                             }
                         }
