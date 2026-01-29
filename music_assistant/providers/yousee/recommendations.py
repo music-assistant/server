@@ -71,324 +71,78 @@ class YouSeeRecommendationsManager:
                             }
                         }
                         trackRecommendations: recommendation(id: "discovertracks") {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         weeklyDiscoveries: recommendation(id: "weeklyDiscoveries") {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         trackRecommendationsFirstMostPlayed: recommendation(
                             id: "tracksbasedonfirstmostplayedartist"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         trackRecommendationsSecondMostPlayed: recommendation(
                             id: "tracksbasedonSecondmostplayedartist"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         historyTopTracks: recommendation(
                             id: "toptracks"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         historyRecentTracks: recommendation(
                             id: "recenttracks"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         yourmix1: recommendation(
                             id: "yourmix"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         yourmix2: recommendation(
                             id: "yourmix2"
                         ) {
-                            id
-                            title
-                            subtitle
-                            description
-                            cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
-                                }
-                            }
+                            ...RecommendationTracks
                         }
                         yourmix3: recommendation(
                             id: "yourmix3"
                         ) {
+                            ...RecommendationTracks
+                        }
+                    }
+                }
+            }
+            fragment RecommendationTracks on Recommendation {
+                id
+                title
+                subtitle
+                description
+                cover(size: $imageSize)
+                ... on TracksRecommendation {
+                    tracks(first: $first) {
+                        items {
                             id
                             title
-                            subtitle
-                            description
                             cover(size: $imageSize)
-                            ... on TracksRecommendation {
-                                tracks(first: $first) {
-                                    items {
-                                        id
-                                        title
-                                        cover(size: $imageSize)
-                                        isrc
-                                        duration
-                                        label
-                                        artist {
-                                            id
-                                            title
-                                            cover(size: $imageSize)
-                                        }
-                                        featuredArtists {
-                                            items {
-                                                id
-                                                title
-                                                cover(size: $imageSize)
-                                            }
-                                        }
-                                        share
-                                        playbackContext
-                                        genre
-                                    }
+                            isrc
+                            duration
+                            label
+                            artist {
+                                id
+                                title
+                                cover(size: $imageSize)
+                            }
+                            featuredArtists {
+                                items {
+                                    id
+                                    title
+                                    cover(size: $imageSize)
                                 }
                             }
+                            share
+                            genre
                         }
                     }
                 }
