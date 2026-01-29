@@ -139,7 +139,6 @@ class ConfigController:
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
-        self._value_cache: dict[str, ConfigValueType] = {}
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -341,23 +340,20 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
-        cache_key = f"prov_conf_value_{instance_id}.{key}"
-        if (cached_value := self._value_cache.get(cache_key)) is not None:
-            return cached_value
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_provider_config_value(instance_id, key)) is not None:
+            return raw_value
         conf = await self.get_provider_config(instance_id)
         if key not in conf.values:
             if default is not None:
                 return default
             msg = f"Config key {key} not found for provider {instance_id}"
             raise KeyError(msg)
-        val = (
+        return (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
-        # store value in cache because this method can potentially be called very often
-        self._value_cache[cache_key] = val
-        return val
 
     @api_command("config/providers/get_entries")
     async def get_provider_config_entries(  # noqa: PLR0915
@@ -1236,7 +1232,6 @@ class ConfigController:
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
-        self._value_cache = {}
         if self._timer_handle is not None:
             self._timer_handle.cancel()
             self._timer_handle = None
