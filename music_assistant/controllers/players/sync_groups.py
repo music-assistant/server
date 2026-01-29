@@ -567,6 +567,7 @@ class SyncGroupController:
         self.mass.config.create_default_player_config(
             player_id=player_id,
             provider=provider.instance_id,
+            player_type=PlayerType.GROUP,
             name=name,
             enabled=True,
             values={

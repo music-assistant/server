@@ -97,7 +97,7 @@ class Player(ABC):
         self._player_id = player_id
         self._provider = provider
         self.mass.config.create_default_player_config(
-            player_id, self.provider_id, self.name, self.enabled_by_default
+            player_id, self.provider_id, self.type, self.name, self.enabled_by_default
         )
         self._config = self.mass.config.get_base_player_config(player_id, self.provider_id)
         self._extra_data: dict[str, Any] = {}
@@ -969,6 +969,9 @@ class Player(ABC):
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
             self.mass.config.set_player_default_name(self.player_id, self.name)
+        # persist the player type if it changed
+        if self.type != self._config.player_type:
+            self.mass.config.set_player_type(self.player_id, self.type)
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:
             return

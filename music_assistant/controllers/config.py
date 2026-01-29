@@ -809,6 +809,54 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
+    def set_player_type(self, player_id: str, player_type: PlayerType) -> None:
+        """Set (or update) the type for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/player_type"
+        self.set(conf_key, player_type)
+
+    def create_default_player_config(
+        self,
+        player_id: str,
+        provider: str,
+        player_type: PlayerType,
+        name: str | None = None,
+        enabled: bool = True,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> None:
+        """
+        Create default/empty PlayerConfig.
+
+        This is meant as helper to create default configs when a player is registered.
+        Called by the player manager on player register.
+        """
+        # return early if the config already exists
+        if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # update default name if needed
+            if name and name != existing_conf.get("default_name"):
+                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            # update player_type if needed
+            if existing_conf.get("player_type") != player_type:
+                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            return
+        # config does not yet exist, create a default one
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        default_conf = PlayerConfig(
+            values={},
+            provider=provider,
+            player_id=player_id,
+            enabled=enabled,
+            name=name,
+            default_name=name,
+            player_type=player_type,
+        )
+        default_conf_raw = default_conf.to_raw()
+        if values is not None:
+            default_conf_raw["values"] = values
+        self.set(
+            conf_key,
+            default_conf_raw,
+        )
+
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
@@ -886,44 +934,6 @@ class ConfigController:
         self.mass.signal_event(
             EventType.DSP_PRESETS_UPDATED,
             data=all_presets,
-        )
-
-    def create_default_player_config(
-        self,
-        player_id: str,
-        provider: str,
-        name: str | None = None,
-        enabled: bool = True,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> None:
-        """
-        Create default/empty PlayerConfig.
-
-        This is meant as helper to create default configs when a player is registered.
-        Called by the player manager on player register.
-        """
-        # return early if the config already exists
-        if self.get(f"{CONF_PLAYERS}/{player_id}"):
-            # update default name if needed
-            if name:
-                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            return
-        # config does not yet exist, create a default one
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        default_conf = PlayerConfig(
-            values={},
-            provider=provider,
-            player_id=player_id,
-            enabled=enabled,
-            name=name,
-            default_name=name,
-        )
-        default_conf_raw = default_conf.to_raw()
-        if values is not None:
-            default_conf_raw["values"] = values
-        self.set(
-            conf_key,
-            default_conf_raw,
         )
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
