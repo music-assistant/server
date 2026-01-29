@@ -7,6 +7,7 @@ and Music Assistant, avoiding the need to expose the WebSocket API to the contro
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from contextlib import suppress
@@ -169,7 +170,7 @@ class SnapcastSocketServer:
 
         # Execute the handler
         result = handler.target(**args)
-        if asyncio.iscoroutine(result):
+        if inspect.iscoroutine(result):
             result = await result
         return result
 
