@@ -130,7 +130,6 @@ class RadioBrowserProvider(MusicProvider):
         except RadioBrowserError as err:
             raise ProviderUnavailableError(f"RadioBrowser API unavailable: {err}") from err
 
-
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
