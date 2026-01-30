@@ -153,7 +153,8 @@ class MusicController(CoreController):
                 description="This will issue a full reset of the library "
                 "database and trigger a full sync. Only use this option as a last resort "
                 "if you are seeing issues with the library database.",
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
         )
         if action == CONF_RESET_DB:

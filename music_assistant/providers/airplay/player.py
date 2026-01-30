@@ -186,7 +186,6 @@ class AirPlayPlayer(Player):
                 "will only work with AirPlay version 2, "
                 "while older devices may only support RAOP.\n\n"
                 "In most cases the default automatic selection will work fine.",
-                category="airplay",
                 options=[
                     ConfigValueOption("Automatically select", 0),
                     ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
@@ -201,10 +200,10 @@ class AirPlayPlayer(Player):
                 label="Enable encryption",
                 description="Enable encrypted communication with the player, "
                 "some (3rd party) players require this to be disabled.",
-                category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=self.protocol != StreamingProtocol.RAOP,
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_ALAC_ENCODE,
@@ -213,10 +212,10 @@ class AirPlayPlayer(Player):
                 label="Enable compression",
                 description="Save some network bandwidth by sending the audio as "
                 "(lossless) ALAC at the cost of a bit of CPU.",
-                category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=self.protocol != StreamingProtocol.RAOP,
+                advanced=True,
             ),
             CONF_ENTRY_SYNC_ADJUST,
             ConfigEntry(
@@ -226,7 +225,7 @@ class AirPlayPlayer(Player):
                 required=False,
                 label="Device password",
                 description="Some devices require a password to connect/play.",
-                category="airplay",
+                advanced=True,
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(
@@ -249,6 +248,7 @@ class AirPlayPlayer(Player):
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=self.protocol != StreamingProtocol.RAOP,
+                advanced=True,
             ),
         ]
 

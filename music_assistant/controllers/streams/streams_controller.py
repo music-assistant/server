@@ -261,7 +261,8 @@ class StreamsController(CoreController):
                 "\nMake sure that this IP can be reached by players on the local network, "
                 "otherwise audio streaming will not work.",
                 required=False,
-                category="advanced",
+                category="generic",
+                advanced=True,
                 requires_reload=True,
             ),
             ConfigEntry(
@@ -272,7 +273,8 @@ class StreamsController(CoreController):
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
                 "on the given IP and TCP port by players on the local network.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 requires_reload=True,
             ),
             ConfigEntry(
@@ -285,7 +287,8 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 required=False,
                 requires_reload=True,
             ),
@@ -296,7 +299,8 @@ class StreamsController(CoreController):
                 description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
             CONF_ENTRY_ZEROCONF_INTERFACES,
         )

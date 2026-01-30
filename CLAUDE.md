@@ -107,6 +107,21 @@ These demo/example implementations have a lot of docstrings and comments to help
 
 ## Code Style Guidelines
 
+### Comments
+Use comments wisely. Only use comments to explain a complex, multi-line block of code.
+
+**❌ Bad example**
+```python
+# add 1 and 2 together
+add(1, 2)
+```
+
+**✅ Good example**
+```python
+# use xxx to achieve yyy
+..multi line code block of complex code
+```
+
 ### Docstring Format
 
 Music Assistant uses **Sphinx-style docstrings** with `:param:` syntax for documenting function parameters. This is the standard format used throughout the codebase.

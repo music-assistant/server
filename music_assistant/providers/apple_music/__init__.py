@@ -258,7 +258,7 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Manual Music User Token",
             required=False,
-            category="advanced",
+            advanced=True,
             description=(
                 "Authenticate with a manual Music User Token in case the Authentication flow"
                 " is unsupported (e.g. when using child accounts)."

@@ -232,7 +232,8 @@ class WebserverController(CoreController):
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 requires_reload=True,
             ),
         )
