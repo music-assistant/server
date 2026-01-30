@@ -1825,7 +1825,7 @@ class ConfigController:
             CONF_ENTRY_AUTO_PLAY,
         ]
 
-    async def _create_output_protocol_config_entries(
+    async def _create_output_protocol_config_entries(  # noqa: PLR0915
         self,
         player: Player,
         action: str | None = None,
@@ -1891,6 +1891,7 @@ class ConfigController:
             protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
+            category_translation_key = "settings.category.protocol_output_settings"
             if not protocol.is_native:
                 all_entries.append(
                     ConfigEntry(
@@ -1901,6 +1902,8 @@ class ConfigController:
                         value=protocol_player_enabled,
                         default_value=protocol_player_enabled,
                         category=protocol_category,
+                        category_translation_key=category_translation_key,
+                        category_translation_params=[protocol_name],
                         immediate_apply=True,
                         requires_reload=False,
                     )
@@ -1914,6 +1917,8 @@ class ConfigController:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
                     entry.category = protocol_category
+                    entry.category_translation_key = category_translation_key
+                    entry.category_translation_params = [protocol_name]
                     all_entries.append(entry)
 
             elif protocol_player := self.mass.players.get(protocol.output_protocol_id):
@@ -1939,6 +1944,8 @@ class ConfigController:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
                     entry.category = protocol_category
+                    entry.category_translation_key = category_translation_key
+                    entry.category_translation_params = [protocol_name]
                     entry.key = f"{protocol_prefix}{entry.key}"
                     entry.depends_on = None if protocol.is_native else protocol_enabled_key
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None

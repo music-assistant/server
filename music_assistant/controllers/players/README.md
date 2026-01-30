@@ -138,26 +138,26 @@ Modern audio devices often support multiple streaming protocols (AirPlay, Chrome
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     Physical Device                                  │
+│                     Physical Device                                 │
 │                  (e.g., Samsung Soundbar)                           │
 ├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │   AirPlay    │  │  Chromecast  │  │    DLNA      │              │
-│  │   Protocol   │  │   Protocol   │  │   Protocol   │              │
-│  │   Player     │  │   Player     │  │   Player     │              │
-│  │  (hidden)    │  │  (hidden)    │  │  (hidden)    │              │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │   AirPlay    │  │  Chromecast  │  │    DLNA      │               │
+│  │   Protocol   │  │   Protocol   │  │   Protocol   │               │
+│  │   Player     │  │   Player     │  │   Player     │               │
+│  │  (hidden)    │  │  (hidden)    │  │  (hidden)    │               │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
 │         │                 │                 │                       │
 │         └─────────────────┼─────────────────┘                       │
 │                           │                                         │
 │                           ▼                                         │
-│              ┌─────────────────────────┐                           │
-│              │    Universal Player     │                           │
-│              │  (visible in UI)        │                           │
-│              │  - Aggregates protocols │                           │
-│              │  - Selects best output  │                           │
-│              │  - Unified control      │                           │
-│              └─────────────────────────┘                           │
+│              ┌─────────────────────────┐                            │
+│              │    Universal Player     │                            │
+│              │  (visible in UI)        │                            │
+│              │  - Aggregates protocols │                            │
+│              │  - Selects best output  │                            │
+│              │  - Unified control      │                            │
+│              └─────────────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

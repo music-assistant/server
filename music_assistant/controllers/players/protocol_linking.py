@@ -115,8 +115,8 @@ class ProtocolLinkingMixin:
         # Try to resolve real MAC via ARP
         real_mac = await resolve_real_mac_address(reported_mac, ip_address)
         if real_mac and real_mac.upper() != (reported_mac or "").upper():
-            # Add the real MAC as an additional identifier
-            # Keep the original MAC too (for protocol-specific matching)
+            # Replace the virtual MAC with the real MAC address
+            # (add_identifier will store multiple values if the implementation supports it)
             player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
             self.logger.debug(
                 "Resolved real MAC for %s: %s -> %s",
