@@ -469,6 +469,7 @@ class SonosPlayer(Player):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
+        self.logger.debug("enqueue_next_media(%s)", media)
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
@@ -910,7 +911,9 @@ class SonosPlayer(Player):
             self.sonos_queue.items.clear()
             return
         current_index = queue.current_index or 0
-        buffer_index = queue.index_in_buffer if queue.index_in_buffer is not None else current_index
+        current_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else current_index
+        )
 
         # Add a few items before the current index for context
         offset = max(0, current_index - 4)
@@ -931,7 +934,7 @@ class SonosPlayer(Player):
                 items.append(media)
 
         # Use get_next_item to fetch next items, which accounts for repeat mode
-        last_index: int | str = buffer_index
+        last_index: int | str = current_index
         for _ in range(5):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
