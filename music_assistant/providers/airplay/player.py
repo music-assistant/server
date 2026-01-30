@@ -176,6 +176,7 @@ class AirPlayPlayer(Player):
                     ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
                 default_value=0,
+                category="protocol_generic",
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
@@ -187,6 +188,7 @@ class AirPlayPlayer(Player):
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=self.protocol != StreamingProtocol.RAOP,
+                category="protocol_generic",
                 advanced=True,
             ),
             ConfigEntry(
@@ -199,6 +201,7 @@ class AirPlayPlayer(Player):
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=self.protocol != StreamingProtocol.RAOP,
+                category="protocol_generic",
                 advanced=True,
             ),
             CONF_ENTRY_SYNC_ADJUST,
@@ -209,6 +212,7 @@ class AirPlayPlayer(Player):
                 required=False,
                 label="Device password",
                 description="Some devices require a password to connect/play.",
+                category="protocol_generic",
                 advanced=True,
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
@@ -227,7 +231,7 @@ class AirPlayPlayer(Player):
                     "volume changes. \n"
                     "Enable this option to ignore these reports."
                 ),
-                category="airplay",
+                category="protocol_generic",
                 # TODO: remove depends_on when DACP support is added for AirPlay2
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
@@ -307,6 +311,7 @@ class AirPlayPlayer(Player):
                         type=ConfigEntryType.STRING,
                         label="Enter the 4-digit PIN shown on the device",
                         required=True,
+                        category="protocol_generic",
                     )
                 )
                 entries.append(
@@ -315,6 +320,7 @@ class AirPlayPlayer(Player):
                         type=ConfigEntryType.ACTION,
                         label=f"Complete {protocol_name} pairing with the PIN",
                         action=CONF_ACTION_FINISH_PAIRING,
+                        category="protocol_generic",
                     )
                 )
             else:
@@ -327,6 +333,7 @@ class AirPlayPlayer(Player):
                             f"This device requires {protocol_name} pairing before it can be used. "
                             "Click the button below to start the pairing process."
                         ),
+                        category="protocol_generic",
                     )
                 )
                 entries.append(
@@ -335,6 +342,7 @@ class AirPlayPlayer(Player):
                         type=ConfigEntryType.ACTION,
                         label=f"Start {protocol_name} pairing",
                         action=CONF_ACTION_START_PAIRING,
+                        category="protocol_generic",
                     )
                 )
         else:
@@ -344,6 +352,7 @@ class AirPlayPlayer(Player):
                     key="pairing_status",
                     type=ConfigEntryType.LABEL,
                     label=f"Device is paired ({protocol_name}) and ready to use.",
+                    category="protocol_generic",
                 )
             )
             # Add reset pairing button
@@ -353,6 +362,7 @@ class AirPlayPlayer(Player):
                     type=ConfigEntryType.ACTION,
                     label=f"Reset {protocol_name} pairing",
                     action=CONF_ACTION_RESET_PAIRING,
+                    category="protocol_generic",
                 )
             )
 
@@ -368,6 +378,7 @@ class AirPlayPlayer(Player):
                     value=values.get(conf_key) if values else None,
                     required=False,
                     hidden=True,
+                    category="protocol_generic",
                 )
             )
         return entries
