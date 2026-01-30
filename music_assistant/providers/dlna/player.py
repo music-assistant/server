@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 
 import defusedxml.ElementTree as DefusedET
-from async_upnp_client.client import UpnpService, UpnpStateVariable
+from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -247,9 +247,9 @@ class DLNAPlayer(Player):
     async def _is_sonos_passive_speaker(self) -> bool:
         """Check if this is a Sonos passive stereo pair speaker.
 
-        Stereo pair satellites have play capability but are marked as Invisible
-        in the ZoneGroupTopology. We need to filter these out as they can't be
-        controlled directly.
+        Queries the device's own topology. If that returns 403, the device is
+        considered passive (passive satellites and speakers with UPnP disabled
+        block topology queries). If successful, checks for Invisible="1" attribute.
         """
         if not self.device:
             return False
@@ -258,9 +258,25 @@ class DLNAPlayer(Player):
         if "sonos" not in manufacturer:
             return False
 
-        # ZoneGroupTopology is on the root device, not the MediaRenderer embedded device
-        upnp_device = self.device.profile_device.root_device
+        # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
+        our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
 
+        # Query this device's topology
+        upnp_device = self.device.profile_device.root_device
+        result = await self._check_invisible_in_topology(upnp_device, our_uuid)
+
+        # Return the result: True if passive/403, False if active or check failed
+        return result if result is not None else False
+
+    async def _check_invisible_in_topology(
+        self, upnp_device: UpnpDevice, our_uuid: str
+    ) -> bool | None:
+        """Check if our UUID is marked as Invisible in the topology.
+
+        :param upnp_device: UPnP device to query
+        :param our_uuid: Our device UUID to search for
+        :return: True if invisible/403 error, False if visible, None if check failed
+        """
         zone_topology_service = None
         for service in upnp_device.all_services:
             if "ZoneGroupTopology" in service.service_type:
@@ -268,30 +284,44 @@ class DLNAPlayer(Player):
                 break
 
         if not zone_topology_service:
-            return False
+            return None
 
         try:
             action = zone_topology_service.action("GetZoneGroupState")
             if not action:
-                return False
+                return None
 
             result = await action.async_call()
             zone_group_state_xml = result.get("ZoneGroupState", "")
             if not zone_group_state_xml:
-                return False
-
-            # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
-            our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
+                return None
 
             root = DefusedET.fromstring(zone_group_state_xml)
             for member in root.iter("ZoneGroupMember"):
                 if member.get("UUID", "").upper() == our_uuid.upper():
                     return str(member.get("Invisible", "0")) == "1"
 
+        except UpnpResponseError as err:
+            # 403 Forbidden indicates passive satellite (blocks topology queries)
+            if "403" in str(err):
+                self.logger.debug(
+                    "Sonos device %s returned 403 - treating as passive satellite",
+                    our_uuid,
+                )
+                return True
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Error checking Sonos zone topology: %s",
+                err,
+            )
         except (UpnpError, DefusedET.ParseError) as err:
-            self.logger.debug("Error checking Sonos zone topology: %s", err)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Error checking Sonos zone topology: %s",
+                err,
+            )
 
-        return False
+        return None
 
     def set_static_attributes(self) -> None:
         """Set static attributes."""

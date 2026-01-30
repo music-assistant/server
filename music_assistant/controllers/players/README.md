@@ -205,13 +205,16 @@ A Universal Player is created when:
 
 ```
 1. Protocol player registered with PlayerType.PROTOCOL
-2. Controller checks for matching native player (links immediately if found)
-3. If no native player, schedules delayed evaluation:
+2. Controller checks for cached parent_id from previous session:
+   - If found, restores link immediately (skips evaluation)
+   - If parent not yet registered, waits without creating universal player
+3. If no cached parent, checks for matching native player (links immediately if found)
+4. If no native player, schedules delayed evaluation:
    - 10 seconds standard delay (allows other protocols to register)
    - 30 seconds if previously linked to a native player (allows native provider to start)
-4. After delay, finds all matching protocol players by identifiers
-5. Creates UniversalPlayer and links all protocols
-6. Protocol players become hidden, Universal Player visible
+5. After delay, finds all matching protocol players by identifiers
+6. Creates UniversalPlayer and links all protocols
+7. Protocol players become hidden, Universal Player visible
 ```
 
 ## Protocol Linking
@@ -249,7 +252,8 @@ When implementing a new protocol provider:
 1. Set `_attr_type = PlayerType.PROTOCOL` for generic devices (non-vendor devices)
 2. Set `_attr_type = PlayerType.PLAYER` for devices with native support (vendor's own devices)
 3. Populate `device_info.identifiers` with MAC, UUID, etc. (see below)
-4. The Player Controller handles linking automatically
+4. Filter out devices that should only be handled by native providers (e.g., passive satellites)
+5. The Player Controller handles linking automatically
 
 ### Adding Native Provider Support
 

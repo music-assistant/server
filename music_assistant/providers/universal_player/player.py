@@ -54,7 +54,8 @@ class UniversalPlayer(Player):
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info
-        self._attr_available = True
+        # Start as unavailable - will be updated when protocol players are linked
+        self._attr_available = False
 
         # Universal players aggregate features from linked protocols
         # but do NOT have PLAY_MEDIA - that's handled via protocol linking

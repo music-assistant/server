@@ -1871,10 +1871,10 @@ class ConfigController:
             else:
                 protocol_name = protocol.protocol_domain.upper()
             if protocol.available:
-                # Use "native" for native playback, otherwise use protocol domain
-                domain = protocol.protocol_domain
+                # Use "native" for native playback,
+                # otherwise use the protocol output id (=player id)
                 title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
-                value = "native" if protocol.is_native else domain
+                value = "native" if protocol.is_native else protocol.output_protocol_id
                 options.append(ConfigValueOption(title=title, value=value))
 
         all_entries.append(
@@ -1886,7 +1886,7 @@ class ConfigController:
                 default_value="auto",
                 required=True,
                 options=options,
-                category="generic",
+                category="protocol_general",
                 requires_reload=False,
             )
         )
@@ -1901,6 +1901,10 @@ class ConfigController:
             protocol_player_enabled = self.get_raw_player_config_value(
                 protocol.output_protocol_id, CONF_ENABLED, True
             )
+            provider_available = self.mass.get_provider(protocol.protocol_domain) is not None
+            if not provider_available:
+                # protocol provider is not available, skip adding entries
+                continue
             protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
@@ -1917,7 +1921,6 @@ class ConfigController:
                         category=protocol_category,
                         category_translation_key=category_translation_key,
                         category_translation_params=[protocol_name],
-                        immediate_apply=True,
                         requires_reload=False,
                     )
                 )
@@ -1937,6 +1940,7 @@ class ConfigController:
             elif protocol_player := self.mass.players.get(protocol.output_protocol_id):
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
+
                 if action and protocol_prefix in action:
                     protocol_action = action.replace(protocol_prefix, "")
                 else:

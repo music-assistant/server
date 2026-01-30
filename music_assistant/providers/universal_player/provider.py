@@ -74,6 +74,42 @@ class UniversalPlayerProvider(PlayerProvider):
         stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
         stored_device_info = values.get(CONF_DEVICE_INFO, {})
 
+        # Check if protocols have been linked to a native player (stale universal player)
+        for protocol_id in stored_protocol_ids:
+            protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if protocol_config:
+                protocol_values = protocol_config.get("values", {})
+                protocol_parent_id = protocol_values.get("protocol_parent_id")
+                if protocol_parent_id and protocol_parent_id != player_id:
+                    self.logger.info(
+                        "Deleting stale universal player %s - protocol %s has moved to parent %s",
+                        player_id,
+                        protocol_id,
+                        protocol_parent_id,
+                    )
+                    await self.mass.config.remove_player_config(player_id)
+                    return
+
+            # Check if native player has this protocol in linked_protocol_player_ids
+            all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+            for other_player_id, other_config in all_player_configs.items():
+                if other_player_id == player_id:
+                    continue
+                if other_config.get("provider") == "universal_player":
+                    continue
+                other_values = other_config.get("values", {})
+                linked_protocols = other_values.get("linked_protocol_player_ids", [])
+                if protocol_id in linked_protocols:
+                    self.logger.info(
+                        "Deleting stale universal player %s - "
+                        "protocol %s is linked to native player %s",
+                        player_id,
+                        protocol_id,
+                        other_player_id,
+                    )
+                    await self.mass.config.remove_player_config(player_id)
+                    return
+
         # Restore device info with stored values or defaults
         device_info = DeviceInfo(
             model=stored_device_info.get("model", "Universal Player"),

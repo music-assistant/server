@@ -144,6 +144,22 @@ class ProtocolLinkingMixin:
         """Try to link a protocol player to a native player."""
         protocol_domain = protocol_player.provider.domain
 
+        # Check for cached parent_id from previous session and restore link immediately
+        cached_parent_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
+        if cached_parent_id:
+            protocol_player._attr_protocol_parent_id = cached_parent_id
+            if parent_player := self.get(cached_parent_id):
+                if not any(
+                    link.output_protocol_id == protocol_player.player_id
+                    for link in parent_player._attr_linked_protocols
+                ):
+                    self._add_protocol_link(parent_player, protocol_player, protocol_domain)
+                    protocol_player.update_state()
+                    parent_player.update_state()
+                return
+            # Parent not registered yet - skip evaluation (no universal player created)
+            return
+
         # Look for a matching native player
         # Protocol players should only link to:
         # 1. True native players (Sonos, etc.)
@@ -168,6 +184,8 @@ class ProtocolLinkingMixin:
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
                         self._update_universal_device_info(native_player, protocol_player)
+                        # Update availability from protocol players
+                        native_player.update_from_protocol_players()
                         # Persist updated data to config (async via task)
                         self._save_universal_player_data(native_player)
                         protocol_player.update_state()
@@ -303,6 +321,8 @@ class ProtocolLinkingMixin:
                 universal_player.device_info.add_identifier(conn_type, value)
             # Update model/manufacturer if universal player has generic values
             self._update_universal_device_info(universal_player, protocol_player)
+            # Update availability from protocol players
+            universal_player.update_from_protocol_players()
 
             # Persist all player data (protocol IDs, identifiers, device info) to config
             for provider in self.mass.get_providers(ProviderType.PLAYER):
@@ -457,6 +477,10 @@ class ProtocolLinkingMixin:
             self._add_protocol_link(universal_player, player, player.provider.domain)
             player.update_state()
 
+        # Update availability from protocol players
+        if isinstance(universal_player, UniversalPlayer):
+            universal_player.update_from_protocol_players()
+
     async def _create_or_update_universal_player(self, protocol_players: list[Player]) -> None:
         """
         Create or update a UniversalPlayer for a set of protocol players.
@@ -536,6 +560,10 @@ class ProtocolLinkingMixin:
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 protocol_player.update_state()
                 native_player.update_state()
+
+        # Proactively recover disabled/missing protocols from config
+        # This ensures disabled protocols show up in the UI so they can be re-enabled
+        self._recover_cached_protocol_links(native_player)
 
     def _check_replace_universal_player(self, native_player: Player) -> None:
         """Check if a universal player should be replaced by this native player."""
@@ -689,6 +717,86 @@ class ProtocolLinkingMixin:
         conf_key = f"{CONF_PLAYERS}/{protocol_player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
         self.mass.config.set(conf_key, None)
 
+    def _recover_cached_protocol_links(self, native_player: Player) -> None:
+        """
+        Recover protocol links from config for disabled/missing protocols.
+
+        This ensures that disabled protocols show up in the output_protocols list
+        so they can be re-enabled by the user. It also handles the case where
+        protocol players haven't registered yet during startup.
+        """
+        # Get currently linked protocol IDs
+        linked_protocol_ids = {
+            link.output_protocol_id for link in native_player._attr_linked_protocols
+        }
+
+        # Get cached protocol IDs from config (includes protocols that were explicitly linked)
+        cached_protocol_ids = self._get_cached_protocol_ids(native_player.player_id)
+
+        # Also check all protocol players that have protocol_parent_id pointing to this player
+        # (this handles disabled protocols that may not be in linked_protocol_player_ids)
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        for protocol_id, protocol_config in all_player_configs.items():
+            # Skip if not a protocol player
+            if protocol_config.get("player_type") != "protocol":
+                continue
+            # Check if this protocol has a parent_id pointing to this native player
+            protocol_values = protocol_config.get("values", {})
+            protocol_parent_id = protocol_values.get(CONF_PROTOCOL_PARENT_ID)
+            if protocol_parent_id == native_player.player_id:
+                if protocol_id not in cached_protocol_ids:
+                    cached_protocol_ids.append(protocol_id)
+
+        if not cached_protocol_ids:
+            return
+
+        # Add OutputProtocol entries for any cached protocols that aren't currently linked
+        for protocol_id in cached_protocol_ids:
+            if protocol_id in linked_protocol_ids:
+                continue  # Already linked
+
+            # Get protocol player config to determine the protocol domain and availability
+            protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if not protocol_config:
+                continue
+
+            # Determine protocol domain from provider
+            protocol_provider = protocol_config.get("provider")
+            if not protocol_provider:
+                continue
+
+            # Get provider name for display
+            provider_name = "Protocol"  # Default fallback
+            for provider in self.mass.get_providers(ProviderType.PLAYER):
+                if provider.domain == protocol_provider:
+                    provider_name = provider.name
+                    break
+
+            # Get priority for this protocol
+            priority = PROTOCOL_PRIORITY.get(protocol_provider, 100)
+
+            # Check if protocol player is available (registered)
+            protocol_player = self.get(protocol_id)
+            is_available = protocol_player is not None and protocol_player.available
+
+            # Add the OutputProtocol entry
+            native_player._attr_linked_protocols.append(
+                OutputProtocol(
+                    output_protocol_id=protocol_id,
+                    name=provider_name,
+                    protocol_domain=protocol_provider,
+                    priority=priority,
+                    is_native=False,
+                    available=is_available,
+                )
+            )
+            self.logger.debug(
+                "Recovered cached protocol link %s -> %s (available: %s)",
+                native_player.player_id,
+                protocol_id,
+                is_available,
+            )
+
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""
         if player.type == PlayerType.PROTOCOL:
@@ -822,7 +930,7 @@ class ProtocolLinkingMixin:
                 if PlayerFeature.PLAY_MEDIA in player.supported_features:
                     return player, "native"
             else:
-                # Preferred is a protocol player_id
+                # Preferred is a protocol player ID
                 for linked in player._attr_linked_protocols:
                     if linked.output_protocol_id == preferred:
                         if protocol_player := self.get(linked.output_protocol_id):

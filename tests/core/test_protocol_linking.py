@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
@@ -28,6 +29,7 @@ class MockProvider:
         """Initialize the mock provider."""
         self.domain = domain
         self.instance_id = instance_id
+        self.name = f"Mock {domain.title()}"
         self.manifest = MagicMock()
         self.manifest.name = f"Mock {domain} Provider"
         self.mass = mass or MagicMock()
@@ -425,3 +427,273 @@ class TestGetCleanPlayerName:
 
         clean_name = controller._get_clean_player_name([player])
         assert clean_name == "HomePod Mini"
+
+
+class TestCachedProtocolParentRestore:
+    """Tests for restoring cached protocol parent links."""
+
+    def test_protocol_parent_id_restored_from_config(self, mock_mass):
+        """Test that cached protocol_parent_id is loaded and used for immediate linking."""
+        controller = PlayerController(mock_mass)
+
+        # Mock config to return cached parent_id when queried
+        def mock_config_get(key, default=None):
+            if "protocol_parent_id" in str(key):
+                return "native_player_id"
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        # Create native player
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            native_provider,
+            "native_player_id",
+            "Sonos Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Create protocol player
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "uuid:RINCON_AABBCCDDEEFF_MR",
+            "Sonos DLNA",
+            player_type=PlayerType.PROTOCOL,
+        )
+
+        # Register native player
+        controller._players = {"native_player_id": native_player}
+        controller._player_throttlers = {"native_player_id": Throttler(1, 0.05)}
+
+        # Try to link protocol to native - should load cached parent_id
+        controller._try_link_protocol_to_native(protocol_player)
+
+        # Verify protocol_parent_id was set
+        assert protocol_player._attr_protocol_parent_id == "native_player_id"
+
+        # Verify protocol was linked to native player
+        assert any(
+            link.output_protocol_id == protocol_player.player_id
+            for link in native_player._attr_linked_protocols
+        )
+
+    def test_protocol_parent_id_prevents_universal_player_creation(self, mock_mass):
+        """Test that cached protocol_parent_id prevents creating universal player."""
+        controller = PlayerController(mock_mass)
+
+        # Mock config to return cached parent_id (parent not yet registered)
+        def mock_config_get(key, default=None):
+            if "protocol_parent_id" in str(key):
+                return "native_player_id"
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        # Create protocol player
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "uuid:RINCON_AABBCCDDEEFF_MR",
+            "Sonos DLNA",
+            player_type=PlayerType.PROTOCOL,
+        )
+
+        # No native player registered yet
+        controller._players = {}
+
+        # Try to link protocol - should set parent_id and skip evaluation
+        controller._try_link_protocol_to_native(protocol_player)
+
+        # Verify protocol_parent_id was set
+        assert protocol_player._attr_protocol_parent_id == "native_player_id"
+
+        # Since parent_id is set, delayed evaluation won't create a universal player
+
+
+class TestSelectBestOutputProtocol:
+    """Tests for output protocol selection logic."""
+
+    def test_select_native_when_preferred_is_native(self, mock_mass):
+        """Test that native protocol is selected when user prefers native."""
+        # Mock config to return "native" as preferred
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="native")
+
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sonos", mass=mock_mass)
+
+        # Create native player with PLAY_MEDIA support
+        native_player = MockPlayer(
+            provider,
+            "sonos_123",
+            "Kantoor",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        # Register players
+        controller._players = {"sonos_123": native_player}
+        controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
+
+        # Select protocol
+        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+
+        # Should select native player
+        assert selected_player == native_player
+        assert protocol_id == "native"
+
+    def test_select_dlna_when_preferred_is_dlna(self, mock_mass):
+        """Test that DLNA protocol is selected when user prefers DLNA."""
+        # Mock config to return the full player ID as preferred
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="dlna_AABBCCDDEEFF")
+
+        controller = PlayerController(mock_mass)
+
+        # Create native player with linked protocols
+        sonos_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Kantoor",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        # Create DLNA protocol player
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_AABBCCDDEEFF",
+            "Kantoor DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Register players
+        controller._players = {
+            "sonos_123": native_player,
+            "dlna_AABBCCDDEEFF": dlna_player,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "dlna_AABBCCDDEEFF": Throttler(1, 0.05),
+        }
+
+        # Link DLNA protocol to native player
+        native_player._attr_linked_protocols.append(
+            OutputProtocol(
+                output_protocol_id="dlna_AABBCCDDEEFF",
+                name="DLNA",
+                protocol_domain="dlna",
+                priority=30,
+            )
+        )
+
+        # Select protocol
+        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+
+        # Should select DLNA player, not native
+        assert selected_player == dlna_player
+        assert protocol_id == "dlna_AABBCCDDEEFF"
+
+    def test_select_airplay_when_preferred_is_airplay(self, mock_mass):
+        """Test that AirPlay protocol is selected when user prefers AirPlay."""
+        # Mock config to return the full player ID as preferred
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            return_value="airplay_AABBCCDDEEFF"
+        )
+
+        controller = PlayerController(mock_mass)
+
+        # Create native player
+        sonos_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Kantoor",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        # Create AirPlay and DLNA protocol players
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        airplay_player = MockPlayer(
+            airplay_provider,
+            "airplay_AABBCCDDEEFF",
+            "Kantoor AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_AABBCCDDEEFF",
+            "Kantoor DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Register players
+        controller._players = {
+            "sonos_123": native_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+            "dlna_AABBCCDDEEFF": dlna_player,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "airplay_AABBCCDDEEFF": Throttler(1, 0.05),
+            "dlna_AABBCCDDEEFF": Throttler(1, 0.05),
+        }
+
+        # Link protocols to native player
+        native_player._attr_linked_protocols.extend(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                OutputProtocol(
+                    output_protocol_id="dlna_AABBCCDDEEFF",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=30,
+                ),
+            ]
+        )
+
+        # Select protocol
+        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+
+        # Should select AirPlay player (even though DLNA has lower priority value),
+        # because user preference overrides priority
+        assert selected_player == airplay_player
+        assert protocol_id == "airplay_AABBCCDDEEFF"
+
+    def test_fallback_to_native_when_auto(self, mock_mass):
+        """Test that native playback is used when preference is auto."""
+        # Mock config to return "auto" as preferred
+        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sonos", mass=mock_mass)
+
+        native_player = MockPlayer(
+            provider,
+            "sonos_123",
+            "Kantoor",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        controller._players = {"sonos_123": native_player}
+        controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
+
+        # Select protocol with auto preference
+        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+
+        # Should select native player
+        assert selected_player == native_player
+        assert protocol_id == "native"
