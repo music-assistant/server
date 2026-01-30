@@ -469,7 +469,6 @@ class SonosPlayer(Player):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
-        self.logger.debug("enqueue_next_media(%s)", media)
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
