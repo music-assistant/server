@@ -355,7 +355,8 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
-        Performs case-insensitive matching against both the player's name and display_name.
+        Performs case-insensitive matching against the player's state name
+        (the final name visible in clients and API).
         If multiple players match, logs a warning and returns the first match.
 
         :param name: Name of the player.
@@ -365,9 +366,7 @@ class PlayerController(CoreController):
         matches: list[Player] = []
 
         for player in self._players.values():
-            if (
-                player.name and player.name.strip().lower() == name_normalized
-            ) or player.display_name.strip().lower() == name_normalized:
+            if player.state.name.strip().lower() == name_normalized:
                 matches.append(player)
 
         if not matches:
