@@ -203,7 +203,7 @@ class StreamsController(CoreController):
                 "If you run Music Assistant on a capable device with enough memory, "
                 "enabling this option is strongly recommended.",
                 required=False,
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
@@ -214,7 +214,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
@@ -225,7 +225,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -233,7 +233,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for radio streams",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -241,7 +241,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for tracks",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
@@ -250,7 +250,7 @@ class StreamsController(CoreController):
                 label="Allow crossfade between tracks from the same album",
                 description="Enabling this option allows for crossfading between tracks "
                 "that are part of the same album.",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,

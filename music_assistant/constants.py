@@ -183,7 +183,7 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
@@ -212,7 +212,7 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
@@ -223,7 +223,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     label="Enable volume normalization",
     default_value=True,
     description="Enable volume normalization (EBU-R128 based)",
-    category="audio",
+    category="playback",
     requires_reload=True,
 )
 
@@ -235,7 +235,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
-    category="audio",
+    category="playback",
     advanced=True,
     requires_reload=True,
 )
@@ -246,7 +246,7 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
     label="Enable limiting to prevent clipping",
     default_value=True,
     description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
-    category="audio",
+    category="playback",
     advanced=True,
     requires_reload=True,
 )
@@ -267,7 +267,7 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     " between tracks.\n"
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",
-    category="audio",
+    category="playback",
     requires_reload=True,
 )
 
@@ -281,7 +281,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="standard_crossfade",
-    category="audio",
+    category="playback",
     advanced=True,
     requires_reload=True,
 )
@@ -304,7 +304,7 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     "Some players however do not support FLAC and require the stream to be packed "
     "into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n "
     "Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
@@ -342,7 +342,7 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     description="If this player is playing audio synced with other players "
     "and you always hear the audio too early or late on this player, "
     "you can shift the audio a bit.",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
@@ -444,7 +444,7 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     default_value=[f"44100{MULTI_VALUE_SPLITTER}16", f"48000{MULTI_VALUE_SPLITTER}16"],
     required=True,
     label="Sample rates supported by this player",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     description="The sample rates (and bit depths) supported by this player.\n"
     "Content with unsupported sample rates will be automatically resampled.",
@@ -462,7 +462,7 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     ],
     default_value="no_content_length",
     label="HTTP Profile used for sending audio",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     description="This is considered to be a very advanced setting, only adjust this if needed, "
     "for example if your player stops playing halfway streams or if you experience "
@@ -508,7 +508,7 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
     depends_on_value_not=False,
     default_value="disabled",
     label="Try to inject metadata into stream (ICY)",
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     description="Try to inject metadata into the stream (ICY) to show track info on the player, "
     "even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by "
@@ -546,7 +546,7 @@ CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     "Only enable this option if your player actually support this, otherwise you may "
     "experience audio glitches during transitioning between tracks.",
     default_value=False,
-    category="audio",
+    category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
