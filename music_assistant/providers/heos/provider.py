@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 class HeosPlayerProvider(PlayerProvider):
     """Player provided for Denon HEOS."""
 
-    _heos: Heos
+    _heos: Heos | None = None
     _music_source_list: list[PlayerSource] = []
     _input_source_list: list[MediaItem] = []
     _player_discovery_running: bool = False
@@ -44,15 +44,18 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
+        self.logger.debug("Attempting HEOS controller setup on IP %s", controller_ip)
         self._heos = Heos(HeosOptions(controller_ip, auto_reconnect=True, auto_failover=True))
 
         try:
             await self._heos.connect()
 
+            self.logger.debug("HEOS controller connected, checking preferred setup")
             system_info = await self._heos.get_system_info()
             preferred_ips: list[str] | None = [
                 host.ip_address for host in system_info.preferred_hosts if host.ip_address
             ]
+
             if preferred_ips and controller_ip not in preferred_ips:
                 if connect_preferred:
                     await self._heos.disconnect()
@@ -94,6 +97,8 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def _populate_sources(self) -> None:
         """Build source list based on data from controller."""
+        if not self._heos:
+            return
         self._input_source_list = list(await self._heos.get_input_sources())
 
         music_sources = await self._heos.get_music_sources()
@@ -120,8 +125,9 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        self._heos.dispatcher.disconnect_all()  # Remove all event connections
-        await self._heos.disconnect()
+        if self._heos:
+            self._heos.dispatcher.disconnect_all()  # Remove all event connections
+            await self._heos.disconnect()
 
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
@@ -163,22 +169,25 @@ class HeosPlayerProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Discovery via mdns."""
-        self.logger.info("Discovered HEOS device %s via mDNS with info: %s", name, info)
+        if state_change == ServiceStateChange.Removed:
+            return
+
+        if not info:
+            return
+
         if self._heos or self._controller_discovery_running:
+            self.logger.debug("Ignoring mDNS configuration because we're already set up")
             # We're already set up or in the process of setting up
             return
 
-        if state_change == ServiceStateChange.Removed:
-            return
-        if info is None:
+        device_ip = get_primary_ip_address_from_zeroconf(info)
+        if not device_ip:
+            self.logger.debug("Ignoring incomplete mdns discovery for HEOS player: %s", name)
             return
 
-        device_ip = get_primary_ip_address_from_zeroconf(info)
-        if device_ip is None:
-            return
+        self.logger.debug("Discovered HEOS device %s on %s", name, device_ip)
 
         self._controller_discovery_running = True
-
         try:
             await self._setup_controller(device_ip, True)
         except SetupFailedError:
