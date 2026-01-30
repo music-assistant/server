@@ -549,7 +549,7 @@ class ConfigController:
             # note that we only check for missing players in the player controller,
             # and we do allow players that are temporary unavailable (player.available = false)
             # because this can also mean that the player needs additional configuration
-            # such as airplay devices that are need pairing.
+            # such as airplay devices that need pairing.
             player = self.mass.players.get(raw_conf["player_id"], False)
             if not include_unavailable and player is None and raw_conf.get("enabled", True):
                 continue
