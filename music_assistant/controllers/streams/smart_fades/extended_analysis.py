@@ -13,7 +13,6 @@ import librosa
 import numpy as np
 import numpy.typing as npt
 from scipy.signal import find_peaks
-from scipy.spatial.distance import cosine
 
 from music_assistant.models.smart_fades import (
     ExtendedSmartFadesAnalysis,
@@ -43,9 +42,9 @@ PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 
 # Number of initial beats to skip when estimating downbeat phase.
 # Based on OBTAIN paper's 5-second transient period where tempo estimation
-# is unreliable. Intros often have atypical rhythmic patterns that skew
-# phase detection. 8 beats ≈ 4 bars ≈ 7.5 seconds at 128 BPM.
-SKIP_INITIAL_BEATS = 8
+# Don't skip intro beats - the first drop is often the most reliable phase anchor.
+# Energy transitions handle intros by detecting where the main pattern kicks in.
+SKIP_INITIAL_BEATS = 0
 
 
 class ExtendedAnalysisProcessor:
@@ -406,17 +405,46 @@ class ExtendedAnalysisProcessor:
             best_offset,
         )
 
-        # Select every 4th beat starting from best_offset
-        # NOTE: +1 beat correction disabled for testing against Harmonix ground truth
-        # Apply +1 beat correction: acoustic features tend to detect the anticipation beat (beat 4)
-        # rather than the actual downbeat (beat 1). Shifting by 1 corrects this.
-        # corrected_offset = (best_offset + 1) % 4
-        corrected_offset = best_offset  # Use raw offset without correction
+        # Check for early energy transition - if there's a clear drop in the first 10 seconds,
+        # use it as a hard anchor since the first drop almost always falls on beat 1
+        early_anchor_offset = None
+        if energy_transitions:
+            first_trans = energy_transitions[0]
+            if first_trans < 10.0:  # First transition within 10 seconds
+                # Find which beat index this transition is at
+                beat_dists = np.abs(beats - first_trans)
+                nearest_beat_idx = int(np.argmin(beat_dists))
+                early_anchor_offset = nearest_beat_idx % 4
+                self.logger.debug(
+                    "Early energy transition at %.2fs (beat %d) -> anchor offset=%d",
+                    first_trans,
+                    nearest_beat_idx,
+                    early_anchor_offset,
+                )
 
-        self.logger.debug(
-            "Using raw offset (no +1 correction): %d",
-            corrected_offset,
-        )
+        # Use early anchor if available, otherwise use scored offset
+        if early_anchor_offset is not None:
+            corrected_offset = early_anchor_offset
+            self.logger.debug(
+                "Using early anchor offset=%d (overriding scored offset=%d)",
+                corrected_offset,
+                best_offset,
+            )
+        else:
+            corrected_offset = best_offset
+
+        # Debug: log energy transition alignment details
+        if energy_transitions:
+            trans_debug = []
+            for trans in energy_transitions[:5]:  # First 5 transitions
+                # Find which beat index this transition corresponds to
+                beat_dists = np.abs(beats - trans)
+                nearest_beat_idx = int(np.argmin(beat_dists))
+                phase_in_bar = nearest_beat_idx % 4
+                trans_debug.append(f"{trans:.2f}s->beat{nearest_beat_idx}(ph{phase_in_bar})")
+            self.logger.debug(
+                "Energy transitions (first 5 of %d): %s", len(energy_transitions), trans_debug
+            )
 
         return beats[corrected_offset::4]
 
@@ -450,7 +478,17 @@ class ExtendedAnalysisProcessor:
         window_beats = 4
         window_frames = int(window_beats * (60.0 / 120.0) * frames_per_second)  # Approximate
 
+        # Debounce: after detecting a transition, skip at least 1 bar (4 beats) to avoid
+        # detecting consecutive beats during energy ramp-up. We want the FIRST beat of a
+        # drop, not every beat after the drop.
+        min_gap_seconds = 1.5  # Minimum gap between transitions (~1 bar at 120 BPM)
+        last_transition_time = -min_gap_seconds
+
         for beat_time in beats:
+            # Skip if too close to last transition (debounce)
+            if beat_time - last_transition_time < min_gap_seconds:
+                continue
+
             frame_idx = int(beat_time * frames_per_second)
 
             if frame_idx < window_frames or frame_idx >= len(rms_flat) - window_frames:
@@ -465,84 +503,32 @@ class ExtendedAnalysisProcessor:
                 # Only major transitions (>50% energy increase)
                 if change_ratio > 0.5:
                     transitions.append(beat_time)
+                    last_transition_time = beat_time
 
         return transitions
-
-    def _compute_beat_sync_chroma(
-        self, chroma: npt.NDArray[np.float32], beat_frames: npt.NDArray[np.int64]
-    ) -> npt.NDArray[np.float32]:
-        """Aggregate chroma features over beat intervals (beat-synchronous chroma).
-
-        Instead of using single-frame chroma at beat positions (noisy), this
-        averages chroma over the entire beat interval. This captures the
-        harmonic content more reliably and is a key feature from MIR literature.
-
-        :param chroma: Chroma features, shape (12, n_frames).
-        :param beat_frames: Frame indices of beats.
-        :return: Beat-synchronous chroma, shape (n_beats-1, 12).
-        """
-        if len(beat_frames) < 2:
-            return np.zeros((0, 12), dtype=np.float32)
-
-        n_frames = chroma.shape[1] if chroma.ndim == 2 else len(chroma)
-        beat_chroma = []
-
-        for i in range(len(beat_frames) - 1):
-            start = beat_frames[i]
-            end = min(beat_frames[i + 1], n_frames)
-
-            if start < end and start < n_frames:
-                # Average chroma over the beat interval
-                interval_chroma = np.mean(chroma[:, start:end], axis=1)
-                beat_chroma.append(interval_chroma)
-            # Fallback to single frame if interval invalid
-            elif start < n_frames:
-                beat_chroma.append(chroma[:, start])
-            else:
-                beat_chroma.append(np.zeros(12, dtype=np.float32))
-
-        return np.array(beat_chroma, dtype=np.float32)
 
     def _compute_harmonic_novelty_at_beats(
         self, chroma: npt.NDArray[np.float32], beat_frames: npt.NDArray[np.int64]
     ) -> npt.NDArray[np.float32]:
-        """Compute harmonic novelty using beat-synchronous chroma and cosine distance.
+        """Compute harmonic novelty (chroma distance) between consecutive beats.
 
         This is a key phase-aware feature: chord changes cluster on beat 1,
         not beat 3. Beat 3 typically has the same chord as beat 1.
-
-        Uses beat-synchronous chroma (averaged over beat intervals) rather than
-        single-frame chroma for more robust chord change detection.
 
         :param chroma: Chroma features, shape (12, n_frames).
         :param beat_frames: Frame indices of beats.
         :return: Harmonic novelty at each beat position.
         """
-        # Get beat-synchronous chroma (shape: n_beats-1, 12)
-        beat_sync_chroma = self._compute_beat_sync_chroma(chroma, beat_frames)
-
-        if len(beat_sync_chroma) < 2:
-            return np.zeros(len(beat_frames), dtype=np.float32)
-
-        # Compute novelty as cosine distance between consecutive beats
-        # Result has length n_beats, with novelty[0] = 0 (no previous beat)
         novelty = np.zeros(len(beat_frames), dtype=np.float32)
 
-        for i in range(1, len(beat_sync_chroma)):
-            prev_chroma = beat_sync_chroma[i - 1]
-            curr_chroma = beat_sync_chroma[i]
+        for i in range(1, len(beat_frames)):
+            curr_frame = beat_frames[i]
+            prev_frame = beat_frames[i - 1]
 
-            # Handle zero vectors (silence)
-            prev_norm = np.linalg.norm(prev_chroma)
-            curr_norm = np.linalg.norm(curr_chroma)
-
-            if prev_norm > 1e-8 and curr_norm > 1e-8:
-                # Cosine distance: 0 = identical, 1 = orthogonal
-                # Higher novelty = more chord change
-                novelty[i + 1] = float(cosine(prev_chroma, curr_chroma))
-            else:
-                # If either beat is silent, no meaningful novelty
-                novelty[i + 1] = 0.0
+            if curr_frame < chroma.shape[1] and prev_frame < chroma.shape[1]:
+                # L2 distance between chroma vectors
+                diff = chroma[:, curr_frame] - chroma[:, prev_frame]
+                novelty[i] = float(np.linalg.norm(diff))
 
         return novelty
 
@@ -737,7 +723,8 @@ class ExtendedAnalysisProcessor:
         """Score how well candidate downbeats align with energy transitions.
 
         Energy transitions (beat drops) should align with beat 1 (downbeat).
-        This is a strong structural anchor for phase detection.
+        Early transitions (first drop/intro) are weighted more heavily as they're
+        the most reliable anchor for phase detection.
 
         :param beats: All beat times in seconds.
         :param energy_transitions: Times of major energy transitions.
@@ -754,19 +741,27 @@ class ExtendedAnalysisProcessor:
         if len(candidate_downbeats) == 0:
             return 1.0
 
-        # Count how many energy transitions align with candidate downbeats
-        alignments = 0
+        # Weight transitions by position - early transitions are more reliable anchors
+        # The first drop/intro almost always falls on beat 1 (downbeat)
+        total_weight = 0.0
+        weighted_alignments = 0.0
+
         for trans_time in energy_transitions:
+            # Early transitions get higher weight (exponential decay)
+            # First 10 seconds: weight ~3-5x, after 30 seconds: weight ~1x
+            position_weight = 1.0 + 4.0 * np.exp(-trans_time / 10.0)
+
             # Find closest candidate downbeat
             distances = np.abs(candidate_downbeats - trans_time)
             min_dist = float(np.min(distances))
             if min_dist < tolerance:
-                alignments += 1
+                weighted_alignments += position_weight
 
-        # Score: proportion of transitions that align
-        # Bonus: more alignments = more confident
-        if len(energy_transitions) > 0:
-            alignment_rate = alignments / len(energy_transitions)
+            total_weight += position_weight
+
+        # Score: weighted proportion of transitions that align
+        if total_weight > 0:
+            alignment_rate = weighted_alignments / total_weight
             # Scale so that good alignment gives scores > 1.0
             return 0.5 + alignment_rate  # Range: 0.5 to 1.5
         return 1.0
