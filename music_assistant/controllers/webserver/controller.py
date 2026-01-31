@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import inspect
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -575,7 +576,7 @@ class WebserverController(CoreController):
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             return web.json_response(result, dumps=json_dumps)
         except Exception as e:
