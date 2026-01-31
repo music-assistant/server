@@ -7,11 +7,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
+from aiomusiccast.capabilities import BinarySensor as MCBinarySensor
+from aiomusiccast.capabilities import BinarySetter as MCBinarySetter
+from aiomusiccast.capabilities import NumberSensor as MCNumberSensor
+from aiomusiccast.capabilities import NumberSetter as MCNumberSetter
+from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
+from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
-from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSoundMode, PlayerSource
+from music_assistant_models.player import (
+    DeviceInfo,
+    PlayerMedia,
+    PlayerOptionNumber,
+    PlayerOptionToggle,
+    PlayerSoundMode,
+    PlayerSource,
+)
 from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
@@ -99,6 +112,8 @@ class MusicCastPlayer(Player):
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.SELECT_SOUND_MODE,
+            PlayerFeature.PLAYER_OPTION,
         }
 
         self._attr_device_info = DeviceInfo(
@@ -136,15 +151,13 @@ class MusicCastPlayer(Player):
             )
 
         # SOUND MODES
-        if self.zone_device.sound_mode_list:
-            self._attr_supported_features.add(PlayerFeature.SELECT_SOUND_MODE)
-            for source_id in self.zone_device.sound_mode_list:
-                friendly_name = MC_SOUND_MODE_FRIENDLY_NAMES.get(source_id) or " ".join(
-                    [x.capitalize() for x in source_id.split("_")]
-                )
-                self._attr_sound_mode_list.append(
-                    PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
-                )
+        for source_id in self.zone_device.sound_mode_list:
+            friendly_name = MC_SOUND_MODE_FRIENDLY_NAMES.get(source_id) or " ".join(
+                [x.capitalize() for x in source_id.split("_")]
+            )
+            self._attr_sound_mode_list.append(
+                PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
+            )
 
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
@@ -307,6 +320,57 @@ class MusicCastPlayer(Player):
             self._attr_group_members = [
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
+
+        # PLAYER OPTIONS
+        # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
+        # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
+        # BinarySensor, TextSensor
+        # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
+        self._attr_player_option_list = []
+        for capability in cast(
+            "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
+            zone_data.capabilities,
+        ):
+            # ruff: noqa: E501 # line too long
+            if isinstance(capability, MCBinarySensor):
+                self._attr_player_option_list.append(
+                    PlayerOptionToggle(
+                        id=capability.id,
+                        name=capability.name,
+                        value=capability.current,
+                        passive=True,
+                    )
+                )
+            elif isinstance(capability, MCBinarySetter):
+                self._attr_player_option_list.append(
+                    PlayerOptionToggle(
+                        id=capability.id,
+                        name=capability.name,
+                        value=capability.current,
+                        passive=False,
+                    )
+                )
+            elif isinstance(capability, MCNumberSensor):
+                self._attr_player_option_list.append(
+                    PlayerOptionNumber(
+                        id=capability.id,
+                        name=capability.name,
+                        value=capability.current,
+                        passive=True,
+                    )
+                )
+            elif isinstance(capability, MCNumberSetter):
+                self._attr_player_option_list.append(
+                    PlayerOptionNumber(
+                        id=capability.id,
+                        name=capability.name,
+                        value=capability.current,
+                        passive=False,
+                        min_value=capability.value_range.minimum,
+                        max_value=capability.value_range.maximum,
+                        step=capability.value_range.step,
+                    )
+                )
 
         self.update_state()
 

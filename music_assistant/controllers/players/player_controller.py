@@ -989,7 +989,7 @@ class PlayerController(CoreController):
     @api_command("players/cmd/set_player_option")
     @handle_player_command
     async def set_player_option(
-        self, player_id: str, option_id: str, option_value: float | bool | str
+        self, player_id: str, option_id: str, option_value: int | bool | str
     ) -> None:
         """
         Handle SET_PLAYER_OPTION command on given player.
