@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import socket
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 
 def get_local_ip() -> str:

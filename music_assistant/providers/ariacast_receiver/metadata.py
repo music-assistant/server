@@ -22,7 +22,7 @@ class MetadataHandler:
 
     def update(self, metadata: dict[str, Any]) -> None:
         """Update current metadata with new values.
-        
+
         Args:
             metadata: Dictionary containing metadata updates
         """
@@ -31,15 +31,23 @@ class MetadataHandler:
             "durationMs": "duration_ms",
             "positionMs": "position_ms",
             "artworkUrl": "artwork_url",
-            "isPlaying": "is_playing"
+            "isPlaying": "is_playing",
         }
-        
+
         # Merge mapped keys into metadata (preferring existing snake_case if present)
         for camel, snake in key_mapping.items():
             if camel in metadata and snake not in metadata:
                 metadata[snake] = metadata[camel]
 
-        for key in ["title", "artist", "album", "artwork_url", "duration_ms", "position_ms", "is_playing"]:
+        for key in [
+            "title",
+            "artist",
+            "album",
+            "artwork_url",
+            "duration_ms",
+            "position_ms",
+            "is_playing",
+        ]:
             if key in metadata and metadata[key] is not None:
                 self.current_metadata[key] = metadata[key]
 
@@ -57,7 +65,7 @@ class MetadataHandler:
 
     def get(self) -> dict[str, Any]:
         """Get current metadata.
-        
+
         Returns:
             Dictionary containing current metadata
         """
