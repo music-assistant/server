@@ -4,6 +4,7 @@ import pathlib
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
+from music_assistant.helpers.tags import split_artists
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
@@ -103,3 +104,22 @@ async def test_parse_metadata_from_invalid_filename() -> None:
     assert _tags.musicbrainz_artistids == ()
     assert _tags.musicbrainz_releasegroupid is None
     assert _tags.musicbrainz_recordingid is None
+
+
+def test_split_artists_with_mixed_separators() -> None:
+    """Test splitting artists with mixed comma and ampersand separators."""
+    # Mixed comma and ampersand should split into 3 artists
+    result = split_artists("Shabson, Krgovich & Harris", allow_extra_splitters=True)
+    assert result == ("Shabson", "Krgovich", "Harris")
+
+    # Only ampersands should also work
+    result = split_artists("Shabson & Krgovich & Harris", allow_extra_splitters=True)
+    assert result == ("Shabson", "Krgovich", "Harris")
+
+    # Only commas should also work
+    result = split_artists("Shabson, Krgovich, Harris", allow_extra_splitters=True)
+    assert result == ("Shabson", "Krgovich", "Harris")
+
+    # Without extra splitters, ampersand should not split
+    result = split_artists("Shabson & Krgovich", allow_extra_splitters=False)
+    assert result == ("Shabson & Krgovich",)
