@@ -3,6 +3,7 @@
 import asyncio
 import time
 from collections.abc import Callable, Coroutine
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -643,6 +644,41 @@ class MusicCastPlayer(Player):
     async def select_sound_mode(self, sound_mode: str) -> None:
         """Select sound Mode Command."""
         await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
+
+    async def set_player_option(self, option_id: str, option_value: int | bool | str) -> None:
+        """Set player option."""
+        if self.zone_device.zone_data is None:
+            return
+        for capability in cast(
+            "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
+            self.zone_device.zone_data.capabilities,
+        ):
+            # ruff: noqa: E501 # line too long
+            if str(capability.id) != option_id:
+                continue
+            if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
+                self.logger.error(f"Option {capability.name} is read only!")
+                return
+            if isinstance(capability, MCBinarySetter):
+                await capability.set(bool(option_value))
+            elif isinstance(capability, MCNumberSetter):
+                min_value = capability.value_range.minimum
+                max_value = capability.value_range.maximum
+                if not min_value <= int(option_value) <= max_value:
+                    self.logger.error(
+                        f"Option {capability.name} has numeric range of {min_value} <= value <= {max_value}"
+                    )
+                    return
+                await capability.set(int(option_value))
+            elif isinstance(capability, MCOptionSetter):
+                _option_value: str | int = option_value  # we may have an int in aiomusiccast as key
+                with suppress(ValueError):
+                    _option_value = int(_option_value)
+                if _option_value not in capability.options:
+                    self.logger.error(f"Option {_option_value} is not allowed for {option_id}")
+                    return
+                await capability.set(_option_value)
+            break
 
     async def ungroup(self) -> None:
         """Ungroup command."""
