@@ -1012,9 +1012,9 @@ class PlayerController(CoreController):
         if prev_player_option.value == option_value:
             return
 
-        if prev_player_option.passive:
+        if prev_player_option.read_only:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support option {option_id} to be set."
+                f"Player {player.display_name} option {option_id} is read-only"
             )
 
         # forward to player

@@ -21,11 +21,9 @@ from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerF
 from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
-    PlayerOptionChoice,
-    PlayerOptionChoices,
-    PlayerOptionNumber,
-    PlayerOptionText,
-    PlayerOptionToggle,
+    PlayerOption,
+    PlayerOptionEntry,
+    PlayerOptionType,
     PlayerSoundMode,
     PlayerSource,
 )
@@ -339,38 +337,42 @@ class MusicCastPlayer(Player):
             # ruff: noqa: E501 # line too long
             if isinstance(capability, MCBinarySensor):
                 self._attr_player_option_list.append(
-                    PlayerOptionToggle(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.SWITCH,
+                        read_only=True,
                         value=capability.current,
-                        passive=True,
                     )
                 )
             elif isinstance(capability, MCBinarySetter):
                 self._attr_player_option_list.append(
-                    PlayerOptionToggle(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.SWITCH,
                         value=capability.current,
-                        passive=False,
+                        read_only=False,
                     )
                 )
             elif isinstance(capability, MCNumberSensor):
                 self._attr_player_option_list.append(
-                    PlayerOptionNumber(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.NUMBER,
                         value=capability.current,
-                        passive=True,
+                        read_only=True,
                     )
                 )
             elif isinstance(capability, MCNumberSetter):
                 self._attr_player_option_list.append(
-                    PlayerOptionNumber(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.NUMBER,
                         value=capability.current,
-                        passive=False,
+                        read_only=False,
                         min_value=capability.value_range.minimum,
                         max_value=capability.value_range.maximum,
                         step=capability.value_range.step,
@@ -378,31 +380,33 @@ class MusicCastPlayer(Player):
                 )
             elif isinstance(capability, MCTextSensor):
                 self._attr_player_option_list.append(
-                    PlayerOptionText(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.TEXT,
                         value=capability.current,
-                        passive=True,
+                        read_only=True,
                     )
                 )
             elif isinstance(capability, MCOptionSetter):
-                choices = []
+                options = []
                 for option_id, option_name in capability.options.items():
-                    choices.append(
-                        PlayerOptionChoice(
+                    options.append(
+                        PlayerOptionEntry(
                             id=str(option_id),  # aiomusiccast allows str and int.
                             name=option_name,
                             value=str(option_id),
-                            passive=False,
+                            read_only=False,
                         )
                     )
                 self._attr_player_option_list.append(
-                    PlayerOptionChoices(
+                    PlayerOption(
                         id=capability.id,
                         name=capability.name,
+                        type=PlayerOptionType.OPTIONS,
                         value=str(capability.current),
-                        passive=False,
-                        choices=UniqueList(choices),
+                        read_only=False,
+                        options=UniqueList(options),
                     )
                 )
 
