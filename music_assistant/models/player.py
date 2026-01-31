@@ -651,6 +651,21 @@ class Player(ABC):
                 return player.player_id
         return None
 
+    @property
+    def active_sound_mode(self) -> str | None:
+        """Return active sound mode of this player."""
+        return self._attr_active_sound_mode
+
+    @cached_property
+    def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
+        """Return available PlayerSoundModes for Player."""
+        return UniqueList(self._attr_sound_mode_list)
+
+    @cached_property
+    def player_option_list(self) -> UniqueList[PlayerOption]:
+        """Return all PlayerOptions for Player."""
+        return UniqueList(self._attr_player_option_list)
+
     def _on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
@@ -817,24 +832,6 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         return self.__attr_source_list or UniqueList()
-
-    @property
-    @final
-    def active_sound_mode(self) -> str | None:
-        """Return active sound mode of this player."""
-        return self._attr_active_sound_mode
-
-    @cached_property
-    @final
-    def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
-        """Return available PlayerSoundModes for Player."""
-        return UniqueList(self._attr_sound_mode_list)
-
-    @cached_property
-    @final
-    def player_option_list(self) -> UniqueList[PlayerOption]:
-        """Return all PlayerOptions for Player."""
-        return UniqueList(self._attr_player_option_list)
 
     @cached_property
     @final
