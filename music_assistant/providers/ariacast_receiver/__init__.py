@@ -569,8 +569,16 @@ class AriaCastReceiverProvider(PluginProvider):
                 if msg.type == web.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        if data.get("type") == "update":
+                        # Accept both legacy "update" and "metadata" types from clients
+                        msg_type = data.get("type") if isinstance(data, dict) else None
+                        if msg_type in ("update", "metadata"):
                             metadata = data.get("data", {})
+                        else:
+                            # Not wrapped: accept dict with direct metadata fields
+                            metadata = data if isinstance(data, dict) else {}
+
+                        if metadata:
+                            self.logger.debug("Received metadata from %s: %s", peer, metadata)
                             self.metadata_handler.update(metadata)
                             self._update_source_metadata(metadata)
                             # Broadcast to all other metadata clients
@@ -615,6 +623,7 @@ class AriaCastReceiverProvider(PluginProvider):
             if metadata:
                 self.metadata_handler.update(metadata)
                 self._update_source_metadata(metadata)
+                # Broadcast using the canonical message type 'metadata'
                 await self._broadcast_metadata(metadata)
 
             return web.Response(status=200, text="OK")
@@ -713,9 +722,9 @@ class AriaCastReceiverProvider(PluginProvider):
         if not metadata:
             return
 
-        # Prepare message
+        # Prepare message (use canonical 'metadata' type for updates)
         message = {
-            "type": "update",
+            "type": "metadata",
             "data": metadata,
         }
 
@@ -724,6 +733,9 @@ class AriaCastReceiverProvider(PluginProvider):
             if client == exclude_ws:
                 continue
             try:
+                self.logger.debug(
+                    "Sending metadata to client %s: %s", getattr(client, "remote", None), metadata
+                )
                 await client.send_json(message)
             except Exception as e:
                 self.logger.debug("Failed to send metadata to client: %s", e)
