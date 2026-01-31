@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import struct
 import time
@@ -17,7 +18,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import web
+from aiohttp import ClientTimeout, web
 from music_assistant_models.config_entries import (ConfigEntry,
                                                    ConfigValueOption)
 from music_assistant_models.enums import (ConfigEntryType, ContentType,
@@ -233,8 +234,11 @@ class AriaCastReceiverProvider(PluginProvider):
             self.logger.debug("Server name changed from '%s' to '%s'", old_name, new_name)
             # Update the config
             self.server_config.SERVER_NAME = new_name
-            # Update source details
-            self._source_details.metadata.title = f"AriaCast | {new_name}"
+            # Update source details (ensure metadata exists)
+            if self._source_details.metadata is None:
+                self._source_details.metadata = StreamMetadata(title=f"AriaCast | {new_name}")
+            else:
+                self._source_details.metadata.title = f"AriaCast | {new_name}"
             # Trigger player update
             if self._source_details.in_use_by:
                 self.mass.players.trigger_player_update(self._source_details.in_use_by)
@@ -422,15 +426,17 @@ class AriaCastReceiverProvider(PluginProvider):
         
         # Send handshake
         try:
+            # Use a local typed reference to avoid optional attribute type issues
+            audio = cast(AudioConfig, self.server_config.AUDIO)
             # Combine READY status with legacy handshake parameters
             # This satisfies both new (waiting for READY) and old (waiting for params) clients
             handshake = {
                 "status": "READY",
                 "type": "handshake",
-                "sampleRate": self.server_config.AUDIO.SAMPLE_RATE,
-                "channels": self.server_config.AUDIO.CHANNELS,
-                "sampleWidth": self.server_config.AUDIO.SAMPLE_WIDTH,
-                "frameSize": self.server_config.AUDIO.FRAME_SIZE,
+                "sampleRate": audio.SAMPLE_RATE,
+                "channels": audio.CHANNELS,
+                "sampleWidth": audio.SAMPLE_WIDTH,
+                "frameSize": audio.FRAME_SIZE,
             }
             await ws.send_json(handshake)
         except Exception as e:
@@ -443,7 +449,7 @@ class AriaCastReceiverProvider(PluginProvider):
                 if msg.type == web.WSMsgType.BINARY:
                     # Receive audio frame
                     data = msg.data
-                    if len(data) == self.server_config.AUDIO.FRAME_SIZE:
+                    if len(data) == audio.FRAME_SIZE:
                         # Drop muted frames to avoid buffer buildup during silence
                         if not any(data):
                             continue
@@ -703,25 +709,28 @@ class AriaCastReceiverProvider(PluginProvider):
 
         has_changes = False
 
+        # Local reference (metadata guaranteed above)
+        meta = self._source_details.metadata
+
         # Update title
         if "title" in metadata and metadata["title"] is not None:
             new_title = str(metadata["title"])
-            if self._source_details.metadata.title != new_title:
-                self._source_details.metadata.title = new_title
+            if meta.title != new_title:
+                meta.title = new_title
                 has_changes = True
 
         # Update artist
         if "artist" in metadata and metadata["artist"] is not None:
             new_artist = str(metadata["artist"])
-            if self._source_details.metadata.artist != new_artist:
-                self._source_details.metadata.artist = new_artist
+            if meta.artist != new_artist:
+                meta.artist = new_artist
                 has_changes = True
 
         # Update album
         if "album" in metadata and metadata["album"] is not None:
             new_album = str(metadata["album"])
-            if self._source_details.metadata.album != new_album:
-                self._source_details.metadata.album = new_album
+            if meta.album != new_album:
+                meta.album = new_album
                 has_changes = True
 
         # Update artwork - download and store like AirPlay does
@@ -732,25 +741,25 @@ class AriaCastReceiverProvider(PluginProvider):
             self.mass.create_task(self._download_artwork(artwork_url))
 
 
-        # Update duration
+        # Update duration (store seconds as int to match model types)
         duration = metadata.get("duration_ms") or metadata.get("durationMs")
         if duration is not None:
             try:
-                new_duration = int(duration) / 1000
-                if self._source_details.metadata.duration != new_duration:
-                    self._source_details.metadata.duration = new_duration
+                new_duration = int(int(duration) / 1000)
+                if meta.duration != new_duration:
+                    meta.duration = new_duration
                     has_changes = True
             except (ValueError, TypeError):
                 pass
 
-        # Update position/elapsed time
+        # Update position/elapsed time (store seconds as int)
         position = metadata.get("position_ms") or metadata.get("positionMs")
         if position is not None:
             try:
-                new_position = int(position) / 1000
+                new_position = int(int(position) / 1000)
                 # Always update position as it changes constantly
-                self._source_details.metadata.elapsed_time = new_position
-                self._source_details.metadata.elapsed_time_last_updated = time.time()
+                meta.elapsed_time = new_position
+                meta.elapsed_time_last_updated = int(time.time())
                 has_changes = True
             except (ValueError, TypeError):
                 pass
@@ -771,7 +780,7 @@ class AriaCastReceiverProvider(PluginProvider):
         try:
             
             # Download the image
-            async with self.mass.http_session.get(artwork_url, timeout=10) as response:
+            async with self.mass.http_session.get(artwork_url, timeout=ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     self._artwork_bytes = await response.read()
                     self._artwork_timestamp = int(time.time() * 1000)
@@ -784,8 +793,12 @@ class AriaCastReceiverProvider(PluginProvider):
                         remotely_accessible=False,
                     )
                     base_url = self.mass.metadata.get_image_url(image)
+                    # Ensure metadata exists
+                    if self._source_details.metadata is None:
+                        self._source_details.metadata = StreamMetadata(title=f"AriaCast | {self.name}")
+                    meta = self._source_details.metadata
                     # Add timestamp for cache-busting
-                    self._source_details.metadata.image_url = f"{base_url}&t={self._artwork_timestamp}"
+                    meta.image_url = f"{base_url}&t={self._artwork_timestamp}"
                     
                     # Trigger player update to show new artwork
                     if self._source_details.in_use_by:
@@ -844,39 +857,46 @@ class AriaCastReceiverProvider(PluginProvider):
 class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     """UDP discovery protocol handler."""
 
-    def __init__(self, config: ServerConfig, logger) -> None:
+    def __init__(self, config: ServerConfig, logger: "logging.Logger") -> None:
         """Initialize the protocol."""
         self.config = config
         self.logger = logger
-        self.transport = None
+        self.transport: asyncio.DatagramTransport | None = None
 
-    def connection_made(self, transport):
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Handle connection made."""
-        self.transport = transport
-        # Enable socket reuse and broadcast
-        sock = transport.get_extra_info('socket')
-        if sock:
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            except Exception as e:
-                self.logger.debug("Failed to set socket options: %s", e)
+        # Only store/operate on DatagramTransport instances; widen signature to BaseTransport
+        if isinstance(transport, asyncio.DatagramTransport):
+            self.transport = transport
+            # Enable socket reuse and broadcast
+            sock = transport.get_extra_info('socket')
+            if sock:
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                except Exception as e:
+                    self.logger.debug("Failed to set socket options: %s", e)
+        else:
+            # Keep transport None if not a datagram transport
+            self.transport = None
 
-    def datagram_received(self, data: bytes, addr):
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle discovery request."""
         try:
             message = data.decode("utf-8").strip()
             if message == "DISCOVER_AUDIOCAST":
                 local_ip = self._get_local_ip()
+                audio = cast(AudioConfig, self.config.AUDIO)
                 response = {
                     "server_name": self.config.SERVER_NAME,
                     "ip": local_ip,
                     "port": self.config.STREAMING_PORT,
-                    "samplerate": self.config.AUDIO.SAMPLE_RATE,
-                    "channels": self.config.AUDIO.CHANNELS,
+                    "samplerate": audio.SAMPLE_RATE,
+                    "channels": audio.CHANNELS,
                 }
-                self.transport.sendto(json.dumps(response).encode(), addr)
-                self.logger.debug("Sent discovery response to %s", addr)
+                if self.transport:
+                    self.transport.sendto(json.dumps(response).encode(), addr)
+                    self.logger.debug("Sent discovery response to %s", addr)
         except Exception as e:
             self.logger.debug("Error handling discovery request: %s", e)
     
@@ -886,8 +906,8 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
+            ip = str(s.getsockname()[0])
             s.close()
             return ip
-        except:
+        except Exception:
             return "127.0.0.1"

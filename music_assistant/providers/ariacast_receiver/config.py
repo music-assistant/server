@@ -29,7 +29,7 @@ class ServerConfig:
     HOST: str = "0.0.0.0"
     AUDIO: AudioConfig | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize default values after instantiation."""
         if self.CODECS is None:
             self.CODECS = ["PCM"]

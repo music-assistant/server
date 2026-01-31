@@ -16,6 +16,6 @@ def get_local_ip() -> str:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             # Connect to a remote address (doesn't actually send data)
             s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
+            return str(s.getsockname()[0])
     except Exception:
         return "127.0.0.1"
