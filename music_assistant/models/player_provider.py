@@ -19,16 +19,19 @@ class PlayerProvider(Provider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        await self.discover_players()
 
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # default implementation: trigger discovery - feel free to override
         task_id = f"discover_players_{self.instance_id}"
-        self.mass.call_later(5, self.discover_players, task_id=task_id)
+        self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
 
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""
+        # default implementation: unregister player from player controller
+        # which will also trigger an unload on the player instance
+        # feel free to override with a better implementation
+        self.mass.create_task(self.mass.players.unregister(player_id))
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""

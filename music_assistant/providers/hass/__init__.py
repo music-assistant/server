@@ -168,7 +168,7 @@ async def get_config_entries(
                 "'authenticate' button to generate a token for you with logging in.",
                 depends_on=CONF_URL,
                 value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
-                category="advanced",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VERIFY_SSL,
@@ -176,7 +176,7 @@ async def get_config_entries(
                 label="Verify SSL",
                 required=False,
                 description="Whether or not to verify the certificate of SSL/TLS connections.",
-                category="advanced",
+                advanced=True,
                 default_value=True,
             ),
         )

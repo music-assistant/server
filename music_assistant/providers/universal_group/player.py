@@ -24,7 +24,6 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
@@ -85,6 +84,11 @@ class UniversalGroupPlayer(GroupPlayer):
         }
         self._set_attributes()
 
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
@@ -108,8 +112,6 @@ class UniversalGroupPlayer(GroupPlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
-            # default entries for player groups
-            *await super().get_config_entries(action=action, values=values),
             # add universal group specific entries
             CONFIG_ENTRY_UGP_NOTE,
             ConfigEntry(
@@ -135,7 +137,6 @@ class UniversalGroupPlayer(GroupPlayer):
                 required=False,
             ),
             CONF_ENTRY_SAMPLE_RATES_UGP,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
         ]
 
     async def stop(self) -> None:

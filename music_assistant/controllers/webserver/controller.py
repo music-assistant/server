@@ -98,8 +98,8 @@ class WebserverController(CoreController):
 
     @property
     def base_url(self) -> str:
-        """Return the base_url for the streamserver."""
-        return self._server.base_url
+        """Return the base_url for the webserver."""
+        return str(self.config.get_value(CONF_BASE_URL)).removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -131,6 +131,7 @@ class WebserverController(CoreController):
                 label="Allow User Self-Registration",
                 description="Allow users to create accounts via Home Assistant OAuth.",
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -140,6 +141,7 @@ class WebserverController(CoreController):
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
                 "the webserver behind a reverse proxy.",
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -147,6 +149,7 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key="webserver_warn",
@@ -169,6 +172,7 @@ class WebserverController(CoreController):
                 label="Enable SSL/TLS",
                 description="Enable HTTPS by providing an SSL certificate and private key. \n"
                 "This encrypts all communication with the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
@@ -181,6 +185,7 @@ class WebserverController(CoreController):
                 "Both RSA and ECDSA certificates are supported.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_PRIVATE_KEY,
@@ -193,6 +198,7 @@ class WebserverController(CoreController):
                 "This is securely encrypted and stored.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ACTION_VERIFY_SSL,
@@ -226,7 +232,9 @@ class WebserverController(CoreController):
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
         )
 
@@ -412,6 +420,49 @@ class WebserverController(CoreController):
                     client._authenticated_user.username,
                 )
                 client._cancel()
+
+    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on websocket clients for a specific user.
+
+        This is called by the sendspin proxy when a client connects, allowing
+        the player controller to auto-whitelist the player for that user's session.
+
+        :param user_id: The user ID to set the sendspin player for.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._authenticated_user and client._authenticated_user.user_id == user_id:
+                client._sendspin_player_id = player_id
+                self.logger.debug(
+                    "Set sendspin player %s for websocket client of user %s",
+                    player_id,
+                    client._authenticated_user.username,
+                )
+
+    def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on a websocket client for a WebRTC session.
+
+        This is called by the WebRTC gateway when it extracts the client_id from
+        the sendspin auth message, allowing auto-whitelisting of the player.
+
+        :param session_id: The WebRTC session ID.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._webrtc_session_id == session_id:
+                client._sendspin_player_id = player_id
+                username = (
+                    client._authenticated_user.username
+                    if client._authenticated_user
+                    else "unauthenticated"
+                )
+                self.logger.debug(
+                    "Set sendspin player %s for WebRTC session %s (user: %s)",
+                    player_id,
+                    session_id,
+                    username,
+                )
+                return
 
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""

@@ -27,7 +27,12 @@ from music_assistant_models.errors import (
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
-from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
+from .helpers.auth_middleware import (
+    is_request_from_ingress,
+    set_current_token,
+    set_current_user,
+    set_sendspin_player_id,
+)
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
@@ -57,8 +62,11 @@ class WebsocketClientHandler:
         )
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
+        self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # Track WebRTC session ID if this is a WebRTC gateway connection
+        self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -194,9 +202,10 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user and token in context for API methods
+            # Set user, token, and sendspin player in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
+            set_sendspin_player_id(self._sendspin_player_id)
 
             # Check role if required
             if handler.required_role == "admin":
@@ -432,6 +441,7 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in self._authenticated_user.player_filter
+                and event.object_id != self._sendspin_player_id
             ):
                 return
 

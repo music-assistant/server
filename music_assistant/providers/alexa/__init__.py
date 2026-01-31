@@ -21,14 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_DEPRECATED_CROSSFADE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -283,6 +276,11 @@ class AlexaPlayer(Player):
         self._attr_available = True
 
     @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
+    @property
     def api(self) -> AlexaAPI:
         """Get the AlexaAPI instance for this player."""
         provider = cast("AlexaProvider", self.provider)
@@ -378,21 +376,6 @@ class AlexaPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_current_media = media
         self.update_state()
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
 
 
 class AlexaProvider(PlayerProvider):

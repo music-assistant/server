@@ -100,14 +100,16 @@ class SyncGroupPlayer(GroupPlayer):
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
         # Config is only available after the player was registered
+        self._cache.clear()  # clear to prevent loading old is_dynamic
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        self._attr_static_group_members = static_members.copy()
-        if not self.powered:
-            self._attr_group_members = static_members.copy()
         if self.is_dynamic:
+            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
+            self._attr_static_group_members = static_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        if not self.powered:
+            self._attr_group_members = static_members.copy()
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -132,16 +134,11 @@ class SyncGroupPlayer(GroupPlayer):
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
         return PlaybackState.IDLE
 
-    @cached_property
-    def flow_mode(self) -> bool:
-        """
-        Return if the player needs flow mode.
-
-        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
-        or has a flow mode config entry set to True.
-        """
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player needs flow mode."""
         if leader := self.sync_leader:
-            return leader.flow_mode
+            return leader.requires_flow_mode
         return False
 
     @property
@@ -192,9 +189,7 @@ class SyncGroupPlayer(GroupPlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries: list[ConfigEntry] = [
-            # default entries for player groups
-            *await super().get_config_entries(action=action, values=values),
-            # add syncgroup specific entries
+            # syncgroup specific entries
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
@@ -572,6 +567,7 @@ class SyncGroupController:
         self.mass.config.create_default_player_config(
             player_id=player_id,
             provider=provider.instance_id,
+            player_type=PlayerType.GROUP,
             name=name,
             enabled=True,
             values={
