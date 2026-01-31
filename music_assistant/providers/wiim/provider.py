@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from pywiim import WiiMClient, discover_devices
+from pywiim import WiiMClient
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.models.player_provider import PlayerProvider
@@ -30,10 +30,10 @@ class WiimProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         self.logger.info("WiimProvider loaded")
 
-        asdf = await discover_devices()
+        # asdf = await discover_devices()
 
-        for d in asdf:
-            self.logger.info("Found one %s", d)
+        # for d in asdf:
+        #     self.logger.info("Found one %s", d)
 
         manual_ip_config: list[str] = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)

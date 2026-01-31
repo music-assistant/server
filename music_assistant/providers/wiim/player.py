@@ -55,6 +55,8 @@ class WiimPlayer(Player):
             on_state_changed=self._update_ma_state_from_sdk_cache,
         )
 
+        await self.wiim_player.refresh()
+
         if self.wiim_player.uuid is None:
             raise RuntimeError("Could not get UUID from WiiM player")
 
