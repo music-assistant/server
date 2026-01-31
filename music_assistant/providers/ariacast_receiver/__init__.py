@@ -73,11 +73,16 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    _instance_id: str | None = None,
-    _action: str | None = None,
-    _values: dict[str, ConfigValueType] | None = None,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
+    # Keep parameters referenced so external callers can pass them by name
+    # and linters won't complain about unused args.
+    _ = instance_id
+    _ = action
+    _ = values
     return (
         CONF_ENTRY_WARN_PREVIEW,
         ConfigEntry(
