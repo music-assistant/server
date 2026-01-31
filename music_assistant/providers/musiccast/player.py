@@ -22,7 +22,7 @@ from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
     PlayerOption,
-    PlayerOptionEntry,
+    PlayerOptionChoice,
     PlayerOptionType,
     PlayerSoundMode,
     PlayerSource,
@@ -340,7 +340,7 @@ class MusicCastPlayer(Player):
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
-                        type=PlayerOptionType.SWITCH,
+                        type=PlayerOptionType.BOOLEAN,
                         read_only=True,
                         value=capability.current,
                     )
@@ -350,7 +350,7 @@ class MusicCastPlayer(Player):
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
-                        type=PlayerOptionType.SWITCH,
+                        type=PlayerOptionType.BOOLEAN,
                         value=capability.current,
                         read_only=False,
                     )
@@ -392,7 +392,7 @@ class MusicCastPlayer(Player):
                 options = []
                 for option_id, option_name in capability.options.items():
                     options.append(
-                        PlayerOptionEntry(
+                        PlayerOptionChoice(
                             id=str(option_id),  # aiomusiccast allows str and int.
                             name=option_name,
                             value=str(option_id),
@@ -403,10 +403,10 @@ class MusicCastPlayer(Player):
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
-                        type=PlayerOptionType.OPTIONS,
+                        type=PlayerOptionType.CHOICES,
                         value=str(capability.current),
                         read_only=False,
-                        options=UniqueList(options),
+                        choices=UniqueList(options),
                     )
                 )
 
