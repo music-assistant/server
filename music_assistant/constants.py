@@ -931,3 +931,12 @@ SOUNDTRACK_INDICATORS = [
 # for provider domains in this list, we won't show the default
 # http-streaming specific config options in player settings
 NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
+
+# Protocol priority values (lower = more preferred)
+PROTOCOL_PRIORITY: Final[dict[str, int]] = {
+    "sendspin": 10,
+    "squeezelite": 20,
+    "chromecast": 30,
+    "airplay": 40,
+    "dlna": 50,
+}

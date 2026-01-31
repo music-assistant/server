@@ -175,7 +175,8 @@ class DLNAPlayer(Player):
                 ):
                     self.force_poll = True
                     self.mass.create_task(self.poll())
-                    self.logger.debug(
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
                         "Received new state from event for Player %s: %s",
                         self.display_name,
                         state_variable.value,

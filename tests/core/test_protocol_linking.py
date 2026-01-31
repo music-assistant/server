@@ -59,6 +59,7 @@ class MockPlayer(Player):
         self._attr_available = True
         self._attr_powered = True
         self._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        self._attr_can_group_with = set()
 
         # Set up device info with identifiers
         self._attr_device_info = DeviceInfo(
@@ -68,6 +69,15 @@ class MockPlayer(Player):
         if identifiers:
             for conn_type, value in identifiers.items():
                 self._attr_device_info.add_identifier(conn_type, value)
+
+        # Clear cached properties after modifying attributes
+        self._cache.clear()
+
+    @property
+    def synced_to(self) -> str | None:
+        """Override to prevent recursion in tests."""
+        # In tests, we don't set up synced relationships, so just return None
+        return None
 
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
@@ -470,12 +480,12 @@ class TestCachedProtocolParentRestore:
         controller._try_link_protocol_to_native(protocol_player)
 
         # Verify protocol_parent_id was set
-        assert protocol_player._attr_protocol_parent_id == "native_player_id"
+        assert protocol_player.protocol_parent_id == "native_player_id"
 
         # Verify protocol was linked to native player
         assert any(
             link.output_protocol_id == protocol_player.player_id
-            for link in native_player._attr_linked_protocols
+            for link in native_player.linked_output_protocols
         )
 
     def test_protocol_parent_id_prevents_universal_player_creation(self, mock_mass):
@@ -506,7 +516,7 @@ class TestCachedProtocolParentRestore:
         controller._try_link_protocol_to_native(protocol_player)
 
         # Verify protocol_parent_id was set
-        assert protocol_player._attr_protocol_parent_id == "native_player_id"
+        assert protocol_player.protocol_parent_id == "native_player_id"
 
         # Since parent_id is set, delayed evaluation won't create a universal player
 
@@ -530,6 +540,9 @@ class TestSelectBestOutputProtocol:
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
         )
         native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        # Wire up mock_mass.players to controller
+        mock_mass.players = controller
 
         # Register players
         controller._players = {"sonos_123": native_player}
@@ -580,13 +593,15 @@ class TestSelectBestOutputProtocol:
         }
 
         # Link DLNA protocol to native player
-        native_player._attr_linked_protocols.append(
-            OutputProtocol(
-                output_protocol_id="dlna_AABBCCDDEEFF",
-                name="DLNA",
-                protocol_domain="dlna",
-                priority=30,
-            )
+        native_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="dlna_AABBCCDDEEFF",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=30,
+                )
+            ]
         )
 
         # Select protocol
@@ -647,7 +662,7 @@ class TestSelectBestOutputProtocol:
         }
 
         # Link protocols to native player
-        native_player._attr_linked_protocols.extend(
+        native_player.set_linked_output_protocols(
             [
                 OutputProtocol(
                     output_protocol_id="airplay_AABBCCDDEEFF",
@@ -697,3 +712,707 @@ class TestSelectBestOutputProtocol:
         # Should select native player
         assert selected_player == native_player
         assert protocol_id == "native"
+
+
+class TestPlayerGrouping:
+    """Tests for player grouping scenarios."""
+
+    def test_native_to_native_grouping(self, mock_mass):
+        """Test that native players from same provider can group together."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", mass=mock_mass)
+
+        # Create two Sonos players
+        player_a = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_a._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        player_a._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        player_a._attr_can_group_with = {"sonos_456"}
+        player_a._cache.clear()  # Clear cached properties after modifying attributes
+
+        player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        player_b._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        player_b._cache.clear()
+
+        controller._players = {
+            "sonos_123": player_a,
+            "sonos_456": player_b,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+        }
+
+        # Translate members for native grouping
+        protocol_members, native_members, _, _ = controller._translate_members_for_protocols(
+            parent_player=player_a,
+            player_ids=["sonos_456"],
+            parent_protocol_player=None,
+            parent_protocol_domain=None,
+        )
+
+        # Should use native grouping (same provider)
+        assert len(native_members) == 1
+        assert "sonos_456" in native_members
+        assert len(protocol_members) == 0
+
+    def test_protocol_to_protocol_grouping(self, mock_mass):
+        """Test that protocol players can group via shared protocol."""
+        controller = PlayerController(mock_mass)
+
+        # Create two players with AirPlay protocol support
+        sonos_provider = MockProvider("sonos", mass=mock_mass)
+        wiim_provider = MockProvider("wiim", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+
+        # Sonos player
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        # WiiM player
+        wiim_player = MockPlayer(
+            wiim_provider,
+            "wiim_456",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        wiim_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        wiim_player._cache.clear()
+
+        # AirPlay protocol players
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_wiim"}
+        sonos_airplay._cache.clear()
+
+        wiim_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_wiim",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # Link protocol players to native players
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+        wiim_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_wiim",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        controller._players = {
+            "sonos_123": sonos_player,
+            "wiim_456": wiim_player,
+            "airplay_sonos": sonos_airplay,
+            "airplay_wiim": wiim_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "wiim_456": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+            "airplay_wiim": Throttler(1, 0.05),
+        }
+
+        # Translate members for protocol grouping (via AirPlay)
+        protocol_members, native_members, protocol_player, _ = (
+            controller._translate_members_for_protocols(
+                parent_player=sonos_player,
+                player_ids=["wiim_456"],
+                parent_protocol_player=sonos_airplay,
+                parent_protocol_domain="airplay",
+            )
+        )
+
+        # Should use protocol grouping (AirPlay)
+        assert len(protocol_members) == 1
+        assert "airplay_wiim" in protocol_members
+        assert len(native_members) == 0
+        assert protocol_player == sonos_airplay
+
+    def test_hybrid_grouping(self, mock_mass):
+        """Test hybrid grouping: native + protocol players in same group."""
+        controller = PlayerController(mock_mass)
+
+        # Create Sonos players (native grouping capability)
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        sonos_a = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_a._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_a._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_a._attr_can_group_with = {"sonos_456"}
+        sonos_a._cache.clear()
+
+        sonos_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        sonos_b._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_b._cache.clear()
+
+        # Create WiiM player with AirPlay protocol
+        wiim_provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        wiim_player = MockPlayer(
+            wiim_provider,
+            "wiim_789",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        wiim_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        wiim_player._cache.clear()
+
+        # AirPlay protocol players
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_wiim"}
+        sonos_airplay._cache.clear()
+
+        wiim_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_wiim",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+
+        # Link AirPlay to Sonos A
+        sonos_a.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+        wiim_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_wiim",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+        wiim_player.set_active_output_protocol("airplay_wiim")
+        wiim_player.set_protocol_parent_id("airplay_wiim")
+
+        # Wire up mock_mass.players to controller so get_linked_protocol works
+        mock_mass.players = controller
+
+        controller._players = {
+            "sonos_123": sonos_a,
+            "sonos_456": sonos_b,
+            "wiim_789": wiim_player,
+            "airplay_sonos": sonos_airplay,
+            "airplay_wiim": wiim_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "wiim_789": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+            "airplay_wiim": Throttler(1, 0.05),
+        }
+
+        # Group Sonos B (native) + WiiM (via AirPlay) to Sonos A
+        protocol_members, native_members, _protocol_player, _ = (
+            controller._translate_members_for_protocols(
+                parent_player=sonos_a,
+                player_ids=["sonos_456", "wiim_789"],
+                parent_protocol_player=sonos_airplay,
+                parent_protocol_domain="airplay",
+            )
+        )
+
+        # Should have hybrid group: native Sonos B + protocol WiiM
+        assert len(native_members) == 1
+        assert "sonos_456" in native_members
+        assert len(protocol_members) == 1
+        assert "airplay_wiim" in protocol_members
+
+    def test_protocol_selection_requires_set_members(self, mock_mass):
+        """Test that only protocols with SET_MEMBERS support are selected for grouping."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", mass=mock_mass)
+        wiim_provider = MockProvider("wiim", mass=mock_mass)
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+
+        # Sonos player
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        # WiiM player
+        wiim_player = MockPlayer(
+            wiim_provider,
+            "wiim_456",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        wiim_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        wiim_player._cache.clear()
+
+        # DLNA protocol (does NOT support SET_MEMBERS)
+        sonos_dlna = MockPlayer(
+            dlna_provider,
+            "dlna_sonos",
+            "Living Room (DLNA)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        # Note: NO SET_MEMBERS feature
+
+        wiim_dlna = MockPlayer(
+            dlna_provider,
+            "dlna_wiim",
+            "Bedroom (DLNA)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # AirPlay protocol (DOES support SET_MEMBERS)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_wiim"}
+        sonos_airplay._cache.clear()
+
+        wiim_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_wiim",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # Link protocols (DLNA has lower priority than AirPlay)
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="dlna_sonos",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=30,  # Lower priority (higher number)
+                    available=True,
+                ),
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,  # Higher priority (lower number)
+                    available=True,
+                ),
+            ]
+        )
+        wiim_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="dlna_wiim",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=30,
+                    available=True,
+                ),
+                OutputProtocol(
+                    output_protocol_id="airplay_wiim",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                ),
+            ]
+        )
+
+        controller._players = {
+            "sonos_123": sonos_player,
+            "wiim_456": wiim_player,
+            "dlna_sonos": sonos_dlna,
+            "dlna_wiim": wiim_dlna,
+            "airplay_sonos": sonos_airplay,
+            "airplay_wiim": wiim_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "wiim_456": Throttler(1, 0.05),
+            "dlna_sonos": Throttler(1, 0.05),
+            "dlna_wiim": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+            "airplay_wiim": Throttler(1, 0.05),
+        }
+
+        # Translate members - should skip DLNA (no SET_MEMBERS) and select AirPlay
+        protocol_members, _native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=sonos_player,
+                player_ids=["wiim_456"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # Should select AirPlay (supports SET_MEMBERS) not DLNA
+        assert len(protocol_members) == 1
+        assert "airplay_wiim" in protocol_members
+        assert protocol_domain == "airplay"
+        assert protocol_player == sonos_airplay
+
+
+class TestCanGroupWith:
+    """Tests for can_group_with property with three scenarios."""
+
+    def test_scenario_1_native_active_only_native_players(self, mock_mass):
+        """Test Scenario 1: Native playback active -> only native players shown."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        # Create Sonos player with native and AirPlay support
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+        sonos_player._cache.clear()
+        sonos_player.set_active_output_protocol("native")
+
+        # Create another Sonos player
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # Create AirPlay protocol player
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_other"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        # Wire up mock_mass.players to controller so get_linked_protocol works
+        mock_mass.players = controller
+
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        # Get can_group_with while native is active
+        groupable = sonos_player.can_group_with
+
+        # Should only show native players (sonos_456), not AirPlay options
+        assert "sonos_456" in groupable
+        assert "airplay_other" not in groupable
+
+    def test_scenario_2_protocol_active_hybrid_groups(self, mock_mass):
+        """Test Scenario 2: Protocol active -> show that protocol + native players."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        # Create Sonos player with AirPlay active
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+        sonos_player._cache.clear()
+
+        # Create another Sonos player
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # Create AirPlay protocol player
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_other"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        # Create another device with AirPlay
+        wiim_player = MockPlayer(
+            sonos_provider,
+            "wiim_789",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+
+        airplay_other = MockPlayer(
+            airplay_provider,
+            "airplay_other",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        airplay_other.set_protocol_parent_id("wiim_789")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+        sonos_player.set_active_output_protocol("airplay_sonos")
+
+        # Wire up mock_mass.players to controller so get_linked_protocol works
+        mock_mass.players = controller
+
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "wiim_789": wiim_player,
+            "airplay_sonos": sonos_airplay,
+            "airplay_other": airplay_other,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "wiim_789": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+            "airplay_other": Throttler(1, 0.05),
+        }
+
+        # Get can_group_with while AirPlay is active
+        groupable = sonos_player.can_group_with
+
+        # Should show native players (sonos_456) + AirPlay players (wiim_789 via airplay_other)
+        assert "sonos_456" in groupable
+        assert "wiim_789" in groupable  # Via airplay_other protocol
+
+    def test_scenario_3_no_active_output_all_protocols_shown(self, mock_mass):
+        """Test Scenario 3: No active output -> show all compatible protocols + native."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+        dlna_provider = MockProvider("dlna", instance_id="dlna_instance", mass=mock_mass)
+
+        # Create Sonos player (no active protocol)
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+        sonos_player._cache.clear()
+        # No active output protocol set
+
+        # Create another Sonos player
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        # Create AirPlay protocol player (supports SET_MEMBERS)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_other"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        # Create DLNA protocol player (does NOT support SET_MEMBERS)
+        sonos_dlna = MockPlayer(
+            dlna_provider,
+            "dlna_sonos",
+            "Living Room (DLNA)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        # No SET_MEMBERS support
+        sonos_dlna._attr_can_group_with = {"dlna_other"}
+        sonos_dlna.set_protocol_parent_id("sonos_123")
+
+        # Another device
+        wiim_player = MockPlayer(
+            sonos_provider,
+            "wiim_789",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+
+        airplay_other = MockPlayer(
+            airplay_provider,
+            "airplay_other",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        airplay_other.set_protocol_parent_id("wiim_789")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                ),
+                OutputProtocol(
+                    output_protocol_id="dlna_sonos",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=30,
+                    available=True,
+                ),
+            ]
+        )
+
+        # Wire up mock_mass.players to controller so get_linked_protocol works
+        mock_mass.players = controller
+
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "wiim_789": wiim_player,
+            "airplay_sonos": sonos_airplay,
+            "airplay_other": airplay_other,
+            "dlna_sonos": sonos_dlna,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "wiim_789": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+            "airplay_other": Throttler(1, 0.05),
+            "dlna_sonos": Throttler(1, 0.05),
+        }
+
+        # Get can_group_with with no active protocol
+        groupable = sonos_player.can_group_with
+
+        # Should show native players + AirPlay players (supports SET_MEMBERS)
+        # but NOT DLNA players (no SET_MEMBERS support)
+        assert "sonos_456" in groupable
+        assert "wiim_789" in groupable  # Via AirPlay protocol
+        # DLNA players should not be shown since DLNA doesn't support SET_MEMBERS

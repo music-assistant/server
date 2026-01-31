@@ -1858,11 +1858,9 @@ class ConfigController:
         if len(output_protocols) <= 1:
             return all_entries
 
-        # Build options from available output protocols only
-        # First option is "auto" which selects the best available protocol
-        options: list[ConfigValueOption] = [
-            ConfigValueOption(title="Auto (best available)", value="auto"),
-        ]
+        # Build options from available output protocols, sorted by priority
+        options: list[ConfigValueOption] = []
+        default_value: str | None = None
 
         # Add each available output protocol as an option, sorted by priority
         for protocol in sorted(output_protocols, key=lambda p: p.priority):
@@ -1876,6 +1874,9 @@ class ConfigController:
                 title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
                 value = "native" if protocol.is_native else protocol.output_protocol_id
                 options.append(ConfigValueOption(title=title, value=value))
+                # First available protocol becomes the default (highest priority)
+                if default_value is None:
+                    default_value = str(value)
 
         all_entries.append(
             ConfigEntry(
@@ -1883,7 +1884,7 @@ class ConfigController:
                 type=ConfigEntryType.STRING,
                 label="Preferred Output Protocol",
                 description="Select the preferred protocol for audio playback to this device.",
-                default_value="auto",
+                default_value=default_value or "native",
                 required=True,
                 options=options,
                 category="protocol_general",

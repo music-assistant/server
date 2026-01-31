@@ -28,7 +28,6 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
-    PlayerFeature,
     ProviderFeature,
     QueueOption,
     RepeatMode,
@@ -67,6 +66,7 @@ from music_assistant.constants import (
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.players.controller import IN_QUEUE_COMMAND
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
@@ -693,9 +693,12 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-            # forward the actual command to the player
-            if temp_player := self.mass.players.get(queue_id):
-                await temp_player.stop()
+        # Set context to prevent circular call, then forward the actual command to the player
+        token = IN_QUEUE_COMMAND.set(True)
+        try:
+            await self.mass.players.cmd_stop(queue_id)
+        finally:
+            IN_QUEUE_COMMAND.reset(token)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -724,41 +727,43 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if queue := self._queues.get(queue_id):
-            if queue.state == PlaybackState.PLAYING:
-                queue.resume_pos = int(queue.corrected_elapsed_time)
-        # forward the actual command to the player controller
-        queue_player = self.mass.players.get(queue_id)
-        assert queue_player is not None  # for type checking
-        if not (self.mass.players.get_player_provider(queue_id)):
-            return  # guard
-
-        if PlayerFeature.PAUSE not in queue_player.supported_features:
-            # if player does not support pause, we need to send stop
-            await queue_player.stop()
+        if not (queue := self._queues.get(queue_id)):
             return
-        await queue_player.pause()
+        queue_active = queue.active
+        if queue.active and queue.state == PlaybackState.PLAYING:
+            queue.resume_pos = int(queue.corrected_elapsed_time)
+        # forward the actual command to the player controller
+        # Set context to prevent circular call, then forward the actual command to the player
+        token = IN_QUEUE_COMMAND.set(True)
+        try:
+            await self.mass.players.cmd_pause(queue_id)
+        finally:
+            IN_QUEUE_COMMAND.reset(token)
 
-        async def _watch_pause() -> None:
+        async def _watch_pause(player: Player) -> None:
             count = 0
             # wait for pause
-            while count < 5 and queue_player.playback_state == PlaybackState.PLAYING:
+            while count < 5 and player.playback_state == PlaybackState.PLAYING:
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
-            if queue_player.playback_state != PlaybackState.PAUSED:
+            if player.playback_state != PlaybackState.PAUSED:
                 return
             count = 0
-            while count < 30 and queue_player.playback_state == PlaybackState.PAUSED:
+            while count < 30 and player.playback_state == PlaybackState.PAUSED:
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
-            if queue_player.playback_state == PlaybackState.PAUSED:
-                await queue_player.stop()
+            if player.playback_state == PlaybackState.PAUSED:
+                await self.stop(queue_id)
 
         # we auto stop a player from paused when its paused for 30 seconds
-        if not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            self.mass.create_task(_watch_pause())
+        if (
+            queue_active
+            and (queue_player := self.mass.players.get(queue_id))
+            and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        ):
+            self.mass.create_task(_watch_pause(queue_player))
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
@@ -778,8 +783,7 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
-            # TODO: forward to underlying player if not active
-            return
+            raise InvalidCommand(f"Queue {queue_id} is not active")
         idx = self._queues[queue_id].current_index
         if idx is None:
             self.logger.warning("Queue %s has no current index", queue.display_name)
@@ -805,8 +809,7 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
-            # TODO: forward to underlying player if not active
-            return
+            raise InvalidCommand(f"Queue {queue_id} is not active")
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
@@ -825,8 +828,7 @@ class PlayerQueuesController(CoreController):
         - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
-            # TODO: forward to underlying player if not active
-            return
+            raise InvalidCommand(f"Queue {queue_id} is not active")
         await self.seek(queue_id, int(self._queues[queue_id].elapsed_time + seconds))
 
     @api_command("player_queues/seek")
@@ -836,8 +838,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
-        if not (queue := self.get(queue_id)):
-            return
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
         queue_player = self.mass.players.get(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")

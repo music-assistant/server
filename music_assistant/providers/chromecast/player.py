@@ -182,7 +182,7 @@ class ChromecastPlayer(Player):
         return sendspin_player
 
     @property
-    def supported_features(self) -> set[PlayerFeature]:
+    def _supported_features(self) -> set[PlayerFeature]:
         """Return the supported features for this player."""
         try:
             if self.sendspin_mode_enabled:

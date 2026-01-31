@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
+from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
@@ -121,27 +122,27 @@ class UniversalPlayer(Player):
         """Handle PLAY command."""
         # Delegate to active protocol player
         if (
-            self._attr_active_output_protocol
-            and self._attr_active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self._attr_active_output_protocol))
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get(self.active_output_protocol))
         ):
             await protocol_player.play()
 
     async def pause(self) -> None:
         """Handle PAUSE command."""
         if (
-            self._attr_active_output_protocol
-            and self._attr_active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self._attr_active_output_protocol))
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get(self.active_output_protocol))
         ):
             await protocol_player.pause()
 
     async def stop(self) -> None:
         """Handle STOP command."""
         if (
-            self._attr_active_output_protocol
-            and self._attr_active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self._attr_active_output_protocol))
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get(self.active_output_protocol))
         ):
             await protocol_player.stop()
         self._attr_current_media = None
@@ -156,9 +157,9 @@ class UniversalPlayer(Player):
         """
         # If we have an active protocol, use that
         if (
-            self._attr_active_output_protocol
-            and self._attr_active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self._attr_active_output_protocol))
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get(self.active_output_protocol))
         ):
             return protocol_player
 
@@ -200,3 +201,59 @@ class UniversalPlayer(Player):
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
             self._attr_supported_features = self._aggregate_features()
+
+    def _get_preferred_protocol_player(self) -> Player | None:
+        """
+        Get the preferred protocol player for this universal player.
+
+        Selection priority:
+        1. Active output protocol (if set and available)
+        2. User's preferred output protocol (from settings), fallback to highest
+           priority if preferred is not available
+        """
+        # 1. Active output protocol takes precedence
+        if (
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get(self.active_output_protocol))
+            and protocol_player.available
+        ):
+            return protocol_player
+
+        # 2. User's preferred output protocol (with fallback to highest priority)
+        preferred = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+        )
+        if preferred and (protocol_player := self.mass.players.get(str(preferred))):
+            if protocol_player.available:
+                return protocol_player
+
+        # Fallback: if user's preferred protocol is not available,
+        # use the highest priority available protocol
+        for protocol in sorted(self.linked_output_protocols, key=lambda x: x.priority):
+            if protocol_player := self.mass.players.get(protocol.output_protocol_id):
+                if protocol_player.available:
+                    return protocol_player
+
+        return None
+
+    @property
+    def _supported_features(self) -> set[PlayerFeature]:
+        """
+        Return the supported features based on the active/preferred protocol.
+
+        Universal players don't have native PLAY_MEDIA capability - playback is always
+        delegated to protocol players. Other features are inherited from the
+        active/preferred protocol player.
+        """
+        # Get the preferred protocol player
+        protocol_player = self._get_preferred_protocol_player()
+        if not protocol_player:
+            # No protocol available, return minimal features
+            return set()
+
+        # Return features from the protocol player, excluding PLAY_MEDIA
+        # (PLAY_MEDIA is handled via protocol linking)
+        features = protocol_player._supported_features.copy()
+        features.discard(PlayerFeature.PLAY_MEDIA)
+        return features

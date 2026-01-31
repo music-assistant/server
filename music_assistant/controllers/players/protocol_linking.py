@@ -23,9 +23,11 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_PARENT_ID,
+    PROTOCOL_PRIORITY,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_locally_administered_mac, resolve_real_mac_address
-from music_assistant.models.player import PROTOCOL_PRIORITY, DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
 from music_assistant.providers.universal_player.constants import UNIVERSAL_PLAYER_PREFIX
 
@@ -147,11 +149,11 @@ class ProtocolLinkingMixin:
         # Check for cached parent_id from previous session and restore link immediately
         cached_parent_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
         if cached_parent_id:
-            protocol_player._attr_protocol_parent_id = cached_parent_id
+            protocol_player.set_protocol_parent_id(cached_parent_id)
             if parent_player := self.get(cached_parent_id):
                 if not any(
                     link.output_protocol_id == protocol_player.player_id
-                    for link in parent_player._attr_linked_protocols
+                    for link in parent_player.linked_output_protocols
                 ):
                     self._add_protocol_link(parent_player, protocol_player, protocol_domain)
                     protocol_player.update_state()
@@ -209,7 +211,7 @@ class ProtocolLinkingMixin:
                 return
 
         # No native player found - schedule delayed evaluation to allow other protocols to register
-        if not protocol_player._attr_protocol_parent_id:
+        if not protocol_player.protocol_parent_id:
             self._schedule_protocol_evaluation(protocol_player)
 
     def _schedule_protocol_evaluation(self, protocol_player: Player) -> None:
@@ -260,7 +262,7 @@ class ProtocolLinkingMixin:
         self._pending_protocol_evaluations.pop(player_id, None)
 
         protocol_player = self.get(player_id)
-        if not protocol_player or protocol_player._attr_protocol_parent_id:
+        if not protocol_player or protocol_player.protocol_parent_id:
             return
 
         protocol_domain = protocol_player.provider.domain
@@ -293,7 +295,7 @@ class ProtocolLinkingMixin:
                 continue
             if other_player.type != PlayerType.PROTOCOL:
                 continue
-            if other_player._attr_protocol_parent_id:
+            if other_player.protocol_parent_id:
                 continue
             if self._identifiers_match(protocol_player, other_player):
                 matching.append(other_player)
@@ -469,10 +471,10 @@ class ProtocolLinkingMixin:
         """Link protocol players to a universal player, cleaning up existing links."""
         for player in protocol_players:
             # Clean up if linked to another player
-            if player._attr_protocol_parent_id:
-                if parent := self.get(player._attr_protocol_parent_id):
+            if player.protocol_parent_id:
+                if parent := self.get(player.protocol_parent_id):
                     self._remove_protocol_link(parent, player.player_id)
-                player._attr_protocol_parent_id = None
+                player.set_protocol_parent_id(None)
             # Link to universal player
             self._add_protocol_link(universal_player, player, player.provider.domain)
             player.update_state()
@@ -510,14 +512,14 @@ class ProtocolLinkingMixin:
 
         async with self._universal_player_locks[device_key]:
             # Re-check - another task may have already handled these players
-            protocol_players = [p for p in protocol_players if not p._attr_protocol_parent_id]
+            protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
             if not protocol_players:
                 return
 
             # Add to existing universal player
             if existing := self.get(universal_player_id):
                 for player in protocol_players:
-                    if not player._attr_protocol_parent_id:
+                    if not player.protocol_parent_id:
                         self._add_protocol_link(existing, player, player.provider.domain)
                         if isinstance(existing, UniversalPlayer):
                             await universal_provider.add_protocol_to_universal_player(
@@ -551,7 +553,7 @@ class ProtocolLinkingMixin:
         for protocol_player in self.all(return_protocol_players=True):
             if protocol_player.type != PlayerType.PROTOCOL:
                 continue
-            if protocol_player._attr_protocol_parent_id:
+            if protocol_player.protocol_parent_id:
                 # Already linked to a parent (could be this native player after replacement)
                 continue
 
@@ -579,14 +581,14 @@ class ProtocolLinkingMixin:
                 continue
 
             # Transfer all protocol links from universal player to native player
-            for linked in list(player._attr_linked_protocols):
+            for linked in list(player.linked_output_protocols):
                 if protocol_player := self.get(linked.output_protocol_id):
-                    protocol_player._attr_protocol_parent_id = None
+                    protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
                     protocol_player.update_state()
 
-            player._attr_linked_protocols.clear()
+            player.set_linked_output_protocols([])
             native_player.update_state()
 
             # Remove the now-obsolete universal player
@@ -597,9 +599,9 @@ class ProtocolLinkingMixin:
     ) -> None:
         """Add a protocol link from native player to protocol player."""
         # Remove any existing link for the same protocol domain
-        native_player._attr_linked_protocols = [
+        updated_protocols = [
             link
-            for link in native_player._attr_linked_protocols
+            for link in native_player.linked_output_protocols
             if link.protocol_domain != protocol_domain
         ]
 
@@ -607,7 +609,7 @@ class ProtocolLinkingMixin:
         priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
         # Add the new link
-        native_player._attr_linked_protocols.append(
+        updated_protocols.append(
             OutputProtocol(
                 output_protocol_id=protocol_player.player_id,
                 name=protocol_player.provider.name,
@@ -615,9 +617,10 @@ class ProtocolLinkingMixin:
                 priority=priority,
             )
         )
+        native_player.set_linked_output_protocols(updated_protocols)
 
         # Set protocol player's parent
-        protocol_player._attr_protocol_parent_id = native_player.player_id
+        protocol_player.set_protocol_parent_id(native_player.player_id)
 
         # Persist linked protocol IDs to config for fast restart
         # (only for non-universal players, as universal players handle this themselves)
@@ -639,16 +642,17 @@ class ProtocolLinkingMixin:
             the protocol ID remains in the cache so it can be shown as disabled
             and re-enabled later.
         """
-        native_player._attr_linked_protocols = [
+        updated_protocols = [
             link
-            for link in native_player._attr_linked_protocols
+            for link in native_player.linked_output_protocols
             if link.output_protocol_id != protocol_player_id
         ]
+        native_player.set_linked_output_protocols(updated_protocols)
 
         # Clear parent reference on protocol player if it still exists
         if protocol_player := self.get(protocol_player_id):
-            if protocol_player._attr_protocol_parent_id == native_player.player_id:
-                protocol_player._attr_protocol_parent_id = None
+            if protocol_player.protocol_parent_id == native_player.player_id:
+                protocol_player.set_protocol_parent_id(None)
 
         # Update persisted linked protocol IDs and clear cached parent
         if native_player.provider.domain != "universal_player":
@@ -673,7 +677,7 @@ class ProtocolLinkingMixin:
         # Get existing cached IDs to preserve disabled protocols
         existing_ids: list[str] = self.mass.config.get(conf_key, [])
         # Get currently active protocol IDs
-        active_ids = {link.output_protocol_id for link in native_player._attr_linked_protocols}
+        active_ids = {link.output_protocol_id for link in native_player.linked_output_protocols}
         # Merge: keep existing IDs and add any new active ones
         merged_ids = list(existing_ids)
         for protocol_id in active_ids:
@@ -727,7 +731,7 @@ class ProtocolLinkingMixin:
         """
         # Get currently linked protocol IDs
         linked_protocol_ids = {
-            link.output_protocol_id for link in native_player._attr_linked_protocols
+            link.output_protocol_id for link in native_player.linked_output_protocols
         }
 
         # Get cached protocol IDs from config (includes protocols that were explicitly linked)
@@ -780,7 +784,7 @@ class ProtocolLinkingMixin:
             is_available = protocol_player is not None and protocol_player.available
 
             # Add the OutputProtocol entry
-            native_player._attr_linked_protocols.append(
+            native_player.linked_output_protocols.append(
                 OutputProtocol(
                     output_protocol_id=protocol_id,
                     name=provider_name,
@@ -801,13 +805,13 @@ class ProtocolLinkingMixin:
         """Clean up protocol links when a player is permanently removed."""
         if player.type == PlayerType.PROTOCOL:
             # Protocol player being removed: remove link from parent
-            if parent_id := player._attr_protocol_parent_id:
+            if parent_id := player.protocol_parent_id:
                 if parent_player := self.get(parent_id):
                     # Use permanent=True to also remove from cached protocol IDs
                     self._remove_protocol_link(parent_player, player.player_id, permanent=True)
                     if (
                         parent_player.provider.domain == "universal_player"
-                        and len(parent_player._attr_linked_protocols) == 0
+                        and len(parent_player.linked_output_protocols) == 0
                     ):
                         # No protocols left - remove universal player
                         self.logger.info(
@@ -822,9 +826,9 @@ class ProtocolLinkingMixin:
         else:
             # Native player being removed: schedule protocol evaluation for linked protocols
             # so they can be assigned to a universal player
-            for linked in player._attr_linked_protocols:
+            for linked in player.linked_output_protocols:
                 if protocol_player := self.get(linked.output_protocol_id):
-                    protocol_player._attr_protocol_parent_id = None
+                    protocol_player.set_protocol_parent_id(None)
                     protocol_player.update_state()
                     self.logger.debug(
                         "Native player %s removed - scheduling evaluation for %s",
@@ -909,15 +913,40 @@ class ProtocolLinkingMixin:
         Select the best available output protocol for a player.
 
         Selection priority:
+        0. Already-set active output protocol (from manual grouping).
         1. Output protocol that is currently grouped/synced with other players.
         2. User's preferred output protocol (from player settings).
         3. Native playback (if player supports PLAY_MEDIA).
         4. Best available protocol by priority.
         """
-        # 1. Check if any output protocol is currently grouped/synced
-        for linked in player._attr_linked_protocols:
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Selecting output protocol for %s",
+            player.display_name,
+        )
+
+        # 0. Check if active output protocol is already set
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            if protocol_player := self.get(player.active_output_protocol):
+                if protocol_player.available:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (already active)",
+                        player.display_name,
+                        protocol_player.display_name,
+                    )
+                    return protocol_player, player.active_output_protocol
+
+        # 1. Check if any output protocol is currently grouped
+        for linked in player.linked_output_protocols:
             if protocol_player := self.get(linked.output_protocol_id):
                 if protocol_player.available and self._is_protocol_grouped(protocol_player):
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (grouped)",
+                        player.display_name,
+                        protocol_player.display_name,
+                    )
                     return protocol_player, linked.output_protocol_id
 
         # 2. Check for user's preferred output protocol
@@ -925,27 +954,45 @@ class ProtocolLinkingMixin:
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL, "auto"
         )
         if preferred and preferred != "auto":
-            # User has a specific preference
             if preferred == "native":
                 if PlayerFeature.PLAY_MEDIA in player.supported_features:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: native (user preference)",
+                        player.display_name,
+                    )
                     return player, "native"
             else:
-                # Preferred is a protocol player ID
-                for linked in player._attr_linked_protocols:
+                for linked in player.linked_output_protocols:
                     if linked.output_protocol_id == preferred:
                         if protocol_player := self.get(linked.output_protocol_id):
                             if protocol_player.available:
+                                self.logger.log(
+                                    VERBOSE_LOG_LEVEL,
+                                    "Selected protocol for %s: %s (user preference)",
+                                    player.display_name,
+                                    protocol_player.display_name,
+                                )
                                 return protocol_player, linked.output_protocol_id
                         break
 
         # 3. Use native playback if available
         if PlayerFeature.PLAY_MEDIA in player.supported_features:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.display_name
+            )
             return player, "native"
 
         # 4. Fall back to best protocol by priority
-        for linked in sorted(player._attr_linked_protocols, key=lambda x: x.priority):
+        for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if protocol_player := self.get(linked.output_protocol_id):
                 if protocol_player.available:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Selected protocol for %s: %s (priority-based)",
+                        player.display_name,
+                        protocol_player.display_name,
+                    )
                     return protocol_player, linked.output_protocol_id
 
         raise PlayerCommandFailed(f"Player {player.display_name} has no available output protocols")
@@ -957,13 +1004,150 @@ class ProtocolLinkingMixin:
         Used to prefer protocols that are actively participating in a group,
         ensuring consistent playback across grouped players.
         """
-        # Check if this protocol player is synced to another player
-        if protocol_player.synced_to:
-            return True
+        is_grouped = bool(
+            protocol_player.synced_to
+            or (protocol_player.group_members and len(protocol_player.group_members) > 1)
+            or protocol_player.active_group
+        )
+        if is_grouped:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Protocol player %s is grouped",
+                protocol_player.display_name,
+            )
+        return is_grouped
 
-        # Check if this protocol player has other players synced to it
-        if protocol_player.group_members and len(protocol_player.group_members) > 1:
-            return True
+    def _translate_members_to_remove_for_protocols(
+        self,
+        parent_player: Player,
+        player_ids: list[str],
+        parent_protocol_player: Player | None,
+        parent_protocol_domain: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Translate member IDs to remove into protocol and native lists.
 
-        # Check if there's an active group involving this player
-        return bool(protocol_player.active_group)
+        :param parent_player: The parent player to remove members from.
+        :param player_ids: List of visible player IDs to remove.
+        :param parent_protocol_player: The parent's protocol player if available.
+        :param parent_protocol_domain: The parent's protocol domain if available.
+        """
+        self.logger.debug(
+            "Translating members to remove for %s: player_ids=%s, parent_protocol_domain=%s",
+            parent_player.display_name,
+            player_ids,
+            parent_protocol_domain,
+        )
+        protocol_members: list[str] = []
+        native_members: list[str] = []
+
+        for child_player_id in player_ids:
+            child_player = self.get(child_player_id)
+            if not child_player:
+                continue
+
+            # Check if this member is in the parent's group via protocol
+            if parent_protocol_domain and parent_protocol_player:
+                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
+                if (
+                    child_protocol
+                    and child_protocol.output_protocol_id in parent_protocol_player.group_members
+                ):
+                    self.logger.debug(
+                        "Translating removal: %s -> protocol %s",
+                        child_player_id,
+                        child_protocol.output_protocol_id,
+                    )
+                    protocol_members.append(child_protocol.output_protocol_id)
+                    continue
+
+            native_members.append(child_player_id)
+
+        return protocol_members, native_members
+
+    async def _forward_protocol_set_members(
+        self,
+        parent_player: Player,
+        parent_protocol_player: Player,
+        protocol_members_to_add: list[str],
+        protocol_members_to_remove: list[str],
+    ) -> None:
+        """
+        Forward protocol members to protocol player's set_members and manage active output protocol.
+
+        :param parent_player: The parent player (native/universal).
+        :param parent_protocol_player: The protocol player to forward commands to.
+        :param protocol_members_to_add: Protocol player IDs to add.
+        :param protocol_members_to_remove: Protocol player IDs to remove.
+        """
+        # Access _filter_protocol_members from the PlayerController
+        # This mixin is used by PlayerController, so self has this method
+        filtered_protocol_add = self._filter_protocol_members(  # type: ignore[attr-defined]
+            protocol_members_to_add, parent_protocol_player
+        )
+        filtered_protocol_remove = self._filter_protocol_members(  # type: ignore[attr-defined]
+            protocol_members_to_remove, parent_protocol_player
+        )
+        self.logger.debug(
+            "Protocol grouping on %s: filtered_add=%s, filtered_remove=%s",
+            parent_protocol_player.display_name,
+            filtered_protocol_add,
+            filtered_protocol_remove,
+        )
+
+        if not filtered_protocol_add and not filtered_protocol_remove:
+            return
+
+        self.logger.info(
+            "Calling set_members on protocol player %s with add=%s, remove=%s",
+            parent_protocol_player.display_name,
+            filtered_protocol_add,
+            filtered_protocol_remove,
+        )
+        await parent_protocol_player.set_members(
+            player_ids_to_add=filtered_protocol_add or None,
+            player_ids_to_remove=filtered_protocol_remove or None,
+        )
+        self.logger.debug(
+            "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
+            parent_protocol_player.display_name,
+            parent_protocol_player.group_members,
+            parent_protocol_player.synced_to,
+        )
+
+        # Mark this protocol as active on the parent player so playback uses it
+        if filtered_protocol_add and parent_protocol_player.player_id:
+            self.logger.info(
+                "Setting active output protocol on %s to %s",
+                parent_player.display_name,
+                parent_protocol_player.player_id,
+            )
+            parent_player.set_active_output_protocol(parent_protocol_player.player_id)
+            parent_player.update_state()
+        # Clear active protocol if all protocol members were removed
+        elif (
+            filtered_protocol_remove
+            and not filtered_protocol_add
+            and parent_protocol_player.player_id == parent_player.active_output_protocol
+        ):
+            # Check group_members count to see if we should clear
+            members_count = len(parent_protocol_player.group_members)
+            self.logger.debug(
+                "Checking if should clear active protocol on %s: "
+                "protocol_members_count=%s, removing=%s",
+                parent_player.display_name,
+                members_count,
+                filtered_protocol_remove,
+            )
+            if members_count <= 1:
+                self.logger.info(
+                    "Clearing active output protocol on %s (no protocol members left)",
+                    parent_player.display_name,
+                )
+                parent_player.set_active_output_protocol(None)
+                parent_player.update_state()
+            else:
+                self.logger.debug(
+                    "NOT clearing active protocol - still has %s members",
+                    members_count,
+                )

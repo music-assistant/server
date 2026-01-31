@@ -526,16 +526,20 @@ class MusicAssistant:
             self._tracked_timers.pop(task_id)
             self.create_task(_target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
+        def _call_sync(_target: Callable[..., _R]) -> None:
+            self._tracked_timers.pop(task_id)
+            _target(*args, **kwargs)
+
         if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
-            # coroutine function
+            # coroutine function or coroutine
             if TYPE_CHECKING:
                 target = cast("Coroutine[Any, Any, _R]", target)
             handle = self.loop.call_later(delay, _create_task, target)
         else:
-            # regular callable
+            # regular sync callable
             if TYPE_CHECKING:
                 target = cast("Callable[..., _R]", target)
-            handle = self.loop.call_later(delay, target, *args)
+            handle = self.loop.call_later(delay, _call_sync, target)
         self._tracked_timers[task_id] = handle
         return handle
 

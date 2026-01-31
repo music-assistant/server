@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -69,6 +70,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -96,6 +98,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
+
+# Context variable to prevent circular calls between players and player_queues controllers
+IN_QUEUE_COMMAND: ContextVar[bool] = ContextVar("IN_QUEUE_COMMAND", default=False)
 
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
@@ -378,14 +383,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        player.mark_stop_called()
-        # Redirect to queue controller if it is active
-        if active_queue := self.get_active_queue(player):
+        # Redirect to queue controller if it is active (skip if already in queue command context)
+        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
             await self.mass.player_queues.stop(active_queue.queue_id)
-        else:
-            # handle command on player directly
-            async with self._player_throttlers[player.player_id]:
-                await player.stop()
+            return
+        player.mark_stop_called()
+        # Delegate to active protocol player if one is active
+        target_player = player
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (protocol_player := self.get(player.active_output_protocol))
+        ):
+            target_player = protocol_player
+        # handle command on player directly
+        async with self._player_throttlers[target_player.player_id]:
+            await target_player.stop()
 
     @api_command("players/cmd/play")
     @handle_player_command
@@ -406,23 +419,31 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if plugin_source.can_play_pause and plugin_source.on_play:
                 await plugin_source.on_play()
                 return
-
+        # handle unpause (=play if player is paused)
         if player.playback_state == PlaybackState.PAUSED:
-            # handle command on player/source directly
             active_source = next(
                 (x for x in player.source_list if x.id == player.active_source), None
             )
+            # raise if active source does not support play/pause
             if active_source and not active_source.can_play_pause:
-                raise PlayerCommandFailed(
-                    "The active source (%s) on player %s does not support play/pause",
-                    active_source.name,
-                    player.display_name,
+                msg = (
+                    f"The active source ({active_source.name}) on player "
+                    f"{player.display_name} does not support play/pause"
                 )
-            async with self._player_throttlers[player.player_id]:
-                await player.play()
-        else:
-            # try to resume the player
-            await self._handle_cmd_resume(player.player_id)
+                raise PlayerCommandFailed(msg)
+            # Delegate to active protocol player if one is active
+            target_player = player
+            if (
+                player.active_output_protocol
+                and player.active_output_protocol != "native"
+                and (protocol_player := self.get(player.active_output_protocol))
+            ):
+                target_player = protocol_player
+            await target_player.play()
+            return
+
+        # player is not paused: try to resume the player
+        await self._handle_cmd_resume(player.player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -432,36 +453,42 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-
         # Check if a plugin source is active with a pause callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_play_pause and plugin_source.on_pause:
                 await plugin_source.on_pause()
                 return
-
-        # Redirect to queue controller if it is active
-        if active_queue := self.get_active_queue(player):
+        # Redirect to queue controller if it is active (skip if already in queue command context)
+        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
             await self.mass.player_queues.pause(active_queue.queue_id)
             return
-
         # handle command on player/source directly
         active_source = next((x for x in player.source_list if x.id == player.active_source), None)
         if active_source and not active_source.can_play_pause:
-            raise PlayerCommandFailed(
-                "The active source (%s) on player %s does not support play/pause",
-                active_source.name,
-                player.display_name,
+            # raise if active source does not support play/pause
+            msg = (
+                f"The active source ({active_source.name}) on player "
+                f"{player.display_name} does not support play/pause"
             )
-        if PlayerFeature.PAUSE not in player.supported_features:
-            # if player does not support pause, we need to send stop
+            raise PlayerCommandFailed(msg)
+        # Delegate to active protocol player if one is active
+        target_player = player
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (protocol_player := self.get(player.active_output_protocol))
+        ):
+            target_player = protocol_player
+        # if player does not support pause, we need to send stop
+        if PlayerFeature.PAUSE not in target_player.supported_features:
             self.logger.debug(
-                "Player %s does not support pause, using STOP instead",
-                player.display_name,
+                "Player/protocol %s does not support pause, using STOP instead",
+                target_player.display_name,
             )
             await self.cmd_stop(player.player_id)
             return
-        # handle command on player directly
-        await player.pause()
+        # handle command on player(protocol) directly
+        await target_player.pause()
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
@@ -513,11 +540,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # handle command on player/source directly
         active_source = next((x for x in player.source_list if x.id == player.active_source), None)
         if active_source and not active_source.can_seek:
-            raise PlayerCommandFailed(
-                "The active source (%s) on player %s does not support seeking",
-                active_source.name,
-                player.display_name,
+            msg = (
+                f"The active source ({active_source.name}) on player "
+                f"{player.display_name} does not support seeking"
             )
+            raise PlayerCommandFailed(msg)
         if PlayerFeature.SEEK not in player.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
@@ -790,7 +817,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             announce_player: Player = player
             native_announce_support = PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
             if not native_announce_support:
-                for linked in player._attr_linked_protocols:
+                for linked in player.linked_output_protocols:
                     if protocol_player := self.get(linked.output_protocol_id):
                         if (
                             protocol_player.available
@@ -887,12 +914,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol
-            player._attr_active_output_protocol = protocol_id
+            self.logger.info(
+                "Starting playback on %s via protocol %s (target=%s), group_members=%s",
+                player.display_name,
+                protocol_id,
+                target_player.display_name,
+                target_player.group_members,
+            )
+            player.set_active_output_protocol(protocol_id)
             player.update_state()
             await target_player.play_media(media)
         else:
             # Native playback
-            player._attr_active_output_protocol = "native"
+            self.logger.info(
+                "Starting playback on %s via native, group_members=%s",
+                player.display_name,
+                player.group_members,
+            )
+            player.set_active_output_protocol("native")
             await player.play_media(media)
 
     @api_command("players/cmd/select_source")
@@ -1005,11 +1044,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 continue
 
             # check if player can be synced/grouped with the target player
-            if not (
-                child_player_id in parent_player.can_group_with
-                or child_player.provider.instance_id in parent_player.can_group_with
-                or "*" in parent_player.can_group_with
-            ):
+            # can_group_with already handles all expansion and translation
+            if child_player_id not in parent_player.can_group_with:
                 raise UnsupportedFeaturedException(
                     f"Player {child_player.name} can not be grouped with {parent_player.name}"
                 )
@@ -1080,11 +1116,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     )
                 final_player_ids_to_remove.append(child_player_id)
 
-        # forward command to the player after all (base) sanity checks
+        # Forward command to the appropriate player(s) after all (base) sanity checks
         async with self._player_throttlers[target_player]:
-            await parent_player.set_members(
-                player_ids_to_add=final_player_ids_to_add or None,
-                player_ids_to_remove=final_player_ids_to_remove or None,
+            await self._handle_set_members_with_protocols(
+                parent_player, final_player_ids_to_add, final_player_ids_to_remove
             )
 
     @api_command("players/cmd/group")
@@ -1344,6 +1379,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
+        # Schedule debounced update of all players since can_group_with values may change
+        # when a new player is added (provider IDs expand to include the new player)
+        self._schedule_update_all_players()
+
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
         if self.mass.closing:
@@ -1352,17 +1391,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.player_id in self._players:
             self._players[player.player_id] = player
             player.update_state()
+            # Also schedule update when replacing existing player
+            self._schedule_update_all_players()
             return
 
         await self.register(player)
 
-    def trigger_player_update(self, player_id: str, force_update: bool = False) -> None:
+    def trigger_player_update(
+        self, player_id: str, force_update: bool = False, delay: float = 1.0
+    ) -> None:
         """Trigger an update for the given player."""
         if self.mass.closing:
             return
         if not (player := self.get(player_id)):
             return
-        self.mass.loop.call_soon(player.update_state, force_update)
+        task_id = f"player_update_state_{player_id}"
+        self.mass.call_later(
+            delay,
+            player.update_state,
+            force_update=force_update,
+            task_id=task_id,
+        )
 
     async def unregister(self, player_id: str, permanent: bool = False) -> None:
         """
@@ -1401,6 +1450,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 self.mass.signal_event(
                     EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
                 )
+        # Schedule debounced update of all players since can_group_with values may change
+        self._schedule_update_all_players()
 
     @api_command("players/remove", required_role="admin")
     async def remove(self, player_id: str) -> None:
@@ -1525,6 +1576,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             active_group_player := self.get(active_group)
         ):
             active_group_player.update_state()
+        # If this is a protocol player, forward the state update to the parent player
+        if player.protocol_parent_id and (
+            parent_player := self.mass.players.get(player.protocol_parent_id)
+        ):
+            # Trigger parent player state update to reflect protocol player's state
+            # Always update if this protocol is active, or if group-related fields changed
+            if parent_player.active_output_protocol == player.player_id or any(
+                key in changed_values for key in ("group_members", "synced_to", "active_group")
+            ):
+                self.trigger_player_update(parent_player.player_id)
+        # If this is a parent player with linked protocols, forward state updates
+        # to linked protocol players so their state reflects parent dependencies
+        if player.type != PlayerType.PROTOCOL and player.linked_output_protocols:
+            for linked in player.linked_output_protocols:
+                if protocol_player := self.mass.players.get(linked.output_protocol_id):
+                    self.mass.players.trigger_player_update(protocol_player.player_id)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -2158,6 +2225,267 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             #   (or vice versa)
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
+
+    def _schedule_update_all_players(self, delay: float = 2.0) -> None:
+        """
+        Schedule a debounced update of all players' state.
+
+        Used when a new player is registered to ensure all existing players
+        update their dynamic properties (like can_group_with) that may have changed.
+
+        :param delay: Delay in seconds before triggering updates (default 2.0).
+        """
+        if self.mass.closing:
+            return
+
+        async def _update_all_players() -> None:
+            if self.mass.closing:
+                return
+
+            for player in self.all(
+                return_unavailable=True,
+                return_disabled=False,
+                return_protocol_players=True,
+            ):
+                # Use call_soon to schedule updates without blocking
+                # This spreads the updates across event loop iterations
+                self.mass.loop.call_soon(player.update_state)
+
+        # Use mass.call_later with task_id for automatic debouncing
+        # Each call resets the timer, so rapid registrations only trigger one update
+        task_id = "update_all_players_on_registration"
+        self.mass.call_later(delay, _update_all_players, task_id=task_id)
+
+    def _filter_protocol_members(self, member_ids: list[str], protocol_player: Player) -> list[str]:
+        """Filter member IDs to only include protocol players from the same domain."""
+        return [
+            pid
+            for pid in member_ids
+            if (p := self.get(pid))
+            and p.type == PlayerType.PROTOCOL
+            and p.provider.domain == protocol_player.provider.domain
+        ]
+
+    def _filter_native_members(self, member_ids: list[str], parent_player: Player) -> list[str]:
+        """Filter member IDs to only include players compatible with the parent."""
+        return [
+            pid
+            for pid in member_ids
+            if (p := self.get(pid))
+            and (
+                p.provider.instance_id == parent_player.provider.instance_id
+                or pid in parent_player._can_group_with
+                or p.provider.instance_id in parent_player._can_group_with
+            )
+        ]
+
+    def _translate_members_for_protocols(
+        self,
+        parent_player: Player,
+        player_ids: list[str],
+        parent_protocol_player: Player | None,
+        parent_protocol_domain: str | None,
+    ) -> tuple[list[str], list[str], Player | None, str | None]:
+        """
+        Translate member IDs to protocol or native IDs.
+
+        Returns tuple of (protocol_members, native_members, protocol_player, protocol_domain).
+        """
+        protocol_members: list[str] = []
+        native_members: list[str] = []
+
+        # Check if parent supports native grouping
+        parent_supports_native_grouping = (
+            PlayerFeature.SET_MEMBERS in parent_player.supported_features
+        )
+
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Translating members for %s: parent_supports_native=%s, parent_protocol=%s (%s)",
+            parent_player.display_name,
+            parent_supports_native_grouping,
+            parent_protocol_player.display_name if parent_protocol_player else "none",
+            parent_protocol_domain or "none",
+        )
+
+        for child_player_id in player_ids:
+            child_player = self.get(child_player_id)
+            if not child_player:
+                continue
+
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Processing child %s (type=%s, protocols=%s)",
+                child_player.display_name,
+                child_player.type,
+                [p.protocol_domain for p in child_player.output_protocols],
+            )
+
+            # Prefer native grouping over protocol grouping when both are available
+            if parent_supports_native_grouping and (
+                child_player.provider.instance_id == parent_player.provider.instance_id
+                or child_player_id in parent_player._can_group_with
+                or child_player.provider.instance_id in parent_player._can_group_with
+            ):
+                native_members.append(child_player_id)
+                continue
+
+            if parent_protocol_domain:
+                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
+                if child_protocol:
+                    protocol_members.append(child_protocol.output_protocol_id)
+                    continue
+            else:
+                # Find common protocol that supports set_members
+                selected_protocol = None
+                selected_child_protocol = None
+
+                for parent_output_protocol in parent_player.output_protocols:
+                    if not parent_output_protocol.available:
+                        continue
+                    child_protocol = child_player.get_linked_protocol(
+                        parent_output_protocol.protocol_domain
+                    )
+                    if child_protocol and child_protocol.available:
+                        protocol_player = self.get(parent_output_protocol.output_protocol_id)
+                        if protocol_player and (
+                            PlayerFeature.SET_MEMBERS in protocol_player.supported_features
+                        ):
+                            selected_protocol = parent_output_protocol
+                            selected_child_protocol = child_protocol
+                            self.logger.log(
+                                VERBOSE_LOG_LEVEL,
+                                "Selected protocol %s for grouping %s with %s",
+                                parent_output_protocol.protocol_domain,
+                                child_player.display_name,
+                                parent_player.display_name,
+                            )
+                            break
+
+                if selected_protocol and selected_child_protocol:
+                    if not parent_protocol_player:
+                        parent_protocol_player = self.get(selected_protocol.output_protocol_id)
+                        if parent_protocol_player:
+                            parent_protocol_domain = parent_protocol_player.provider.domain
+                    protocol_members.append(selected_child_protocol.output_protocol_id)
+                elif parent_supports_native_grouping:
+                    # No common protocol - fallback to native grouping
+                    native_members.append(child_player_id)
+                else:
+                    # No common protocol and parent doesn't support native grouping
+                    self.logger.warning(
+                        "Cannot group %s with %s: no compatible protocol supports set_members "
+                        "and parent doesn't support native grouping",
+                        child_player.display_name,
+                        parent_player.display_name,
+                    )
+                continue
+
+            # Parent has active protocol but child doesn't support it
+            if parent_supports_native_grouping:
+                native_members.append(child_player_id)
+            else:
+                self.logger.warning(
+                    "Cannot group %s with %s: incompatible protocols",
+                    child_player.display_name,
+                    parent_player.display_name,
+                )
+
+        return protocol_members, native_members, parent_protocol_player, parent_protocol_domain
+
+    async def _handle_set_members_with_protocols(
+        self,
+        parent_player: Player,
+        player_ids_to_add: list[str],
+        player_ids_to_remove: list[str],
+    ) -> None:
+        """
+        Handle set_members considering protocol and native members.
+
+        Translates visible player IDs to protocol player IDs when appropriate,
+        and forwards to the correct player's set_members.
+
+        :param parent_player: The parent player to add/remove members to/from.
+        :param player_ids_to_add: List of visible player IDs to add as members.
+        :param player_ids_to_remove: List of visible player IDs to remove from members.
+        """
+        # Get parent's active protocol domain and player if available
+        parent_protocol_domain = None
+        parent_protocol_player = None
+        if (
+            parent_player.active_output_protocol
+            and parent_player.active_output_protocol != "native"
+        ):
+            parent_protocol_player = self.get(parent_player.active_output_protocol)
+            if parent_protocol_player:
+                parent_protocol_domain = parent_protocol_player.provider.domain
+
+        self.logger.debug(
+            "set_members on %s: active_protocol=%s, adding=%s, removing=%s",
+            parent_player.display_name,
+            parent_protocol_domain or "none",
+            player_ids_to_add,
+            player_ids_to_remove,
+        )
+
+        # Translate members to add
+        (
+            protocol_members_to_add,
+            native_members_to_add,
+            parent_protocol_player,
+            parent_protocol_domain,
+        ) = self._translate_members_for_protocols(
+            parent_player, player_ids_to_add, parent_protocol_player, parent_protocol_domain
+        )
+
+        self.logger.debug(
+            "Translated members: protocol=%s (domain=%s), native=%s",
+            protocol_members_to_add,
+            parent_protocol_domain,
+            native_members_to_add,
+        )
+
+        # Translate members to remove
+        protocol_members_to_remove, native_members_to_remove = (
+            self._translate_members_to_remove_for_protocols(
+                parent_player, player_ids_to_remove, parent_protocol_player, parent_protocol_domain
+            )
+        )
+
+        # Forward protocol members to protocol player's set_members
+        if (protocol_members_to_add or protocol_members_to_remove) and parent_protocol_player:
+            await self._forward_protocol_set_members(
+                parent_player,
+                parent_protocol_player,
+                protocol_members_to_add,
+                protocol_members_to_remove,
+            )
+
+        # Forward native members to parent player's set_members
+        if native_members_to_add or native_members_to_remove:
+            filtered_native_add = self._filter_native_members(native_members_to_add, parent_player)
+            filtered_native_remove = [
+                pid
+                for pid in native_members_to_remove
+                if (p := self.get(pid)) and p.type != PlayerType.PROTOCOL
+            ]
+            self.logger.debug(
+                "Native grouping on %s: filtered_add=%s, filtered_remove=%s",
+                parent_player.display_name,
+                filtered_native_add,
+                filtered_native_remove,
+            )
+            if filtered_native_add or filtered_native_remove:
+                self.logger.info(
+                    "Calling set_members on native player %s with add=%s, remove=%s",
+                    parent_player.display_name,
+                    filtered_native_add,
+                    filtered_native_remove,
+                )
+                await parent_player.set_members(
+                    player_ids_to_add=filtered_native_add or None,
+                    player_ids_to_remove=filtered_native_remove or None,
+                )
 
     # Private command handlers (no permission checks)
 

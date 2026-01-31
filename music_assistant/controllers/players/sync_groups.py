@@ -112,17 +112,17 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members = static_members.copy()
 
     @property
-    def supported_features(self) -> set[PlayerFeature]:
+    def _supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         members = self.group_members
         reference_player: Player | None = self.sync_leader or (
             self.mass.players.get(members[0]) if members else None
         )
         if reference_player:
-            base_features = self._attr_supported_features.copy()
+            base_features = self._supported_features.copy()
             # add features supported by the sync leader
             for feature in OPTIONAL_FEATURES:
-                if feature in reference_player.supported_features:
+                if feature in reference_player._supported_features:
                     base_features.add(feature)
             return base_features
         return self._attr_supported_features
