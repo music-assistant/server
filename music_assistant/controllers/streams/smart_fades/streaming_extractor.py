@@ -25,8 +25,9 @@ class StreamingFeatureExtractor:
     """Extracts audio features incrementally as PCM audio streams.
 
     This class processes PCM audio chunks and extracts lightweight features
-    (onset envelope, chroma, RMS, spectral centroid, low-frequency RMS) that
-    can be accumulated without holding the entire audio in memory.
+    (onset envelope, chroma, RMS, spectral centroid, low-frequency RMS,
+    mid-frequency RMS) that can be accumulated without holding the entire
+    audio in memory.
 
     Key implementation details:
     - Accumulates raw audio bytes, processes in batches via asyncio.to_thread
@@ -218,6 +219,10 @@ class StreamingFeatureExtractor:
             # 5. Low-frequency RMS (for kick drum / downbeat detection)
             await asyncio.sleep(0)  # Yield to event loop
             await asyncio.to_thread(self._extract_low_freq_rms, mono_audio)
+
+            # 6. Mid-frequency RMS (for snare detection / kick-snare pattern)
+            await asyncio.sleep(0)  # Yield to event loop
+            await asyncio.to_thread(self._extract_mid_freq_rms, mono_audio)
         except Exception as e:
             self.logger.warning("Feature extraction failed: %s", e)
         finally:
@@ -339,6 +344,33 @@ class StreamingFeatureExtractor:
         except Exception as e:
             self.logger.debug("Low-freq RMS extraction failed: %s", e)
 
+    def _extract_mid_freq_rms(self, mono_audio: npt.NDArray[np.float32]) -> None:
+        """Extract mid-frequency RMS energy for snare detection (runs in thread pool).
+
+        Applies a band-pass filter at 200-2000Hz to isolate mid-frequency content,
+        then computes frame-wise RMS. Snare drums have high energy in this band.
+        """
+        try:
+            # Design band-pass Butterworth filter at 200-2000Hz
+            nyquist = self.sample_rate / 2
+            low_cutoff = 200 / nyquist
+            high_cutoff = min(2000 / nyquist, 0.99)  # Ensure below Nyquist
+            sos = signal.butter(4, [low_cutoff, high_cutoff], btype="band", output="sos")
+
+            # Apply filter
+            filtered = signal.sosfilt(sos, mono_audio).astype(np.float32)
+
+            # Compute RMS of filtered signal
+            mid_freq_rms = librosa.feature.rms(
+                y=filtered,
+                frame_length=self.n_fft,
+                hop_length=self.hop_length,
+                center=False,
+            )
+            self.accumulator.add_mid_freq_rms(np.asarray(mid_freq_rms, dtype=np.float32))
+        except Exception as e:
+            self.logger.debug("Mid-freq RMS extraction failed: %s", e)
+
     def should_abort(self) -> bool:
         """Check if extraction should be aborted due to user action.
 
@@ -430,6 +462,8 @@ class StreamingFeatureExtractor:
                     await asyncio.to_thread(self._extract_centroid, mono_audio)
                     await asyncio.sleep(0)
                     await asyncio.to_thread(self._extract_low_freq_rms, mono_audio)
+                    await asyncio.sleep(0)
+                    await asyncio.to_thread(self._extract_mid_freq_rms, mono_audio)
             except Exception as e:
                 self.logger.warning("Final feature extraction failed: %s", e)
         else:
