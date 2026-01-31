@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import pathlib
@@ -412,7 +413,7 @@ class MusicAssistant:
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if asyncio.iscoroutinefunction(cb_func):
+            if inspect.iscoroutinefunction(cb_func):
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -466,10 +467,10 @@ class MusicAssistant:
                 return existing
         self.verify_event_loop_thread("create_task")
 
-        if asyncio.iscoroutinefunction(target):
+        if inspect.iscoroutinefunction(target):
             # coroutine function
             task = self.loop.create_task(target(*args, **kwargs))
-        elif asyncio.iscoroutine(target):
+        elif inspect.iscoroutine(target):
             # coroutine
             task = self.loop.create_task(target)
         elif callable(target):
@@ -526,7 +527,7 @@ class MusicAssistant:
             self._tracked_timers.pop(task_id)
             self.create_task(_target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
-        if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutine(target):
             # coroutine function
             if TYPE_CHECKING:
                 target = cast("Coroutine[Any, Any, _R]", target)

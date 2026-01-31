@@ -910,6 +910,9 @@ class SonosPlayer(Player):
             self.sonos_queue.items.clear()
             return
         current_index = queue.current_index or 0
+        current_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else current_index
+        )
 
         # Add a few items before the current index for context
         offset = max(0, current_index - 4)
