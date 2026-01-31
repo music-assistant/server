@@ -986,6 +986,33 @@ class PlayerController(CoreController):
         # forward to player
         await player.select_sound_mode(sound_mode)
 
+    @api_command("players/cmd/set_player_option")
+    @handle_player_command
+    async def set_player_option(
+        self, player_id: str, option_id: str, option_value: float | bool | str
+    ) -> None:
+        """
+        Handle SET_PLAYER_OPTION command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - option_id: The ID of the player option that needs to be activated/selected.
+        - option_value: The new value of the player option
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.PLAYER_OPTION not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support set_player_option"
+            )
+
+        prev_player_option = next(x for x in player.player_option_list if x.id == option_id)
+        if prev_player_option.value == option_value:
+            return
+
+        # forward to player
+        await player.set_player_option(option_id=option_id, option_value=option_value)
+
     @api_command("players/cmd/select_source")
     @handle_player_command
     async def select_source(self, player_id: str, source: str | None) -> None:

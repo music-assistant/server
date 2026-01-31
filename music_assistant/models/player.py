@@ -23,7 +23,13 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSoundMode, PlayerSource
+from music_assistant_models.player import (
+    DeviceInfo,
+    PlayerMedia,
+    PlayerOption,
+    PlayerSoundMode,
+    PlayerSource,
+)
 from music_assistant_models.player import Player as PlayerState
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
@@ -65,6 +71,7 @@ class Player(ABC):
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
     _attr_sound_mode_list: list[PlayerSoundMode]
+    _attr_player_option_list: list[PlayerOption]
     _attr_available: bool = True
     _attr_name: str | None = None
     _attr_powered: bool | None = None
@@ -95,6 +102,7 @@ class Player(ABC):
         self._attr_can_group_with = set()
         self._attr_source_list = []
         self._attr_sound_mode_list = []
+        self._attr_player_option_list = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self._player_id = player_id
@@ -509,6 +517,19 @@ class Player(ABC):
             "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
         )
 
+    async def set_player_option(self, option_id: str, option_value: float | bool | str) -> None:
+        """
+        Handle SET_PLAYER_OPTION command on the player.
+
+        Will only be called if the PlayerFeature.PlayerOption is supported.
+
+        :param option_id: The option_id of the PlayerOption
+        :param option_value: The new value of the PlayerOption
+        """
+        raise NotImplementedError(
+            "set_player_option needs to be implemented when PlayerFeature.PlayerOption is set"
+        )
+
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -808,6 +829,12 @@ class Player(ABC):
     def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
         """Return available PlayerSoundModes for Player."""
         return UniqueList(self._attr_sound_mode_list)
+
+    @cached_property
+    @final
+    def player_option_list(self) -> UniqueList[PlayerOption]:
+        """Return all PlayerOptions for Player."""
+        return UniqueList(self._attr_player_option_list)
 
     @cached_property
     @final
