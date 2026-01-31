@@ -10,11 +10,7 @@ from hass_client.exceptions import FailedCommand
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
@@ -43,12 +39,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
 
-DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-)
+DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 
 class HomeAssistantPlayer(Player):
@@ -106,14 +97,19 @@ class HomeAssistantPlayer(Player):
         self.extra_data["hass_supported_features"] = hass_supported_features
         self._update_attributes(hass_state["attributes"])
 
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        # hass media players are a hot mess so play it safe and always use flow mode
+        return True
+
     async def get_config_entries(
         self,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        base_entries = [*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES]
+        base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
         if self.extra_data.get("esphome_supported_audio_formats"):
             # optimized config for new ESPHome mediaplayer
             supported_sample_rates: list[int] = []
@@ -141,7 +137,6 @@ class HomeAssistantPlayer(Player):
             config_entries = [
                 *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
-                CONF_ENTRY_FLOW_MODE_ENFORCED,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             ]
 
@@ -167,10 +162,6 @@ class HomeAssistantPlayer(Player):
         # add alert if player is a known player type that has a native provider in MA
         if self.extra_data.get("hass_domain") in WARN_HASS_INTEGRATIONS:
             base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
-
-        # enable flow mode by default if player does not report enqueue support
-        if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in self.extra_data["hass_supported_features"]:
-            base_entries = [*base_entries, CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED]
 
         return base_entries
 

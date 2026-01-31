@@ -64,7 +64,6 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_FLOW_MODE,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
@@ -932,7 +931,6 @@ class PlayerQueuesController(CoreController):
         target_player = self.mass.players.get(queue_id)
         if target_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        enqueue_supported = PlayerFeature.ENQUEUE in target_player.supported_features
         queue.next_item_id_enqueued = None
         # always update session id when we start a new playback session
         queue.session_id = shortuuid.random(length=8)
@@ -982,12 +980,7 @@ class PlayerQueuesController(CoreController):
                 raise MediaNotFoundError("No playable item found to start playback")
 
             # work out if we need to use flow mode
-            prefer_flow_mode = await self.mass.config.get_player_config_value(
-                queue_id, CONF_FLOW_MODE, default=False
-            )
-            flow_mode = (
-                prefer_flow_mode or not enqueue_supported
-            ) and queue_item.media_type not in (
+            flow_mode = target_player.flow_mode and queue_item.media_type not in (
                 # don't use flow mode for duration-less streams
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,

@@ -63,7 +63,7 @@ async def get_config_entries(
     return (
         ConfigEntry(
             key=CONF_QUALITY,
-            category="advanced",
+            advanced=True,
             type=ConfigEntryType.STRING,
             label="Stream Quality",
             options=[

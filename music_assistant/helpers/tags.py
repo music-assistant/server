@@ -1,4 +1,4 @@
-"""Helpers/utilities to parse ID3 tags from audio files with ffmpeg."""
+"""Helpers/utilities to parse tags from audio files with ffmpeg and mutagen."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
+from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -603,59 +604,231 @@ def get_file_duration(input_file: str) -> float:
         raise InvalidDataError(error_msg) from err
 
 
-def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
-    """
-    Parse tags from an audio file using Mutagen.
+def _decode_mp4_freeform_single(values: list[Any]) -> str:
+    """Decode a single-value MP4 freeform tag (bytes to string).
 
-    NOT Async friendly.
+    :param values: List of MP4FreeForm values (typically contains one item).
+    """
+    if not values:
+        return ""
+    val = values[0]
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
+
+
+def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
+    """Decode a multi-value MP4 freeform tag (bytes to strings).
+
+    :param values: List of MP4FreeForm values.
+    """
+    result = []
+    for val in values:
+        if isinstance(val, bytes):
+            result.append(val.decode("utf-8", errors="replace"))
+        else:
+            result.append(str(val))
+    return result
+
+
+def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
+    """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
+
+    :param tags: The MP4Tags object from mutagen.
+    """
+    result: dict[str, Any] = {}
+
+    # Basic text tags (single value - extract first element)
+    if "©nam" in tags:
+        result["title"] = tags["©nam"][0]
+    if "©ART" in tags:
+        result["artist"] = tags["©ART"][0]
+    if "aART" in tags:
+        result["albumartist"] = tags["aART"][0]
+    if "©alb" in tags:
+        result["album"] = tags["©alb"][0]
+
+    # Genre can have multiple values
+    if "©gen" in tags:
+        result["genre"] = list(tags["©gen"])
+
+    # Sort tags (single value)
+    if "sonm" in tags:
+        result["titlesort"] = tags["sonm"][0]
+    if "soal" in tags:
+        result["albumsort"] = tags["soal"][0]
+    # Sort tags (multi-value to match ID3 behavior)
+    if "soar" in tags:
+        result["artistsort"] = list(tags["soar"])
+    if "soaa" in tags:
+        result["albumartistsort"] = list(tags["soaa"])
+
+    # iTunes freeform tags for MusicBrainz IDs
+    # Single value tags
+    if "----:com.apple.iTunes:MusicBrainz Album Id" in tags:
+        result["musicbrainzalbumid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Album Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Release Group Id" in tags:
+        result["musicbrainzreleasegroupid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Release Group Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Track Id" in tags:
+        result["musicbrainztrackid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Recording Id" in tags:
+        result["musicbrainzrecordingid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Recording Id"]
+        )
+
+    # Multi-value tags (return as list to match ID3 behavior)
+    if "----:com.apple.iTunes:MusicBrainz Artist Id" in tags:
+        result["musicbrainzartistid"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:MusicBrainz Artist Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Album Artist Id" in tags:
+        result["musicbrainzalbumartistid"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:MusicBrainz Album Artist Id"]
+        )
+
+    # Additional freeform tags
+    if "----:com.apple.iTunes:ARTISTS" in tags:
+        result["artists"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ARTISTS"])
+    if "----:com.apple.iTunes:BARCODE" in tags:
+        result["barcode"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:BARCODE"])
+    if "----:com.apple.iTunes:ISRC" in tags:
+        result["tsrc"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ISRC"])
+
+    # Track and disc numbers (MP4 stores as tuple: [(number, total)])
+    # NOTE: type ignores needed because MP4Tags from mutagen uses an untyped get() internally
+    if tags.get("trkn"):  # type: ignore[no-untyped-call]
+        track_info = tags["trkn"][0]
+        if track_info[0]:
+            result["track"] = str(track_info[0])
+        if len(track_info) > 1 and track_info[1]:
+            result["tracktotal"] = str(track_info[1])
+    if tags.get("disk"):  # type: ignore[no-untyped-call]
+        disc_info = tags["disk"][0]
+        if disc_info[0]:
+            result["disc"] = str(disc_info[0])
+        if len(disc_info) > 1 and disc_info[1]:
+            result["disctotal"] = str(disc_info[1])
+
+    # Date
+    if "©day" in tags:
+        result["date"] = tags["©day"][0]
+
+    # Lyrics
+    if "©lyr" in tags:
+        result["lyrics"] = tags["©lyr"][0]
+
+    # Compilation flag
+    if tags.get("cpil"):  # type: ignore[no-untyped-call]
+        result["compilation"] = "1" if tags["cpil"] else "0"
+
+    # Album type (MusicBrainz)
+    if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
+        result["musicbrainzalbumtype"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Album Type"]
+        )
+
+    # ReplayGain tags
+    if "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" in tags:
+        result["replaygaintrackgain"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"]
+        )
+    if "----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN" in tags:
+        result["replaygainalbumgain"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
+        )
+
+    return result
+
+
+def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
+    """Parse ID3 tags (MP3 files) from mutagen tags dict.
+
+    :param tags: Dictionary of ID3 tags from mutagen.
+    """
+    result: dict[str, Any] = {}
+
+    # Basic tags (single value)
+    if "TIT2" in tags:
+        result["title"] = tags["TIT2"].text[0]
+    if "TPE1" in tags:
+        result["artist"] = tags["TPE1"].text[0]
+    if "TPE2" in tags:
+        result["albumartist"] = tags["TPE2"].text[0]
+    if "TALB" in tags:
+        result["album"] = tags["TALB"].text[0]
+
+    # Genre (multi-value)
+    if "TCON" in tags:
+        result["genre"] = tags["TCON"].text
+
+    # Multi-value artist tag
+    if "TXXX:ARTISTS" in tags:
+        result["artists"] = tags["TXXX:ARTISTS"].text
+
+    # MusicBrainz tags (single value)
+    if "TXXX:MusicBrainz Album Id" in tags:
+        result["musicbrainzalbumid"] = tags["TXXX:MusicBrainz Album Id"].text[0]
+    if "TXXX:MusicBrainz Release Group Id" in tags:
+        result["musicbrainzreleasegroupid"] = tags["TXXX:MusicBrainz Release Group Id"].text[0]
+    if "UFID:http://musicbrainz.org" in tags:
+        result["musicbrainzrecordingid"] = tags["UFID:http://musicbrainz.org"].data.decode()
+    if "TXXX:MusicBrainz Track Id" in tags:
+        result["musicbrainztrackid"] = tags["TXXX:MusicBrainz Track Id"].text[0]
+
+    # MusicBrainz tags (multi-value)
+    if "TXXX:MusicBrainz Album Artist Id" in tags:
+        result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
+    if "TXXX:MusicBrainz Artist Id" in tags:
+        result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
+
+    # Additional tags
+    if "TXXX:BARCODE" in tags:
+        result["barcode"] = tags["TXXX:BARCODE"].text
+    if "TXXX:TSRC" in tags:
+        result["tsrc"] = tags["TXXX:TSRC"].text
+
+    # Sort tags (multi-value to support multiple artists)
+    if "TSOP" in tags:
+        result["artistsort"] = tags["TSOP"].text
+    if "TSO2" in tags:
+        result["albumartistsort"] = tags["TSO2"].text
+
+    # Sort tags (single value)
+    if tags.get("TSOT"):
+        result["titlesort"] = tags["TSOT"].text[0]
+    if tags.get("TSOA"):
+        result["albumsort"] = tags["TSOA"].text[0]
+
+    return result
+
+
+def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
+    """Parse tags from an audio file using Mutagen.
+
+    Supports ID3 tags (MP3) and MP4 tags (AAC/M4A/ALAC).
+
+    :param input_file: Path to the audio file.
     """
     result: dict[str, Any] = {}
     try:
-        # TODO: extend with more tags and file types!
-        # https://mutagen.readthedocs.io/en/latest/user/gettingstarted.html
-        tags = mutagen.File(input_file)  # type: ignore[attr-defined]
-        if tags is None or not tags.tags:
+        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+        if audio is None or not audio.tags:
             return result
-        tags = dict(tags.tags)
-        # ID3 tags
-        if "TIT2" in tags:
-            result["title"] = tags["TIT2"].text[0]
-        if "TPE1" in tags:
-            result["artist"] = tags["TPE1"].text[0]
-        if "TPE2" in tags:
-            result["albumartist"] = tags["TPE2"].text[0]
-        if "TALB" in tags:
-            result["album"] = tags["TALB"].text[0]
-        if "TCON" in tags:
-            result["genre"] = tags["TCON"].text
-        if "TXXX:ARTISTS" in tags:
-            result["artists"] = tags["TXXX:ARTISTS"].text
-        if "TXXX:MusicBrainz Album Id" in tags:
-            result["musicbrainzalbumid"] = tags["TXXX:MusicBrainz Album Id"].text[0]
-        if "TXXX:MusicBrainz Album Artist Id" in tags:
-            result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
-        if "TXXX:MusicBrainz Artist Id" in tags:
-            result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
-        if "TXXX:MusicBrainz Release Group Id" in tags:
-            result["musicbrainzreleasegroupid"] = tags["TXXX:MusicBrainz Release Group Id"].text[0]
-        if "UFID:http://musicbrainz.org" in tags:
-            result["musicbrainzrecordingid"] = tags["UFID:http://musicbrainz.org"].data.decode()
-        if "TXXX:MusicBrainz Track Id" in tags:
-            result["musicbrainztrackid"] = tags["TXXX:MusicBrainz Track Id"].text[0]
-        if "TXXX:BARCODE" in tags:
-            result["barcode"] = tags["TXXX:BARCODE"].text
-        if "TXXX:TSRC" in tags:
-            result["tsrc"] = tags["TXXX:TSRC"].text
-        if "TSOP" in tags:
-            result["artistsort"] = tags["TSOP"].text
-        if "TSO2" in tags:
-            result["albumartistsort"] = tags["TSO2"].text
-        if tags.get("TSOT"):
-            result["titlesort"] = tags["TSOT"].text[0]
-        if tags.get("TSOA"):
-            result["albumsort"] = tags["TSOA"].text[0]
 
-        del tags
+        # Check if MP4/M4A/AAC file (uses MP4Tags)
+        if isinstance(audio.tags, MP4Tags):
+            result = _parse_mp4_tags(audio.tags)
+        else:
+            # ID3 tags (MP3) and other formats
+            tags_dict = dict(audio.tags)
+            result = _parse_id3_tags(tags_dict)
+
         return result
     except Exception as err:
         LOGGER.debug(f"Error parsing mutagen tags for {input_file}: {err}")

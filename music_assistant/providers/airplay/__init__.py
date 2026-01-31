@@ -53,7 +53,7 @@ async def get_config_entries(
                 "If you experience issues or players are not fully in sync, disable this option. \n"
                 "Also note that a late joining player may take a few seconds to catch up."
             ),
-            category="airplay",
+            category="protocol_generic",
         ),
     )
 

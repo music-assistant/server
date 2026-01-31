@@ -1,4 +1,4 @@
-"""Tests for parsing ID3 tags functions."""
+"""Tests for parsing audio file tags (ID3, MP4/AAC, etc.)."""
 
 import pathlib
 
@@ -7,7 +7,8 @@ from music_assistant.helpers import tags
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
-FILE_1 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
+FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
+FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -42,6 +43,34 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.year == 2022
     _tags.tags["date"] = ""
     assert _tags.year is None
+
+
+async def test_parse_metadata_from_mp4tags() -> None:
+    """Test parsing of metadata from MP4/AAC tags."""
+    filename = FILE_M4A
+    _tags = await tags.async_parse_tags(filename)
+    assert _tags.album == "MyAlbum"
+    assert _tags.title == "MyTitle"
+    assert _tags.album_artists == ("MyArtist",)
+    assert _tags.artists == ("MyArtist", "MyArtist2")
+    assert _tags.genres == ("Genre1", "Genre2")
+    assert _tags.musicbrainz_albumartistids == ("abcdefg",)
+    assert _tags.musicbrainz_artistids == ("abcdefg",)
+    assert _tags.musicbrainz_releasegroupid == "abcdefg"
+    assert _tags.musicbrainz_recordingid == "abcdefg"
+    # test track/disc from MP4 tuples
+    assert _tags.track == 5
+    assert _tags.disc == 1
+    # test total track/disc
+    assert _tags.tags.get("tracktotal") == "12"
+    assert _tags.tags.get("disctotal") == "2"
+    # test year
+    assert _tags.year == 2022
+    # test sort tags (artistsort/albumartistsort returned as lists to match ID3 behavior)
+    assert _tags.tags.get("titlesort") == "MyTitle Sort"
+    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("albumsort") == "MyAlbum Sort"
+    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
 
 
 async def test_parse_metadata_from_filename() -> None:
