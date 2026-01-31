@@ -10,19 +10,10 @@ Stream audio wirelessly from your Android device to Music Assistant players. Thi
 - 🔀 **Flexible Routing**: Stream to any Music Assistant player or group
 - ⚡ **Low Latency**: 20ms frame duration with intelligent buffering
 
-## Quick Start
-
-### Installation
-
-Clone this repository into your Music Assistant providers folder:
-```bash
-cd /path/to/music_assistant/providers
-git clone https://github.com/AirPlr/AriaCast-Receiver-MusicAssistant.git ariacast_receiver
-```
 
 ### Configuration
 
-1. Enable **AriaCast Receiver** in Music Assistant settings
+1. Enable **AriaCast Receiver** in Music Assistant settings by adding it as a provider
 2. Configure basic settings:
    - **Server Name**: How it appears in discovery (default: "AriaCast Speaker")
    - **Target Player**: Auto or specific player
