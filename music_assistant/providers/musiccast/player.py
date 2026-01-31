@@ -20,11 +20,15 @@ from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerF
 from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
+    PlayerOptionChoice,
+    PlayerOptionChoices,
     PlayerOptionNumber,
+    PlayerOptionText,
     PlayerOptionToggle,
     PlayerSoundMode,
     PlayerSource,
 )
+from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
@@ -369,6 +373,35 @@ class MusicCastPlayer(Player):
                         min_value=capability.value_range.minimum,
                         max_value=capability.value_range.maximum,
                         step=capability.value_range.step,
+                    )
+                )
+            elif isinstance(capability, MCTextSensor):
+                self._attr_player_option_list.append(
+                    PlayerOptionText(
+                        id=capability.id,
+                        name=capability.name,
+                        value=capability.current,
+                        passive=True,
+                    )
+                )
+            elif isinstance(capability, MCOptionSetter):
+                choices = []
+                for option_id, option_name in capability.options.items():
+                    choices.append(
+                        PlayerOptionChoice(
+                            id=str(option_id),  # aiomusiccast allows str and int.
+                            name=option_name,
+                            value=str(option_id),
+                            passive=False,
+                        )
+                    )
+                self._attr_player_option_list.append(
+                    PlayerOptionChoices(
+                        id=capability.id,
+                        name=capability.name,
+                        value=str(capability.current),
+                        passive=False,
+                        choices=UniqueList(choices),
                     )
                 )
 

@@ -1152,6 +1152,7 @@ class Player(ABC):
             source_list=self.source_list,
             active_sound_mode=self.active_sound_mode,
             sound_mode_list=self.sound_mode_list,
+            player_option_list=self.player_option_list,
             active_group=self.active_group,
             current_media=self.current_media,
             name=self.display_name,
