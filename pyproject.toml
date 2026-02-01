@@ -48,6 +48,7 @@ dependencies = [
   "aiortc>=1.6.0",
   "beat-this @ https://github.com/CPJKU/beat_this/archive/main.zip",
   "torch>=2.1,<3.0",
+  "torchaudio>=2.1,<3.0",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}

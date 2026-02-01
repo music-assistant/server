@@ -1,6 +1,7 @@
 # smart_fades_streaming_analyzer.py
 
 import asyncio
+import logging
 from typing import Any
 
 from music_assistant_models.media_items import AudioFormat

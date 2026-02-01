@@ -1,5 +1,6 @@
 # processors/base.py
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -59,6 +60,8 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         self._post = Postprocessor(type="minimal")
         self._device = device
 
+        self.logger = logging.getLogger(__name__)
+
     async def process_pcm_chunk(self, pcm_chunk: bytes) -> None:
         # 1. resample immediately
         pcm = await resample_pcm_audio(
@@ -79,6 +82,7 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
             await self._process_block()
 
     async def _process_block(self) -> None:
+        self.logger.debug("Processing 10s of pcm chunks.")
         pcm = np.concatenate(self._pcm_buffer)
         self._pcm_buffer.clear()
         self._pcm_samples = 0
