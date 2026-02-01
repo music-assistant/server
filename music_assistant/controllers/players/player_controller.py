@@ -997,7 +997,8 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command
         - option_id: The ID of the player option that needs to be activated/selected.
-        - option_value: The new value of the player option
+        - option_value: The new value of the player option. If we have a
+            PlayerOptionType.OPTIONS this is the id of PlayerOptionEntry
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
