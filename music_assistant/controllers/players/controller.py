@@ -1342,6 +1342,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
             # finally actually register it
             self._players[player_id] = player
+            # update state without signaling event first (ensure all attributes are set)
+            player.update_state(signal_event=False)
 
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
@@ -1361,8 +1363,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.display_name,
             )
             # signal event that a player was added
-            # update state without signaling event first (ensure all attributes are set)
-            player.update_state(signal_event=False)
+
             if player.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player

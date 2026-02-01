@@ -73,12 +73,6 @@ class MockPlayer(Player):
         # Clear cached properties after modifying attributes
         self._cache.clear()
 
-    @property
-    def synced_to(self) -> str | None:
-        """Override to prevent recursion in tests."""
-        # In tests, we don't set up synced relationships, so just return None
-        return None
-
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
 

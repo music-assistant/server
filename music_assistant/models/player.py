@@ -238,6 +238,18 @@ class Player(ABC):
         return self._attr_static_group_members
 
     @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        If it is part of a (permanent) group, this should also return None.
+        """
+        # default implementation: feel free to override
+        return self.__attr_synced_to
+
+    @property
     def _powered(self) -> bool | None:
         """
         Return if the player is powered on.
@@ -615,25 +627,6 @@ class Player(ABC):
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
 
-    @property
-    def synced_to(self) -> str | None:
-        """
-        Return the id of the player this player is synced to (sync leader).
-
-        If this player is not synced to another player (or is the sync leader itself),
-        this should return None.
-        If it is part of a (permanent) group, this should also return None.
-        """
-        # default implementation: feel free to override
-        for player in self.mass.players.all():
-            if player.player_id == self.player_id:
-                # skip self
-                continue
-            if player.type != PlayerType.GROUP and self.player_id in player.group_members:
-                # this player is synced to another player, but not part of a (permanent) group
-                return player.player_id
-        return None
-
     def _on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
         # optional callback for players that want to be informed when the final
@@ -939,19 +932,18 @@ class Player(ABC):
         Return the FINAL set of player id's this player can group with.
 
         This is a convenience property which calculates the final can_group_with set
-        based on any linked protocol players and current sync state.
+        based on any linked protocol players and current player/grouped state.
 
         If player is synced to a native parent: return empty set (already grouped).
         If player is synced to a protocol: can still group with other players.
-        If no active linked protocol: return _can_group_with from all active output protocols.
-        If active linked protocol: return native _can_group_with + active protocol's.
+        If no active linked protocol: return can_group_with from all active output protocols.
+        If active linked protocol: return native can_group_with + active protocol's.
 
         All protocol player IDs are translated to their visible parent player IDs.
         """
         if self.synced_to:
-            synced_parent = self.mass.players.get(self.synced_to)
-            if synced_parent and synced_parent.type != PlayerType.PROTOCOL:
-                return set()
+            # player is already synced/grouped, cannot group with others
+            return set()
 
         result = self._expand_can_group_with()
 
@@ -1134,7 +1126,7 @@ class Player(ABC):
 
     # Protocol-related properties and helpers
 
-    @property
+    @cached_property
     @final
     def output_protocols(self) -> list[OutputProtocol]:
         """
@@ -1257,6 +1249,7 @@ class Player(ABC):
             )
         else:
             self.__attr_active_output_protocol = protocol_id
+        self.mass.players.trigger_player_update(self.player_id)
 
     @final
     def set_linked_output_protocols(self, protocols: list[OutputProtocol]) -> None:
@@ -1266,6 +1259,7 @@ class Player(ABC):
         :param protocols: List of OutputProtocol objects representing active protocol players.
         """
         self.__attr_linked_protocols = protocols
+        self.mass.players.trigger_player_update(self.player_id)
 
     @final
     def set_protocol_parent_id(self, parent_id: str | None) -> None:
@@ -1275,6 +1269,7 @@ class Player(ABC):
         :param parent_id: The player_id of the parent player, or None to clear.
         """
         self.__attr_protocol_parent_id = parent_id
+        self.mass.players.trigger_player_update(self.player_id)
 
     @final
     def get_linked_protocol(self, protocol_domain: str) -> OutputProtocol | None:
@@ -1442,6 +1437,7 @@ class Player(ABC):
         """
         # TODO: validate that caller is the PlayerController ?
         self._config = config
+        self.mass.players.trigger_player_update(self.player_id)
 
     @final
     def to_dict(self) -> dict[str, Any]:
@@ -1487,6 +1483,7 @@ class Player(ABC):
         self.__attr_active_groups = self.__calculate_active_groups()
         self.__attr_current_media = self.__calculate_current_media()
         self.__attr_source_list = self.__calculate_source_list()
+        self.__attr_synced_to = self.__calculate_synced_to()
         prev_state = deepcopy(self._state)
         self._state = PlayerState(
             player_id=self.player_id,
@@ -1768,17 +1765,29 @@ class Player(ABC):
         (native or universal). This method translates protocol player IDs
         back to the visible player IDs.
 
-        :param player_ids: Set of player IDs.
+        :param player_ids: Set of player IDs (protocol player IDs).
         :return: Set of visible player IDs.
         """
         result = set()
+
         for player_id in player_ids:
             target_player = self.mass.players.get(player_id)
             if not target_player or target_player.type != PlayerType.PROTOCOL:
                 continue
             # This is a protocol player - find its visible parent
-            if target_player.protocol_parent_id:
-                result.add(target_player.protocol_parent_id)
+            if not target_player.protocol_parent_id:
+                continue
+
+            parent_player = self.mass.players.get(target_player.protocol_parent_id)
+            if not parent_player:
+                continue
+
+            # Check if the parent player should be included
+            if not self._should_include_player(parent_player):
+                continue
+
+            result.add(parent_player.player_id)
+
         return result
 
     @final
@@ -1796,29 +1805,8 @@ class Player(ABC):
             if member_id == self.player_id:
                 continue  # Don't include self
             if player := self.mass.players.get(member_id):
-                # Only include available players
-                if not player.available:
-                    continue
-                # Skip players that are active with other sources
-                if player.playback_state != PlaybackState.IDLE and player.active_source not in (
-                    None,
-                    player.player_id,
-                    self.player_id,
-                    self.active_source,
-                    self.protocol_parent_id,
-                ):
-                    continue
-                # Don't include players that are currently grouped/synced elsewhere
-                grouped_to = player.synced_to or player.active_group
-                if grouped_to not in (
-                    None,
-                    self.player_id,
-                    self.active_source,
-                    self.protocol_parent_id,
-                ):
-                    continue
-
-                result.add(player.player_id)
+                if self._should_include_player(player):
+                    result.add(player.player_id)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
@@ -1829,9 +1817,31 @@ class Player(ABC):
                 ):
                     if player.player_id == self.player_id:
                         continue  # Don't include self
-                    result.add(player.player_id)
-            return result
+                    if self._should_include_player(player):
+                        result.add(player.player_id)
         return result
+
+    @final
+    def _should_include_player(self, player: Player) -> bool:
+        """Check if a player should be included in the can-group-with set."""
+        # Only include available players
+        if not player.available:
+            return False
+        # Skip players that are active with other sources
+        if player.playback_state != PlaybackState.IDLE and player.active_source not in (
+            self.player_id,
+            self.active_source,
+            self.protocol_parent_id,
+        ):
+            return False
+        # don't include players that have group members (they are group leaders)
+        if player.group_members:
+            return False
+
+        # Don't include players that are currently grouped/synced to OTHER players
+        # But DO include players grouped to THIS player (so they can be ungrouped)
+        grouped_to = player.synced_to or player.active_group
+        return grouped_to is None or grouped_to == self.player_id
 
     # The id of the (last) active mass source.
     # This is to keep track of the last active MA source for the player,
@@ -1867,6 +1877,19 @@ class Player(ABC):
         mainly for debugging/logging purposes by the streams controller.
         """
         return self.__stop_called
+
+    __attr_synced_to: str | None = None
+
+    def __calculate_synced_to(self) -> str | None:
+        """Calculate the player this player is synced to (if any)."""
+        for player in self.mass.players.all():
+            if player.player_id == self.player_id:
+                # skip self
+                continue
+            if player.type != PlayerType.GROUP and self.player_id in player._group_members:
+                # this player is synced to another player, but not part of a (permanent) group
+                return player.player_id
+        return None
 
     def __hash__(self) -> int:
         """Return a hash of the Player."""
