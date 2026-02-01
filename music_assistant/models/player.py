@@ -27,6 +27,7 @@ from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
     PlayerOption,
+    PlayerOptionValueType,
     PlayerSoundMode,
     PlayerSource,
 )
@@ -517,7 +518,7 @@ class Player(ABC):
             "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
         )
 
-    async def set_player_option(self, option_id: str, option_value: int | bool | str) -> None:
+    async def set_player_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
         """
         Handle SET_PLAYER_OPTION command on the player.
 

@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.player import PlayerOptionValueType
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -989,7 +990,7 @@ class PlayerController(CoreController):
     @api_command("players/cmd/set_player_option")
     @handle_player_command
     async def set_player_option(
-        self, player_id: str, option_id: str, option_value: int | bool | str
+        self, player_id: str, option_id: str, option_value: PlayerOptionValueType
     ) -> None:
         """
         Handle SET_PLAYER_OPTION command on given player.
