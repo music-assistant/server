@@ -16,24 +16,9 @@ from bandcamp_async_api import (
 )
 from bandcamp_async_api.models import CollectionType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
-from music_assistant_models.media_items import (
-    Album,
-    Artist,
-    AudioFormat,
-    SearchResults,
-    Track,
-)
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.media_items import Album, Artist, AudioFormat, SearchResults, Track
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -93,7 +78,7 @@ async def get_config_entries(
             description="Search limit while getting artist top tracks.",
             value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
             default_value=DEFAULT_TOP_TRACKS_LIMIT,
-            category="advanced",
+            advanced=True,
         ),
     )
 
@@ -275,7 +260,7 @@ class BandcampProvider(MusicProvider):
                     album_name=api_album.title,
                     album_image_url=api_album.art_url,
                 )
-            elif not album_id:
+            if not album_id:
                 api_track = await self._client.get_track(artist_id, track_id)
                 return self._converters.track_from_api(
                     track=api_track,
@@ -283,8 +268,7 @@ class BandcampProvider(MusicProvider):
                     album_name=api_track.album.title if api_track.album else "",
                     album_image_url=api_track.album.art_url if api_track.album else "",
                 )
-            else:
-                raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
+            raise MediaNotFoundError(f"Track {prov_track_id} not found on Bandcamp")
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Bandcamp track {prov_track_id} search returned no results"

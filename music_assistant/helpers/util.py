@@ -27,7 +27,12 @@ import ifaddr
 from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
+    LIVE_INDICATORS,
+    SOUNDTRACK_INDICATORS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -687,6 +692,9 @@ def validate_announcement_chime_url(url: str) -> bool:
     """Validate announcement chime URL format."""
     if not url or not url.strip():
         return True  # Empty URL is valid
+
+    if url == ANNOUNCE_ALERT_FILE:
+        return True  # Built-in chime file is valid
 
     try:
         parsed = urlparse(url.strip())

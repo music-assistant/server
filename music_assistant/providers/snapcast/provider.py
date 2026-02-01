@@ -265,8 +265,7 @@ class SnapCastProvider(PlayerProvider):
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
             self._ids_map[new_id] = snap_client_id
             return new_id
-        else:
-            return self._get_ma_id(snap_client_id)
+        return self._get_ma_id(snap_client_id)
 
     def _handle_player_init(self, snap_client: Snapclient) -> SnapCastPlayer:
         """Process Snapcast add to Player controller."""

@@ -123,7 +123,7 @@ async def get_config_entries(
             label="Verify SSL",
             required=False,
             description="Whether or not to verify the certificate of SSL/TLS connections.",
-            category="advanced",
+            advanced=True,
             default_value=True,
         ),
     )

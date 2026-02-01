@@ -121,7 +121,6 @@ class DLNAPlayer(Player):
                 # connect was successful, update device info
                 self._attr_device_info = DeviceInfo(
                     model=self.device.model_name,
-                    ip_address=self.device.device.presentation_url or self.description_url,
                     manufacturer=self.device.manufacturer,
                 )
 
@@ -269,21 +268,7 @@ class DLNAPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return base_entries + PLAYER_CONFIG_ENTRIES
-
-    # async def on_player_config_change(
-    #     self,
-    #     config: PlayerConfig,
-    #     changed_keys: set[str],
-    # ) -> None:
-    #     """Call (by config manager) when the configuration of a player changes."""
-    #     if dlna_player := self.dlnaplayers.get(config.player_id):
-    #         # reset player features based on config values
-    #         self._set_player_features(dlna_player)
-    #     else:
-    #         # run discovery to catch any re-enabled players
-    #         self.mass.create_task(self.discover_players())
+        return [*PLAYER_CONFIG_ENTRIES]
 
     # COMMANDS
     @catch_request_errors

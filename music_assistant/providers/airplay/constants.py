@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import IntEnum
 from typing import Final
 
 from music_assistant_models.enums import ContentType
@@ -13,7 +13,7 @@ from music_assistant.constants import INTERNAL_PCM_FORMAT
 DOMAIN = "airplay"
 
 
-class StreamingProtocol(Enum):
+class StreamingProtocol(IntEnum):
     """AirPlay streaming protocol versions."""
 
     RAOP = 1  # AirPlay 1 (RAOP)
@@ -34,25 +34,25 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-AIRPLAY_PRELOAD_SECONDS: Final[int] = (
-    5  # Number of seconds (in PCM) to preload before throttling back
-)
-AIRPLAY_PROCESS_SPAWN_TIME_MS: Final[int] = (
-    200  # Time in ms to allow AirPlay CLI processes to spawn and initialise
-)
 AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
     2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
 )
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
 AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+RAOP_CONNECT_TIME_MS: Final[int] = 1000  # Time in ms to allow RAOP device to connect
+
+# Per-protocol credential storage keys
+CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
+CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
+
+# Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
-CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
-CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"
-CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_ap_pairing"
-CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
-CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
+
+# Pairing action keys
+CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"
+CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
+CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
-CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
@@ -80,12 +80,13 @@ BROKEN_AIRPLAY_MODELS = (
     ("Sonos", "Move 2"),
     ("Sonos", "Roam 2"),
     ("Sonos", "Arc Ultra"),
-    # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
+    # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
     ("Samsung", "*"),
 )
 
 AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
+    # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
     ("Juke Audio", "*"),
 )

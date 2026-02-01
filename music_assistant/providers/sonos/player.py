@@ -34,7 +34,6 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
-    CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
@@ -49,6 +48,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
+    UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
 )
 
 if TYPE_CHECKING:
@@ -137,7 +137,11 @@ class SonosPlayer(Player):
 
         # collect supported features
         _supported_features = SUPPORTED_FEATURES.copy()
-        if SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]:
+        if (
+            SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]
+            and self.discovery_info["device"]["modelDisplayName"]
+            not in UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS
+        ):
             _supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
         if not self.client.player.has_fixed_volume:
             _supported_features.add(PlayerFeature.VOLUME_SET)
@@ -192,8 +196,6 @@ class SonosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [
-            *await super().get_config_entries(action=action, values=values),
-            CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players
@@ -383,6 +385,23 @@ class SonosPlayer(Player):
             return
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
+
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            # We cannot use play_stream_url for announcements because Sonos treats those
+            # as duration less radio streams and will retry/loop them.
+            if not media.duration and media.custom_data:
+                announcement_url = media.custom_data.get("announcement_url", media.uri)
+                media_info = await async_parse_tags(announcement_url, require_duration=True)
+                media.duration = media_info.duration
+            media.queue_item_id = "announcement"
+            self.sonos_queue.items = [media]
+            self.sonos_queue.last_updated = time.time()
+            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            await self.client.player.group.play_cloud_queue(
+                cloud_queue_url,
+                item_id=media.queue_item_id,
+            )
+            return
 
         if (
             not self.flow_mode and media.source_id and media.queue_item_id
@@ -617,8 +636,7 @@ class SonosPlayer(Player):
                 self._attr_current_media = airplay_player.current_media
                 # return early as we dont need further info
                 return
-            else:
-                self._attr_active_source = SOURCE_AIRPLAY
+            self._attr_active_source = SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION
             and active_service != MusicService.MUSIC_ASSISTANT
@@ -892,6 +910,9 @@ class SonosPlayer(Player):
             self.sonos_queue.items.clear()
             return
         current_index = queue.current_index or 0
+        current_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else current_index
+        )
 
         # Add a few items before the current index for context
         offset = max(0, current_index - 4)
