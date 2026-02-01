@@ -144,12 +144,13 @@ class HeosPlayerProvider(PlayerProvider):
             devices = await self._heos.get_players()
             for device in devices.values():
                 player_id = str(device.player_id)
-                if player := self.mass.players.get(player_id):
+                if player := cast("HeosPlayer", self.mass.players.get(player_id)):
                     self.logger.debug(
                         "Updating existing HEOS player: %s (%s)", device.name, player_id
                     )
                     # Update properties such as name or availability
-                    cast("HeosPlayer", player).set_static_attributes()
+                    player.set_device_info()
+                    player.update_state()
                     continue
 
                 player_enabled = self.mass.config.get_raw_player_config_value(
