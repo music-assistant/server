@@ -69,6 +69,10 @@ def split_items(
 # - 1 ID: don't split at all (single artist confirmed)
 # - 2+ IDs: split on featuring first, then extra splitters until we reach the target count
 #
+# TODO: If a MusicBrainz mirror/local database was available, artist names could be
+# looked up directly using the MB Artist IDs from the tags, eliminating the need for
+# ARTISTS tag parsing or ARTIST tag splitting entirely.
+#
 # Featuring splitters - always split on these to capture featuring artists in the database
 FEATURING_SPLITTERS = [
     " featuring ",
