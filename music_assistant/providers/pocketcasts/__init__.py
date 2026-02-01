@@ -356,6 +356,7 @@ class PocketCastsProvider(MusicProvider):
                     stream_type=StreamType.HTTP,
                     path=url,
                     can_seek=True,
+                    allow_seek=True,
                 )
 
         raise MediaNotFoundError(f"Episode {item_id} not found")
@@ -436,11 +437,14 @@ class PocketCastsProvider(MusicProvider):
         raise MediaNotFoundError(msg)
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
-        """Return the resume position (in seconds) for a podcast episode.
+        """Return the resume position for a podcast episode.
 
-        Returns: (fully_played, position_seconds)
+        :param item_id: The episode item ID (format: podcast_uuid:episode_uuid).
+        :param media_type: The media type (should be PODCAST_EPISODE).
+
+        Returns: (fully_played, position_milliseconds)
         """
-        LOGGER.warning("!!! GET_RESUME_POSITION CALLED for %s !!!", item_id)
+        LOGGER.debug("Getting resume position for episode: %s", item_id)
 
         if not self._client:
             return (False, 0)
@@ -457,19 +461,21 @@ class PocketCastsProvider(MusicProvider):
 
             for ep in in_progress:
                 if ep.get("uuid") == episode_uuid:
-                    played_up_to = int(ep.get("playedUpTo", 0))  # seconds
+                    played_up_to = int(ep.get("playedUpTo", 0))  # seconds from API
                     duration = int(ep.get("duration", 0))
 
                     # Consider fully played if > 90%
                     fully_played = duration > 0 and (played_up_to / duration) > 0.9
 
                     LOGGER.debug(
-                        "Resume position for %s: %d seconds (fully_played=%s)",
+                        "Resume position for %s: %d seconds / %d ms (fully_played=%s)",
                         episode_uuid,
                         played_up_to,
+                        played_up_to * 1000,
                         fully_played,
                     )
-                    return (fully_played, played_up_to)
+                    # Return position in milliseconds as expected by Music Assistant
+                    return (fully_played, played_up_to * 1000)
 
             # Not in progress list
             return (False, 0)

@@ -136,12 +136,7 @@ SUPPORTED_FEATURES = {
 ### Fixed Issues ✅
 1. ~~**Missing lookup_key attribute**~~ - FIXED: Changed to `self.instance_id`
 2. ~~**Podcast sidebar not showing**~~ - RESOLVED: Frontend cache issue
-
-### Active Investigation ⚠️
-1. **Resume Position Not Working** - See Bug #3 in Testing Status
-   - `get_resume_position()` is called but returns (False, 0)
-   - Episode UUID matching may be failing
-   - Need to verify if MA's local position tracking is working
+3. ~~**Resume position not working**~~ - FIXED: Two-part fix (milliseconds + allow_seek)
 
 ### To Investigate
 1. **Image URLs** - Static CDN URLs used, should verify they're always accessible
@@ -176,9 +171,9 @@ SUPPORTED_FEATURES = {
 - [x] Play an episode - Playback works
 - [x] Podcast sidebar - Shows in UI (after frontend cache clear)
 - [x] Podcast images - Thumbnails load correctly
+- [x] Resume playback from saved position - SUCCESS (after Bug #3 fixes)
 
 ⚠️ **Partially Working:**
-- [ ] Resume playback from saved position - Needs investigation (see Bug #3)
 - [ ] Sync progress back to Pocketcasts - Not tested yet
 
 ❌ **Not Tested:**
@@ -207,26 +202,29 @@ SUPPORTED_FEATURES = {
 - **Status:** ✅ Resolved - not a provider issue
 - **Notes:** Podcasts ARE syncing correctly to database
 
-#### Bug #3: Resume position not working ⚠️ INVESTIGATING
+#### Bug #3: Resume position not working ✅ FIXED
 - **Discovered:** 2026-02-01 during playback testing
 - **Symptom:** Episodes always start from 0:00 instead of last played position
-- **What Works:**
-  - `get_resume_position()` IS being called by Music Assistant
-  - API successfully fetches in-progress episodes (2 found)
-  - No errors or exceptions thrown
-- **What Doesn't Work:**
-  - Episode UUID matching fails (episode not found in in-progress list)
-  - Method returns `(False, 0)` - no resume position
-- **Possible Causes:**
-  1. Episode hasn't been played in Pocketcasts yet (not in in-progress list)
-  2. Episode UUID mismatch between MA storage and Pocketcasts API
-  3. Music Assistant's own local position tracking may not be working (unrelated to provider)
-- **Status:** ⚠️ Needs investigation
-- **Next Steps:**
-  - Add debug logging to compare UUIDs
-  - Test with episode that has known progress in Pocketcasts
-  - Check if MA's local position tracking works independently
-  - Verify `update_episode_progress()` is being called during playback
+- **Root Causes:** Two separate issues found through debugging:
+  1. **Wrong units:** `get_resume_position()` returned seconds instead of milliseconds
+  2. **Missing flag:** `get_stream_details()` didn't set `allow_seek=True`
+- **Investigation Process:**
+  1. Confirmed `get_resume_position()` was being called
+  2. Confirmed API was returning correct position (194 seconds)
+  3. Discovered return value was in seconds, but MA expects milliseconds
+  4. Fixed units, but audio still started at 0:00
+  5. UI showed correct position (3:14) but audio didn't seek
+  6. Traced through code: player_queues → streams → audio.py → ffmpeg
+  7. Found ffmpeg only applies `-ss` seek if `allow_seek=True`
+  8. Provider was only setting `can_seek=True` (different flag)
+- **Fix Applied:**
+  - **Part 1:** Line 478 - Changed return to `played_up_to * 1000` (milliseconds)
+  - **Part 2:** Line 360 - Added `allow_seek=True` to StreamDetails
+- **Status:** ✅ Fixed and tested
+- **Commit:** Pending
+- **Learned:**
+  - `can_seek` = Stream format supports seeking (informational)
+  - `allow_seek` = Permission for ffmpeg to apply `-ss` parameter (required!)
 
 ### Unit Tests
 - [ ] No unit tests exist yet
@@ -366,22 +364,31 @@ SUPPORTED_FEATURES = {
   - Merged upstream/dev into pocketcasts (565 commits)
   - Rebased to create clean PR branch (4 commits only)
   - Simplified to single clean branch strategy
+  - Pushed to fork: github.com/yfhyou/MAserver
 
 - **Bug Fixes:**
-  - Fixed Bug #1: Changed `self.lookup_key` → `self.instance_id` (3 occurrences)
-  - Lines affected: 169, 174, 215 in `__init__.py`
+  - **Bug #1:** Changed `self.lookup_key` → `self.instance_id` (3 occurrences)
+    - Lines affected: 169, 174, 215 in `__init__.py`
+  - **Bug #3 (Part 1):** Fixed resume position units (seconds → milliseconds)
+    - Line 478: Return `played_up_to * 1000` instead of `played_up_to`
+    - Updated docstring to document milliseconds return value
+  - **Bug #3 (Part 2):** Added missing `allow_seek=True` flag
+    - Line 360: Added `allow_seek=True` to StreamDetails
+    - Enables ffmpeg to apply `-ss` seek parameter for resume playback
 
 - **Testing:**
   - Set up fresh development environment
   - Tested provider with real Pocketcasts account
-  - Documented 3 bugs (1 fixed, 1 resolved, 1 investigating)
+  - Documented and fixed 3 bugs (all resolved!)
+  - Verified resume playback works correctly (starts at 3:14 for 194 second position)
   - Updated STATUS.md with comprehensive test results
 
 - **Documentation:**
-  - Created STATUS.md to track development progress
+  - Created STATUS.md to track development progress (340+ lines)
   - Documented known issues and testing checklist
   - Added API endpoints reference
   - Added contributing guidelines
+  - Documented all bug findings and fixes
 
 ### Previous Work (upstream/pocketcasts)
 - **401d41c8** - More drafting
