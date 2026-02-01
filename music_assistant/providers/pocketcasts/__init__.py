@@ -166,12 +166,12 @@ class PocketCastsProvider(MusicProvider):
 
             episode_item = PodcastEpisode(
                 item_id=item_id,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=episode_data.get("title", "Unknown Episode"),
                 podcast=ItemMapping(
                     media_type=MediaType.PODCAST,
                     item_id=podcast_uuid,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     name="",
                 ),
                 position=episode_data.get("episode_number", 0),
@@ -212,7 +212,7 @@ class PocketCastsProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumbnail_url,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -259,10 +259,9 @@ class PocketCastsProvider(MusicProvider):
                 if response.status == 200:
                     data = await response.json()
                     return self._convert_podcast(data)
-                else:
-                    raise MediaNotFoundError(
-                        f"Podcast {prov_podcast_id} not found (status {response.status})"
-                    )
+                raise MediaNotFoundError(
+                    f"Podcast {prov_podcast_id} not found (status {response.status})"
+                )
 
         except Exception as err:
             LOGGER.error("Error fetching podcast %s: %s", prov_podcast_id, err)
