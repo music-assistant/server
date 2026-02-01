@@ -5,6 +5,7 @@
         "ms-python.debugpy",
         "ms-python.vscode-python-envs",
         "ms-python.vscode-pylance",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "esbenp.prettier-vscode"
     ]
 }
