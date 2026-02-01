@@ -72,7 +72,7 @@ class Player(ABC):
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
     _attr_sound_mode_list: list[PlayerSoundMode]
-    _attr_player_options: list[PlayerOption]
+    _attr_options: list[PlayerOption]
     _attr_available: bool = True
     _attr_name: str | None = None
     _attr_powered: bool | None = None
@@ -103,7 +103,7 @@ class Player(ABC):
         self._attr_can_group_with = set()
         self._attr_source_list = []
         self._attr_sound_mode_list = []
-        self._attr_player_options = []
+        self._attr_options = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self._player_id = player_id
@@ -518,17 +518,17 @@ class Player(ABC):
             "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
         )
 
-    async def set_player_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
+    async def set_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
         """
-        Handle SET_PLAYER_OPTION command on the player.
+        Handle SET_OPTION command on the player.
 
-        Will only be called if the PlayerFeature.PlayerOption is supported.
+        Will only be called if the PlayerFeature.OPTIONS is supported.
 
         :param option_id: The option_id of the PlayerOption
         :param option_value: The new value of the PlayerOption
         """
         raise NotImplementedError(
-            "set_player_option needs to be implemented when PlayerFeature.PlayerOption is set"
+            "set_option needs to be implemented when PlayerFeature.Option is set"
         )
 
     async def set_members(
@@ -663,9 +663,9 @@ class Player(ABC):
         return UniqueList(self._attr_sound_mode_list)
 
     @cached_property
-    def player_options(self) -> UniqueList[PlayerOption]:
+    def options(self) -> UniqueList[PlayerOption]:
         """Return all PlayerOptions for Player."""
-        return UniqueList(self._attr_player_options)
+        return UniqueList(self._attr_options)
 
     def _on_player_media_updated(self) -> None:  # noqa: B027
         """Handle callback when the current media of the player is updated."""
@@ -1150,7 +1150,7 @@ class Player(ABC):
             source_list=self.source_list,
             active_sound_mode=self.active_sound_mode,
             sound_mode_list=self.sound_mode_list,
-            player_options=self.player_options,
+            options=self.options,
             active_group=self.active_group,
             current_media=self.current_media,
             name=self.display_name,

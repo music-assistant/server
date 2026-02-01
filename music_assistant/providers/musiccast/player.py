@@ -22,7 +22,7 @@ from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
     PlayerOption,
-    PlayerOptionChoice,
+    PlayerOptionEntry,
     PlayerOptionType,
     PlayerSoundMode,
     PlayerSource,
@@ -116,7 +116,7 @@ class MusicCastPlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
             PlayerFeature.SELECT_SOUND_MODE,
-            PlayerFeature.PLAYER_OPTION,
+            PlayerFeature.OPTIONS,
         }
 
         self._attr_device_info = DeviceInfo(
@@ -329,14 +329,14 @@ class MusicCastPlayer(Player):
         # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
         # BinarySensor, TextSensor
         # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
-        self._attr_player_options = []
+        self._attr_options = []
         for capability in cast(
             "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
             zone_data.capabilities,
         ):
             # ruff: noqa: E501 # line too long
             if isinstance(capability, MCBinarySensor):
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -346,7 +346,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCBinarySetter):
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -356,7 +356,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCNumberSensor):
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -366,7 +366,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCNumberSetter):
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -379,7 +379,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCTextSensor):
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -392,21 +392,21 @@ class MusicCastPlayer(Player):
                 options = []
                 for option_id, option_name in capability.options.items():
                     options.append(
-                        PlayerOptionChoice(
+                        PlayerOptionEntry(
                             id=str(option_id),  # aiomusiccast allows str and int.
                             name=option_name,
                             value=str(option_id),
                             read_only=False,
                         )
                     )
-                self._attr_player_options.append(
+                self._attr_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
-                        type=PlayerOptionType.CHOICES,
+                        type=PlayerOptionType.OPTIONS,
                         value=str(capability.current),
                         read_only=False,
-                        choices=UniqueList(options),
+                        options=UniqueList(options),
                     )
                 )
 
@@ -649,7 +649,7 @@ class MusicCastPlayer(Player):
         """Select sound Mode Command."""
         await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
 
-    async def set_player_option(self, option_id: str, option_value: int | bool | str) -> None:
+    async def set_option(self, option_id: str, option_value: int | bool | str) -> None:
         """Set player option."""
         if self.zone_device.zone_data is None:
             return
