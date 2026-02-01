@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING, cast
 
 import pywiim
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from pywiim import WiiMClient
-from pywiim.upnp.client import UpnpClient
 from pywiim.upnp.eventer import UpnpEventer
 
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
+    from pywiim.upnp.client import UpnpClient
+
     from .provider import WiimProvider
 
 
@@ -21,7 +21,12 @@ class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
 
     def __init__(
-        self, provider: WiimProvider, player_id: str, name: str, client: WiiMClient
+        self,
+        provider: WiimProvider,
+        player_id: str,
+        name: str,
+        client: pywiim.WiiMClient,
+        upnp_client: UpnpClient,
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
@@ -38,38 +43,27 @@ class WiimPlayer(Player):
             # PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {provider.instance_id}
-        self.client = client
-        self.wiim_player: pywiim.Player | None = None
-        self.current_uri: str | None = None
-
-    async def setup(self, ip_address: str) -> None:
-        """Handle logic when the player is set up in the Player controller."""
-        # Create UPnP client (required for events and queue management)
-        description_url = f"http://{ip_address}:49152/description.xml"
-        upnp_client = await UpnpClient.create(ip_address, description_url)
-
-        # Create Player with UPnP client (for queue management + events)
+        self.wiim_client = client
+        self.wiim_upnp_client = upnp_client
         self.wiim_player = pywiim.Player(
-            self.client,
+            client,
             upnp_client=upnp_client,
             on_state_changed=self._update_ma_state_from_sdk_cache,
         )
+        self.current_uri: str | None = None
 
-        await self.wiim_player.refresh()
-
-        if self.wiim_player.uuid is None:
-            raise RuntimeError("Could not get UUID from WiiM player")
-
+    async def setup(self) -> None:
+        """Handle logic when the player is set up in the Player controller."""
         # Create UpnpEventer with same UPnP client (for real-time events)
-        eventer = UpnpEventer(
-            upnp_client,  # Share same UPnP client
+        self.wiim_eventer = UpnpEventer(
+            self.wiim_upnp_client,  # Share same UPnP client
             self.wiim_player,  # Player implements apply_diff() for state updates
-            self.wiim_player.uuid,
+            self.player_id,
             state_updated_callback=self.foo,
         )
 
         # Start UPnP event subscriptions
-        await eventer.start()
+        await self.wiim_eventer.start()
 
     def foo(self) -> None:
         """Call the next status update method."""
@@ -169,11 +163,7 @@ class WiimPlayer(Player):
                         await child_player.wiim_player.leave_group()
 
     def _update_ma_state_from_sdk_cache(self) -> None:
-        """Update MA state from SDK's cache/HTTP poll attributes.
-
-        This is the main method for updating this entity's MA attributes.
-        Crucially, it also handles propagating metadata to followers if this is a leader.
-        """
+        """Update MA state from SDK's cache/HTTP poll attributes."""
         if self.wiim_player is not None:
             logger = self.logger
             logger.debug("Device %s: Updating MA state from SDK cache/HTTP poll", self._attr_name)
