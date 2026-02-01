@@ -24,6 +24,7 @@ from music_assistant_models.player import (
     PlayerOption,
     PlayerOptionEntry,
     PlayerOptionType,
+    PlayerOptionValueType,
     PlayerSoundMode,
     PlayerSource,
 )
@@ -396,6 +397,7 @@ class MusicCastPlayer(Player):
                             id=str(option_id),  # aiomusiccast allows str and int.
                             name=option_name,
                             value=str(option_id),
+                            type=PlayerOptionType.TEXT,
                             read_only=False,
                         )
                     )
@@ -649,7 +651,7 @@ class MusicCastPlayer(Player):
         """Select sound Mode Command."""
         await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
 
-    async def set_option(self, option_id: str, option_value: int | bool | str) -> None:
+    async def set_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
         """Set player option."""
         if self.zone_device.zone_data is None:
             return
@@ -675,7 +677,8 @@ class MusicCastPlayer(Player):
                     return
                 await capability.set(int(option_value))
             elif isinstance(capability, MCOptionSetter):
-                _option_value: str | int = option_value  # we may have an int in aiomusiccast as key
+                assert isinstance(option_value, str | int)  # for type checking
+                _option_value = option_value  # we may have an int in aiomusiccast as key
                 with suppress(ValueError):
                     _option_value = int(_option_value)
                 if _option_value not in capability.options:
