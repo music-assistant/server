@@ -1687,7 +1687,7 @@ class MusicController(CoreController):
         details: str | None | Any = UNSET,
         audio_format: AudioFormat | Any = UNSET,
     ) -> None:
-        """Patch an existing provider mapping row."""
+        """Update an existing provider mapping for a library item."""
         ctrl = self.get_controller(media_type)
         await ctrl.update_provider_mapping(
             item_id=db_id,
