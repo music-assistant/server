@@ -154,7 +154,6 @@ class DLNAPlayerProvider(PlayerProvider):
                 # will be updated later.
                 dlna_player._attr_device_info = DeviceInfo(
                     model="unknown",
-                    ip_address=description_url,
                     manufacturer="unknown",
                 )
                 self.dlnaplayers[udn] = dlna_player

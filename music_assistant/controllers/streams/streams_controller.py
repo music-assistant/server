@@ -241,7 +241,7 @@ class StreamsController(CoreController):
                 "If you run Music Assistant on a capable device with enough memory, "
                 "enabling this option is strongly recommended.",
                 required=False,
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
@@ -252,7 +252,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
@@ -263,7 +263,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -271,7 +271,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for radio streams",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -279,7 +279,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for tracks",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
@@ -288,7 +288,7 @@ class StreamsController(CoreController):
                 label="Allow crossfade between tracks from the same album",
                 description="Enabling this option allows for crossfading between tracks "
                 "that are part of the same album.",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
@@ -299,7 +299,9 @@ class StreamsController(CoreController):
                 "\nMake sure that this IP can be reached by players on the local network, "
                 "otherwise audio streaming will not work.",
                 required=False,
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -309,7 +311,9 @@ class StreamsController(CoreController):
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
                 "on the given IP and TCP port by players on the local network.",
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -321,8 +325,10 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 required=False,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SMART_FADES_LOG_LEVEL,
@@ -331,7 +337,8 @@ class StreamsController(CoreController):
                 description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
             CONF_ENTRY_ZEROCONF_INTERFACES,
         )

@@ -122,7 +122,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="SMB Version",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="3.0",
             options=[
                 ConfigValueOption("Auto", ""),
@@ -140,7 +140,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Cache Mode",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="loose",
             options=[
                 ConfigValueOption("Strict", "strict"),

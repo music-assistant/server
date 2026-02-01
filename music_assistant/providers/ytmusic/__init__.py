@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
 from io import StringIO
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from aiohttp import ClientConnectorError
 from duration_parser import parse as parse_str_duration
@@ -121,6 +122,7 @@ YT_PERSONAL_PLAYLISTS = (
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
+DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -196,6 +198,7 @@ class YoutubeMusicProvider(MusicProvider):
     _cipher = None
     _yt_user = None
     _cookie = None
+    _yt_dlp_module = None
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -620,6 +623,11 @@ class YoutubeMusicProvider(MusicProvider):
             item_id = item_id.split(PODCAST_EPISODE_SPLITTER)[1]
         stream_format = await self._get_stream_format(item_id=item_id)
         self.logger.debug("Found stream_format: %s for song %s", stream_format["format"], item_id)
+        url = stream_format["url"]
+        expiration = DEFAULT_STREAM_URL_EXPIRATION
+        if parsed := parse_qs(urlparse(url).query):
+            if expire_ts := parsed.get("expire", [None])[0]:
+                expiration = int(expire_ts) - int(time.time())
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -627,9 +635,10 @@ class YoutubeMusicProvider(MusicProvider):
                 content_type=ContentType.try_parse(stream_format["audio_ext"]),
             ),
             stream_type=StreamType.HTTP,
-            path=stream_format["url"],
+            path=url,
             can_seek=True,
             allow_seek=True,
+            expiration=expiration,
         )
         if (
             stream_format.get("audio_channels")
@@ -993,7 +1002,9 @@ class YoutubeMusicProvider(MusicProvider):
         """Figure out the stream URL to use and return the highest quality."""
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
-            yt_dlp = importlib.import_module("yt_dlp")
+            if self._yt_dlp_module is None:
+                self._yt_dlp_module = importlib.import_module("yt_dlp")
+            yt_dlp = self._yt_dlp_module
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,

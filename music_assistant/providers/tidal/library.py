@@ -31,22 +31,22 @@ class TidalLibraryManager:
     async def get_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists."""
         path = f"users/{self.auth.user_id}/favorites/artists"
-        async for item in self.api.paginate(path, nested_key="item"):
-            if item and item.get("id"):
+        async for item in self.api.paginate(path):
+            if item and item.get("item") and item["item"].get("id"):
                 yield parse_artist(self.provider, item)
 
     async def get_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums."""
         path = f"users/{self.auth.user_id}/favorites/albums"
-        async for item in self.api.paginate(path, nested_key="item"):
-            if item and item.get("id"):
+        async for item in self.api.paginate(path):
+            if item and item.get("item") and item["item"].get("id"):
                 yield parse_album(self.provider, item)
 
     async def get_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks."""
         path = f"users/{self.auth.user_id}/favorites/tracks"
-        async for item in self.api.paginate(path, nested_key="item"):
-            if item and item.get("id"):
+        async for item in self.api.paginate(path):
+            if item and item.get("item") and item["item"].get("id"):
                 yield parse_track(self.provider, item)
 
     async def get_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -60,8 +60,8 @@ class TidalLibraryManager:
 
         # 2. Get user playlists
         path = f"users/{self.auth.user_id}/playlistsAndFavoritePlaylists"
-        async for item in self.api.paginate(path, nested_key="playlist"):
-            if item and item.get("uuid"):
+        async for item in self.api.paginate(path):
+            if item and item.get("playlist") and item["playlist"].get("uuid"):
                 yield parse_playlist(self.provider, item)
 
     async def add_item(self, item: MediaItemType) -> bool:

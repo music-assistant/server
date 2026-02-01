@@ -16,24 +16,9 @@ from bandcamp_async_api import (
 )
 from bandcamp_async_api.models import CollectionType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
-from music_assistant_models.media_items import (
-    Album,
-    Artist,
-    AudioFormat,
-    SearchResults,
-    Track,
-)
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.media_items import Album, Artist, AudioFormat, SearchResults, Track
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -93,7 +78,7 @@ async def get_config_entries(
             description="Search limit while getting artist top tracks.",
             value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
             default_value=DEFAULT_TOP_TRACKS_LIMIT,
-            category="advanced",
+            advanced=True,
         ),
     )
 
