@@ -1,6 +1,7 @@
 # processors/base.py
 
 import logging
+import time
 from typing import Any
 
 import numpy as np
@@ -50,6 +51,7 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
 
         self._pcm_buffer: list[np.ndarray] = []
         self._pcm_samples = 0
+        self._total_pcm_samples = 0
         self._feature_blocks: list[np.ndarray] = []
 
         self._features = AdvancedBeatFeatureExtractor(
@@ -77,19 +79,23 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         # 2. buffer resampled PCM
         self._pcm_buffer.append(pcm_22k)
         self._pcm_samples += len(pcm_22k)
+        self._total_pcm_samples += len(pcm_22k)
 
         if self._pcm_samples >= self.block_samples:
             await self._process_block()
 
     async def _process_block(self) -> None:
-        self.logger.debug("Processing 10s of pcm chunks.")
         pcm = np.concatenate(self._pcm_buffer)
         self._pcm_buffer.clear()
         self._pcm_samples = 0
 
+        start_time = time.perf_counter()
         feats = await self._features.process_pcm(pcm)
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+
         if feats.size:
             self._feature_blocks.append(feats)
+        self.logger.debug("Processed 10s of PCM chunks in %.1fms", elapsed_ms)
 
     async def finalize(self) -> dict[str, Any]:
         # 1. Process remaining buffered PCM
@@ -109,22 +115,45 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         feats = np.concatenate(self._feature_blocks, axis=0)
 
         tensor = torch.from_numpy(feats).to(self._device)
+        self.logger.debug(
+            "Running model inference on %d frames (%.1fs of audio)",
+            feats.shape[0],
+            feats.shape[0] * 0.02,  # 20ms per frame (hop_length=441 at 22050Hz)
+        )
 
         # 4. Single-shot model inference
+        inference_start = time.perf_counter()
         with torch.no_grad():
             beat_logits, downbeat_logits = self._model(tensor)
-            beats, downbeats = self._post(beat_logits, downbeat_logits)
+            model_elapsed = (time.perf_counter() - inference_start) * 1000
 
-        # 5. Free memory and reset state
+            post_start = time.perf_counter()
+            beats, downbeats = self._post(beat_logits, downbeat_logits)
+            post_elapsed = (time.perf_counter() - post_start) * 1000
+
+        self.logger.debug(
+            "Model inference: %.1fms, postprocessing: %.1fms, detected %d beats, %d downbeats",
+            model_elapsed,
+            post_elapsed,
+            len(beats),
+            len(downbeats),
+        )
+
+        # 5. Calculate duration from total samples processed
+        duration = self._total_pcm_samples / BEAT_THIS_ANALYSIS_AUDIO_FORMAT.sample_rate
+
+        # 6. Free memory and reset state
         await self.reset()
 
         return {
             "beats": beats,
             "downbeats": downbeats,
+            "duration": duration,
         }
 
     async def reset(self) -> None:
         self._pcm_buffer.clear()
         self._feature_blocks.clear()
         self._pcm_samples = 0
+        self._total_pcm_samples = 0
         self._features.reset()

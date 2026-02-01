@@ -16,6 +16,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final, cast
 
 from aiofiles.os import wrap
@@ -37,7 +38,6 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
-import numpy as np
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -71,9 +71,8 @@ from music_assistant.controllers.streams.smart_fades.extended_analysis import (
     ExtendedAnalysisProcessor,
 )
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
-from music_assistant.controllers.streams.smart_fades.streaming_analyzer import SmartFadesStreamingAnalyzer
-from music_assistant.controllers.streams.smart_fades.streaming_extractor import (
-    StreamingFeatureExtractor,
+from music_assistant.controllers.streams.smart_fades.streaming_analyzer import (
+    SmartFadesStreamingAnalyzer,
 )
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
@@ -97,7 +96,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
-from music_assistant.models.smart_fades import SmartFadesMode
+from music_assistant.models.smart_fades import SmartFadesAnalysisFragment, SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
@@ -129,7 +128,7 @@ CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
 #     "yes",
 # )
 SMART_FADES_TEST_MODE = True
-SMART_FADES_TEST_DIR: Final[str] = "smart_fades_test/songs"
+SMART_FADES_TEST_DIR: Final[str] = "../smart_fades_test/songs"
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -189,7 +188,7 @@ class StreamsController(CoreController):
         self._smart_fades_mixer = SmartFadesMixer(self)
         self._smart_fades_analyzer = SmartFadesAnalyzer(self)
         # Extended smart fades feature extraction
-        self._active_extractors: dict[str, StreamingFeatureExtractor] = {}
+        self._active_extractors: dict[str, SmartFadesStreamingAnalyzer] = {}
         self._extraction_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent extractions
         self._extended_analysis_processor = ExtendedAnalysisProcessor(
             self.logger.getChild("extended_analysis")
@@ -1061,16 +1060,16 @@ class StreamsController(CoreController):
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",
                 queue_track.streamdetails.uri,
-                queue_track.name,f
+                queue_track.name,
                 queue.display_name,
             )
 
             # Start feature extraction for extended smart fades analysis
-            feature_extractor: StreamingFeatureExtractor | None = None
-            # if smart_fades_mode != SmartFadesMode.DISABLED:
-            #     feature_extractor = await self._start_feature_extraction(
-            #         queue_track, queue, pcm_format
-            #     )
+            feature_extractor: SmartFadesStreamingAnalyzer | None = None
+            if smart_fades_mode != SmartFadesMode.DISABLED:
+                feature_extractor = await self._start_feature_extraction(
+                    queue_track, queue, pcm_format
+                )
 
             # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
             pcm_capture_key = self._start_pcm_capture(queue_track, pcm_format)
@@ -1134,8 +1133,8 @@ class StreamsController(CoreController):
                     await feature_extractor.process_pcm_chunk(chunk)
 
                 # Write chunk to PCM capture file (test mode)
-                # if pcm_capture_key:
-                #     self._write_pcm_capture(pcm_capture_key, chunk)
+                if pcm_capture_key:
+                    self._write_pcm_capture(pcm_capture_key, chunk)
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -1197,10 +1196,14 @@ class StreamsController(CoreController):
             # We do this here (not after buffer handling) so analysis can run while
             # remaining audio is being sent to player
             if feature_extractor:
-                results = await feature_extractor.finalize()
-                beats = results.get("beats", np.array([]))
-                downbeats = results.get("downbeats", np.array([]))
-                self.logger.info("Beats: %s \nDownbeats: %s", beats, downbeats)
+                analysis = await feature_extractor.finalize()
+                self.logger.info(
+                    "Analysis finished for %s. BPM: %.1f, Beats: %s\nDownbeats: %s",
+                    queue_track.streamdetails.stream_title,
+                    analysis.bpm,
+                    analysis.beats,
+                    analysis.downbeats,
+                )
                 feature_extractor = None  # Prevent double finalization
 
             # Finalize PCM capture (test mode)
@@ -1592,7 +1595,7 @@ class StreamsController(CoreController):
         )
 
         # Start feature extraction for extended smart fades analysis
-        feature_extractor: StreamingFeatureExtractor | None = None
+        feature_extractor: SmartFadesStreamingAnalyzer | None = None
         if smart_fades_mode != SmartFadesMode.DISABLED:
             feature_extractor = await self._start_feature_extraction(queue_item, queue, pcm_format)
 
@@ -1657,12 +1660,9 @@ class StreamsController(CoreController):
             else:
                 req_buffer_size = crossfade_buffer_size
 
-            # Queue chunk for feature extraction (non-blocking, just appends to list)
-            if feature_extractor and not feature_extractor.is_aborted:
-                feature_extractor.queue_chunk(chunk, pcm_format)
-                # Process accumulated audio if threshold reached
-                if feature_extractor.should_process():
-                    self.mass.create_task(feature_extractor.process_pending())
+            # Queue chunk for feature extraction
+            if feature_extractor:
+                await feature_extractor.process_pcm_chunk(chunk)
 
             # Write chunk to PCM capture file (test mode)
             if pcm_capture_key:
@@ -1716,12 +1716,16 @@ class StreamsController(CoreController):
                 buffer = buffer[pcm_format.pcm_sample_size :]
 
         #### HANDLE END OF TRACK
-        # Stream data fully received - start final feature extraction analysis in background
-        # We do this here (not after buffer handling) so analysis can run while
-        # remaining audio is being sent to player
-        if feature_extractor and not feature_extractor.is_aborted:
-            self.mass.create_task(self._finalize_feature_extraction(feature_extractor, pcm_format))
-            feature_extractor = None  # Prevent double finalization
+        # Stream data fully received - finalize feature extraction
+        if feature_extractor:
+            analysis = await feature_extractor.finalize()
+            self.logger.info(
+                "Smart fades analysis for %s: %d beats, %d downbeats",
+                queue_item.name,
+                len(analysis.beats),
+                len(analysis.downbeats),
+            )
+            feature_extractor = None
 
         # Finalize PCM capture (test mode)
         if pcm_capture_key:
@@ -2110,7 +2114,7 @@ class StreamsController(CoreController):
         queue_item: QueueItem,
         queue: PlayerQueue,
         pcm_format: AudioFormat,
-    ) -> StreamingFeatureExtractor | None:
+    ) -> SmartFadesStreamingAnalyzer | None:
         """Start feature extraction for a queue item if eligible.
 
         :param queue_item: The queue item being streamed.
@@ -2136,19 +2140,25 @@ class StreamsController(CoreController):
             return None
 
         # 3. Check if we already have full-song analysis
-        existing = await self.mass.music.get_extended_smart_fades_analysis(
+        existing = await self.mass.music.get_smart_fades_analysis(
             streamdetails.item_id,
             streamdetails.provider,
+            SmartFadesAnalysisFragment.FULL_SONG,
         )
         if existing:
             self.logger.debug(
-                "Skipping feature extraction for %s - already have extended analysis",
+                "Skipping feature extraction for %s - already have full-song analysis",
                 queue_item.name,
             )
             return None
 
-        # 4. Check concurrency limit
-        extractor = SmartFadesStreamingAnalyzer(audio_format=pcm_format)
+        # 4. Create extractor
+        extractor = SmartFadesStreamingAnalyzer(
+            streams=self,
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            audio_format=pcm_format,
+        )
 
         # Track the extractor
         extractor_key = f"{queue.queue_id}:{queue_item.queue_item_id}"
@@ -2161,84 +2171,6 @@ class StreamsController(CoreController):
         )
 
         return extractor
-
-    async def _finalize_feature_extraction(
-        self,
-        extractor: StreamingFeatureExtractor,
-        pcm_format: AudioFormat,
-    ) -> None:
-        """Finalize feature extraction and store the analysis.
-
-        :param extractor: The feature extractor to finalize.
-        :param pcm_format: PCM format of the audio stream.
-        """
-        if extractor.is_aborted or extractor.is_finalized:
-            return
-
-        # finalize() processes any remaining audio buffer
-        await extractor.finalize()
-
-        # Remove from active extractors
-        for key, ext in list(self._active_extractors.items()):
-            if ext is extractor:
-                del self._active_extractors[key]
-                break
-
-        # Check if we have sufficient data
-        if not extractor.accumulator.has_sufficient_data():
-            self.logger.debug(
-                "Feature extraction for %s has insufficient data, skipping analysis",
-                extractor.track_id,
-            )
-            return
-
-        # Log accumulator stats before analysis
-        self.logger.debug(
-            "Finalizing feature extraction for %s: duration=%.1fs",
-            extractor.track_id,
-            extractor.accumulator.get_duration(),
-        )
-
-        # Perform extended analysis
-        try:
-            analysis = await self._extended_analysis_processor.analyze(
-                accumulator=extractor.accumulator,
-                sample_rate=pcm_format.sample_rate,
-                hop_length=extractor.hop_length,
-            )
-
-            if analysis:
-                # Store in database
-                await self.mass.music.set_extended_smart_fades_analysis(
-                    extractor.track_id,
-                    extractor.provider_id,
-                    analysis,
-                )
-                self.logger.debug(
-                    "Extended smart fades analysis stored for %s: BPM=%.1f, key=%s, "
-                    "%d phrase boundaries",
-                    extractor.track_id,
-                    analysis.bpm,
-                    f"{analysis.musical_key.root} {analysis.musical_key.mode}"
-                    if analysis.musical_key
-                    else "unknown",
-                    len(analysis.phrase_boundaries),
-                )
-            else:
-                self.logger.debug(
-                    "Extended analysis failed for %s",
-                    extractor.track_id,
-                )
-
-        except Exception as e:
-            self.logger.warning(
-                "Failed to finalize feature extraction for %s: %s",
-                extractor.track_id,
-                e,
-            )
-        finally:
-            # Clean up accumulator
-            extractor.accumulator.clear()
 
     def _start_pcm_capture(
         self,
@@ -2263,21 +2195,27 @@ class StreamsController(CoreController):
 
         # Build filename: {item_id}_{sample_rate}_{channels}_{bit_depth}.pcm
         item_id = streamdetails.item_id.replace("/", "_").replace("\\", "_")
-        title = streamdetails.title
+        title = (queue_item.name or "unknown").replace("/", "-").replace("\\", "-")
         sr = pcm_format.sample_rate
         ch = pcm_format.channels
         bd = pcm_format.bit_depth
         filename = f"{item_id}_{title}_{sr}_{ch}_{bd}.pcm"
         file_path = os.path.join(SMART_FADES_TEST_DIR, filename)
+        capture_key = f"{queue_item.queue_id}:{queue_item.queue_item_id}"
 
-        # Don't overwrite existing captures
+        # Check if there's an active session for this capture key (stream restart scenario)
+        # If so, the previous stream was cancelled without cleanup - abort it first
+        if capture_key in self._pcm_captures:
+            self.logger.debug("Aborting orphaned PCM capture for restarted stream: %s", capture_key)
+            self._abort_pcm_capture(capture_key)
+
+        # Don't overwrite existing captures (from previous complete sessions)
         if os.path.exists(file_path):
             self.logger.debug("PCM capture already exists: %s", file_path)
             return None
 
         try:
             file_handle = open(file_path, "wb")  # noqa: SIM115
-            capture_key = f"{queue_item.queue_id}:{queue_item.queue_item_id}"
             self._pcm_captures[capture_key] = PCMCaptureSession(
                 file_path=file_path,
                 file_handle=file_handle,
@@ -2321,3 +2259,24 @@ class StreamsController(CoreController):
                 )
             except OSError:
                 pass
+
+    def _abort_pcm_capture(self, capture_key: str) -> None:
+        """Abort a PCM capture session and delete the incomplete file.
+
+        Used when a stream is restarted (e.g., client disconnect) and the previous
+        capture was incomplete.
+
+        :param capture_key: The capture session key.
+        """
+        session = self._pcm_captures.pop(capture_key, None)
+        if session:
+            try:
+                if session.file_handle:
+                    session.file_handle.close()
+                # Delete the incomplete file
+                file_path = Path(session.file_path)
+                if file_path.exists():
+                    file_path.unlink()
+                    self.logger.debug("Deleted incomplete PCM capture: %s", session.file_path)
+            except OSError as e:
+                self.logger.warning("Failed to abort PCM capture: %s", e)
