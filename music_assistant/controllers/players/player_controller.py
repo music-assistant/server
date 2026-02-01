@@ -1007,7 +1007,7 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support set_player_option"
             )
 
-        prev_player_option = next((x for x in player.player_option_list if x.id == option_id), None)
+        prev_player_option = next((x for x in player.player_options if x.id == option_id), None)
         if not prev_player_option:
             return
         if prev_player_option.value == option_value:

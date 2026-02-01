@@ -329,14 +329,14 @@ class MusicCastPlayer(Player):
         # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
         # BinarySensor, TextSensor
         # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
-        self._attr_player_option_list = []
+        self._attr_player_options = []
         for capability in cast(
             "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
             zone_data.capabilities,
         ):
             # ruff: noqa: E501 # line too long
             if isinstance(capability, MCBinarySensor):
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -346,7 +346,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCBinarySetter):
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -356,7 +356,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCNumberSensor):
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -366,7 +366,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCNumberSetter):
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -379,7 +379,7 @@ class MusicCastPlayer(Player):
                     )
                 )
             elif isinstance(capability, MCTextSensor):
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
@@ -399,7 +399,7 @@ class MusicCastPlayer(Player):
                             read_only=False,
                         )
                     )
-                self._attr_player_option_list.append(
+                self._attr_player_options.append(
                     PlayerOption(
                         id=capability.id,
                         name=capability.name,
