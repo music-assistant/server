@@ -21,7 +21,12 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,

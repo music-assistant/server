@@ -1621,6 +1621,12 @@ class PlayerController(CoreController):
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
+        # signal a separate PlayerOptionsUpdated event
+        if options := changed_values.get("options"):
+            self.mass.signal_event(
+                EventType.PLAYER_OPTIONS_UPDATED, object_id=player_id, data=options
+            )
+
         if skip_forward and not force_update:
             return
 
