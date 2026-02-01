@@ -75,7 +75,7 @@ class HeosPlayer(Player):
         await self.build_source_list()
 
     def set_device_info(self) -> None:
-        """Set all player static attributes."""
+        """Set all device info attributes."""
         # Extract manufacturer and model from device model string, if available
         model_parts = self._device.model.split(maxsplit=1)
         manufacturer = model_parts[0] if len(model_parts) == 2 else "HEOS"
