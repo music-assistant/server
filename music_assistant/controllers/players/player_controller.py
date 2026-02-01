@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -91,7 +92,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
-    from music_assistant_models.player import PlayerOptionValueType
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
