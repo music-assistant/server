@@ -990,13 +990,13 @@ class PlayerController(CoreController):
     @api_command("players/cmd/set_option")
     @handle_player_command
     async def set_option(
-        self, player_id: str, option_id: str, option_value: PlayerOptionValueType
+        self, player_id: str, option_key: str, option_value: PlayerOptionValueType
     ) -> None:
         """
         Handle SET_PLAYER_OPTION command on given player.
 
         - player_id: player_id of the player to handle the command
-        - option_id: The ID of the player option that needs to be activated/selected.
+        - option_key: The key of the player option that needs to be activated/selected.
         - option_value: The new value of the player option. If we have a
             PlayerOptionType.OPTIONS this is the id of PlayerOptionEntry
         """
@@ -1008,7 +1008,7 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support set_player_option"
             )
 
-        prev_player_option = next((x for x in player.options if x.id == option_id), None)
+        prev_player_option = next((x for x in player.options if x.key == option_key), None)
         if not prev_player_option:
             return
         if prev_player_option.value == option_value:
@@ -1016,11 +1016,11 @@ class PlayerController(CoreController):
 
         if prev_player_option.read_only:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} option {option_id} is read-only"
+                f"Player {player.display_name} option {option_key} is read-only"
             )
 
         # forward to player
-        await player.set_option(option_id=option_id, option_value=option_value)
+        await player.set_option(option_id=option_key, option_value=option_value)
 
     @api_command("players/cmd/select_source")
     @handle_player_command

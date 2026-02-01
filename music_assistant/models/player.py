@@ -523,7 +523,7 @@ class Player(ABC):
             "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
         )
 
-    async def set_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
         """
         Handle SET_OPTION command on the player.
 
