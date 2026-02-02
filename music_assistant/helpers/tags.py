@@ -975,11 +975,9 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Explicit multi-artist tags take precedence if present
+    # Explicit ARTISTS tag takes precedence if present
     if artists := _vorbis_get_multi(tags, "ARTISTS"):
         result["artists"] = artists
-    if albumartists := _vorbis_get_multi(tags, "ALBUMARTISTS"):
-        result["albumartists"] = albumartists
 
 
 def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
