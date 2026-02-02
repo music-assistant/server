@@ -170,6 +170,9 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+markers = [
+  "e2e: mark test as end-to-end (requires server process and free port 8095)",
+]
 filterwarnings = [
   # Suppress Python 3.13 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",
