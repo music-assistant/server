@@ -1565,18 +1565,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
-            child_player.update_state()
+            self.trigger_player_update(child_player.player_id)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            group_player.update_state()
+            self.trigger_player_update(group_player.player_id)
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
-            synced_to_player.update_state()
+            self.trigger_player_update(synced_to_player.player_id)
         # update/signal active groups when a group member updates
         if (active_group := player.active_group) and (
             active_group_player := self.get(active_group)
         ):
-            active_group_player.update_state()
+            self.trigger_player_update(active_group_player.player_id)
         # If this is a protocol player, forward the state update to the parent player
         if player.protocol_parent_id and (
             parent_player := self.mass.players.get(player.protocol_parent_id)
@@ -1593,6 +1593,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for linked in player.linked_output_protocols:
                 if protocol_player := self.mass.players.get(linked.output_protocol_id):
                     self.mass.players.trigger_player_update(protocol_player.player_id)
+        # trigger update of all players in a provider if group related fields changed
+        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
+            for prov_player in player.provider.players:
+                self.trigger_player_update(prov_player.player_id)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -2297,7 +2301,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Check if parent supports native grouping
         parent_supports_native_grouping = (
-            PlayerFeature.SET_MEMBERS in parent_player.supported_features
+            # NOTE: Accessing protected member _supported_features
+            # because we want the original supported features, not the
+            # modified version that may include dynamic features.
+            PlayerFeature.SET_MEMBERS in parent_player._supported_features
         )
 
         self.logger.log(

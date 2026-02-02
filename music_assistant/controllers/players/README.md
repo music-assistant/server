@@ -56,7 +56,7 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
                                   │ update_state()
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   PlayerState (API)                              │
+│                   PlayerState (API)                             │
 │  - Final display name (with user customizations)                │
 │  - Transformed state (fake controls applied)                    │
 │  - Player controls configuration                                │
@@ -120,7 +120,7 @@ A generic protocol player without native vendor support. These are streaming end
 - Sony speaker discovered via Chromecast (not a Google device)
 - Any DLNA/UPnP device (always PROTOCOL type)
 
-**Important:** Protocol players with `PlayerType.PROTOCOL` are hidden from the UI and wrapped in a Universal Player.
+**Important:** Protocol players with `PlayerType.PROTOCOL` are hidden from the UI and wrapped in a Universal Player or attached to an existing native player.
 
 ### PlayerType.GROUP
 
@@ -259,7 +259,7 @@ When implementing a new protocol provider:
 
 When implementing a native provider (e.g., Sonos, Bluesound) that should link to protocol players:
 
-1. Set `_attr_type = PlayerType.PLAYER` for all devices
+1. Set `_attr_type = PlayerType.PLAYER` (or the property 'type') for all devices
 2. **Populate device identifiers** - This is critical for protocol linking:
    ```python
    self._attr_device_info = DeviceInfo(

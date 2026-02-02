@@ -9,7 +9,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 APPLICATION_NAME: Final = "Music Assistant"
@@ -939,4 +939,25 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
     "chromecast": 30,
     "airplay": 40,
     "dlna": 50,
+}
+
+PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from protocol implementations
+    PlayerFeature.POWER,
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
+    PlayerFeature.SET_MEMBERS,
+}
+
+ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the active output protocol
+    *PROTOCOL_FEATURES,
+    PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.MULTI_DEVICE_DSP,
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.PAUSE,
+    PlayerFeature.SEEK,
 }

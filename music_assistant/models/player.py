@@ -29,6 +29,7 @@ from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
+    ACTIVE_PROTOCOL_FEATURES,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
@@ -43,6 +44,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
+    PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
     VERBOSE_LOG_LEVEL,
 )
@@ -907,7 +909,10 @@ class Player(ABC):
 
         members = self._group_members.copy()
         # If there's an active linked protocol, include its group members (translated)
-        if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
+        if self.__attr_active_output_protocol and self.__attr_active_output_protocol not in (
+            "native",
+            self.player_id,
+        ):
             if protocol_player := self.mass.players.get(self.__attr_active_output_protocol):
                 # Translate protocol player IDs to visible player IDs
                 protocol_members = self._translate_protocol_ids_to_visible(
@@ -985,12 +990,16 @@ class Player(ABC):
         if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
             # Active linked protocol: add from that specific protocol
             if protocol_player := self.mass.players.get(self.__attr_active_output_protocol):
-                base_features.update(protocol_player.supported_features)
-        else:
-            # No active protocol: add from all linked protocols
-            for linked in self.__attr_linked_protocols:
-                if protocol_player := self.mass.players.get(linked.output_protocol_id):
-                    base_features.update(protocol_player.supported_features)
+                for feature in protocol_player.supported_features:
+                    if feature in ACTIVE_PROTOCOL_FEATURES:
+                        base_features.add(feature)
+            return base_features
+        # No active protocol: add from all linked protocols
+        for linked in self.__attr_linked_protocols:
+            if protocol_player := self.mass.players.get(linked.output_protocol_id):
+                for feature in protocol_player.supported_features:
+                    if feature in PROTOCOL_FEATURES:
+                        base_features.add(feature)
         return base_features
 
     @cached_property
@@ -1003,24 +1012,35 @@ class Player(ABC):
     @final
     def power_control(self) -> str:
         """Return the power control type."""
-        if conf := self._config.get_value(CONF_POWER_CONTROL):
+        if conf := self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL):
             return str(conf)
+        # not explicitly set, use native if supported
+        if PlayerFeature.POWER in self.supported_features:
+            return PLAYER_CONTROL_NATIVE
         return PLAYER_CONTROL_NONE
 
     @cached_property
     @final
     def volume_control(self) -> str:
         """Return the volume control type."""
-        if conf := self._config.get_value(CONF_VOLUME_CONTROL):
+        if conf := self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_VOLUME_CONTROL
+        ):
             return str(conf)
+        # not explicitly set, use native if supported
+        if PlayerFeature.VOLUME_SET in self.supported_features:
+            return PLAYER_CONTROL_NATIVE
         return PLAYER_CONTROL_NONE
 
     @cached_property
     @final
     def mute_control(self) -> str:
         """Return the mute control type."""
-        if conf := self._config.get_value(CONF_MUTE_CONTROL):
+        if conf := self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL):
             return str(conf)
+        # not explicitly set, use native if supported
+        if PlayerFeature.VOLUME_MUTE in self.supported_features:
+            return PLAYER_CONTROL_NATIVE
         return PLAYER_CONTROL_NONE
 
     @property
@@ -1128,6 +1148,14 @@ class Player(ABC):
 
     @cached_property
     @final
+    def is_native_player(self) -> bool:
+        """Return True if this player is a native player."""
+        is_universal_player = self.provider.domain == "universal_player"
+        has_play_media = PlayerFeature.PLAY_MEDIA in self.supported_features
+        return self.type != PlayerType.PROTOCOL and not is_universal_player and has_play_media
+
+    @cached_property
+    @final
     def output_protocols(self) -> list[OutputProtocol]:
         """
         Return all output options for this player.
@@ -1140,11 +1168,9 @@ class Player(ABC):
         Each entry has an available flag indicating current availability.
         """
         result: list[OutputProtocol] = []
-        is_universal_player = self.provider.domain == "universal_player"
-        has_play_media = PlayerFeature.PLAY_MEDIA in self.supported_features
 
         # Add native playback option if applicable
-        if self.type != PlayerType.PROTOCOL and not is_universal_player and has_play_media:
+        if self.is_native_player:
             result.append(
                 OutputProtocol(
                     output_protocol_id="native",
@@ -1484,6 +1510,13 @@ class Player(ABC):
         self.__attr_current_media = self.__calculate_current_media()
         self.__attr_source_list = self.__calculate_source_list()
         self.__attr_synced_to = self.__calculate_synced_to()
+        # correct active output protocol if needed
+        if (
+            self.__attr_active_output_protocol is None
+            and self.is_native_player
+            and (self._playback_state == PlaybackState.PLAYING or self._group_members)
+        ):
+            self.__attr_active_output_protocol = "native"
         prev_state = deepcopy(self._state)
         self._state = PlayerState(
             player_id=self.player_id,

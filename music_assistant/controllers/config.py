@@ -1798,7 +1798,7 @@ class ConfigController:
                 type=ConfigEntryType.STRING,
                 label="Power Control",
                 default_value=PLAYER_CONTROL_NATIVE if supports_power else PLAYER_CONTROL_NONE,
-                required=True,
+                required=False,
                 options=[
                     *base_power_options,
                     *(ConfigValueOption(x.name, x.id) for x in power_controls),

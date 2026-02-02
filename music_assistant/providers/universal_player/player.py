@@ -1,8 +1,9 @@
-"""Universal Player implementation.
+"""
+Universal Player implementation.
 
 A virtual player for devices that have no native (vendor-specific) provider in
 Music Assistant but support one or more generic streaming protocols such as
-AirPlay, Chromecast, or DLNA.
+AirPlay, Sendspin, Chromecast, or DLNA.
 
 The Universal Player is automatically created when a protocol player with
 PlayerType.PROTOCOL is registered, providing a unified interface while delegating
@@ -13,23 +14,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.player import PlayerMedia
 
     from .provider import UniversalPlayerProvider
 
 
 class UniversalPlayer(Player):
-    """Universal Player implementation.
+    """
+    Universal Player implementation.
 
     A virtual player for devices without native Music Assistant support that use
-    generic streaming protocols. It does NOT have PLAY_MEDIA capability - playback
-    is always delegated to one of the linked protocol players via the protocol
+    generic streaming protocols. It does NOT have PLAY_MEDIA capability on its own.
+    Playback is always delegated to one of the linked protocol players via the protocol
     linking system.
     """
 
@@ -41,7 +44,8 @@ class UniversalPlayer(Player):
         device_info: DeviceInfo,
         protocol_player_ids: list[str],
     ) -> None:
-        """Initialize UniversalPlayer instance.
+        """
+        Initialize UniversalPlayer instance.
 
         :param provider: The UniversalPlayerProvider instance.
         :param player_id: Unique player ID (typically based on MAC address).
@@ -51,105 +55,125 @@ class UniversalPlayer(Player):
         """
         super().__init__(provider, player_id)
         self._protocol_player_ids = protocol_player_ids
-
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info
         # Start as unavailable - will be updated when protocol players are linked
         self._attr_available = False
 
-        # Universal players aggregate features from linked protocols
-        # but do NOT have PLAY_MEDIA - that's handled via protocol linking
-        self._attr_supported_features = self._aggregate_features()
-
-    def _aggregate_features(self) -> set[PlayerFeature]:
-        """Aggregate supported features from all linked protocol players."""
-        features: set[PlayerFeature] = set()
-
-        for protocol_player_id in self._protocol_player_ids:
-            if protocol_player := self.mass.players.get(protocol_player_id):
-                # Add features that make sense to aggregate
-                for feature in protocol_player.supported_features:
-                    if feature in (
-                        PlayerFeature.VOLUME_SET,
-                        PlayerFeature.VOLUME_MUTE,
-                        PlayerFeature.POWER,
-                        PlayerFeature.PAUSE,
-                    ):
-                        features.add(feature)
-
-        return features
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        # Get base config entries
-        # Note: linked_protocol_ids is stored directly in config values, not as a visible entry
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return list(base_entries)
-
     async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to the player.
+        """
+        Send VOLUME_SET command to the player.
 
         Delegates to the active protocol player or best available protocol.
         """
-        target_player = self._get_control_target()
-        if target_player and PlayerFeature.VOLUME_SET in target_player.supported_features:
+        if target_player := self._get_control_target(PlayerFeature.VOLUME_SET):
             await target_player.volume_set(volume_level)
-            self._attr_volume_level = volume_level
-            self.update_state()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
     async def volume_mute(self, muted: bool) -> None:
-        """Send VOLUME_MUTE command to the player."""
-        target_player = self._get_control_target()
-        if target_player and PlayerFeature.VOLUME_MUTE in target_player.supported_features:
+        """
+        Send VOLUME_MUTE command to the player.
+
+        Delegates to the active protocol player or best available protocol.
+        """
+        if target_player := self._get_control_target(PlayerFeature.VOLUME_MUTE):
             await target_player.volume_mute(muted)
-            self._attr_volume_muted = muted
-            self.update_state()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
     async def power(self, powered: bool) -> None:
-        """Send POWER command to the player."""
-        target_player = self._get_control_target()
-        if target_player and PlayerFeature.POWER in target_player.supported_features:
+        """
+        Send POWER command to the player.
+
+        Delegates to the active protocol player or best available protocol.
+        """
+        if target_player := self._get_control_target(PlayerFeature.POWER):
             await target_player.power(powered)
-        self._attr_powered = powered
-        self.update_state()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
     async def play(self) -> None:
-        """Handle PLAY command."""
-        # Delegate to active protocol player
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self.active_output_protocol))
-        ):
-            await protocol_player.play()
+        """
+        Handle PLAY command.
+
+        Delegates to the active protocol player.
+        """
+        if target_player := self._get_control_target(PlayerFeature.PAUSE, True):
+            await target_player.play()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
     async def pause(self) -> None:
-        """Handle PAUSE command."""
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get(self.active_output_protocol))
-        ):
-            await protocol_player.pause()
+        """
+        Handle PAUSE command.
+
+        Delegates to the active protocol player or best available protocol.
+        """
+        if target_player := self._get_control_target(PlayerFeature.PAUSE, True):
+            await target_player.pause()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
     async def stop(self) -> None:
-        """Handle STOP command."""
+        """
+        Handle STOP command.
+
+        Delegates to the active protocol player or best available protocol.
+        """
         if (
             self.active_output_protocol
             and self.active_output_protocol != "native"
             and (protocol_player := self.mass.players.get(self.active_output_protocol))
         ):
             await protocol_player.stop()
-        self._attr_current_media = None
-        self._attr_playback_state = PlaybackState.IDLE
-        self.update_state()
+            return
+        raise PlayerCommandFailed("Action not available.")
 
-    def _get_control_target(self) -> Player | None:
+    async def next_track(self) -> None:
+        """
+        Handle NEXT_TRACK command.
+
+        Delegates to the active protocol player.
+        """
+        if target_player := self._get_control_target(PlayerFeature.NEXT_PREVIOUS, True):
+            await target_player.next_track()
+            return
+        raise PlayerCommandFailed("Action not available.")
+
+    async def previous_track(self) -> None:
+        """
+        Handle PREVIOUS_TRACK command.
+
+        Delegates to the active protocol player.
+        """
+        if target_player := self._get_control_target(PlayerFeature.NEXT_PREVIOUS, True):
+            await target_player.previous_track()
+            return
+        raise PlayerCommandFailed("Action not available.")
+
+    async def seek(self, position: int) -> None:
+        """
+        Handle SEEK command.
+
+        Delegates to the active protocol player.
+        """
+        if target_player := self._get_control_target(PlayerFeature.SEEK, True):
+            await target_player.seek(position)
+            return
+        raise PlayerCommandFailed("Action not available.")
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next (queue) item on the player."""
+        if target_player := self._get_control_target(PlayerFeature.ENQUEUE, True):
+            await target_player.enqueue_next_media(media)
+            return
+        raise PlayerCommandFailed("Action not available.")
+
+    def _get_control_target(
+        self, required_feature: PlayerFeature, require_active: bool = False
+    ) -> Player | None:
         """Get the best player to send control commands to.
 
         Prefers the active output protocol, otherwise uses the first available
@@ -160,19 +184,28 @@ class UniversalPlayer(Player):
             self.active_output_protocol
             and self.active_output_protocol != "native"
             and (protocol_player := self.mass.players.get(self.active_output_protocol))
+            and required_feature in protocol_player.supported_features
         ):
             return protocol_player
 
+        # If require_active is set, and no active protocol found, return None
+        if require_active:
+            return None
+
         # Otherwise, use the first available linked protocol
         for protocol_player_id in self._protocol_player_ids:
-            if protocol_player := self.mass.players.get(protocol_player_id):
-                if protocol_player.available:
-                    return protocol_player
+            if (
+                (protocol_player := self.mass.players.get(protocol_player_id))
+                and protocol_player.available
+                and required_feature in protocol_player.supported_features
+            ):
+                return protocol_player
 
         return None
 
     def update_from_protocol_players(self) -> None:
-        """Update state from linked protocol players.
+        """
+        Update state from linked protocol players.
 
         Called to sync state like volume, availability from protocol players.
         """
@@ -180,11 +213,11 @@ class UniversalPlayer(Player):
         self._attr_available = any(
             (p := self.mass.players.get(pid)) and p.available for pid in self._protocol_player_ids
         )
-
         # Get volume from best control target
-        if target := self._get_control_target():
+        if target := self._get_control_target(PlayerFeature.VOLUME_SET):
             if target.volume_level is not None:
                 self._attr_volume_level = target.volume_level
+        if target := self._get_control_target(PlayerFeature.VOLUME_MUTE):
             if target.volume_muted is not None:
                 self._attr_volume_muted = target.volume_muted
 
@@ -194,13 +227,11 @@ class UniversalPlayer(Player):
         """Add a protocol player to this universal player."""
         if protocol_player_id not in self._protocol_player_ids:
             self._protocol_player_ids.append(protocol_player_id)
-            self._attr_supported_features = self._aggregate_features()
 
     def remove_protocol_player(self, protocol_player_id: str) -> None:
         """Remove a protocol player from this universal player."""
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
-            self._attr_supported_features = self._aggregate_features()
 
     def _get_preferred_protocol_player(self) -> Player | None:
         """
@@ -236,24 +267,3 @@ class UniversalPlayer(Player):
                     return protocol_player
 
         return None
-
-    @property
-    def _supported_features(self) -> set[PlayerFeature]:
-        """
-        Return the supported features based on the active/preferred protocol.
-
-        Universal players don't have native PLAY_MEDIA capability - playback is always
-        delegated to protocol players. Other features are inherited from the
-        active/preferred protocol player.
-        """
-        # Get the preferred protocol player
-        protocol_player = self._get_preferred_protocol_player()
-        if not protocol_player:
-            # No protocol available, return minimal features
-            return set()
-
-        # Return features from the protocol player, excluding PLAY_MEDIA
-        # (PLAY_MEDIA is handled via protocol linking)
-        features = protocol_player._supported_features.copy()
-        features.discard(PlayerFeature.PLAY_MEDIA)
-        return features
