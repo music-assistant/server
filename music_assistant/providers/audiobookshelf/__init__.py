@@ -184,7 +184,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USE_ABS_SESSIONS,
             type=ConfigEntryType.BOOLEAN,
-            label="Use audiobookshelf's sessions",
+            label="Use audiobookshelf's sessions (testing - subject to removal)",
             description="Use audiobookshelf's sessions for streaming.",
             required=False,
             default_value=False,
@@ -584,7 +584,6 @@ for more details.
                     self.logger.debug("Using an already available session.")
             if session is None:
                 session = await self._get_abs_playback_session(mass_item_id=item_id)
-                await asyncio.sleep(2)
                 self.sessions[item_id] = SessionHelper(
                     abs_session_id=session.id_, last_sync_time=time.time()
                 )
@@ -592,6 +591,7 @@ for more details.
                 f"{self.mass.streams.base_url}/{self.instance_id}_session_stream?"
                 f"session_id={session.id_}"
             )
+            stream_url = self._get_stream_url_from_playback_session(session)
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
@@ -763,9 +763,7 @@ for more details.
         except AbsSessionNotFoundError:
             raise web.HTTPNotFound from AbsSessionNotFoundError
         stream_url = self._get_stream_url_from_playback_session(abs_session)
-        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-0.ts"))
-        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-1.ts"))
-        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-2.ts"))
+        self.logger.error(stream_url)
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
 
