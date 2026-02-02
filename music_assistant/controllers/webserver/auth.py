@@ -53,11 +53,16 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 4
+DB_SCHEMA_VERSION = 6
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
 TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+
+# Join code constants (short codes for QR/link-based login)
+JOIN_CODE_LENGTH = 6
+JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
+JOIN_CODE_DEFAULT_EXPIRY_HOURS = 24
 
 
 class AuthenticationManager:
@@ -203,6 +208,24 @@ class AuthenticationManager:
             )
             """
         )
+        # Join codes table (for short code to JWT exchange, used by providers like party mode)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS join_codes (
+                code_id TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                max_uses INTEGER DEFAULT 0,
+                use_count INTEGER DEFAULT 0,
+                last_used_at TEXT,
+                device_name TEXT,
+                provider_name TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -220,6 +243,12 @@ class AuthenticationManager:
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_join_codes_hash ON join_codes(code_hash)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
         )
 
     async def _migrate_database(self, from_version: int) -> None:
@@ -256,6 +285,34 @@ class AuthenticationManager:
         # Migration to version 4: Make usernames case-insensitive by converting to lowercase
         if from_version < 4:
             await self.database.execute("UPDATE users SET username = LOWER(username)")
+            await self.database.commit()
+
+        # Migration to version 5: Add join codes table
+        if from_version < 5:
+            await self.database.execute(
+                """
+                CREATE TABLE IF NOT EXISTS join_codes (
+                    code_id TEXT PRIMARY KEY,
+                    code_hash TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_uses INTEGER DEFAULT 0,
+                    use_count INTEGER DEFAULT 0,
+                    last_used_at TEXT,
+                    device_name TEXT,
+                    provider_name TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
+            await self.database.commit()
+
+        # Migration to version 6: Add provider_name column to join_codes
+        if from_version == 5:
+            with contextlib.suppress(OperationalError):
+                # Column may already exist
+                await self.database.execute("ALTER TABLE join_codes ADD COLUMN provider_name TEXT")
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
@@ -353,9 +410,18 @@ class AuthenticationManager:
 
         return await provider.authenticate(credentials)
 
+    @staticmethod
+    def _is_jwt_token(token: str) -> bool:
+        """Check if token appears to be a JWT (3 dot-separated parts).
+
+        :param token: The token string to check.
+        :return: True if token has JWT format, False otherwise.
+        """
+        return token.count(".") == 2
+
     async def authenticate_with_token(self, token: str) -> User | None:
         """
-        Authenticate a user with an access token.
+        Authenticate a user with an access token (JWT or legacy).
 
         Supports both JWT tokens and legacy hash-based tokens for backward compatibility.
 
@@ -426,18 +492,18 @@ class AuthenticationManager:
         # Implement sliding expiration for short-lived tokens
         is_long_lived = bool(token_row["is_long_lived"])
         now = utc()
-        updates = {"last_used_at": now.isoformat()}
+        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
 
         if not is_long_lived and token_row["expires_at"]:
             # Short-lived token: extend expiration on each use (sliding window)
             new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            updates["expires_at"] = new_expires_at.isoformat()
+            legacy_updates["expires_at"] = new_expires_at.isoformat()
 
         # Update last used timestamp and potentially expiration
         await self.database.update(
             "auth_tokens",
             {"token_id": token_row["token_id"]},
-            updates,
+            legacy_updates,
         )
 
         # Get user
@@ -459,7 +525,6 @@ class AuthenticationManager:
         token_row = await self.database.get_row("auth_tokens", {"token_hash": token_hash})
         if not token_row:
             return None
-
         return str(token_row["token_id"])
 
     @api_command("auth/user", required_role="admin")
@@ -830,15 +895,23 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
+    async def create_token(
+        self,
+        user: User,
+        name: str,
+        is_long_lived: bool = False,
+        provider_name: str | None = None,
+    ) -> str:
         """
-        Create a new access token for a user.
+        Create a new JWT access token for a user.
 
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
             Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
             Long-lived tokens (True): No auto-renewal, expire after 10 years.
+        :param provider_name: Optional provider name that created this token (e.g., "party_mode").
+        :return: JWT token string.
         """
         # Generate unique token ID
         token_id = secrets.token_urlsafe(32)
@@ -859,6 +932,7 @@ class AuthenticationManager:
             token_name=name,
             expires_at=expires_at,
             is_long_lived=is_long_lived,
+            provider_name=provider_name,
         )
 
         # Store token hash in database for revocation checking
@@ -1487,3 +1561,170 @@ class AuthenticationManager:
         )
         await self.database.commit()
         return True
+
+    # ==================== Join Code Methods ====================
+
+    async def generate_join_code(
+        self,
+        user_id: str,
+        expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
+        max_uses: int = 0,
+        device_name: str = "Short Code Login",
+        provider_name: str | None = None,
+    ) -> tuple[str, datetime]:
+        """Generate a short join code for link/QR-based login.
+
+        This creates a short alphanumeric code that can be exchanged for a JWT token.
+        Providers can use this to implement features like party mode guest access,
+        device pairing, or other short-code authentication flows.
+
+        :param user_id: The user ID that tokens created from this code will belong to.
+        :param expires_in_hours: Hours until code expires (default: 24).
+        :param max_uses: Maximum number of uses (0 = unlimited).
+        :param device_name: Device name for tokens created with this code.
+        :param provider_name: Optional provider name identifier (e.g., "party_mode").
+        :return: Tuple of (code, expires_at datetime).
+        """
+        # Verify user exists
+        user = await self.get_user(user_id)
+        if not user:
+            raise ValueError(f"User not found: {user_id}")
+
+        # Generate short alphanumeric code
+        code = "".join(secrets.choice(JOIN_CODE_CHARSET) for _ in range(JOIN_CODE_LENGTH))
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+
+        now = utc()
+        expires_at = now + timedelta(hours=expires_in_hours)
+
+        code_data = {
+            "code_id": secrets.token_urlsafe(32),
+            "code_hash": code_hash,
+            "user_id": user_id,
+            "created_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "max_uses": max_uses,
+            "use_count": 0,
+            "device_name": device_name,
+            "provider_name": provider_name,
+        }
+        await self.database.insert("join_codes", code_data)
+        await self.database.commit()
+
+        self.logger.debug("Generated join code (expires: %s, max_uses: %s)", expires_at, max_uses)
+        return code, expires_at
+
+    async def exchange_join_code(self, code: str) -> str | None:
+        """Exchange a join code for a JWT access token.
+
+        The token is created for the user associated with the join code,
+        using the provider_name that was specified when the code was generated.
+
+        :param code: The short join code.
+        :return: JWT token string if valid, None otherwise.
+        """
+        code_hash = hashlib.sha256(code.upper().encode()).hexdigest()
+
+        # Find code in database
+        code_row = await self.database.get_row("join_codes", {"code_hash": code_hash})
+        if not code_row:
+            return None
+
+        # Check if code is expired
+        expires_at = datetime.fromisoformat(code_row["expires_at"])
+        if utc() > expires_at:
+            # Code expired, delete it
+            await self.database.delete("join_codes", {"code_id": code_row["code_id"]})
+            await self.database.commit()
+            return None
+
+        # Check use limit
+        max_uses = code_row["max_uses"]
+        use_count = code_row["use_count"]
+        if max_uses > 0 and use_count >= max_uses:
+            return None
+
+        # Update use count
+        now = utc()
+        await self.database.update(
+            "join_codes",
+            {"code_id": code_row["code_id"]},
+            {"use_count": use_count + 1, "last_used_at": now.isoformat()},
+        )
+        await self.database.commit()
+
+        # Get user and create token
+        user = await self.get_user(code_row["user_id"])
+        if not user:
+            self.logger.error("User not found for join code (user_id=%s)", code_row["user_id"])
+            return None
+
+        device_name = code_row["device_name"] or "Short Code Login"
+        provider_name = code_row["provider_name"]  # May be None
+        token = await self.create_token(
+            user,
+            device_name,
+            is_long_lived=False,
+            provider_name=provider_name,
+        )
+
+        self.logger.debug("Join code exchanged for token (user=%s)", user.username)
+        return token
+
+    async def revoke_join_codes(self, user_id: str | None = None) -> int:
+        """Revoke all join codes, optionally for a specific user.
+
+        :param user_id: Optional user ID to revoke codes for (default: all codes).
+        :return: Number of codes revoked.
+        """
+        if user_id:
+            # Count codes first
+            rows = await self.database.get_rows("join_codes", {"user_id": user_id})
+            count = len(list(rows))
+            await self.database.delete("join_codes", {"user_id": user_id})
+        else:
+            # Revoke all join codes
+            rows = await self.database.get_rows("join_codes")
+            count = len(list(rows))
+            await self.database.execute("DELETE FROM join_codes")
+
+        await self.database.commit()
+        if count > 0:
+            self.logger.info("Revoked %d join code(s)", count)
+        return count
+
+    @api_command("auth/code", authenticated=False)
+    async def authenticate_with_join_code(self, code: str) -> dict[str, Any]:
+        """Exchange a join code for an access token (public API).
+
+        This is the public API endpoint for short-code authentication.
+        Clients call this with a code (e.g., from QR scan or link) to receive a JWT token.
+
+        :param code: The short join code.
+        :return: Authentication result with access token if successful.
+        """
+        token = await self.exchange_join_code(code)
+
+        if not token:
+            return {
+                "success": False,
+                "error": "Invalid or expired join code",
+            }
+
+        # Decode token to get user info
+        try:
+            payload = self.jwt_helper.decode_token(token)
+            return {
+                "success": True,
+                "access_token": token,
+                "user": {
+                    "user_id": payload.get("sub"),
+                    "username": payload.get("username"),
+                    "role": payload.get("role"),
+                },
+            }
+        except pyjwt.InvalidTokenError:
+            return {
+                "success": False,
+                "error": "Failed to create access token",
+            }
