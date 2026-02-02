@@ -575,10 +575,19 @@ for more details.
         """Get stream of item."""
         if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)):
             self.logger.debug("Streaming item %s via an abs session.", item_id)
-            session = await self._get_abs_playback_session(mass_item_id=item_id)
-            self.sessions[item_id] = SessionHelper(
-                abs_session_id=session.id_, last_sync_time=time.time()
-            )
+            session: AbsPlaybackSessionExpanded | None = None
+            if session_helper := self.sessions.get(item_id):
+                with suppress(AbsSessionNotFoundError):
+                    session = await self._client.get_open_session(
+                        session_id=session_helper.abs_session_id
+                    )
+                    self.logger.debug("Using an already available session.")
+            if session is None:
+                session = await self._get_abs_playback_session(mass_item_id=item_id)
+                await asyncio.sleep(2)
+                self.sessions[item_id] = SessionHelper(
+                    abs_session_id=session.id_, last_sync_time=time.time()
+                )
             stream_url = (
                 f"{self.mass.streams.base_url}/{self.instance_id}_session_stream?"
                 f"session_id={session.id_}"
@@ -754,6 +763,9 @@ for more details.
         except AbsSessionNotFoundError:
             raise web.HTTPNotFound from AbsSessionNotFoundError
         stream_url = self._get_stream_url_from_playback_session(abs_session)
+        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-0.ts"))
+        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-1.ts"))
+        await self.mass.http_session.get(stream_url.replace("output.m3u8", "output-2.ts"))
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
 
@@ -771,7 +783,7 @@ for more details.
         episode_id = item_ids[1] if len(item_ids) == 2 else None
 
         # this will either create or return an open one.
-        session = await self._client.get_playback_session(
+        return await self._client.get_playback_session(
             # These parameters give an hls stream, which is only a concat
             # of the individual file's at abs
             session_parameters=AbsPlaybackSessionParameters(
@@ -784,8 +796,6 @@ for more details.
             item_id=item_id,
             episode_id=episode_id,
         )
-        await asyncio.sleep(1)  # give session some time to start
-        return session
 
     def _get_stream_url_from_playback_session(self, session: AbsPlaybackSessionExpanded) -> str:
         tracks = session.audio_tracks
@@ -1058,7 +1068,6 @@ for more details.
         async def _update_by_session(session_helper: SessionHelper, duration: int) -> None:
             now = time.time()
             try:
-                self.logger.debug(now - session_helper.last_sync_time)
                 await self._client.sync_open_session(
                     session_id=session_helper.abs_session_id,
                     parameters=SyncOpenSessionParameters(
