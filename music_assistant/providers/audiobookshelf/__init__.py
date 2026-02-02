@@ -803,6 +803,14 @@ for more details.
     @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return finished:bool, position_ms: int."""
+        if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
+            session_id := self.session_ids.get(item_id)
+        ):
+            with suppress(AbsSessionNotFoundError):
+                # suppress: fall back to standard approach if session is not found/ yet available
+                session = await self._client.get_open_session(session_id=session_id)
+                finished = session.current_time > session.duration - 30
+                return finished, int(session.current_time * 1000)
         progress: None | MediaProgress = None
         if media_type == MediaType.PODCAST_EPISODE:
             abs_podcast_id, abs_episode_id = item_id.split(" ")
