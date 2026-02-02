@@ -6,6 +6,7 @@ Music Assistant provider for [Yandex Music](https://music.yandex.ru).
 
 - **Yandex Music Token** — OAuth token for the Yandex Music API. Required for search, library, and streaming.
 - **Audio quality** — Choose High (320 kbps) or Lossless (FLAC) when available.
+  FLAC is only offered by the Yandex API when your account has **Yandex Music Plus** and the track has a lossless version in the catalog. The provider prefers **flac-mp4** and **aac-mp4** (Yandex moved to these formats around 2025). When you select Lossless, the provider first requests the stream via the get-file-info API; if that returns 401 Unauthorized (e.g. OAuth token not accepted for this endpoint), it retries with a different transport and, if still unauthorized, falls back to the standard download-info list and uses the best available quality (typically 320 kbps MP3). For lossless via get-file-info, a token or session that the endpoint accepts may be required (e.g. from the web client at [music.yandex.ru](https://music.yandex.ru)); if you have Plus and a track has lossless but you get 401, try updating the token from the web client. If the API returns only MP3 in the download-info list, the provider uses it and logs a warning.
 
 ## Obtaining an OAuth token
 
@@ -29,6 +30,22 @@ Yandex Music does not offer an official public OAuth flow for third-party apps. 
 - Add/remove library items (like/unlike)
 - Browse library (artists, albums, tracks, playlists)
 - Streaming (HTTP direct links; quality selection)
+
+## Checking if a track has lossless (FLAC)
+
+The library does not expose a "has lossless" field on the track; the API decides which codecs to return when you request download info (depending on catalog and account/subscription). Supported lossless codecs are **flac** and **flac-mp4** (preferred since ~2025). To see what formats the API returns for a given track, run from the repo root:
+
+```bash
+YANDEX_MUSIC_TOKEN=your_token python scripts/check_yandex_track_formats.py [track_id]
+```
+
+Example for track 132401416 (album 33801370):
+
+```bash
+YANDEX_MUSIC_TOKEN=... python scripts/check_yandex_track_formats.py 132401416
+```
+
+If the output shows only MP3, then for that track/account the API does not offer FLAC (either the track has no lossless in the catalog or the account needs Yandex Music Plus).
 
 ## Development and testing
 
