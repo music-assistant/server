@@ -529,7 +529,7 @@ class Player(ABC):
 
         Will only be called if the PlayerFeature.OPTIONS is supported.
 
-        :param option_id: The option_id of the PlayerOption
+        :param option_key: The option_key of the PlayerOption
         :param option_value: The new value of the PlayerOption
         """
         raise NotImplementedError(

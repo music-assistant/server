@@ -45,6 +45,7 @@ from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
+    MC_CAPABILITIES,
     MC_CONTROL_SOURCE_IDS,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
@@ -332,10 +333,9 @@ class MusicCastPlayer(Player):
         # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
         self._attr_options = []
         for capability in cast(
-            "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
+            "list[MC_CAPABILITIES]",
             zone_data.capabilities,
         ):
-            # ruff: noqa: E501 # line too long
             if isinstance(capability, MCBinarySensor):
                 self._attr_options.append(
                     PlayerOption(
@@ -391,12 +391,12 @@ class MusicCastPlayer(Player):
                 )
             elif isinstance(capability, MCOptionSetter):
                 options = []
-                for option_id, option_name in capability.options.items():
+                for option_key, option_name in capability.options.items():
                     options.append(
                         PlayerOptionEntry(
-                            key=str(option_id),  # aiomusiccast allows str and int.
+                            key=str(option_key),  # aiomusiccast allows str and int.
                             name=option_name,
-                            value=str(option_id),
+                            value=str(option_key),
                             type=PlayerOptionType.STRING,
                             read_only=False,
                         )
@@ -651,16 +651,15 @@ class MusicCastPlayer(Player):
         """Select sound Mode Command."""
         await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
 
-    async def set_option(self, option_id: str, option_value: PlayerOptionValueType) -> None:
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
         """Set player option."""
         if self.zone_device.zone_data is None:
             return
         for capability in cast(
-            "list[MCBinarySensor | MCBinarySetter | MCNumberSensor | MCNumberSetter | MCTextSensor | MCOptionSetter]",
+            "list[MC_CAPABILITIES]",
             self.zone_device.zone_data.capabilities,
         ):
-            # ruff: noqa: E501 # line too long
-            if str(capability.id) != option_id:
+            if str(capability.id) != option_key:
                 continue
             if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
                 self.logger.error(f"Option {capability.name} is read only!")
@@ -672,7 +671,8 @@ class MusicCastPlayer(Player):
                 max_value = capability.value_range.maximum
                 if not min_value <= int(option_value) <= max_value:
                     self.logger.error(
-                        f"Option {capability.name} has numeric range of {min_value} <= value <= {max_value}"
+                        f"Option {capability.name} has numeric range of"
+                        f"{min_value} <= value <= {max_value}"
                     )
                     return
                 await capability.set(int(option_value))
@@ -682,7 +682,7 @@ class MusicCastPlayer(Player):
                 with suppress(ValueError):
                     _option_value = int(_option_value)
                 if _option_value not in capability.options:
-                    self.logger.error(f"Option {_option_value} is not allowed for {option_id}")
+                    self.logger.error(f"Option {_option_value} is not allowed for {option_key}")
                     return
                 await capability.set(_option_value)
             break

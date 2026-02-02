@@ -993,19 +993,19 @@ class PlayerController(CoreController):
         self, player_id: str, option_key: str, option_value: PlayerOptionValueType
     ) -> None:
         """
-        Handle SET_PLAYER_OPTION command on given player.
+        Handle SET_OPTION command on given player.
 
         - player_id: player_id of the player to handle the command
         - option_key: The key of the player option that needs to be activated/selected.
         - option_value: The new value of the player option. If we have a
-            PlayerOptionType.OPTIONS this is the id of PlayerOptionEntry
+            PlayerOptionType.OPTIONS this is the key of PlayerOptionEntry
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
 
         if PlayerFeature.OPTIONS not in player.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support set_player_option"
+                f"Player {player.display_name} does not support set_option"
             )
 
         prev_player_option = next((x for x in player.options if x.key == option_key), None)
@@ -1020,7 +1020,7 @@ class PlayerController(CoreController):
             )
 
         # forward to player
-        await player.set_option(option_id=option_key, option_value=option_value)
+        await player.set_option(option_key=option_key, option_value=option_value)
 
     @api_command("players/cmd/select_source")
     @handle_player_command
