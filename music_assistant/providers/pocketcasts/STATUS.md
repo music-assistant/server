@@ -92,10 +92,8 @@ SUPPORTED_FEATURES = {
 ### ⚠️ Partially Implemented
 
 #### Library Management (LIBRARY_PODCASTS_EDIT)
-- [ ] **Subscribe to podcast** - Not implemented
-- [ ] **Unsubscribe from podcast** - Not implemented
-- [ ] **Add podcast to library** - Not implemented
-- [ ] **Remove podcast from library** - Not implemented
+- [ ] **Subscribe to podcast** - Not implemented (add podcast to library)
+- [ ] **Unsubscribe from podcast** - Not implemented (remove podcast from library)
 
 #### Playback Progress Sync
 - [x] `get_resume_position()` - Read position from Pocketcasts
@@ -108,26 +106,159 @@ SUPPORTED_FEATURES = {
 
 ### ❌ Not Implemented
 
-#### Advanced Features
-- [ ] **Favorites/Starred Episodes** - Not implemented
-- [ ] **Up Next Queue** - Pocketcasts has a queue feature
-- [ ] **Filters** - Pocketcasts supports custom filters
-- [ ] **Episode Notes/Show Notes** - Basic implementation exists but not fully featured
-- [ ] **Download Management** - Not applicable (streaming only)
-- [ ] **Playback Speed** - Should be handled by player
-- [ ] **Chapter Support** - Not implemented
-- [ ] **Sleep Timer** - Should be handled by player
+**Note:** See "Potential Features from Pocketcasts API" section below for detailed mapping of Pocketcasts features to Music Assistant capabilities.
 
-#### Browse Features
-- [ ] **Featured/Trending Podcasts** - API supports this
-- [ ] **Categories/Genres** - Pocketcasts has categories
-- [ ] **New Releases** - API may support this
-- [ ] **Recommendations** - Not implemented
+---
 
-#### Episode Filtering
-- [ ] **Filter by played/unplayed** - Not implemented
-- [ ] **Filter by downloaded** - Not applicable
-- [ ] **Sort options** - Uses default API ordering
+## Potential Features from Pocketcasts API
+
+This section maps available Pocketcasts API features to Music Assistant provider features. These are enhancement opportunities for future implementation.
+
+### 1. Starred Episodes → `FAVORITE_PODCASTS_EDIT`
+**Pocketcasts Feature:** Starred episodes (user-marked favorites)
+**MA Feature:** `ProviderFeature.FAVORITE_PODCASTS_EDIT`
+**Implementation:** `set_favorite()` method
+**API Endpoints:**
+- Get starred: `POST /user/starred`
+- Star/unstar: `POST /sync/update_episode_star`
+
+**Priority:** Medium - Useful for marking favorite episodes
+
+---
+
+### 2. Live Updating Playlists → `BROWSE` folders
+**Pocketcasts Features:**
+- New Releases - Recently published episodes from subscriptions
+- In Progress - Episodes currently being listened to
+- Starred - User's starred/favorited episodes
+- History - Recently played episodes
+
+**MA Feature:** Extend existing `BROWSE` implementation with dynamic folders
+**Implementation:** Add these as BrowseFolder items in `browse()` method
+**API Endpoints:**
+- `/user/new_releases`
+- `/user/in_progress`
+- `/user/starred`
+- `/user/history`
+
+**Priority:** High - Great UX, leverages existing browse infrastructure
+
+---
+
+### 3. Up Next Queue → `PLAYLIST_TRACKS_EDIT` + `PLAYLIST_CREATE`
+**Pocketcasts Feature:** User-created queue for next episodes to play
+**MA Features:**
+- `ProviderFeature.PLAYLIST_TRACKS_EDIT` - Modify playlist contents
+- `ProviderFeature.PLAYLIST_CREATE` - Create new playlists
+
+**Implementation:**
+- Map "Up Next" to a special playlist
+- Implement add/remove/reorder operations
+
+**API Endpoints:**
+- Get queue: `POST /up_next/list`
+- Add to top: `POST /up_next/play_next`
+- Add to end: `POST /up_next/play_last`
+- Remove: `POST /up_next/remove`
+
+**Priority:** Medium - Nice-to-have for queue management
+
+---
+
+### 4. Recommendations/Discover → `RECOMMENDATIONS`
+**Pocketcasts Features:**
+- Featured/Trending Podcasts
+- Categories/Genres
+- Episode recommendations
+- User-based podcast recommendations
+
+**MA Feature:** `ProviderFeature.RECOMMENDATIONS`
+**Implementation:** `recommendations()` method returning list of `RecommendationFolder`
+**API Endpoints:**
+- Featured: `GET https://lists.pocketcasts.com/featured.json`
+- Trending: `GET https://lists.pocketcasts.com/trending.json`
+- Categories: `GET https://static.pocketcasts.com/discover/json/categories_v2.json`
+- Discovery content: `GET https://static.pocketcasts.com/discover/web/content_v3.json`
+- Episode recommendations: `POST /discover/recommend_episodes`
+- Podcast recommendations: `GET /recommendations/podcast/{podcast_uuid}`
+- Social recommendations: `GET /recommendations/social`
+- User recommendations: `GET /recommendations/user_podcast`
+
+**Priority:** High - Helps users discover new content
+
+---
+
+### 5. Bookmarks → `BROWSE` folders or custom feature
+**Pocketcasts Feature:** Time-stamped bookmarks within episodes
+**MA Feature:** Could be implemented as:
+- BrowseFolder showing bookmarked episodes with timestamps
+- Custom metadata on episodes
+- Potentially a playlist of bookmarked positions
+
+**Implementation:** Display in browse section
+**API Endpoints:**
+- List all bookmarks: `POST /user/bookmark/list`
+- Add bookmark: `POST /user/bookmark/add`
+- Delete bookmark: `POST /user/bookmark/delete`
+- Single episode bookmarks: `POST /user/podcast/episode/bookmarks`
+- Multi-episode bookmarks: `POST /user/podcast/episodes/bookmarks`
+
+**Priority:** Low - Niche feature, complex to integrate
+
+---
+
+### 6. Transcripts → `LYRICS` metadata
+**Pocketcasts Feature:** AI-generated transcripts (.vtt format) for premium users
+**MA Feature:** `ProviderFeature.LYRICS`
+**Implementation:** `get_lyrics()` method
+**API Endpoints:**
+- **Not documented in API reference** - Likely embedded in episode data or requires investigation
+- Format: WebVTT (.vtt) file - would need parsing
+
+**Priority:** Low - Premium feature only, requires VTT parsing, endpoint needs discovery
+
+**Notes:**
+- Transcripts are premium-only
+- Would need to parse VTT format to plain text
+- Could provide timestamped lyrics support
+- Endpoint not confirmed in unofficial API docs
+
+---
+
+### 7. Filters → Custom implementation
+**Pocketcasts Feature:** User-created custom filters (smart playlists)
+**Potential Implementation:**
+- Could be exposed as BrowseFolder items
+- Each filter as a dynamic playlist
+
+**API Endpoints:**
+- **Not documented in API reference** - Endpoints need discovery
+- May not be available via public API (web/mobile app only?)
+
+**Priority:** Low - Complex feature, unclear MA mapping, endpoints unconfirmed
+
+---
+
+## Implementation Priority Recommendation
+
+Based on user value and implementation complexity:
+
+**Phase 1 - High Value, Medium Effort:**
+1. ✅ **RECOMMENDATIONS** - Discover/Featured/Trending
+2. ✅ **Live Updating Playlists** - Extend browse with New Releases, In Progress, Starred, History
+
+**Phase 2 - Medium Value, Medium Effort:**
+3. **FAVORITE_PODCASTS_EDIT** - Star/unstar episodes
+4. **LIBRARY_PODCASTS_EDIT** - Complete subscribe/unsubscribe implementation
+
+**Phase 3 - Medium Value, Higher Effort:**
+5. **Up Next Queue** - PLAYLIST features
+6. **Playback Progress Sync** - Auto-sync to Pocketcasts
+
+**Phase 4 - Nice-to-Have:**
+7. **Transcripts (LYRICS)** - Premium users only
+8. **Bookmarks** - Niche use case
+9. **Filters** - Complex, unclear benefit
 
 ---
 
@@ -250,52 +381,122 @@ SUPPORTED_FEATURES = {
 
 ---
 
-## API Endpoints Used
+## API Endpoints
 
-### Authentication
-- `POST https://api.pocketcasts.com/user/login` - Login with email/password
+Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/api_pocketcasts/blob/main/reference/endpoints.md)
 
-### Podcasts
-- `POST https://api.pocketcasts.com/user/podcast/list` - Get subscribed podcasts
-- `GET https://podcast-api.pocketcasts.com/podcast/full/{uuid}` - Get podcast details and episodes
-- `POST https://api.pocketcasts.com/discover/search` - Search podcasts
+### Currently Implemented ✅
 
-### Episodes
-- `POST https://api.pocketcasts.com/user/in_progress` - Get in-progress episodes
-- `POST https://api.pocketcasts.com/sync/update_episode` - Update playback progress
+#### Authentication (api.pocketcasts.com)
+- `POST /user/login` - Login with email/password (returns JWT token)
 
-### Assets
-- `https://static.pocketcasts.com/discover/images/280/{uuid}.jpg` - Podcast thumbnails
+#### Podcasts (api.pocketcasts.com)
+- `POST /user/podcast/list` - Get user's subscribed podcasts
+- `POST /discover/search` - Search for podcasts
+
+#### Podcasts (podcast-api.pocketcasts.com)
+- `GET /podcast/full/{uuid}` - Get podcast details and episodes (redirects to static JSON)
+
+#### Episodes (api.pocketcasts.com)
+- `POST /user/in_progress` - Get in-progress episodes with resume positions
+- `POST /sync/update_episode` - Update episode playback progress and status
+
+#### Assets (static.pocketcasts.com)
+- `GET /discover/images/280/{uuid}.jpg` - Podcast thumbnails (280x280)
+- `GET /discover/images/metadata/{image_id}.json` - Image metadata
+
+---
+
+### Available but Not Yet Implemented
+
+#### Authentication & Account (api.pocketcasts.com)
+- `POST /user/login_pocket_casts` - Alternative login endpoint
+- `POST /user/token` - Token generation/refresh
+- `GET /subscription/status` - Check premium subscription status
+
+#### Library Management (api.pocketcasts.com)
+- `POST /user/podcast/subscribe` - Subscribe to a podcast
+- `POST /user/podcast/unsubscribe` - Unsubscribe from a podcast
+- `POST /user/episode` - Episode-level management
+
+#### Up Next Queue (api.pocketcasts.com)
+- `POST /up_next/list` - Get Up Next queue
+- `POST /up_next/play_next` - Add episode to top of queue
+- `POST /up_next/play_last` - Add episode to end of queue
+- `POST /up_next/remove` - Remove episode from queue
+
+#### Live Playlists (api.pocketcasts.com)
+- `POST /user/new_releases` - Recently published episodes from subscriptions
+- `POST /user/starred` - User's starred/favorited episodes
+- `POST /user/history` - Recently played episodes
+
+#### Favorites/Starred (api.pocketcasts.com)
+- `POST /sync/update_episode_star` - Toggle episode star status (star/unstar)
+- `POST /sync/update_episodes_archive` - Archive/unarchive episodes
+
+#### Bookmarks (api.pocketcasts.com)
+- `POST /user/bookmark/list` - List all user bookmarks
+- `POST /user/bookmark/add` - Create a new bookmark at timestamp
+- `POST /user/bookmark/delete` - Delete a bookmark
+- `POST /user/podcast/episode/bookmarks` - Get bookmarks for single episode
+- `POST /user/podcast/episodes/bookmarks` - Get bookmarks for multiple episodes
+
+#### Recommendations (api.pocketcasts.com)
+- `POST /discover/recommend_episodes` - Get recommended episodes
+- `GET /recommendations/podcast/{podcast_uuid}` - Podcast-specific recommendations
+- `GET /recommendations/social` - Social recommendations
+- `GET /recommendations/user_podcast` - User-based podcast recommendations
+
+#### Discovery (lists.pocketcasts.com)
+- `GET /featured.json` - Featured podcasts
+- `GET /trending.json` - Trending podcasts
+- `GET /{uuid}.json` - Specific list by UUID
+
+#### Discovery (static.pocketcasts.com)
+- `GET /discover/json/categories_v2.json` - Podcast categories
+- `GET /discover/web/content_v3.json` - Discovery content
+
+#### Show Notes (shownotes.pocketcasts.com)
+- `POST /show_notes/{podcast_uuid}/episodes_{timestamp}.json` - Episode show notes
+
+#### Episodes (podcasts.pocketcasts.com)
+- `GET /{podcast_uuid}/episodes_full_{timestamp}.json` - Full episode list with metadata
+
+#### Stats & History (api.pocketcasts.com)
+- `POST /user/stats/add` - Record listening statistics
+- `POST /history/do` - Record history event
 
 ---
 
 ## Next Steps
 
-### High Priority
-1. **Test basic functionality** - Verify login, browse, and playback work
-2. **Implement subscribe/unsubscribe** - Complete LIBRARY_PODCASTS_EDIT feature
-3. **Connect progress sync** - Hook into player queue events to auto-sync position
-4. **Add error handling** - Improve error messages and exception handling
-5. **Token refresh** - Implement token refresh mechanism
+See "Potential Features from Pocketcasts API" section above for detailed feature mapping and implementation priorities.
 
-### Medium Priority
-6. **Add browse categories** - Implement featured/trending/categories
-7. **Episode filtering** - Add played/unplayed filters
-8. **Add unit tests** - Test core functionality
-9. **Handle token expiration** - Graceful re-authentication
-10. **Optimize API calls** - Cache podcast lists, reduce redundant calls
+### Immediate Priority (Core Functionality)
+1. ✅ **Test basic functionality** - DONE: Login, browse, playback all working
+2. **Add error handling** - Improve error messages and exception handling
+3. **Token refresh** - Implement token refresh mechanism for expired sessions
+4. **Add unit tests** - Test core functionality (API client, data conversion)
 
-### Low Priority
-11. **Add Up Next queue support** - If API supports it
-12. **Add filters feature** - Custom episode filters
-13. **Chapter support** - If episodes have chapter markers
-14. **Artwork optimization** - Support multiple image sizes
+### Phase 1: Discovery & Browse Enhancement (High Value)
+5. **Implement RECOMMENDATIONS** - Featured/trending podcasts, categories
+6. **Extend BROWSE** - Add live playlists (New Releases, In Progress, Starred, History)
+7. **Test search functionality** - Verify search works as expected
 
-### Nice to Have
-15. **Multi-instance support** - Allow multiple Pocketcasts accounts
-16. **Advanced search** - Search within episodes
-17. **Podcast recommendations** - Based on listening history
-18. **Statistics** - Listening time, favorite podcasts, etc.
+### Phase 2: Library Management (Medium Priority)
+8. **Complete LIBRARY_PODCASTS_EDIT** - Subscribe/unsubscribe to podcasts
+9. **Implement FAVORITE_PODCASTS_EDIT** - Star/unstar episodes
+
+### Phase 3: Sync & Polish (Medium Priority)
+10. **Connect progress sync** - Hook into player queue events to auto-sync position to Pocketcasts
+11. **Optimize API calls** - Cache podcast lists, reduce redundant calls
+12. **Handle token expiration** - Graceful re-authentication
+
+### Phase 4: Advanced Features (Nice to Have)
+13. **Up Next Queue** - PLAYLIST_TRACKS_EDIT/PLAYLIST_CREATE features
+14. **Transcripts as LYRICS** - For premium users (VTT parsing required)
+15. **Bookmarks** - Show time-stamped bookmarks in browse
+16. **Multi-instance support** - Allow multiple Pocketcasts accounts
 
 ---
 
@@ -361,7 +562,6 @@ SUPPORTED_FEATURES = {
 ### 2026-02-01 - Testing and Bug Fixes
 - **Branch Management:**
   - Synced pocketcasts branch from upstream
-  - Merged upstream/dev into pocketcasts (565 commits)
   - Rebased to create clean PR branch (4 commits only)
   - Simplified to single clean branch strategy
   - Pushed to fork: github.com/yfhyou/MAserver
