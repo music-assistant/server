@@ -302,15 +302,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         """
         options = ["rw"]  # read-write access
 
-        # Handle username and password
-        # We pass the password via the PASSWD environment variable instead of on the
-        # command line because passwords containing commas cannot be properly escaped
-        # on the command line - the comma is used as the option separator.
-        # See: https://bugs.launchpad.net/ubuntu/+source/cifs-utils/+bug/1069915
+        # We pass the password via the PASSWD environment variable to avoid
+        # improperly escaped passwords with special characters.
         if username and username.lower() != "guest":
             options.append(f"username={username}")
             if password:
-                # Pass password via environment variable to handle special characters
                 env_vars["PASSWD"] = password
         else:
             # Guest/anonymous access
