@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -306,13 +306,6 @@ class AuthenticationManager:
                 )
                 """
             )
-            await self.database.commit()
-
-        # Migration to version 6: Add provider_name column to join_codes
-        if from_version == 5:
-            with contextlib.suppress(OperationalError):
-                # Column may already exist
-                await self.database.execute("ALTER TABLE join_codes ADD COLUMN provider_name TEXT")
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
