@@ -53,5 +53,6 @@ async def get_config_entries(
             description="Hostname or IP address of the HEOS device "
             "to be used as the main controller. It is recommended to use a "
             "wired device as the main controller.",
+            category="advanced",
         ),
     )
