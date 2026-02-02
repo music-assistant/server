@@ -198,17 +198,17 @@ class DeezerProvider(MusicProvider):
 
     # Cached wrappers for dynamic Deezer content (ensures consistent data across calls)
     @use_cache(3600)  # Cache for 1 hour
-    async def _get_flow_tracks(self) -> list:
+    async def _get_flow_tracks(self) -> list[deezer.Track]:
         """Get cached Flow tracks."""
         return list(await self.client.get_user_flow())
 
     @use_cache(3600)  # Cache for 1 hour
-    async def _get_recommended_tracks(self) -> list:
+    async def _get_recommended_tracks(self) -> list[deezer.Track]:
         """Get cached recommended tracks."""
         return list(await self.client.get_user_recommended_tracks())
 
     @use_cache(3600)  # Cache for 1 hour
-    async def _get_chart_tracks(self) -> list:
+    async def _get_chart_tracks(self) -> list[deezer.Track]:
         """Get cached chart tracks."""
         chart = await self.client.get_chart()
         return list(chart.tracks[:100]) if chart.tracks else []
@@ -407,7 +407,7 @@ class DeezerProvider(MusicProvider):
         playlist_tracks = await playlist.get_tracks()
         return self._parse_tracks_list(list(playlist_tracks))
 
-    def _parse_tracks_list(self, tracks: list) -> list[Track]:
+    def _parse_tracks_list(self, tracks: list[deezer.Track]) -> list[Track]:
         """Parse a list of Deezer tracks to Music Assistant tracks."""
         return [
             self.parse_track(
@@ -871,7 +871,7 @@ class DeezerProvider(MusicProvider):
         :param name: Display name for the playlist.
         :param image_url: Optional image URL.
         """
-        images = UniqueList()
+        images: UniqueList[MediaItemImage] = UniqueList()
         if image_url:
             images.append(
                 MediaItemImage(
