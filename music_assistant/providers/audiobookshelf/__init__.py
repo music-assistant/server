@@ -93,7 +93,7 @@ from .constants import (
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
 )
-from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard
+from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard, SessionHelper
 
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
@@ -239,10 +239,8 @@ class Audiobookshelf(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
-        # ruff: noqa: PLR0915
         self._on_unload_callbacks: list[Callable[[], None]] = []
-        self.session_last_time = 0.0  # time since an abs session was synced last.
-        self.session_ids: dict[str, str] = {}  # media_item_id: session_id
+        self.sessions: dict[str, SessionHelper] = {}  # key is the media_item_id
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
@@ -578,8 +576,9 @@ for more details.
         if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)):
             self.logger.debug("Streaming item %s via an abs session.", item_id)
             session = await self._get_abs_playback_session(mass_item_id=item_id)
-            self.session_last_time = time.time()
-            self.session_ids[item_id] = session.id_
+            self.sessions[item_id] = SessionHelper(
+                abs_session_id=session.id_, last_sync_time=time.time()
+            )
             stream_url = (
                 f"{self.mass.streams.base_url}/{self.instance_id}_session_stream?"
                 f"session_id={session.id_}"
@@ -804,11 +803,13 @@ for more details.
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return finished:bool, position_ms: int."""
         if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-            session_id := self.session_ids.get(item_id)
+            session_helper := self.sessions.get(item_id)
         ):
             with suppress(AbsSessionNotFoundError):
                 # suppress: fall back to standard approach if session is not found/ yet available
-                session = await self._client.get_open_session(session_id=session_id)
+                session = await self._client.get_open_session(
+                    session_id=session_helper.abs_session_id
+                )
                 finished = session.current_time > session.duration - 30
                 return finished, int(session.current_time * 1000)
         progress: None | MediaProgress = None
@@ -1054,21 +1055,22 @@ for more details.
 
         """
 
-        async def _update_by_session(session_id: str, duration: int) -> None:
+        async def _update_by_session(session_helper: SessionHelper, duration: int) -> None:
             now = time.time()
             try:
+                self.logger.debug(now - session_helper.last_sync_time)
                 await self._client.sync_open_session(
-                    session_id=session_id,
+                    session_id=session_helper.abs_session_id,
                     parameters=SyncOpenSessionParameters(
                         current_time=position,
-                        time_listened=now - self.session_last_time,
+                        time_listened=now - session_helper.last_sync_time,
                         duration=duration,
                     ),
                 )
                 self.logger.debug("Synced playback session, position %s s.", position)
             except AbsSessionNotFoundError:
                 self.logger.error("Was unable to sync session.")
-            self.session_last_time = now
+            session_helper.last_sync_time = now
 
         if media_type == MediaType.PODCAST_EPISODE:
             abs_podcast_id, abs_episode_id = prov_item_id.split(" ")
@@ -1095,9 +1097,9 @@ for more details.
 
             duration = media_item.duration
             if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-                session_id := self.session_ids.get(prov_item_id)
+                session_helper := self.sessions.get(prov_item_id)
             ):
-                await _update_by_session(session_id=session_id, duration=duration)
+                await _update_by_session(session_helper=session_helper, duration=duration)
             else:
                 self.logger.debug(
                     f"Updating media progress of {media_type.value}, title {media_item.name}."
@@ -1129,9 +1131,9 @@ for more details.
 
             duration = media_item.duration
             if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-                session_id := self.session_ids.get(prov_item_id)
+                session_helper := self.sessions.get(prov_item_id)
             ):
-                await _update_by_session(session_id=session_id, duration=duration)
+                await _update_by_session(session_helper=session_helper, duration=duration)
             else:
                 self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
                 await self._client.update_my_media_progress(

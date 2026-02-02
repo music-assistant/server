@@ -27,6 +27,14 @@ class LibrariesHelper(DataClassDictMixin):
 
 
 @dataclass(kw_only=True)
+class SessionHelper:
+    """Helper class to store some session information."""
+
+    abs_session_id: str
+    last_sync_time: float
+
+
+@dataclass(kw_only=True)
 class _ProgressHelper:
     id_: str  # audiobook or podcast id
     episode_id: str | None = None
