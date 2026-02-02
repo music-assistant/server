@@ -102,6 +102,18 @@ SUPPORTED_FEATURES = {
 - [ ] **Auto-sync on pause/stop** - Not implemented
 - [ ] **Mark as played** - Not implemented
 
+#### Authentication & Token Management
+- [x] **Login** - Successfully authenticates with email/password
+- [x] **Long-lived Token** - Uses mobile/API token (valid ~5 months)
+- [ ] **Token Refresh** - Not implemented (low priority - mobile tokens are long-lived)
+
+**Token Details:**
+- Current implementation uses `/user/login` without `scope` parameter
+- Returns mobile/API token (`"pc:tokenType":"ID"`, `"scopes":["mobile"]`)
+- Token valid for ~5 months (vs 1 hour for web player tokens)
+- No refresh token needed for this authentication method
+- Alternative web player authentication (`scope: "webplayer"`) would require hourly token refresh
+
 ---
 
 ### ❌ Not Implemented
@@ -411,7 +423,7 @@ Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/
 
 #### Authentication & Account (api.pocketcasts.com)
 - `POST /user/login_pocket_casts` - Alternative login endpoint
-- `POST /user/token` - Token generation/refresh
+- `POST /user/token` - Token refresh (for web player tokens only, not needed for mobile tokens)
 - `GET /subscription/status` - Check premium subscription status
 
 #### Library Management (api.pocketcasts.com)
@@ -474,8 +486,8 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 
 ### Immediate Priority (Core Functionality)
 1. ✅ **Test basic functionality** - DONE: Login, browse, playback all working
-2. **Add error handling** - Improve error messages and exception handling
-3. **Token refresh** - Implement token refresh mechanism for expired sessions
+2. ✅ **Test login error handling** - DONE: Invalid credentials show 401 error
+3. **Add error handling** - Improve error messages and exception handling for API calls
 4. **Add unit tests** - Test core functionality (API client, data conversion)
 
 ### Phase 1: Discovery & Browse Enhancement (High Value)
@@ -490,10 +502,13 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 ### Phase 3: Sync & Polish (Medium Priority)
 10. **Connect progress sync** - Hook into player queue events to auto-sync position to Pocketcasts
 11. **Optimize API calls** - Cache podcast lists, reduce redundant calls
-12. **Handle token expiration** - Graceful re-authentication
 
 ### Phase 4: Advanced Features (Nice to Have)
-13. **Up Next Queue** - PLAYLIST_TRACKS_EDIT/PLAYLIST_CREATE features
+12. **Up Next Queue** - PLAYLIST_TRACKS_EDIT/PLAYLIST_CREATE features
+13. **Token refresh mechanism** - Low priority (current mobile tokens valid ~5 months)
+    - Would allow graceful handling of token expiration
+    - Could enable web player token support (requires hourly refresh)
+    - Not urgent: users typically restart MA or update config before expiry
 14. **Transcripts as LYRICS** - For premium users (VTT parsing required)
 15. **Bookmarks** - Show time-stamped bookmarks in browse
 16. **Multi-instance support** - Allow multiple Pocketcasts accounts
