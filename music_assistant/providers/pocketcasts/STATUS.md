@@ -64,6 +64,10 @@ SUPPORTED_FEATURES = {
 - [x] `get_subscribed_podcasts()` - Fetch user's podcast library
 - [x] `get_podcast_episodes()` - Get episodes via API redirect
 - [x] `get_in_progress_episodes()` - Fetch resume positions
+- [x] `get_up_next_episodes()` - Fetch Up Next queue
+- [x] `get_new_releases()` - Fetch new release episodes
+- [x] `get_starred_episodes()` - Fetch starred/favorited episodes
+- [x] `get_history()` - Fetch listening history
 - [x] `update_episode_progress()` - Sync playback position to server
 - [x] `search_podcasts()` - Search for podcasts
 - [x] `get_podcast_details()` - Fetch podcast by UUID
@@ -75,10 +79,25 @@ SUPPORTED_FEATURES = {
 - [x] `get_podcast()` - Get full podcast details
 - [x] `get_podcast_episodes()` - Get all episodes for a podcast
 - [x] `get_podcast_episode()` - Get single episode with resume position
-- [x] `browse()` - Browse podcasts and episodes
+- [x] `browse()` - Browse podcasts, episodes, and special folders
+- [x] `_create_browse_folders()` - Create special browse folders at root
+- [x] `_get_special_folder_episodes()` - Fetch episodes for special folders
 - [x] `search()` - Search for podcasts
 - [x] `get_stream_details()` - Get streaming URLs for episodes
 - [x] `get_resume_position()` - Get playback position for episodes
+
+#### Browse Folders (Live Playlists)
+- [x] **Up Next** - User's queued episodes
+- [x] **New Releases** - Recent episodes from subscriptions
+- [x] **In Progress** - Currently listening episodes
+- [x] **Starred** - Favorited episodes
+- [x] **History** - Recently played episodes
+
+**Implementation Notes:**
+- Browse folders appear at root level before subscribed podcasts
+- Up Next endpoint returns episodes as dict (UUID keys) vs list format of other endpoints
+- Special handling added to extract episode UUIDs from dict keys
+- Podcast UUID extraction handles both string format (Up Next) and object format (other endpoints)
 
 #### Data Conversion
 - [x] `_convert_podcast()` - Convert API data to Podcast object
@@ -298,7 +317,7 @@ Based on user value and implementation complexity:
 
 ## Testing Status
 
-### Manual Testing Results (2026-02-01)
+### Manual Testing Results (2026-02-01 to 2026-02-02)
 
 **Testing Environment:**
 - Music Assistant: version 0.0.0 (dev branch)
@@ -309,18 +328,24 @@ Based on user value and implementation complexity:
 
 ✅ **Working Features:**
 - [x] Login with valid credentials - SUCCESS
+- [x] Login error handling - Invalid credentials show 401 error (2026-02-02)
 - [x] Browse podcast library - Podcasts display correctly
 - [x] Episode lists - Episodes load and display properly
 - [x] Play an episode - Playback works
 - [x] Podcast sidebar - Shows in UI (after frontend cache clear)
 - [x] Podcast images - Thumbnails load correctly
 - [x] Resume playback from saved position - SUCCESS (after Bug #3 fixes)
+- [x] Browse folders - All 5 special folders working (2026-02-02)
+  - [x] Up Next - Shows queued episodes
+  - [x] New Releases - Shows recent episodes from subscriptions
+  - [x] In Progress - Shows episodes being listened to
+  - [x] Starred - Shows favorited episodes
+  - [x] History - Shows recently played episodes
 
 ⚠️ **Partially Working:**
 - [ ] Sync progress back to Pocketcasts - Not tested yet
 
 ❌ **Not Tested:**
-- [ ] Login with invalid credentials (error handling)
 - [ ] Search for podcasts
 - [ ] Test with large libraries (100+ podcasts)
 - [ ] Test with podcasts that have many episodes (500+)
@@ -492,7 +517,7 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 
 ### Phase 1: Discovery & Browse Enhancement (High Value)
 5. **Implement RECOMMENDATIONS** - Featured/trending podcasts, categories
-6. **Extend BROWSE** - Add live playlists (New Releases, In Progress, Starred, History)
+6. ✅ **Extend BROWSE** - DONE: Added 5 live playlists (Up Next, New Releases, In Progress, Starred, History)
 7. **Test search functionality** - Verify search works as expected
 
 ### Phase 2: Library Management (Medium Priority)
@@ -573,6 +598,45 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 ---
 
 ## Changelog
+
+### 2026-02-02 - Browse Folders & Token Documentation
+
+- **New Feature: Browse Folders (Live Playlists)**
+  - Implemented 5 special browse folders at root level:
+    - **Up Next** - User's queued episodes
+    - **New Releases** - Recent episodes from subscriptions
+    - **In Progress** - Episodes being listened to
+    - **Starred** - Favorited episodes
+    - **History** - Recently played episodes
+
+- **API Client Additions:**
+  - Added `get_up_next_episodes()` - POST `/up_next/list`
+  - Added `get_new_releases()` - POST `/user/new_releases`
+  - Added `get_starred_episodes()` - POST `/user/starred`
+  - Added `get_history()` - POST `/user/history`
+  - Note: `get_in_progress_episodes()` already existed
+
+- **Provider Implementation:**
+  - Added `_create_browse_folders()` helper method
+  - Added `_get_special_folder_episodes()` to handle folder-specific API calls
+  - Updated `browse()` to show browse folders at root level
+  - **Special Handling for Up Next:**
+    - Up Next endpoint returns episodes as dict (UUID keys) instead of list
+    - Modified iteration logic to handle both dict and list formats
+    - Extract episode UUID from dict key when missing from data
+    - Handle podcast field as both string (Up Next) and object (other endpoints)
+
+- **Testing:**
+  - Tested all 5 browse folders successfully
+  - Verified episode display and playback from folders
+  - Confirmed login error handling shows 401 for invalid credentials
+
+- **Documentation:**
+  - Documented token authentication behavior (mobile vs web player tokens)
+  - Mobile tokens valid ~5 months, no refresh needed
+  - Moved token refresh to Phase 4 (low priority)
+  - Updated API endpoints with all discovered endpoints from unofficial API
+  - Added comprehensive feature mapping (7 potential features documented)
 
 ### 2026-02-01 - Testing and Bug Fixes
 - **Branch Management:**

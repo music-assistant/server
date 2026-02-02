@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from typing import Any, cast
 
 import aiohttp
@@ -35,7 +36,12 @@ class PocketCastsClient:
         self.session = aiohttp.ClientSession()
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         """Async context manager exit."""
         if self.session:
             await self.session.close()
@@ -122,9 +128,8 @@ class PocketCastsClient:
 
                     LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
                     return episodes
-                else:
-                    LOGGER.error("Failed to get episodes: %d", response.status)
-                    return []
+                LOGGER.error("Failed to get episodes: %d", response.status)
+                return []
 
         except Exception as err:
             LOGGER.error("Error fetching episodes: %s", err)
@@ -153,6 +158,111 @@ class PocketCastsClient:
 
         except Exception as err:
             LOGGER.error("Error fetching in-progress: %s", err)
+            return []
+
+    async def get_up_next_episodes(self) -> dict[str, dict[str, Any]] | list[dict[str, Any]]:
+        """Get Up Next queue episodes.
+
+        Note: Returns dict with episode UUIDs as keys, unlike other endpoints that return lists.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching Up Next episodes")
+
+            async with self.session.post(
+                f"{self.BASE_URL}/up_next/list", headers=self._headers()
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    LOGGER.error("Failed to get up next: %d - %s", response.status, text)
+                    return {}
+
+                data = await response.json()
+                episodes: dict[str, dict[str, Any]] | list[dict[str, Any]] = data.get(
+                    "episodes", {}
+                )
+                LOGGER.debug("Retrieved %d up next episodes", len(episodes))
+                return episodes
+
+        except Exception as err:
+            LOGGER.error("Error fetching up next: %s", err)
+            return {}
+
+    async def get_new_releases(self) -> list[dict[str, Any]]:
+        """Get new release episodes from subscriptions."""
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching new releases")
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/new_releases", headers=self._headers()
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    LOGGER.error("Failed to get new releases: %d - %s", response.status, text)
+                    return []
+
+                data = await response.json()
+                episodes: list[dict[str, Any]] = data.get("episodes", [])
+                LOGGER.debug("Retrieved %d new release episodes", len(episodes))
+                return episodes
+
+        except Exception as err:
+            LOGGER.error("Error fetching new releases: %s", err)
+            return []
+
+    async def get_starred_episodes(self) -> list[dict[str, Any]]:
+        """Get starred/favorited episodes."""
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching starred episodes")
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/starred", headers=self._headers()
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    LOGGER.error("Failed to get starred: %d - %s", response.status, text)
+                    return []
+
+                data = await response.json()
+                episodes: list[dict[str, Any]] = data.get("episodes", [])
+                LOGGER.debug("Retrieved %d starred episodes", len(episodes))
+                return episodes
+
+        except Exception as err:
+            LOGGER.error("Error fetching starred: %s", err)
+            return []
+
+    async def get_history(self) -> list[dict[str, Any]]:
+        """Get listening history episodes."""
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching history")
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/history", headers=self._headers()
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    LOGGER.error("Failed to get history: %d - %s", response.status, text)
+                    return []
+
+                data = await response.json()
+                episodes: list[dict[str, Any]] = data.get("episodes", [])
+                LOGGER.debug("Retrieved %d history episodes", len(episodes))
+                return episodes
+
+        except Exception as err:
+            LOGGER.error("Error fetching history: %s", err)
             return []
 
     async def update_episode_progress(
@@ -209,10 +319,9 @@ class PocketCastsClient:
                     podcasts: list[dict[str, Any]] = data.get("podcasts", [])
                     LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
                     return podcasts
-                else:
-                    text = await response.text()
-                    LOGGER.error("Search failed: %d - %s", response.status, text)
-                    return []
+                text = await response.text()
+                LOGGER.error("Search failed: %d - %s", response.status, text)
+                return []
 
         except Exception as err:
             LOGGER.error("Error searching: %s", err)

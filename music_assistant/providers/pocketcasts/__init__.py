@@ -288,6 +288,124 @@ class PocketCastsProvider(MusicProvider):
         except Exception as err:
             LOGGER.error("Error getting episodes for podcast %s: %s", prov_podcast_id, err)
 
+    async def _get_special_folder_episodes(
+        self, folder_name: str
+    ) -> list[MediaItemType | BrowseFolder]:
+        """Get episodes for a special browse folder.
+
+        :param folder_name: Name of the special folder (up_next, new_releases, etc.)
+        """
+        if not self._client:
+            return []
+
+        # Get episodes from the appropriate API endpoint
+        if folder_name == "up_next":
+            episode_list = await self._client.get_up_next_episodes()
+        elif folder_name == "new_releases":
+            episode_list = await self._client.get_new_releases()
+        elif folder_name == "in_progress":
+            episode_list = await self._client.get_in_progress_episodes()
+        elif folder_name == "starred":
+            episode_list = await self._client.get_starred_episodes()
+        else:  # history
+            episode_list = await self._client.get_history()
+
+        LOGGER.debug("Got %d episodes from %s API", len(episode_list), folder_name)
+
+        items: list[MediaItemType | BrowseFolder] = []
+        # Convert episodes to PodcastEpisode objects
+        # Note: up_next returns dict with UUIDs as keys, others return list
+        if isinstance(episode_list, dict):
+            # Up Next format: {episode_uuid: {episode_data}}
+            episode_items: list[tuple[str | None, dict[str, Any]]] = list(episode_list.items())
+        else:
+            # Other formats: [{episode_data}, ...]
+            episode_items = [(None, ep) for ep in episode_list]
+
+        for episode_uuid_key, episode_data in episode_items:
+            # For up_next, add the UUID from the dict key to the episode data
+            if episode_uuid_key and "uuid" not in episode_data:
+                episode_data["uuid"] = episode_uuid_key
+
+            # Extract podcast UUID from episode data
+            # Note: up_next endpoint returns podcast as string, others return object
+            podcast_field = episode_data.get("podcast")
+            podcast_uuid: str | None = None
+            if isinstance(podcast_field, str):
+                podcast_uuid = podcast_field
+            elif isinstance(podcast_field, dict):
+                podcast_uuid = podcast_field.get("uuid", None)
+            else:
+                podcast_uuid = episode_data.get("podcastUuid", None)
+
+            if podcast_uuid:
+                episode_item = self._convert_episode(episode_data, podcast_uuid)
+                if episode_item:
+                    items.append(episode_item)
+
+        LOGGER.debug("Converted %d episodes successfully from %s", len(items), folder_name)
+        return items
+
+    def _create_browse_folders(self) -> list[BrowseFolder]:
+        """Create special browse folders for root level."""
+        return [
+            BrowseFolder(
+                item_id="up_next",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://up_next",
+                name="Up Next",
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    provider=self.instance_id,
+                ),
+            ),
+            BrowseFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://new_releases",
+                name="New Releases",
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    provider=self.instance_id,
+                ),
+            ),
+            BrowseFolder(
+                item_id="in_progress",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://in_progress",
+                name="In Progress",
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    provider=self.instance_id,
+                ),
+            ),
+            BrowseFolder(
+                item_id="starred",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://starred",
+                name="Starred",
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    provider=self.instance_id,
+                ),
+            ),
+            BrowseFolder(
+                item_id="history",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://history",
+                name="History",
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    provider=self.instance_id,
+                ),
+            ),
+        ]
+
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """Browse this provider's items."""
         if not self._client:
@@ -298,21 +416,39 @@ class PocketCastsProvider(MusicProvider):
         LOGGER.debug("Browse called with path: %s, parsed to: %s", path, item_path)
 
         items: list[MediaItemType | BrowseFolder] = []
+
         if not item_path:
-            # Root level - show subscribed podcasts
+            # Root level - show special folders and subscribed podcasts
             try:
+                # Add special browse folders at the top
+                items.extend(self._create_browse_folders())
+
+                # Add subscribed podcasts
                 podcasts = await self._client.get_subscribed_podcasts()
                 for podcast_data in podcasts:
                     podcast_item = self._convert_podcast(podcast_data)
                     if podcast_item:
                         items.append(podcast_item)
-                LOGGER.debug("Returning %d podcasts at root level", len(items))
+                LOGGER.debug(
+                    "Returning %d items at root level (5 folders + %d podcasts)",
+                    len(items),
+                    len(items) - 5,
+                )
                 return items
             except Exception as err:
                 LOGGER.exception("Error browsing podcasts: %s", err)
                 return []
+
+        elif item_path in ("up_next", "new_releases", "in_progress", "starred", "history"):
+            # Special folder - show episodes from appropriate API endpoint
+            LOGGER.debug("Fetching episodes for special folder: %s", item_path)
+            try:
+                return await self._get_special_folder_episodes(item_path)
+            except Exception as err:
+                LOGGER.exception("Error browsing special folder %s: %s", item_path, err)
+                return []
         else:
-            # Sub-path - show episodes for the podcast
+            # Regular podcast path - show episodes for the podcast
             LOGGER.debug("Fetching episodes for podcast: %s", item_path)
             try:
                 episodes = await self._client.get_podcast_episodes(item_path)
