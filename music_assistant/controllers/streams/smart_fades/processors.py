@@ -1,11 +1,13 @@
 # processors/base.py
 
+import asyncio
 import logging
 import time
 from typing import Any
 
 import numpy as np
 import torch
+import torchaudio
 from beat_this.inference import Postprocessor, Spect2Frames
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
@@ -13,7 +15,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.controllers.streams.smart_fades.feature_extractors import (
     AdvancedBeatFeatureExtractor,
 )
-from music_assistant.helpers.audio import resample_pcm_audio
 
 BEAT_THIS_ANALYSIS_AUDIO_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -62,16 +63,48 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         self._post = Postprocessor(type="minimal")
         self._device = device
 
+        # Create resampler for converting input audio to analysis format (22050Hz mono)
+        # This avoids spawning ffmpeg subprocesses for each chunk
+        self._resampler: torchaudio.transforms.Resample | None = None
+        if audio_format.sample_rate != BEAT_THIS_ANALYSIS_AUDIO_FORMAT.sample_rate:
+            self._resampler = torchaudio.transforms.Resample(
+                orig_freq=audio_format.sample_rate,
+                new_freq=BEAT_THIS_ANALYSIS_AUDIO_FORMAT.sample_rate,
+            ).to(device)
+
         self.logger = logging.getLogger(__name__)
 
-    async def process_pcm_chunk(self, pcm_chunk: bytes) -> None:
-        # 1. resample immediately
-        pcm = await resample_pcm_audio(
-            pcm_chunk, self.input_audio_format, BEAT_THIS_ANALYSIS_AUDIO_FORMAT
-        )
+    def _resample_chunk_sync(self, pcm_chunk: bytes) -> np.ndarray:
+        """Resample a PCM chunk to analysis format (22050Hz mono). Runs synchronously."""
+        content_type = self.input_audio_format.content_type
 
-        # Convert S16LE to float32 in [-1, 1] range
-        pcm_22k = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        # Parse PCM bytes based on content type (clone to avoid non-writable buffer warning)
+        if content_type == ContentType.PCM_F32LE:
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.float32).clone()
+        elif content_type == ContentType.PCM_F64LE:
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.float64).clone().to(torch.float32)
+        elif content_type == ContentType.PCM_S32LE:
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.int32).clone().to(torch.float32) / 2147483648.0
+        else:
+            # Default: PCM_S16LE (most common)
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+
+        # Handle stereo to mono conversion
+        if self.input_audio_format.channels == 2:
+            audio = audio.reshape(-1, 2).mean(dim=1)
+
+        # Resample if needed
+        if self._resampler is not None:
+            audio = audio.to(self._device)
+            with torch.no_grad():
+                audio = self._resampler(audio)
+            audio = audio.cpu()
+
+        return audio.numpy()
+
+    async def process_pcm_chunk(self, pcm_chunk: bytes) -> None:
+        # Resample to 22050Hz mono in thread pool (avoids blocking event loop)
+        pcm_22k = await asyncio.to_thread(self._resample_chunk_sync, pcm_chunk)
 
         if pcm_22k.size == 0:
             return
