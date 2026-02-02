@@ -18,7 +18,7 @@ from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_u
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 from music_assistant_models.errors import AuthenticationFailed
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
@@ -252,8 +252,6 @@ class LoginRateLimiter:
 class LoginProviderConfig(TypedDict, total=False):
     """Base configuration for login providers."""
 
-    allow_self_registration: bool
-
 
 class HomeAssistantProviderConfig(LoginProviderConfig):
     """Configuration for Home Assistant OAuth provider."""
@@ -287,7 +285,11 @@ class LoginProvider(ABC):
         self.provider_id = provider_id
         self.config = config
         self.logger = LOGGER
-        self.allow_self_registration = config.get("allow_self_registration", False)
+
+    @property
+    def allow_self_registration(self) -> bool:
+        """Return whether self-registration is allowed for this provider."""
+        return False
 
     @property
     def auth_manager(self) -> AuthenticationManager:
@@ -519,6 +521,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         super().__init__(mass, provider_id, config)
         # Store OAuth state -> return_url mapping to support concurrent sessions
         self._oauth_sessions: dict[str, str | None] = {}
+
+    @property
+    def allow_self_registration(self) -> bool:
+        """Return whether self-registration is allowed, read dynamically from config."""
+        return bool(self.mass.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION))
 
     @property
     def provider_type(self) -> AuthProviderType:

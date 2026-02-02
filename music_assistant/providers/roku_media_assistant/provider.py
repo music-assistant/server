@@ -72,45 +72,46 @@ class MediaAssistantprovider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover Roku players on the network."""
-        if self.config.get_value(CONF_AUTO_DISCOVER):
-            if self._discovery_running:
-                return
-            try:
-                self._discovery_running = True
-                self.logger.debug("Roku discovery started...")
-                discovered_devices: set[str] = set()
+        if not self.config.get_value(CONF_AUTO_DISCOVER):
+            return
+        if self._discovery_running:
+            return
+        try:
+            self._discovery_running = True
+            self.logger.debug("Roku discovery started...")
+            discovered_devices: set[str] = set()
 
-                async def on_response(discovery_info: CaseInsensitiveDict) -> None:
-                    """Process discovered device from ssdp search."""
-                    ssdp_st: str | None = discovery_info.get("st")
-                    if not ssdp_st:
-                        return
+            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
+                """Process discovered device from ssdp search."""
+                ssdp_st: str | None = discovery_info.get("st")
+                if not ssdp_st:
+                    return
 
-                    if "roku:ecp" not in ssdp_st:
-                        # we're only interested in Roku devices
-                        return
+                if "roku:ecp" not in ssdp_st:
+                    # we're only interested in Roku devices
+                    return
 
-                    ssdp_usn: str = discovery_info["usn"]
-                    ssdp_udn: str | None = discovery_info.get("_udn")
-                    if not ssdp_udn and ssdp_usn.startswith("uuid:"):
-                        ssdp_udn = "ROKU_" + ssdp_usn.split(":")[-1]
-                    elif ssdp_udn:
-                        ssdp_udn = "ROKU_" + ssdp_udn.split(":")[-1]
-                    else:
-                        return
+                ssdp_usn: str = discovery_info["usn"]
+                ssdp_udn: str | None = discovery_info.get("_udn")
+                if not ssdp_udn and ssdp_usn.startswith("uuid:"):
+                    ssdp_udn = "ROKU_" + ssdp_usn.split(":")[-1]
+                elif ssdp_udn:
+                    ssdp_udn = "ROKU_" + ssdp_udn.split(":")[-1]
+                else:
+                    return
 
-                    if ssdp_udn in discovered_devices:
-                        # already processed this device
-                        return
+                if ssdp_udn in discovered_devices:
+                    # already processed this device
+                    return
 
-                    discovered_devices.add(ssdp_udn)
+                discovered_devices.add(ssdp_udn)
 
-                    await self._device_discovered(discovery_info["_host"])
+                await self._device_discovered(discovery_info["_host"])
 
-                await async_search(on_response, search_target="roku:ecp")
+            await async_search(on_response, search_target="roku:ecp")
 
-            finally:
-                self._discovery_running = False
+        finally:
+            self._discovery_running = False
 
         def reschedule() -> None:
             self.mass.create_task(self.discover_players())

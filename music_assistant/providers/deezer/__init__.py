@@ -622,6 +622,7 @@ class DeezerProvider(MusicProvider):
             provider=self.instance_id,
             name=name,
             version=version,
+            year=album.release_date.year if getattr(album, "release_date", None) else None,
             artists=UniqueList(
                 [
                     ItemMapping(

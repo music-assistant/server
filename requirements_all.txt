@@ -16,13 +16,13 @@ aioslimproto==3.1.4
 aiosonos==0.1.9
 aiosqlite==0.22.1
 aiovban>=0.6.3
-alexapy==1.29.14
+alexapy==1.29.15
 async-upnp-client==0.46.2
 audible==0.10.0
 auntie-sounds==1.1.7
 av==16.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.0.4
+bandcamp-async-api==0.0.7
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
@@ -41,8 +41,8 @@ liblistenbrainz==0.6.1
 librosa==0.11.0
 lyricsgenius==3.7.5
 mashumaro==3.17
-music-assistant-frontend==2.17.73
-music-assistant-models==1.1.91
+music-assistant-frontend==2.17.77
+music-assistant-models==1.1.95
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
 orjson==3.11.5
@@ -51,7 +51,7 @@ pkce==1.0.3
 plexapi==4.17.2
 podcastparser==0.6.11
 propcache>=0.2.1
-py-opensonic==8.0.1
+py-opensonic==8.1.1
 pyblu==2.0.5
 pycares==4.11.0
 PyChromecast==14.0.9
@@ -74,5 +74,6 @@ unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
 xmltodict==1.0.2
+yandex-music==2.2.0
 ytmusicapi==1.11.3
 zeroconf==0.148.0

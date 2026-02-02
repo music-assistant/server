@@ -70,7 +70,7 @@
         'version': '',
       }),
     ]),
-    'date_added': None,
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
       list([
         'barcode',
@@ -143,7 +143,7 @@
 # ---
 # name: test_parse_artist[artist]
   dict({
-    'date_added': None,
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
     'favorite': False,
@@ -281,7 +281,7 @@
 # ---
 # name: test_parse_playlist[playlist]
   dict({
-    'date_added': None,
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
     'favorite': False,
@@ -434,7 +434,7 @@
         'version': '',
       }),
     ]),
-    'date_added': None,
+    'date_added': '2024-06-10T12:00:00+00:00',
     'disc_number': 1,
     'duration': 180,
     'external_ids': list([

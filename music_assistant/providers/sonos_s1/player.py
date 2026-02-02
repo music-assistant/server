@@ -14,27 +14,23 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerState, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-    CONF_ENTRY_OUTPUT_CODEC,
-    VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL, create_sample_rates_config_entry
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     DURATION_SECONDS,
+    LINEIN_SOURCE_IDS,
     LINEIN_SOURCES,
     NEVER_TIME,
     PLAYER_FEATURES,
+    PLAYER_SOURCE_MAP,
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
@@ -131,14 +127,10 @@ class SonosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-            CONF_ENTRY_OUTPUT_CODEC,
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100, 48000],
                 supported_bit_depths=[16],
-                hidden=False,
+                hidden=True,
             ),
         ]
 
@@ -150,7 +142,12 @@ class SonosPlayer(Player):
                 self.player_id,
             )
             return
-        await asyncio.to_thread(self.soco.stop)
+        if self._attr_active_source in LINEIN_SOURCE_IDS:
+            # Play an invalid URI to force stop line-in sources
+            with contextlib.suppress(SoCoException):
+                await asyncio.to_thread(self.soco.play_uri, "")
+        else:
+            await asyncio.to_thread(self.soco.stop)
         self.mass.call_later(2, self.poll)
         self.update_state()
 
@@ -213,9 +210,11 @@ class SonosPlayer(Player):
             media.uri = media.uri.replace(".flac", ".mp3")
 
         didl_metadata = create_didl_metadata(media)
+        is_announcement = media.media_type == MediaType.ANNOUNCEMENT
+        force_radio = False if is_announcement else not media.duration
 
         await asyncio.to_thread(
-            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=not media.duration
+            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=force_radio
         )
         self.mass.call_later(2, self.poll)
 
@@ -548,9 +547,13 @@ class SonosPlayer(Player):
         uri = track_info["uri"]
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if SOURCE_MAPPING.get(audio_source) and audio_source in LINEIN_SOURCES:
+        if (source_id := SOURCE_MAPPING.get(audio_source)) and audio_source in LINEIN_SOURCES:
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
+            self._attr_active_source = source_id
+            self._attr_current_media = None
+            if source_id not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
             return
 
         current_media = PlayerMedia(
@@ -561,6 +564,7 @@ class SonosPlayer(Player):
             image_url=track_info.get("album_art"),
         )
         self._attr_current_media = current_media
+        self._attr_active_source = None
         self._update_media_position(track_info, force_update=update_position)
 
     def _update_media_position(

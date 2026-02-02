@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Sequence
 from typing import Any
 
@@ -24,7 +22,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
 from .constants import RADIO_PARADISE_CHANNELS
-from .helpers import build_stream_url, find_current_song, get_current_block_position, get_next_song
 
 
 class RadioParadiseProvider(MusicProvider):
@@ -55,7 +52,9 @@ class RadioParadiseProvider(MusicProvider):
         if item_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError(f"Unknown radio channel: {item_id}")
 
-        stream_url = build_stream_url(item_id)
+        # Get stream URL from channel configuration
+        channel_info = RADIO_PARADISE_CHANNELS[item_id]
+        stream_url = channel_info.get("stream_url")
         if not stream_url:
             raise UnplayableMediaError(f"No stream URL found for channel {item_id}")
 
@@ -76,35 +75,17 @@ class RadioParadiseProvider(MusicProvider):
             allow_seek=False,
             can_seek=False,
             duration=0,
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=10,  # Check every 10 seconds
         )
 
         # Set initial metadata if available
         metadata = await self._get_channel_metadata(item_id)
         if metadata and metadata.get("current"):
             current_song = metadata["current"]
-            stream_details.stream_metadata = parsers.build_stream_metadata(current_song, metadata)
-
-        # Store the monitoring task in streamdetails.data for cleanup in on_streamed
-        monitor_task = self.mass.create_task(self._monitor_stream_metadata(stream_details))
-        stream_details.data = {"monitor_task": monitor_task}
+            stream_details.stream_metadata = parsers.build_stream_metadata(current_song)
 
         return stream_details
-
-    async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Handle callback when given streamdetails completed streaming."""
-        self.logger.debug(
-            f"Radio Paradise channel {streamdetails.item_id} streamed for "
-            f"{streamdetails.seconds_streamed} seconds"
-        )
-
-        # Cancel and clean up the monitoring task
-        if "monitor_task" in streamdetails.data:
-            monitor_task = streamdetails.data["monitor_task"]
-            if not monitor_task.done():
-                monitor_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await monitor_task
-            del streamdetails.data["monitor_task"]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
@@ -115,88 +96,80 @@ class RadioParadiseProvider(MusicProvider):
         return parsers.parse_radio(channel_id, self.instance_id, self.domain)
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current track and upcoming tracks from Radio Paradise's block API.
+        """Get current track metadata from Radio Paradise's now_playing API.
 
-        Args:
-            channel_id: Radio Paradise channel ID (0-5)
-
-        Returns:
-            Dict with current song, next song, and block data, or None if API fails
+        :param channel_id: Radio Paradise channel ID (0-5).
         """
         if channel_id not in RADIO_PARADISE_CHANNELS:
             return None
 
         try:
-            # Use block API for much richer data
-            api_url = (
-                f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
-            )
+            # Use now_playing API
+            channel_info = RADIO_PARADISE_CHANNELS[channel_id]
+            api_url = channel_info["api_url"]
             timeout = aiohttp.ClientTimeout(total=10)
 
             async with self.mass.http_session.get(api_url, timeout=timeout) as response:
                 if response.status != 200:
-                    self.logger.debug(f"Block API call failed with status {response.status}")
+                    self.logger.debug(f"Now playing API call failed with status {response.status}")
                     return None
 
                 data = await response.json()
 
-                # Find currently playing song based on elapsed time
-                current_time_ms = get_current_block_position(data)
-                current_song = find_current_song(data.get("song", {}), current_time_ms)
-
-                if not current_song:
-                    self.logger.debug(f"No current song found for channel {channel_id}")
+                if not data:
+                    self.logger.debug(f"No metadata returned for channel {channel_id}")
                     return None
 
-                # Get next song
-                next_song = get_next_song(data.get("song", {}), current_song)
-
-                return {"current": current_song, "next": next_song, "block_data": data}
+                return {"current": data, "next": None, "block_data": None}
 
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
+            self.logger.debug(f"Failed to get metadata for channel {channel_id}: {exc}")
             return None
         except Exception as exc:
-            self.logger.debug(
-                f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
-            )
+            self.logger.debug(f"Unexpected error getting metadata for channel {channel_id}: {exc}")
             return None
 
-    async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
-        """Monitor and update stream metadata in real-time during playback.
+    async def _update_stream_metadata(
+        self, stream_details: StreamDetails, elapsed_time: int
+    ) -> None:
+        """Update stream metadata callback called by player queue controller.
 
-        Fetches current track info from Radio Paradise's API every 10 seconds
-        and updates StreamDetails with track metadata and upcoming songs.
+        Fetches current track info from Radio Paradise's API and updates
+        StreamDetails with track metadata.
 
-        Args:
-            stream_details: StreamDetails object to update with metadata
+        :param stream_details: StreamDetails object to update with metadata.
+        :param elapsed_time: Elapsed playback time in seconds (unused for Radio Paradise).
         """
-        last_track_event = ""
         item_id = stream_details.item_id
 
+        # Initialize data dict if needed
+        if stream_details.data is None:
+            stream_details.data = {}
+
         try:
-            while True:
-                metadata = await self._get_channel_metadata(item_id)
-                if metadata and metadata.get("current"):
-                    current_song = metadata["current"]
-                    current_event = current_song.get("event", "")
+            metadata = await self._get_channel_metadata(item_id)
+            if metadata and metadata.get("current"):
+                current_song = metadata["current"]
+                artist = current_song.get("artist", "")
+                title = current_song.get("title", "")
+                current_track_id = f"{artist}:{title}"
 
-                    if current_event != last_track_event:
-                        # Create StreamMetadata object with full track info
-                        stream_metadata = parsers.build_stream_metadata(current_song, metadata)
+                # Only update if track changed
+                if (
+                    not stream_details.stream_metadata
+                    or stream_details.data.get("last_track_id") != current_track_id
+                ):
+                    # Create StreamMetadata object with full track info
+                    stream_metadata = parsers.build_stream_metadata(current_song)
 
-                        self.logger.debug(
-                            f"Updating stream metadata for {item_id}: "
-                            f"{stream_metadata.artist} - {stream_metadata.title}"
-                        )
-                        stream_details.stream_metadata = stream_metadata
+                    self.logger.debug(
+                        f"Updating stream metadata for {item_id}: "
+                        f"{stream_metadata.artist} - {stream_metadata.title}"
+                    )
+                    stream_details.stream_metadata = stream_metadata
+                    stream_details.data["last_track_id"] = current_track_id
 
-                        last_track_event = current_event
-
-                await asyncio.sleep(15)
-        except asyncio.CancelledError:
-            self.logger.debug(f"Monitor task cancelled for {item_id}")
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Network error while monitoring {item_id}: {exc}")
+            self.logger.debug(f"Network error while updating metadata for {item_id}: {exc}")
         except Exception as exc:
-            self.logger.warning(f"Unexpected error monitoring {item_id}: {exc}")
+            self.logger.warning(f"Unexpected error updating metadata for {item_id}: {exc}")

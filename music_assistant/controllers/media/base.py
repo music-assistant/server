@@ -16,11 +16,18 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import ItemMapping, MediaItemType, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    MediaItemType,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request
 
@@ -613,6 +620,75 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.music.match_provider_instances(library_item)
         await self.set_provider_mappings(db_id, library_item.provider_mappings)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+
+    @final
+    async def update_provider_mapping(
+        self,
+        item_id: str | int,
+        provider_instance_id: str,
+        provider_item_id: str,
+        *,
+        available: bool | Any = UNSET,
+        in_library: bool | Any = UNSET,
+        is_unique: bool | None | Any = UNSET,
+        url: str | None | Any = UNSET,
+        details: str | None | Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
+    ) -> None:
+        """Update an existing provider mapping for a library item."""
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+
+        # find the current mapping (strictly by provider instance + provider item id)
+        cur_mapping: ProviderMapping | None = None
+        for mapping in library_item.provider_mappings:
+            if (
+                mapping.provider_instance == provider_instance_id
+                and mapping.item_id == provider_item_id
+            ):
+                cur_mapping = mapping
+                break
+        if cur_mapping is None:
+            msg = (
+                f"Provider mapping {provider_instance_id}/{provider_item_id} "
+                f"not found for item {db_id}"
+            )
+            raise MediaNotFoundError(msg)
+
+        # guard against nulls for NOT NULL columns
+        if available is None:
+            available = UNSET
+        if in_library is None:
+            in_library = UNSET
+
+        updates: dict[str, Any] = {}
+        if available is not UNSET:
+            updates["available"] = bool(available)
+        if in_library is not UNSET:
+            updates["in_library"] = bool(in_library)
+        if is_unique is not UNSET:
+            updates["is_unique"] = is_unique
+        if url is not UNSET:
+            updates["url"] = url
+        if details is not UNSET:
+            updates["details"] = details
+        if audio_format is not UNSET:
+            updates["audio_format"] = serialize_to_json(audio_format)
+
+        if not updates:
+            return
+
+        match = {
+            "media_type": self.media_type.value,
+            "item_id": db_id,
+            "provider_instance": provider_instance_id,
+            "provider_item_id": provider_item_id,
+        }
+        await self.mass.music.database.update(DB_TABLE_PROVIDER_MAPPINGS, match, updates)
+
+        # Re-fetch the updated item so the event payload reflects persisted DB state.
+        updated_item = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated_item.uri, updated_item)
 
     @final
     async def remove_provider_mapping(

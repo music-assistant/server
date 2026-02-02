@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import pathlib
@@ -412,7 +413,7 @@ class MusicAssistant:
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if asyncio.iscoroutinefunction(cb_func):
+            if inspect.iscoroutinefunction(cb_func):
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -466,10 +467,10 @@ class MusicAssistant:
                 return existing
         self.verify_event_loop_thread("create_task")
 
-        if asyncio.iscoroutinefunction(target):
+        if inspect.iscoroutinefunction(target):
             # coroutine function
             task = self.loop.create_task(target(*args, **kwargs))
-        elif asyncio.iscoroutine(target):
+        elif inspect.iscoroutine(target):
             # coroutine
             task = self.loop.create_task(target)
         elif callable(target):
@@ -526,7 +527,7 @@ class MusicAssistant:
             self._tracked_timers.pop(task_id)
             self.create_task(_target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
-        if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutine(target):
             # coroutine function
             if TYPE_CHECKING:
                 target = cast("Coroutine[Any, Any, _R]", target)
@@ -704,6 +705,31 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
 
+    async def run_provider_discovery(self, instance_id: str) -> None:
+        """
+        Run mDNS discovery for a given provider.
+
+        In case of a PlayerProvider, will also call its own discovery method.
+        """
+        provider = self.get_provider(instance_id, return_unavailable=False)
+        if not provider:
+            raise KeyError(f"Provider with instance ID {instance_id} not found")
+        if provider.manifest.mdns_discovery:
+            if provider.instance_id not in self._mdns_locks:
+                self._mdns_locks[provider.instance_id] = asyncio.Lock()
+            async with self._mdns_locks[provider.instance_id]:
+                for mdns_type in provider.manifest.mdns_discovery or []:
+                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                        if mdns_type not in mdns_name or mdns_type == mdns_name:
+                            continue
+                        info = AsyncServiceInfo(mdns_type, mdns_name)
+                        if await info.async_request(self.aiozc.zeroconf, 3000):
+                            await provider.on_mdns_service_state_change(
+                                mdns_name, ServiceStateChange.Added, info
+                            )
+        if isinstance(provider, PlayerProvider):
+            await provider.discover_players()
+
     def verify_event_loop_thread(self, what: str) -> None:
         """Report and raise if we are not running in the event loop thread."""
         if self.loop_thread_id != threading.get_ident():
@@ -757,7 +783,7 @@ class MusicAssistant:
             # If a provider fails, that will not block the loading of other providers.
             self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:  # noqa: PLR0915
+    async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -815,21 +841,10 @@ class MusicAssistant:
         # execute post load actions
         async def _on_provider_loaded() -> None:
             await provider.loaded_in_mass()
-            if provider.type != ProviderType.PLAYER:
-                return
-            # add mdns discovery if needed
-            if provider.instance_id not in self._mdns_locks:
-                self._mdns_locks[provider.instance_id] = asyncio.Lock()
-            async with self._mdns_locks[provider.instance_id]:
-                for mdns_type in provider.manifest.mdns_discovery or []:
-                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                        if mdns_type not in mdns_name or mdns_type == mdns_name:
-                            continue
-                        info = AsyncServiceInfo(mdns_type, mdns_name)
-                        if await info.async_request(self.aiozc.zeroconf, 3000):
-                            await provider.on_mdns_service_state_change(
-                                mdns_name, ServiceStateChange.Added, info
-                            )
+            await self.run_provider_discovery(provider.instance_id)
+            # push instance name to config (to persist it if it was autogenerated)
+            if provider.default_name != conf.default_name:
+                self.config.set_provider_default_name(provider.instance_id, provider.default_name)
 
         self.create_task(_on_provider_loaded())
 

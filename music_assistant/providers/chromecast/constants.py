@@ -35,7 +35,7 @@ CAST_PLAYER_CONFIG_ENTRIES = (
         "better metadata and future expansion. \\n\\n"
         "If you want to use the official Google Cast Receiver app instead, disable this option, "
         "for example if your device has issues with the Music Assistant app.",
-        category="advanced",
+        advanced=True,
     ),
 )
 

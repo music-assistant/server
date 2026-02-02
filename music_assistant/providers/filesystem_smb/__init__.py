@@ -122,7 +122,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="SMB Version",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="3.0",
             options=[
                 ConfigValueOption("Auto", ""),
@@ -140,7 +140,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Cache Mode",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="loose",
             options=[
                 ConfigValueOption("Strict", "strict"),
@@ -303,6 +303,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         options.append(f"cache={cache_mode}")
 
         # Case insensitive by default (standard for SMB) and other performance options
+        # Note: iocharset is omitted to allow CIFS native Unicode handling for emoji
+        # and other 4-byte UTF-8 characters.
         options.extend(
             [
                 "nocase",
@@ -310,7 +312,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 "dir_mode=0755",
                 "uid=0",
                 "gid=0",
-                "iocharset=utf8",
                 "noperm",
                 "nobrl",
                 "mfsymlinks",

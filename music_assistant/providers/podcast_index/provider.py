@@ -173,7 +173,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Adding podcast %s to library", item.name)
         stored_podcasts.append(feed_url)
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -205,7 +205,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)
         stored_podcasts = [x for x in stored_podcasts if x != feed_url]
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
