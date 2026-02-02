@@ -236,8 +236,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 server, username, password_str, share, subfolder
             )
         elif platform.system() == "Linux":
-            mount_cmd = self._build_linux_mount_cmd(
-                server, username, password_str, share, subfolder
+            mount_cmd, env_vars = self._build_linux_mount_cmd(
+                server, username, password_str, share, subfolder, env_vars
             )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
@@ -279,16 +279,35 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         ]
 
     def _build_linux_mount_cmd(
-        self, server: str, username: str, password: str | None, share: str, subfolder: str
-    ) -> list[str]:
-        """Build mount command for Linux."""
+        self,
+        server: str,
+        username: str,
+        password: str | None,
+        share: str,
+        subfolder: str,
+        env_vars: dict[str, str],
+    ) -> tuple[list[str], dict[str, str]]:
+        """Build mount command for Linux.
+
+        Uses the PASSWD environment variable to handle passwords with special characters
+        (commas, etc.) that cannot be escaped on the command line.
+
+        :param server: The SMB server hostname or IP.
+        :param username: The username for authentication.
+        :param password: The password for authentication (can contain special chars).
+        :param share: The share name on the server.
+        :param subfolder: Optional subfolder path within the share.
+        :param env_vars: Environment variables dict to modify with PASSWD if needed.
+        :returns: Tuple of (mount command args, modified env vars).
+        """
         options = ["rw"]  # read-write access
 
-        # Handle username and password
+        # We pass the password via the PASSWD environment variable to avoid
+        # improperly escaped passwords with special characters.
         if username and username.lower() != "guest":
             options.append(f"username={username}")
             if password:
-                options.append(f"password={password}")
+                env_vars["PASSWD"] = password
         else:
             # Guest/anonymous access
             options.append("guest")
@@ -320,7 +339,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             ]
         )
 
-        return [
+        mount_cmd = [
             "mount",
             "-t",
             "cifs",
@@ -329,6 +348,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             f"//{server}/{share}{subfolder}",
             self.base_path,
         ]
+        return mount_cmd, env_vars
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
