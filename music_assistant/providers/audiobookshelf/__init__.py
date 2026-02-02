@@ -20,6 +20,7 @@ from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlayb
 from aioaudiobookshelf.client.session import SyncOpenSessionParameters
 from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
 from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
+from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
@@ -749,7 +750,10 @@ for more details.
         """Session request."""
         if not (session_id := request.query.get("session_id")):
             return web.Response(status=400, text="session_id")
-        abs_session = await self._client.get_open_session(session_id=session_id)
+        try:
+            abs_session = await self._client.get_open_session(session_id=session_id)
+        except AbsSessionNotFoundError:
+            raise web.HTTPNotFound from AbsSessionNotFoundError
         stream_url = self._get_stream_url_from_playback_session(abs_session)
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
@@ -1044,15 +1048,18 @@ for more details.
 
         async def _update_by_session(session_id: str, duration: int) -> None:
             now = time.time()
-            await self._client.sync_open_session(
-                session_id=session_id,
-                parameters=SyncOpenSessionParameters(
-                    current_time=position,
-                    time_listened=now - self.session_last_time,
-                    duration=duration,
-                ),
-            )
-            self.logger.debug("Synced playback session, position %s s.", position)
+            try:
+                await self._client.sync_open_session(
+                    session_id=session_id,
+                    parameters=SyncOpenSessionParameters(
+                        current_time=position,
+                        time_listened=now - self.session_last_time,
+                        duration=duration,
+                    ),
+                )
+                self.logger.debug("Synced playback session, position %s s.", position)
+            except AbsSessionNotFoundError:
+                self.logger.error("Was unable to sync session.")
             self.session_last_time = now
 
         if media_type == MediaType.PODCAST_EPISODE:
