@@ -583,11 +583,11 @@ for more details.
             )
 
         if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
-            return await self._get_stream_details_session(session)
+            return await self._get_stream_details_session(session, media_type)
         raise MediaNotFoundError("Stream unknown")
 
     async def _get_stream_details_session(
-        self, abs_session: AbsPlaybackSessionExpanded
+        self, abs_session: AbsPlaybackSessionExpanded, media_type: MediaType
     ) -> StreamDetails:
         """Streamdetails audiobook.
 
@@ -635,7 +635,7 @@ for more details.
             provider=self.instance_id,
             item_id=abs_session.id_,
             audio_format=AudioFormat(content_type=content_type),
-            media_type=MediaType.AUDIOBOOK,
+            media_type=media_type,
             stream_type=StreamType.HLS if hls else StreamType.HTTP,
             duration=int(abs_session.duration),
             path=file_parts[0].path if hls else file_parts,
