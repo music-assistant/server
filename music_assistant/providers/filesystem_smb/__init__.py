@@ -303,6 +303,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         options.append(f"cache={cache_mode}")
 
         # Case insensitive by default (standard for SMB) and other performance options
+        # Note: We intentionally do NOT set iocharset=utf8 because the NLS framework
+        # is limited to 16-bit Unicode (U+FFFF max) and cannot handle emoji or other
+        # characters above the Basic Multilingual Plane. Without iocharset, CIFS uses
+        # its native Unicode handling which supports the full Unicode range including
+        # surrogate pairs (4-byte UTF-8 sequences like emoji).
         options.extend(
             [
                 "nocase",
@@ -310,7 +315,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 "dir_mode=0755",
                 "uid=0",
                 "gid=0",
-                "iocharset=utf8",
                 "noperm",
                 "nobrl",
                 "mfsymlinks",
