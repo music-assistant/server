@@ -644,9 +644,14 @@ class PlayerQueuesController(CoreController):
         for x in media_items:
             if not x or not x.available:
                 continue
-            queue_items.append(
-                QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
-            )
+            queue_item = QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+            # Track which user added this item and how (for provider hooks like guest priority)
+            if playback_user:
+                queue_item.extra_attributes["added_by_user_id"] = playback_user.user_id
+                queue_item.extra_attributes["added_by_user_role"] = playback_user.role.value
+            if option:
+                queue_item.extra_attributes["queue_option"] = option.value
+            queue_items.append(queue_item)
 
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
