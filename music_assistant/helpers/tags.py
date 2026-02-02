@@ -1088,6 +1088,8 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
             result = _parse_vorbis_tags(audio.tags)
         else:
             # ID3 tags (MP3) and other formats
+            # TODO: Add _parse_apev2_tags() for WavPack/Musepack/Monkey's Audio to extract
+            # MusicBrainz IDs and multi-artist tags (APEv2 uses different tag names than ID3).
             tags_dict = dict(audio.tags)
             result = _parse_id3_tags(tags_dict)
 
