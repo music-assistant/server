@@ -18,7 +18,7 @@ import random
 import time
 from contextlib import suppress
 from types import NoneType
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -126,6 +126,90 @@ class CompareState(TypedDict):
     output_formats: list[str] | None
 
 
+class QueueModifier(Protocol):
+    """Protocol for queue behavior modifiers.
+
+    Providers can implement this protocol to modify queue behavior at key points.
+    This allows features like party mode's guest priority queue to be implemented
+    in the provider rather than hardcoded in the core controller.
+    """
+
+    def modify_enqueue_option(
+        self,
+        queue_id: str,
+        option: QueueOption | None,
+        user: User | None,
+        queue_state: PlaybackState,
+    ) -> QueueOption | None:
+        """Optionally modify the queue option before processing.
+
+        Called before enqueueing items. Return the modified option or None to use default.
+
+        :param queue_id: The queue being modified.
+        :param option: The original queue option (PLAY, ADD, NEXT, REPLACE).
+        :param user: The user performing the action, if known.
+        :param queue_state: Current playback state of the queue.
+        :returns: Modified queue option, or None to use the original.
+        """
+        ...
+
+    def calculate_insert_index(
+        self,
+        queue_id: str,
+        items: list[QueueItem],
+        user: User | None,
+        current_index: int | None,
+        queue_length: int,
+    ) -> int | None:
+        """Calculate custom insert index for ADD operations.
+
+        Called when items are added with QueueOption.ADD. Return a custom insert
+        index or None to use the default behavior.
+
+        :param queue_id: The queue being modified.
+        :param items: The items being inserted.
+        :param user: The user performing the action, if known.
+        :param current_index: Current playing index in the queue.
+        :param queue_length: Total number of items in the queue.
+        :returns: Custom insert index, or None for default behavior.
+        """
+        ...
+
+    def should_shuffle_items(
+        self,
+        queue_id: str,
+        items: list[QueueItem],
+        user: User | None,
+    ) -> bool:
+        """Determine if items should be shuffled.
+
+        Called when items are being added with shuffle enabled. Return False
+        to prevent shuffling for these items (e.g., guest priority items).
+
+        :param queue_id: The queue being modified.
+        :param items: The items being inserted.
+        :param user: The user performing the action, if known.
+        :returns: True to allow shuffling, False to prevent it.
+        """
+        ...
+
+    def get_protected_item_ids(
+        self,
+        queue_id: str,
+        items: list[QueueItem],
+    ) -> set[str]:
+        """Get item IDs that should be protected from shuffle.
+
+        Called during shuffle operations. Returns a set of queue_item_ids that
+        should maintain their position and not be shuffled.
+
+        :param queue_id: The queue being shuffled.
+        :param items: All items in the queue after current position.
+        :returns: Set of queue_item_ids to protect from shuffling.
+        """
+        ...
+
+
 class PlayerQueuesController(CoreController):
     """Controller holding all logic to enqueue music for players."""
 
@@ -138,6 +222,7 @@ class PlayerQueuesController(CoreController):
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
+        self._queue_modifiers: dict[str, QueueModifier] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -150,6 +235,27 @@ class PlayerQueuesController(CoreController):
         for queue in self.all():
             if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 await self.stop(queue.queue_id)
+
+    def register_queue_modifier(self, provider_id: str, modifier: QueueModifier) -> None:
+        """Register a queue modifier from a provider.
+
+        Queue modifiers allow providers to influence queue behavior at key points,
+        such as modifying insert positions, controlling shuffle behavior, etc.
+
+        :param provider_id: Unique identifier for the provider registering the modifier.
+        :param modifier: Object implementing the QueueModifier protocol.
+        """
+        self._queue_modifiers[provider_id] = modifier
+        self.logger.debug("Registered queue modifier from provider: %s", provider_id)
+
+    def unregister_queue_modifier(self, provider_id: str) -> None:
+        """Unregister a queue modifier.
+
+        :param provider_id: The provider ID whose modifier should be removed.
+        """
+        if provider_id in self._queue_modifiers:
+            del self._queue_modifiers[provider_id]
+            self.logger.debug("Unregistered queue modifier from provider: %s", provider_id)
 
     async def get_config_entries(
         self,
@@ -319,15 +425,32 @@ class PlayerQueuesController(CoreController):
         else:
             next_items = []
             next_index = 0
+
+        # Allow queue modifiers to protect certain items from shuffling
+        # (e.g., party mode protects guest-added items to maintain their priority order)
+        protected_ids: set[str] = set()
+        for modifier in self._queue_modifiers.values():
+            protected_ids.update(modifier.get_protected_item_ids(queue_id, next_items))
+
+        protected_items = [x for x in next_items if x.queue_item_id in protected_ids]
+        regular_items = [x for x in next_items if x.queue_item_id not in protected_ids]
+
         if not shuffle_enabled:
-            # shuffle disabled, try to restore original sort order of the remaining items
-            next_items.sort(key=lambda x: x.sort_index, reverse=False)
+            # shuffle disabled, try to restore original sort order
+            # protected items stay in front, regular items sorted by original order
+            regular_items.sort(key=lambda x: x.sort_index, reverse=False)
+            next_items = protected_items + regular_items
+        else:
+            # shuffle enabled: only shuffle regular items, keep protected items in order at front
+            shuffled_regular = await _smart_shuffle(regular_items) if regular_items else []
+            next_items = protected_items + shuffled_regular
+
         await self.load(
             queue_id=queue_id,
             queue_items=next_items,
             insert_at_index=next_index,
             keep_remaining=False,
-            shuffle=shuffle_enabled,
+            shuffle=False,  # we handle shuffling ourselves above
         )
 
     @api_command("player_queues/dont_stop_the_music")
@@ -418,6 +541,15 @@ class PlayerQueuesController(CoreController):
         else:
             playback_user = get_current_user()
         queue.userid = playback_user.user_id if playback_user else None
+
+        # Allow queue modifiers to change the enqueue option
+        # (e.g., party mode converting ADD to PLAY when queue is idle)
+        for modifier in self._queue_modifiers.values():
+            if modified := modifier.modify_enqueue_option(
+                queue_id, option, playback_user, queue.state
+            ):
+                option = modified
+                break  # First modifier to return a value wins
 
         # a single item or list of items may be provided
         media_list = media if isinstance(media, list) else [media]
@@ -570,14 +702,37 @@ class PlayerQueuesController(CoreController):
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
-            await self.load(
-                queue_id=queue_id,
-                queue_items=queue_items,
-                insert_at_index=insert_at_index
-                if queue.shuffle_enabled
-                else len(self._queue_items[queue_id]) + 1,
-                shuffle=queue.shuffle_enabled,
-            )
+            # Allow queue modifiers to customize insert index and shuffle behavior
+            custom_insert_index: int | None = None
+            allow_shuffle = True
+            queue_length = len(self._queue_items[queue_id])
+
+            for modifier in self._queue_modifiers.values():
+                # Check if modifier wants a custom insert index
+                if idx := modifier.calculate_insert_index(
+                    queue_id, queue_items, playback_user, queue.current_index, queue_length
+                ):
+                    custom_insert_index = idx
+                # Check if modifier wants to prevent shuffling
+                if not modifier.should_shuffle_items(queue_id, queue_items, playback_user):
+                    allow_shuffle = False
+
+            if custom_insert_index is not None:
+                # Use custom insert index from modifier (e.g., guest priority queue)
+                await self.load(
+                    queue_id=queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=custom_insert_index,
+                    shuffle=False,  # Custom insert implies no shuffle
+                )
+            else:
+                # Default behavior: end of queue or shuffle insert
+                await self.load(
+                    queue_id=queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=insert_at_index if queue.shuffle_enabled else queue_length + 1,
+                    shuffle=queue.shuffle_enabled and allow_shuffle,
+                )
             # handle edgecase, queue is empty and items are only added (not played)
             # mark first item as new index
             if queue.current_index is None:
