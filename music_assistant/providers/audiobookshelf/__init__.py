@@ -86,7 +86,7 @@ from .constants import (
     CONF_OLD_TOKEN,
     CONF_PASSWORD,
     CONF_URL,
-    CONF_USE_ABS_SESSIONS,
+    CONF_USE_SESSION_HLS,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
     AbsBrowseItemsBookTranslationKey,
@@ -182,10 +182,10 @@ async def get_config_entries(
             hidden=True,
         ),
         ConfigEntry(
-            key=CONF_USE_ABS_SESSIONS,
+            key=CONF_USE_SESSION_HLS,
             type=ConfigEntryType.BOOLEAN,
-            label="Use audiobookshelf's sessions (testing - subject to removal)",
-            description="Use audiobookshelf's sessions for streaming.",
+            label="Stream via HLS from ABS",
+            description="Use an HLS stream when streaming from audiobookshelf.",
             required=False,
             default_value=False,
         ),
@@ -349,17 +349,7 @@ for more details.
         # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}_part_stream", self._handle_audiobook_part_request
-            )
-        )
-        self._on_unload_callbacks.append(
-            self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}_episode_stream", self._handle_episode_request
-            )
-        )
-        self._on_unload_callbacks.append(
-            self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}_session_stream", self._handle_session_request
+                f"/{self.instance_id}_part_stream", self._handle_session_part_request
             )
         )
 
@@ -573,61 +563,54 @@ for more details.
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream of item."""
-        if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)):
-            self.logger.debug("Streaming item %s via an abs session.", item_id)
-            session: AbsPlaybackSessionExpanded | None = None
-            if session_helper := self.sessions.get(item_id):
-                with suppress(AbsSessionNotFoundError):
-                    session = await self._client.get_open_session(
-                        session_id=session_helper.abs_session_id
-                    )
-                    self.logger.debug("Using an already available session.")
-            if session is None:
-                session = await self._get_abs_playback_session(mass_item_id=item_id)
-                self.sessions[item_id] = SessionHelper(
-                    abs_session_id=session.id_, last_sync_time=time.time()
+        # We always create a playback session. The default is direct playback.
+        # In that case, session.tracks holds the exact same as the audiobook/ podcast.track,
+        # so we only use the session to update our progress.
+        #
+        # In the case of hls the session has an hls stream as track.
+        #
+        session: AbsPlaybackSessionExpanded | None = None
+        if session_helper := self.sessions.get(item_id):
+            with suppress(AbsSessionNotFoundError):
+                session = await self._client.get_open_session(
+                    session_id=session_helper.abs_session_id
                 )
-            stream_url = (
-                f"{self.mass.streams.base_url}/{self.instance_id}_session_stream?"
-                f"session_id={session.id_}"
-            )
-            stream_url = self._get_stream_url_from_playback_session(session)
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.UNKNOWN,
-                ),
-                media_type=media_type,
-                stream_type=StreamType.HLS,
-                path=stream_url,
-                can_seek=True,
-                allow_seek=True,
+                self.logger.debug("Using an already available session.")
+        if session is None:
+            session = await self._get_abs_playback_session(mass_item_id=item_id)
+            self.sessions[item_id] = SessionHelper(
+                abs_session_id=session.id_, last_sync_time=time.time()
             )
 
-        # Non-Session approach
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self._get_stream_details_episode(item_id)
-        if media_type == MediaType.AUDIOBOOK:
-            abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=item_id)
-            return await self._get_stream_details_audiobook(abs_audiobook)
+        if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
+            return await self._get_stream_details_session(session)
         raise MediaNotFoundError("Stream unknown")
 
-    async def _get_stream_details_audiobook(
-        self, abs_audiobook: AbsLibraryItemExpandedBook
+    async def _get_stream_details_session(
+        self, abs_session: AbsPlaybackSessionExpanded
     ) -> StreamDetails:
         """Streamdetails audiobook.
 
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
         """
-        tracks = abs_audiobook.media.tracks
+        hls = bool(self.config.get_value(CONF_USE_SESSION_HLS))
+        tracks = abs_session.audio_tracks
+        if hls:
+            # some checks
+            if len(tracks) == 0:
+                raise RuntimeError("Playback session has no tracks to play")
+            track = tracks[0]
+            track_url = track.content_url
+            if track_url.split("/")[1] != "hls":
+                raise RuntimeError("Did expect HLS stream for session playback")
+
         if len(tracks) == 0:
             raise MediaNotFoundError("Stream not found")
 
         content_type = ContentType.UNKNOWN
-        if abs_audiobook.media.tracks[0].metadata is not None:
-            content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
+        if abs_session.audio_tracks[0].metadata is not None:
+            content_type = ContentType.try_parse(abs_session.audio_tracks[0].metadata.ext)
 
         file_parts: list[MultiPartPath] = []
         abs_base_url = str(self.config.get_value(CONF_URL))
@@ -644,68 +627,24 @@ for more details.
                 # we also use this for the first part, otherwise we can't seek
                 stream_url = (
                     f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                    f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
+                    f"session_id={abs_session.id_}&part_id={idx}"
                 )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
             provider=self.instance_id,
-            item_id=abs_audiobook.id_,
+            item_id=abs_session.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.AUDIOBOOK,
-            stream_type=StreamType.HTTP,
-            duration=int(abs_audiobook.media.duration),
-            path=file_parts,
+            stream_type=StreamType.HLS if hls else StreamType.HTTP,
+            duration=int(abs_session.duration),
+            path=file_parts[0].path if hls else file_parts,
             can_seek=True,
             allow_seek=True,
         )
 
-    async def _get_stream_details_episode(self, podcast_id: str) -> StreamDetails:
-        """Streamdetails of a podcast episode.
-
-        There are no multi-file podcasts in abs, but we use a custom
-        stream to handle possible ffmpeg errors.
-        """
-        abs_podcast_id, abs_episode_id = podcast_id.split(" ")
-        abs_episode = None
-
-        abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_podcast_id)
-        for abs_episode in abs_podcast.media.episodes:
-            if abs_episode.id_ == abs_episode_id:
-                break
-        if abs_episode is None:
-            raise MediaNotFoundError("Stream not found")
-        content_type = ContentType.UNKNOWN
-        if abs_episode.audio_track.metadata is not None:
-            content_type = ContentType.try_parse(abs_episode.audio_track.metadata.ext)
-
-        if self.is_token_user:
-            self.logger.debug("Token User - Stream is direct.")
-            # long lived API token, no need for detour
-            abs_base_url = str(self.config.get_value(CONF_URL))
-            stream_url = (
-                f"{abs_base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
-            )
-        else:
-            stream_url = (
-                f"{self.mass.streams.base_url}/{self.instance_id}_episode_stream?"
-                f"podcast_id={abs_podcast.id_}&episode_id={abs_episode.id_}"
-            )
-
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=podcast_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-            ),
-            media_type=MediaType.PODCAST_EPISODE,
-            stream_type=StreamType.HTTP,
-            can_seek=True,
-            allow_seek=True,
-            path=stream_url,
-        )
-
-    async def _handle_audiobook_part_request(self, request: web.Request) -> web.Response:
+    @handle_refresh_token
+    async def _handle_session_part_request(self, request: web.Request) -> web.Response:
         """
         Handle dynamic audiobook part stream request.
 
@@ -713,57 +652,22 @@ for more details.
         This is done because the token might expire, so we need to
         generate a fresh url on each part.
         """
-        if not (audiobook_id := request.query.get("audiobook_id")):
-            return web.Response(status=400, text="Missing audiobook_id")
+        if not (session_id := request.query.get("session_id")):
+            return web.Response(status=400, text="Missing session_id")
         if not (part_id := request.query.get("part_id")):
             return web.Response(status=400, text="Missing part_id")
-        abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=audiobook_id)
+        try:
+            abs_session = await self._client.get_open_session(session_id=session_id)
+        except AbsSessionNotFoundError as err:
+            raise web.HTTPNotFound from err
         part_id = int(part_id)  # type: ignore[assignment]
         try:
-            part_track = abs_audiobook.media.tracks[part_id]
+            part_track = abs_session.audio_tracks[part_id]
         except IndexError:
             return web.Response(status=404, text="Part not found")
 
         base_url = str(self.config.get_value(CONF_URL))
         stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
-        # redirect to the actual stream url
-        raise web.HTTPFound(location=stream_url)
-
-    async def _handle_episode_request(self, request: web.Request) -> web.Response:
-        """Podcast episode request.
-
-        For a podcast episode, we only have a single file, but the token might be expired should
-        user try to seek an episode.
-        """
-        if not (abs_podcast_id := request.query.get("podcast_id")):
-            return web.Response(status=400, text="Missing podcast_id")
-        if not (abs_episode_id := request.query.get("episode_id")):
-            return web.Response(status=400, text="Missing episode_id")
-        abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_podcast_id)
-        abs_episode = None
-        for abs_episode in abs_podcast.media.episodes:
-            if abs_episode.id_ == abs_episode_id:
-                break
-        if abs_episode is None:
-            return web.Response(status=400, text="Stream not found")
-
-        base_url = str(self.config.get_value(CONF_URL))
-        stream_url = f"{base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
-
-        # redirect to the actual stream url
-        raise web.HTTPFound(location=stream_url)
-
-    @handle_refresh_token
-    async def _handle_session_request(self, request: web.Request) -> web.Response:
-        """Session request."""
-        if not (session_id := request.query.get("session_id")):
-            return web.Response(status=400, text="session_id")
-        try:
-            abs_session = await self._client.get_open_session(session_id=session_id)
-        except AbsSessionNotFoundError:
-            raise web.HTTPNotFound from AbsSessionNotFoundError
-        stream_url = self._get_stream_url_from_playback_session(abs_session)
-        self.logger.error(stream_url)
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
 
@@ -782,11 +686,11 @@ for more details.
 
         # this will either create or return an open one.
         return await self._client.get_playback_session(
-            # These parameters give an hls stream, which is only a concat
-            # of the individual file's at abs
+            # These parameters give an hls if we don't enforce direct play stream,
+            # which is only a concat of the individual file's at abs
             session_parameters=AbsPlaybackSessionParameters(
                 device_info=device_info,
-                force_direct_play=False,
+                force_direct_play=not bool(self.config.get_value(CONF_USE_SESSION_HLS)),
                 force_transcode=False,
                 supported_mime_types=[],
                 media_player=client_name,
@@ -795,24 +699,10 @@ for more details.
             episode_id=episode_id,
         )
 
-    def _get_stream_url_from_playback_session(self, session: AbsPlaybackSessionExpanded) -> str:
-        tracks = session.audio_tracks
-        if len(tracks) == 0:
-            raise RuntimeError("Playback session has no tracks to play")
-        track = tracks[0]
-        track_url = track.content_url
-        if track_url.split("/")[1] != "hls":
-            raise RuntimeError("Did expect HLS stream for session playback")
-        token = self._client.token
-        base_url = str(self.config.get_value(CONF_URL))
-        return f"{base_url}{track_url}?token={token}"
-
     @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return finished:bool, position_ms: int."""
-        if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-            session_helper := self.sessions.get(item_id)
-        ):
+        if session_helper := self.sessions.get(item_id):
             with suppress(AbsSessionNotFoundError):
                 # suppress: fall back to standard approach if session is not found/ yet available
                 session = await self._client.get_open_session(
@@ -1103,9 +993,7 @@ for more details.
                     return
 
             duration = media_item.duration
-            if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-                session_helper := self.sessions.get(prov_item_id)
-            ):
+            if session_helper := self.sessions.get(prov_item_id):
                 await _update_by_session(session_helper=session_helper, duration=duration)
             else:
                 self.logger.debug(
@@ -1137,9 +1025,7 @@ for more details.
                 return
 
             duration = media_item.duration
-            if bool(self.config.get_value(CONF_USE_ABS_SESSIONS)) and (
-                session_helper := self.sessions.get(prov_item_id)
-            ):
+            if session_helper := self.sessions.get(prov_item_id):
                 await _update_by_session(session_helper=session_helper, duration=duration)
             else:
                 self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
