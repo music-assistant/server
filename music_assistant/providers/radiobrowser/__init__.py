@@ -130,15 +130,6 @@ class RadioBrowserProvider(MusicProvider):
         except RadioBrowserError as err:
             raise ProviderUnavailableError(f"RadioBrowser API unavailable: {err}") from err
 
-        # copy the radiobrowser items that were added to the library
-        # TODO: remove this logic after version 2.3.0 or later
-        if not self.config.get_value(CONF_STORED_RADIOS) and self.mass.music.database:
-            async for db_row in self.mass.music.database.iter_items(
-                "provider_mappings",
-                {"media_type": "radio", "provider_domain": "radiobrowser"},
-            ):
-                await self.library_add(await self.get_radio(db_row["provider_item_id"]))
-
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
