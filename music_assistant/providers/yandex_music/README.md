@@ -13,7 +13,11 @@ Music Assistant provider for [Yandex Music](https://music.yandex.ru).
 Yandex Music does not offer an official public OAuth flow for third-party apps. The token is the same one used by the web or mobile app. You can obtain it in one of these ways:
 
 1. **Browser developer tools (web)**
-   Log in to [music.yandex.ru](https://music.yandex.ru), open Developer Tools (F12) → Application/Storage → look for cookies or local storage that contain a token, or inspect network requests to the API and copy the `Authorization` header or token from the request.
+   Log in to [music.yandex.ru](https://music.yandex.ru), then:
+   - Open Developer Tools (F12) → **Network** tab.
+   - In the filter box type `api.music.yandex` or leave all. Trigger a request (e.g. play a track, open Search, or refresh the page).
+   - Click any request to `api.music.yandex.ru` or `api.music.yandex.net` in the list → **Headers** → **Request Headers**.
+   - Find **Authorization**. The value is like `OAuth y0_AgAAAAA...` — the token is the part after `OAuth ` (e.g. `y0_AgAAAAA...`). Copy that string into the provider’s token field.
 
 2. **Community tools**
    Some open-source tools and scripts can generate or extract a token by simulating the official client. Use them at your own risk and only from sources you trust.
@@ -30,6 +34,7 @@ Yandex Music does not offer an official public OAuth flow for third-party apps. 
 - Add/remove library items (like/unlike)
 - Browse library (artists, albums, tracks, playlists)
 - Streaming (HTTP direct links; quality selection)
+- Lyrics (plain text and optional LRC when available from the API; same endpoint as the web client)
 
 ## Checking if a track has lossless (FLAC)
 

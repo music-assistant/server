@@ -1,12 +1,12 @@
 """Test we can parse Yandex Music API objects into Music Assistant models."""
 
+from __future__ import annotations
+
 import json
 import pathlib
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
@@ -20,34 +20,18 @@ from music_assistant.providers.yandex_music.parsers import (
 )
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
+from .conftest import DE_JSON_CLIENT
+
+if TYPE_CHECKING:
+    from syrupy.assertion import SnapshotAssertion
+
+    from .conftest import ProviderStub
+
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))
 ALBUM_FIXTURES = list(FIXTURES_DIR.glob("albums/*.json"))
 TRACK_FIXTURES = list(FIXTURES_DIR.glob("tracks/*.json"))
 PLAYLIST_FIXTURES = list(FIXTURES_DIR.glob("playlists/*.json"))
-
-# Minimal client-like object for yandex_music de_json (library requires client, not None)
-_DE_JSON_CLIENT = type("ClientStub", (), {"report_unknown_fields": False})()
-
-
-class ProviderStub:
-    """Minimal provider-like object for parser tests (no Mock)."""
-
-    domain = "yandex_music"
-    instance_id = "yandex_music_instance"
-
-    def __init__(self) -> None:
-        """Initialize stub with minimal client."""
-        self.client = type("ClientStub", (), {"user_id": 12345})()
-
-    def get_item_mapping(self, media_type: MediaType | str, key: str, name: str) -> ItemMapping:
-        """Return ItemMapping for the given media type, key and name."""
-        return ItemMapping(
-            media_type=MediaType(media_type) if isinstance(media_type, str) else media_type,
-            item_id=key,
-            provider=self.instance_id,
-            name=name,
-        )
 
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
@@ -59,31 +43,28 @@ def _load_json(path: pathlib.Path) -> dict[str, Any]:
 def _artist_from_fixture(path: pathlib.Path) -> YandexArtist | None:
     """Deserialize Yandex Artist from fixture JSON."""
     data = _load_json(path)
-    return YandexArtist.de_json(data, _DE_JSON_CLIENT)
+    return YandexArtist.de_json(data, DE_JSON_CLIENT)
 
 
 def _album_from_fixture(path: pathlib.Path) -> YandexAlbum | None:
     """Deserialize Yandex Album from fixture JSON."""
     data = _load_json(path)
-    return YandexAlbum.de_json(data, _DE_JSON_CLIENT)
+    return YandexAlbum.de_json(data, DE_JSON_CLIENT)
 
 
 def _track_from_fixture(path: pathlib.Path) -> YandexTrack | None:
     """Deserialize Yandex Track from fixture JSON."""
     data = _load_json(path)
-    return YandexTrack.de_json(data, _DE_JSON_CLIENT)
+    return YandexTrack.de_json(data, DE_JSON_CLIENT)
 
 
 def _playlist_from_fixture(path: pathlib.Path) -> YandexPlaylist | None:
     """Deserialize Yandex Playlist from fixture JSON."""
     data = _load_json(path)
-    return YandexPlaylist.de_json(data, _DE_JSON_CLIENT)
+    return YandexPlaylist.de_json(data, DE_JSON_CLIENT)
 
 
-@pytest.fixture
-def provider_stub() -> ProviderStub:
-    """Return a real provider stub (no Mock)."""
-    return ProviderStub()
+# provider_stub fixture is provided by conftest.py
 
 
 @pytest.mark.parametrize("example", ARTIST_FIXTURES, ids=lambda val: val.stem)
@@ -195,3 +176,72 @@ def test_parse_playlist_other_user(provider_stub: ProviderStub) -> None:
     assert result.owner == "Other User"
     assert result.is_editable is False
     assert result.metadata.description == "A shared playlist"
+
+
+# --- Snapshot tests ---
+
+
+def _sort_for_snapshot(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Sort lists in parsed dict for deterministic snapshot comparison."""
+    if parsed.get("external_ids"):
+        parsed["external_ids"] = sorted(parsed["external_ids"])
+    if "metadata" in parsed and isinstance(parsed["metadata"], dict):
+        if parsed["metadata"].get("genres"):
+            parsed["metadata"]["genres"] = sorted(parsed["metadata"]["genres"])
+    return parsed
+
+
+@pytest.mark.parametrize("example", ARTIST_FIXTURES, ids=lambda val: val.stem)
+def test_parse_artist_snapshot(
+    example: pathlib.Path,
+    provider_stub: ProviderStub,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Snapshot test for artist parsing."""
+    artist_obj = _artist_from_fixture(example)
+    assert artist_obj is not None
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj)
+    parsed = _sort_for_snapshot(result.to_dict())
+    assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: val.stem)
+def test_parse_album_snapshot(
+    example: pathlib.Path,
+    provider_stub: ProviderStub,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Snapshot test for album parsing."""
+    album_obj = _album_from_fixture(example)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    parsed = _sort_for_snapshot(result.to_dict())
+    assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", TRACK_FIXTURES, ids=lambda val: val.stem)
+def test_parse_track_snapshot(
+    example: pathlib.Path,
+    provider_stub: ProviderStub,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Snapshot test for track parsing."""
+    track_obj = _track_from_fixture(example)
+    assert track_obj is not None
+    result = parse_track(cast("YandexMusicProvider", provider_stub), track_obj)
+    parsed = _sort_for_snapshot(result.to_dict())
+    assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", PLAYLIST_FIXTURES, ids=lambda val: val.stem)
+def test_parse_playlist_snapshot(
+    example: pathlib.Path,
+    provider_stub: ProviderStub,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Snapshot test for playlist parsing."""
+    playlist_obj = _playlist_from_fixture(example)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    parsed = _sort_for_snapshot(result.to_dict())
+    assert snapshot == parsed
