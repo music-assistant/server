@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
@@ -63,15 +63,19 @@ def _make_search_result(track: Any, album: Any, artist: Any, playlist: Any) -> A
     )()
 
 
-def _make_download_info() -> Any:
+def _make_download_info(
+    codec: str = "mp3",
+    direct_link: str = "https://example.com/yandex_track.mp3",
+    bitrate_in_kbps: int = 320,
+) -> Any:
     """Build DownloadInfo-like object for streaming."""
     return type(
         "DownloadInfo",
         (),
         {
-            "direct_link": "https://example.com/yandex_track.mp3",
-            "codec": "mp3",
-            "bitrate_in_kbps": 320,
+            "direct_link": direct_link,
+            "codec": codec,
+            "bitrate_in_kbps": bitrate_in_kbps,
         },
     )()
 
@@ -128,11 +132,87 @@ async def yandex_music_provider(
         mock_client.get_artist_tracks = mock.AsyncMock(return_value=[track])
         mock_client.get_playlist = mock.AsyncMock(return_value=playlist)
         mock_client.get_track_download_info = mock.AsyncMock(return_value=[download_info])
+        mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, None))
 
         async with wait_for_sync_completion(mass):
             config = await mass.config.save_provider_config(
                 "yandex_music",
                 {"token": "mock_yandex_token", "quality": "high"},
+            )
+            await mass.music.start_sync()
+
+        yield config
+
+
+@pytest.fixture
+async def yandex_music_provider_lossless(
+    mass: MusicAssistant,
+) -> AsyncGenerator[ProviderConfig, None]:
+    """Configure Yandex Music with quality=lossless and mock returning MP3 + FLAC."""
+    artist, album, track, playlist = _load_yandex_objects()
+    search_result = _make_search_result(track, album, artist, playlist)
+    mp3_info = _make_download_info(
+        codec="mp3",
+        direct_link="https://example.com/yandex_track.mp3",
+        bitrate_in_kbps=320,
+    )
+    flac_info = _make_download_info(
+        codec="flac",
+        direct_link="https://example.com/yandex_track.flac",
+        bitrate_in_kbps=0,
+    )
+    download_infos = [mp3_info, flac_info]
+
+    album_with_volumes = type(
+        "AlbumWithVolumes",
+        (),
+        {
+            "id": album.id,
+            "title": album.title,
+            "volumes": [[track]],
+            "artists": album.artists if hasattr(album, "artists") else [],
+            "year": getattr(album, "year", None),
+            "release_date": getattr(album, "release_date", None),
+            "genre": getattr(album, "genre", None),
+            "cover_uri": getattr(album, "cover_uri", None),
+            "og_image": getattr(album, "og_image", None),
+            "type": getattr(album, "type", "album"),
+            "available": getattr(album, "available", True),
+        },
+    )()
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.provider.YandexMusicClient"
+    ) as mock_client_class:
+        mock_client = mock.AsyncMock()
+        mock_client_class.return_value = mock_client
+
+        mock_client.connect = mock.AsyncMock(return_value=True)
+        mock_client.user_id = 12345
+
+        mock_client.get_liked_tracks = mock.AsyncMock(return_value=[])
+        mock_client.get_liked_albums = mock.AsyncMock(return_value=[])
+        mock_client.get_liked_artists = mock.AsyncMock(return_value=[])
+        mock_client.get_user_playlists = mock.AsyncMock(return_value=[playlist])
+
+        mock_client.search = mock.AsyncMock(return_value=search_result)
+        mock_client.get_track = mock.AsyncMock(return_value=track)
+        mock_client.get_tracks = mock.AsyncMock(return_value=[track])
+        mock_client.get_album = mock.AsyncMock(return_value=album)
+        mock_client.get_album_with_tracks = mock.AsyncMock(return_value=album_with_volumes)
+        mock_client.get_artist = mock.AsyncMock(return_value=artist)
+        mock_client.get_artist_albums = mock.AsyncMock(return_value=[album])
+        mock_client.get_artist_tracks = mock.AsyncMock(return_value=[track])
+        mock_client.get_playlist = mock.AsyncMock(return_value=playlist)
+        # get-file-info lossless is tried first; mock returns None so we use download_info path
+        mock_client.get_track_file_info_lossless = mock.AsyncMock(return_value=None)
+        mock_client.get_track_download_info = mock.AsyncMock(return_value=download_infos)
+        mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, None))
+
+        async with wait_for_sync_completion(mass):
+            config = await mass.config.save_provider_config(
+                "yandex_music",
+                {"token": "mock_yandex_token", "quality": "lossless"},
             )
             await mass.music.start_sync()
 
@@ -229,6 +309,19 @@ async def test_get_stream_details(mass: MusicAssistant) -> None:
     assert stream_details is not None
     assert stream_details.stream_type == StreamType.HTTP
     assert stream_details.path == "https://example.com/yandex_track.mp3"
+
+
+@pytest.mark.usefixtures("yandex_music_provider_lossless")
+async def test_get_stream_details_returns_flac_when_lossless_selected(
+    mass: MusicAssistant,
+) -> None:
+    """When quality=lossless and API returns MP3+FLAC, stream details use FLAC."""
+    prov = _get_yandex_provider(mass)
+    assert prov is not None
+    stream_details = await prov.get_stream_details("400", MediaType.TRACK)
+    assert stream_details is not None
+    assert stream_details.audio_format.content_type == ContentType.FLAC
+    assert stream_details.path == "https://example.com/yandex_track.flac"
 
 
 @pytest.mark.usefixtures("yandex_music_provider")
