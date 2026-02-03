@@ -237,6 +237,72 @@ class PocketCastsProvider(MusicProvider):
         except Exception as err:
             LOGGER.error("Error getting library podcasts: %s", err)
 
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add podcast to library (subscribe).
+
+        :param item: The media item to add to the library.
+        """
+        # Only handle podcasts
+        if not isinstance(item, Podcast):
+            return await super().library_add(item)
+
+        if not self._client:
+            LOGGER.error("Cannot subscribe: client not initialized")
+            return False
+
+        try:
+            # Get the podcast UUID from the item
+            podcast_uuid = item.item_id
+
+            LOGGER.info("Adding podcast to library: %s (%s)", item.name, podcast_uuid)
+
+            # Call API to subscribe
+            success = await self._client.subscribe_podcast(podcast_uuid)
+
+            if success:
+                LOGGER.info("Successfully subscribed to podcast: %s", item.name)
+            else:
+                LOGGER.error("Failed to subscribe to podcast: %s", item.name)
+
+            return success
+
+        except Exception as err:
+            LOGGER.exception("Error adding podcast to library: %s", err)
+            return False
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove podcast from library (unsubscribe).
+
+        :param prov_item_id: The provider item ID to remove from library.
+        :param media_type: The media type of the item.
+        """
+        # Only handle podcasts
+        if media_type != MediaType.PODCAST:
+            return await super().library_remove(prov_item_id, media_type)
+
+        if not self._client:
+            LOGGER.error("Cannot unsubscribe: client not initialized")
+            return False
+
+        try:
+            podcast_uuid = prov_item_id
+
+            LOGGER.info("Removing podcast from library: %s", podcast_uuid)
+
+            # Call API to unsubscribe
+            success = await self._client.unsubscribe_podcast(podcast_uuid)
+
+            if success:
+                LOGGER.info("Successfully unsubscribed from podcast: %s", podcast_uuid)
+            else:
+                LOGGER.error("Failed to unsubscribe from podcast: %s", podcast_uuid)
+
+            return success
+
+        except Exception as err:
+            LOGGER.exception("Error removing podcast from library: %s", err)
+            return False
+
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details."""
         # First try library

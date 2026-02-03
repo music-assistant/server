@@ -360,3 +360,66 @@ class PocketCastsClient:
         except Exception as err:
             LOGGER.error("Error fetching podcast details: %s", err)
             return None
+
+    async def subscribe_podcast(self, podcast_uuid: str) -> bool:
+        """Subscribe to a podcast.
+
+        :param podcast_uuid: The UUID of the podcast to subscribe to.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Subscribing to podcast %s", podcast_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/podcast/subscribe",
+                headers=self._headers(),
+                json={"uuid": podcast_uuid},
+            ) as response:
+                success = response.status == 200
+                if success:
+                    LOGGER.info("Successfully subscribed to podcast %s", podcast_uuid)
+                else:
+                    text = await response.text()
+                    LOGGER.error(
+                        "Failed to subscribe: %d - %s - Response: %s",
+                        response.status,
+                        response.reason,
+                        text,
+                    )
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error subscribing to podcast: %s", err)
+            return False
+
+    async def unsubscribe_podcast(self, podcast_uuid: str) -> bool:
+        """Unsubscribe from a podcast.
+
+        :param podcast_uuid: The UUID of the podcast to unsubscribe from.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Unsubscribing from podcast %s", podcast_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/podcast/unsubscribe",
+                headers=self._headers(),
+                json={"uuid": podcast_uuid},
+            ) as response:
+                success = response.status == 200
+                if success:
+                    LOGGER.info("Successfully unsubscribed from podcast %s", podcast_uuid)
+                else:
+                    text = await response.text()
+                    LOGGER.error("Failed to unsubscribe: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error unsubscribing from podcast: %s", err)
+            return False

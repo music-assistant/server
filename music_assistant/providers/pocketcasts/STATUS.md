@@ -44,7 +44,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,        # ✅ Implemented
     ProviderFeature.BROWSE,                  # ✅ Implemented
     ProviderFeature.SEARCH,                  # ✅ Implemented
-    ProviderFeature.LIBRARY_PODCASTS_EDIT,   # ⚠️  Partially implemented
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,   # ✅ Implemented
 }
 ```
 
@@ -71,11 +71,15 @@ SUPPORTED_FEATURES = {
 - [x] `update_episode_progress()` - Sync playback position to server
 - [x] `search_podcasts()` - Search for podcasts
 - [x] `get_podcast_details()` - Fetch podcast by UUID
+- [x] `subscribe_podcast()` - Subscribe to a podcast
+- [x] `unsubscribe_podcast()` - Unsubscribe from a podcast
 
 #### Provider Implementation (`__init__.py`)
 - [x] `handle_async_init()` - Initialize and login
 - [x] `unload()` - Cleanup session on shutdown
 - [x] `get_library_podcasts()` - Sync user's podcast library
+- [x] `library_add()` - Subscribe to a podcast
+- [x] `library_remove()` - Unsubscribe from a podcast
 - [x] `get_podcast()` - Get full podcast details
 - [x] `get_podcast_episodes()` - Get all episodes for a podcast
 - [x] `get_podcast_episode()` - Get single episode with resume position
@@ -106,13 +110,28 @@ SUPPORTED_FEATURES = {
 - [x] Metadata extraction (title, description, duration)
 - [x] Episode numbering and positioning
 
+#### Library Management (LIBRARY_PODCASTS_EDIT)
+- [x] **`library_add()` method** - Subscribe to podcast via API
+  - Called when user adds podcast to library
+  - API: `POST /user/podcast/subscribe`
+  - Parameters: `{"uuid": podcast_uuid}`
+- [x] **`library_remove()` method** - Unsubscribe from podcast via API
+  - Called when user removes podcast from library
+  - API: `POST /user/podcast/unsubscribe`
+  - Parameters: `{"uuid": podcast_uuid}`
+
+**Status:** ✅ Fully implemented - Syncs library changes back to Pocketcasts
+
+**API Behavior Notes:**
+- API validates UUID format but not existence
+- Malformed UUIDs → 400 error (correctly rejected)
+- Well-formed but non-existent UUIDs → 200 success (silently accepted)
+- In practice, not a concern: UUIDs come from Pocketcasts search/discovery APIs
+- Implementation trusts API status codes (200 = success)
+
 ---
 
 ### ⚠️ Partially Implemented
-
-#### Library Management (LIBRARY_PODCASTS_EDIT)
-- [ ] **Subscribe to podcast** - Not implemented (add podcast to library)
-- [ ] **Unsubscribe from podcast** - Not implemented (remove podcast from library)
 
 #### Playback Progress Sync
 - [x] `get_resume_position()` - Read position from Pocketcasts
@@ -145,15 +164,20 @@ SUPPORTED_FEATURES = {
 
 This section maps available Pocketcasts API features to Music Assistant provider features. These are enhancement opportunities for future implementation.
 
-### 1. Starred Episodes → `FAVORITE_PODCASTS_EDIT`
-**Pocketcasts Feature:** Starred episodes (user-marked favorites)
-**MA Feature:** `ProviderFeature.FAVORITE_PODCASTS_EDIT`
-**Implementation:** `set_favorite()` method
+### 1. Starred Episodes → ~~`FAVORITE_PODCASTS_EDIT`~~ Not Applicable
+**Pocketcasts Feature:** Starred episodes (individual episode favorites)
+**MA Feature:** ❌ Not applicable - `FAVORITE_PODCASTS_EDIT` is for podcast-level favorites
 **API Endpoints:**
 - Get starred: `POST /user/starred`
 - Star/unstar: `POST /sync/update_episode_star`
 
-**Priority:** Medium - Useful for marking favorite episodes
+**Status:** ✅ Already handled via "Starred" browse folder
+- Starred episodes are browsable via the special "Starred" browse folder
+- Episode starring is not a library management feature in MA
+- MA doesn't have a `FAVORITE_PODCAST_EPISODES_EDIT` feature
+- `FAVORITE_PODCASTS_EDIT` would be for marking entire podcasts as favorites (which Pocketcasts doesn't support)
+
+**Priority:** N/A - Already implemented as browse folder
 
 ---
 
@@ -278,18 +302,19 @@ Based on user value and implementation complexity:
 1. ✅ **RECOMMENDATIONS** - Discover/Featured/Trending
 2. ✅ **Live Updating Playlists** - Extend browse with New Releases, In Progress, Starred, History
 
-**Phase 2 - Medium Value, Medium Effort:**
-3. **FAVORITE_PODCASTS_EDIT** - Star/unstar episodes
-4. **LIBRARY_PODCASTS_EDIT** - Complete subscribe/unsubscribe implementation
+**Phase 2 - Core Library Management (High Priority):**
+3. **LIBRARY_PODCASTS_EDIT** - Complete subscribe/unsubscribe implementation
+   - Essential for syncing library changes back to Pocketcasts
+   - Allows users to manage subscriptions from MA
 
 **Phase 3 - Medium Value, Higher Effort:**
-5. **Up Next Queue** - PLAYLIST features
-6. **Playback Progress Sync** - Auto-sync to Pocketcasts
+4. **Up Next Queue** - PLAYLIST features
+5. **Playback Progress Sync** - Auto-sync to Pocketcasts
 
 **Phase 4 - Nice-to-Have:**
-7. **Transcripts (LYRICS)** - Premium users only
-8. **Bookmarks** - Niche use case
-9. **Filters** - Complex, unclear benefit
+6. **Transcripts (LYRICS)** - Premium users only
+7. **Bookmarks** - Niche use case
+8. **Filters** - Complex, unclear benefit
 
 ---
 
@@ -341,6 +366,13 @@ Based on user value and implementation complexity:
   - [x] In Progress - Shows episodes being listened to
   - [x] Starred - Shows favorited episodes
   - [x] History - Shows recently played episodes
+- [x] Subscribe to podcast - SUCCESS (2026-02-03)
+  - Syncs to Pocketcasts account
+  - API validates UUID format (rejects malformed UUIDs with 400)
+  - API accepts well-formed UUIDs (200) even if podcast doesn't exist
+- [x] Unsubscribe from podcast - SUCCESS (2026-02-03)
+  - Syncs removal to Pocketcasts account
+  - MA shows generic warning (not customizable per provider)
 
 ⚠️ **Partially Working:**
 - [ ] Sync progress back to Pocketcasts - Not tested yet
@@ -429,6 +461,8 @@ Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/
 
 #### Podcasts (api.pocketcasts.com)
 - `POST /user/podcast/list` - Get user's subscribed podcasts
+- `POST /user/podcast/subscribe` - Subscribe to a podcast
+- `POST /user/podcast/unsubscribe` - Unsubscribe from a podcast
 - `POST /discover/search` - Search for podcasts
 
 #### Podcasts (podcast-api.pocketcasts.com)
@@ -452,8 +486,6 @@ Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/
 - `GET /subscription/status` - Check premium subscription status
 
 #### Library Management (api.pocketcasts.com)
-- `POST /user/podcast/subscribe` - Subscribe to a podcast
-- `POST /user/podcast/unsubscribe` - Unsubscribe from a podcast
 - `POST /user/episode` - Episode-level management
 
 #### Up Next Queue (api.pocketcasts.com)
@@ -520,9 +552,10 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 6. ✅ **Extend BROWSE** - DONE: Added 5 live playlists (Up Next, New Releases, In Progress, Starred, History)
 7. **Test search functionality** - Verify search works as expected
 
-### Phase 2: Library Management (Medium Priority)
-8. **Complete LIBRARY_PODCASTS_EDIT** - Subscribe/unsubscribe to podcasts
-9. **Implement FAVORITE_PODCASTS_EDIT** - Star/unstar episodes
+### Phase 2: Library Management (High Priority)
+8. ✅ **Complete LIBRARY_PODCASTS_EDIT** - Subscribe/unsubscribe to podcasts
+   - ✅ Implement `library_add()` method for subscribing
+   - ✅ Implement `library_remove()` method for unsubscribing
 
 ### Phase 3: Sync & Polish (Medium Priority)
 10. **Connect progress sync** - Hook into player queue events to auto-sync position to Pocketcasts
@@ -598,6 +631,34 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 ---
 
 ## Changelog
+
+### 2026-02-03 - Library Management (Subscribe/Unsubscribe)
+
+- **New Feature: Complete LIBRARY_PODCASTS_EDIT implementation**
+  - Implemented `library_add()` method for subscribing to podcasts
+  - Implemented `library_remove()` method for unsubscribing from podcasts
+  - Library changes now sync back to Pocketcasts
+
+- **API Client Additions:**
+  - Added `subscribe_podcast()` - POST `/user/podcast/subscribe`
+  - Added `unsubscribe_podcast()` - POST `/user/podcast/unsubscribe`
+
+- **Provider Implementation:**
+  - Added `library_add()` - Handles podcast subscription via API
+  - Added `library_remove()` - Handles podcast unsubscription via API
+  - Both methods delegate to base class for non-podcast media types
+
+- **Testing:**
+  - Tested subscribe/unsubscribe functionality - both working correctly
+  - Verified API validates UUID format (rejects malformed UUIDs with 400)
+  - Discovered API accepts well-formed but non-existent UUIDs (returns 200)
+  - Not a practical concern: UUIDs come from Pocketcasts' own APIs in normal usage
+
+- **Documentation:**
+  - Clarified difference between `LIBRARY_PODCASTS_EDIT` (subscribe/unsubscribe) and `FAVORITE_PODCASTS_EDIT` (not applicable)
+  - Updated STATUS.md to mark LIBRARY_PODCASTS_EDIT as fully implemented
+  - Removed incorrect reference to FAVORITE_PODCASTS_EDIT feature
+  - Documented API behavior regarding UUID validation
 
 ### 2026-02-02 - Browse Folders & Token Documentation
 
