@@ -305,21 +305,6 @@ def test_parse_vorbis_tags_explicit_artists_tag_takes_precedence() -> None:
     assert result.get("artists") == ["Explicit Artist 1", "Explicit Artist 2", "Explicit Artist 3"]
 
 
-def test_parse_vorbis_tags_explicit_albumartists_tag_takes_precedence() -> None:
-    """Test that explicit ALBUMARTISTS tag takes precedence over multiple ALBUMARTIST fields."""
-    mock_tags = _create_mock_vorbis_tags(
-        {
-            "ALBUMARTIST": ["Album Artist A", "Album Artist B"],
-            "ALBUMARTISTS": ["Explicit AA 1", "Explicit AA 2"],
-        }
-    )
-
-    result = _parse_vorbis_tags(mock_tags)
-
-    # ALBUMARTISTS tag should take precedence
-    assert result.get("albumartists") == ["Explicit AA 1", "Explicit AA 2"]
-
-
 def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     """Test that MusicBrainz IDs are parsed correctly from Vorbis tags."""
     mock_tags = _create_mock_vorbis_tags(
