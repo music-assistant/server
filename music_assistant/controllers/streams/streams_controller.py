@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Final, cast
 
 from aiofiles.os import wrap
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -65,9 +69,12 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.player_controller import AnnounceData
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.smart_fades.fades import (
+    SMART_CROSSFADE_DURATION,
+)
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
+    create_wave_header,
     get_buffered_media_stream,
     get_chunksize,
     get_media_stream,
@@ -117,7 +124,9 @@ CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
     """Parse PCM info from a codec/content_type string."""
     params = (
-        dict(urllib.parse.parse_qsl(content_type.replace(";", "&"))) if ";" in content_type else {}
+        dict(urllib.parse.parse_qsl(content_type.replace(";", "&")))
+        if ";" in content_type
+        else {}
     )
     sample_rate = int(params.get("rate", 44100))
     sample_size = int(params.get("bitrate", 16))
@@ -131,7 +140,9 @@ class CrossfadeData:
 
     data: bytes
     fade_in_size: int
-    pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
+    pcm_format: (
+        AudioFormat  # Format of the 'data' bytes (current/previous track's format)
+    )
     fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
     queue_item_id: str
 
@@ -402,7 +413,9 @@ class StreamsController(CoreController):
             fmt = ContentType.WAV.value
         else:
             fmt = plugin_source.audio_format.content_type.value
-        return f"{self._server.base_url}/pluginsource/{plugin_source.id}/{player_id}.{fmt}"
+        return (
+            f"{self._server.base_url}/pluginsource/{plugin_source.id}/{player_id}.{fmt}"
+        )
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream single queueitem audio to a player."""
@@ -429,7 +442,9 @@ class StreamsController(CoreController):
                     "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                 )
                 queue_item.available = False
-                raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+                raise web.HTTPNotFound(
+                    reason=f"No streamdetails for Queue item: {queue_item_id}"
+                )
 
         # pick output format based on the streamdetails and player capabilities
         if not queue_player:
@@ -447,6 +462,25 @@ class StreamsController(CoreController):
             content_sample_rate=pcm_format.sample_rate,
             content_bit_depth=pcm_format.bit_depth,
         )
+
+        range_header = request.headers.get("Range")
+        if (
+            queue_player.provider.domain == "chromecast"
+            and output_format.content_type == ContentType.WAV
+            and (queue_item.streamdetails.duration or queue_item.duration)
+        ):
+            # Chromecast "Cast Lite" devices are known to aggressively buffer and then close the HTTP
+            # connection. They later reconnect with a Range request to continue downloading.
+            # For WAV (linear PCM), we can support Range requests by mapping byte offsets to PCM time.
+            return await self._serve_wav_queue_item_stream_with_range(
+                request=request,
+                queue=queue,
+                queue_item=queue_item,
+                queue_player=queue_player,
+                input_pcm_format=pcm_format,
+                wav_format=output_format,
+                range_header=range_header,
+            )
 
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -560,17 +594,41 @@ class StreamsController(CoreController):
                     # Player disconnected (unexpected) after receiving at least some data
                     # This could indicate buffering issues, network problems,
                     # or player-specific issues
-                    bytes_expected = get_chunksize(output_format, queue_item.duration or 3600)
-                    self.logger.warning(
-                        "Player %s disconnected prematurely from stream for %s (%s) - "
-                        "error: %s, sent %d bytes, expected (approx) bytes=%d",
-                        queue.display_name,
-                        queue_item.name,
-                        queue_item.uri,
-                        err.__class__.__name__,
-                        bytes_sent,
-                        bytes_expected,
+                    bytes_expected = get_chunksize(
+                        output_format, queue_item.duration or 3600
                     )
+                    user_agent = request.headers.get("User-Agent", "")
+                    is_cast_lite = (
+                        queue_player.provider.domain == "chromecast"
+                        and "Cast Lite" in user_agent
+                    )
+                    if is_cast_lite and output_format.content_type != ContentType.WAV:
+                        # Cast Lite devices are known to buffer aggressively and then close the HTTP
+                        # connection. They may later reconnect using HTTP Range requests to continue
+                        # downloading. Range support is currently only available for WAV streams.
+                        self.logger.warning(
+                            "Player %s closed %s stream early for %s (%s) - Cast Lite may resume "
+                            "with HTTP Range requests; enable WAV output codec to support this. "
+                            "error: %s, sent %d bytes, expected (approx) bytes=%d",
+                            queue.display_name,
+                            output_format.output_format_str,
+                            queue_item.name,
+                            queue_item.uri,
+                            err.__class__.__name__,
+                            bytes_sent,
+                            bytes_expected,
+                        )
+                    else:
+                        self.logger.warning(
+                            "Player %s disconnected prematurely from stream for %s (%s) - "
+                            "error: %s, sent %d bytes, expected (approx) bytes=%d",
+                            queue.display_name,
+                            queue_item.name,
+                            queue_item.uri,
+                            err.__class__.__name__,
+                            bytes_sent,
+                            bytes_expected,
+                        )
                 break
         if queue_item.streamdetails.stream_error:
             self.logger.error(
@@ -583,6 +641,218 @@ class StreamsController(CoreController):
             self.mass.call_later(5, self.mass.player_queues.next(queue_id))
         return resp
 
+    @staticmethod
+    def _parse_http_range(range_header: str, total_size: int) -> tuple[int, int] | None:
+        """Parse a single HTTP Range header (bytes=START-END) and clamp to total_size."""
+        if not range_header:
+            return None
+        if not range_header.startswith("bytes="):
+            return None
+        range_spec = range_header[6:].strip()
+        # only support a single range
+        if "," in range_spec:
+            return None
+        if range_spec.startswith("-"):
+            # suffix-length range: bytes=-N
+            try:
+                suffix_len = int(range_spec[1:])
+            except ValueError:
+                return None
+            if suffix_len <= 0:
+                return None
+            start = max(0, total_size - suffix_len)
+            return (start, total_size - 1)
+        if "-" not in range_spec:
+            return None
+        start_str, end_str = range_spec.split("-", 1)
+        if not start_str:
+            return None
+        try:
+            start = int(start_str)
+        except ValueError:
+            return None
+        if start < 0:
+            return None
+        if start >= total_size:
+            return None
+        if end_str:
+            try:
+                end = int(end_str)
+            except ValueError:
+                return None
+            if end < start:
+                return None
+            end = min(end, total_size - 1)
+        else:
+            end = total_size - 1
+        return (start, end)
+
+    async def _serve_wav_queue_item_stream_with_range(
+        self,
+        *,
+        request: web.Request,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        queue_player: Player,
+        input_pcm_format: AudioFormat,
+        wav_format: AudioFormat,
+        range_header: str | None,
+    ) -> web.StreamResponse:
+        """Serve a WAV stream for a single queue item, with HTTP Range support."""
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+
+        base_seek = int(streamdetails.seek_position or 0)
+        duration_total = int(streamdetails.duration or queue_item.duration or 0)
+        duration_remaining = max(0, duration_total - base_seek) if duration_total else 0
+
+        wav_header = create_wave_header(
+            samplerate=wav_format.sample_rate,
+            channels=wav_format.channels,
+            bitspersample=wav_format.bit_depth,
+            duration=duration_remaining,
+        )
+        header_len = len(wav_header)
+        bytes_per_second = int(
+            wav_format.sample_rate * wav_format.channels * (wav_format.bit_depth // 8)
+        )
+        total_pcm_bytes = int(duration_remaining * bytes_per_second)
+        total_size = header_len + total_pcm_bytes
+
+        # Determine requested range (or full content).
+        start = 0
+        end = total_size - 1
+        status = 200
+        if range_header:
+            parsed = self._parse_http_range(range_header, total_size)
+            if parsed is None:
+                # Invalid or unsatisfiable range.
+                resp = web.StreamResponse(
+                    status=416, reason="Requested Range Not Satisfiable"
+                )
+                resp.headers["Content-Range"] = f"bytes */{total_size}"
+                resp.headers["Accept-Ranges"] = "bytes"
+                await resp.prepare(request)
+                return resp
+            start, end = parsed
+            status = 206
+
+        headers = {
+            **DEFAULT_STREAM_HEADERS,
+            "icy-name": queue_item.name,
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
+            "Accept-Ranges": "bytes",
+            "Content-Type": "audio/wav",
+        }
+        if status == 206:
+            headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
+
+        reason = "Partial Content" if status == 206 else "OK"
+        resp = web.StreamResponse(status=status, reason=reason, headers=headers)
+        resp.content_type = "audio/wav"
+        resp.content_length = (end - start) + 1
+        await resp.prepare(request)
+
+        if request.method != "GET":
+            return resp
+
+        first_bytes_written = False
+
+        bytes_remaining = resp.content_length
+        bytes_sent = 0
+
+        # Send WAV header bytes (if range starts inside header).
+        if start < header_len and bytes_remaining:
+            header_end = min(header_len, start + bytes_remaining)
+            header_chunk = wav_header[start:header_end]
+            try:
+                await resp.write(header_chunk)
+                if not first_bytes_written:
+                    first_bytes_written = True
+                    self.mass.player_queues.track_loaded_in_buffer(
+                        queue_item.queue_id, queue_item.queue_item_id
+                    )
+                bytes_sent += len(header_chunk)
+                bytes_remaining -= len(header_chunk)
+                start += len(header_chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                return resp
+
+        # Send PCM data bytes.
+        if bytes_remaining and start >= header_len:
+            data_offset = start - header_len
+            skip_seconds, skip_bytes = divmod(data_offset, bytes_per_second)
+            seek_position = base_seek + int(skip_seconds)
+
+            out_pcm_content_type = ContentType.from_bit_depth(wav_format.bit_depth)
+            out_pcm_format = AudioFormat(
+                content_type=out_pcm_content_type,
+                sample_rate=wav_format.sample_rate,
+                bit_depth=wav_format.bit_depth,
+                channels=wav_format.channels,
+            )
+
+            audio_input = self.get_queue_item_stream(
+                queue_item=queue_item,
+                pcm_format=input_pcm_format,
+                seek_position=seek_position,
+            )
+            pcm_stream = get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=input_pcm_format,
+                output_format=out_pcm_format,
+                filter_params=get_player_filter_params(
+                    self.mass,
+                    player_id=queue_player.player_id,
+                    input_format=input_pcm_format,
+                    output_format=out_pcm_format,
+                ),
+            )
+
+            first_chunk = True
+            # Range requests may start at arbitrary byte offsets within the PCM payload.
+            # Because ffmpeg yields chunks of (usually) ~64k, the initial byte offset may span
+            # multiple chunks. Keep discarding until we've skipped the requested byte count.
+            remaining_skip_bytes = skip_bytes
+            async for chunk in pcm_stream:
+                if not chunk:
+                    continue
+                if remaining_skip_bytes:
+                    if len(chunk) <= remaining_skip_bytes:
+                        remaining_skip_bytes -= len(chunk)
+                        continue
+                    chunk = chunk[remaining_skip_bytes:]
+                    remaining_skip_bytes = 0
+                if not chunk:
+                    continue
+                if len(chunk) > bytes_remaining:
+                    chunk = chunk[:bytes_remaining]
+                try:
+                    await resp.write(chunk)
+                    if not first_bytes_written:
+                        first_bytes_written = True
+                        self.mass.player_queues.track_loaded_in_buffer(
+                            queue_item.queue_id, queue_item.queue_item_id
+                        )
+                    bytes_sent += len(chunk)
+                    bytes_remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    break
+                if bytes_remaining <= 0:
+                    break
+
+        if range_header and bytes_sent and queue_player.provider.domain == "chromecast":
+            user_agent = request.headers.get("User-Agent")
+            if user_agent:
+                self.logger.debug(
+                    "WAV Range served to %s: ua=%s range=%s",
+                    queue.display_name,
+                    user_agent,
+                    range_header,
+                )
+
+        return resp
+
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream Queue Flow audio to player."""
         self._log_request(request)
@@ -593,7 +863,9 @@ class StreamsController(CoreController):
         if not (queue_player := self.mass.players.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
-        start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
+        start_queue_item = self.mass.player_queues.get_item(
+            queue_id, start_queue_item_id
+        )
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
@@ -615,7 +887,10 @@ class StreamsController(CoreController):
             CONF_ENTRY_ENABLE_ICY_METADATA.key,
             CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
         )
-        enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
+        enable_icy = (
+            request.headers.get("Icy-MetaData", "") == "1"
+            and icy_preference != "disabled"
+        )
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -653,7 +928,9 @@ class StreamsController(CoreController):
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
-        self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
+        self.logger.debug(
+            "Start serving Queue flow audio stream for %s", queue.display_name
+        )
 
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_queue_flow_stream(
@@ -672,7 +949,9 @@ class StreamsController(CoreController):
             # see for example: https://github.com/music-assistant/support/issues/3717
             # allow buffer ahead of 6 seconds and read rest in realtime
             extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "6"],
-            chunk_size=icy_meta_interval if enable_icy else get_chunksize(output_format),
+            chunk_size=(
+                icy_meta_interval if enable_icy else get_chunksize(output_format)
+            ),
         ):
             try:
                 await resp.write(chunk)
@@ -716,7 +995,9 @@ class StreamsController(CoreController):
             self.mass.create_task(self.mass.player_queues.next(queue_id))
         return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
 
-    async def serve_announcement_stream(self, request: web.Request) -> web.StreamResponse:
+    async def serve_announcement_stream(
+        self, request: web.Request
+    ) -> web.StreamResponse:
         """Stream announcement audio to a player."""
         self._log_request(request)
         player_id = request.match_info["player_id"]
@@ -724,7 +1005,9 @@ class StreamsController(CoreController):
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if not (announce_data := self.announcements.get(player_id)):
-            raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
+            raise web.HTTPNotFound(
+                reason=f"No pending announcements for Player: {player_id}"
+            )
 
         # work out output format/details
         fmt = request.match_info["fmt"]
@@ -790,7 +1073,9 @@ class StreamsController(CoreController):
 
         return resp
 
-    async def serve_plugin_source_stream(self, request: web.Request) -> web.StreamResponse:
+    async def serve_plugin_source_stream(
+        self, request: web.Request
+    ) -> web.StreamResponse:
         """Stream PluginSource audio to a player."""
         self._log_request(request)
         plugin_source_id = request.match_info["plugin_source"]
@@ -840,7 +1125,9 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         if not plugin_source.audio_format:
-            raise InvalidDataError(f"No audio format for plugin source {plugin_source_id}")
+            raise InvalidDataError(
+                f"No audio format for plugin source {plugin_source_id}"
+            )
         async for chunk in self.get_plugin_source_stream(
             plugin_source_id=plugin_source_id,
             output_format=output_format,
@@ -910,7 +1197,9 @@ class StreamsController(CoreController):
         ):
             # special case: member player accessing UGP stream
             # Check URI to distinguish from the UGP accessing its own stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+            ugp_player = cast(
+                "UniversalGroupPlayer", self.mass.players.get(media.source_id)
+            )
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             if ugp_stream.base_pcm_format == pcm_format:
@@ -937,7 +1226,9 @@ class StreamsController(CoreController):
             )
         elif media.source_id and media.queue_item_id:
             # single item stream (e.g. radio)
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             assert queue_item
             audio_source = buffered(
                 self.get_queue_item_stream(
@@ -995,9 +1286,11 @@ class StreamsController(CoreController):
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
             smart_fades_mode,
-            f"({standard_crossfade_duration}s)"
-            if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
-            else "",
+            (
+                f"({standard_crossfade_duration}s)"
+                if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
+                else ""
+            ),
         )
         total_bytes_sent = 0
         total_chunks_received = 0
@@ -1037,15 +1330,19 @@ class StreamsController(CoreController):
             )
             crossfade_buffer_duration = min(
                 crossfade_buffer_duration,
-                int(queue_track.streamdetails.duration / 2)
-                if queue_track.streamdetails.duration
-                else crossfade_buffer_duration,
+                (
+                    int(queue_track.streamdetails.duration / 2)
+                    if queue_track.streamdetails.duration
+                    else crossfade_buffer_duration
+                ),
             )
             # Ensure crossfade buffer size is aligned to frame boundaries
             # Frame size = bytes_per_sample * channels
             bytes_per_sample = pcm_format.bit_depth // 8
             frame_size = bytes_per_sample * pcm_format.channels
-            crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
+            crossfade_buffer_size = int(
+                pcm_format.pcm_sample_size * crossfade_buffer_duration
+            )
             # Round down to nearest frame boundary
             crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
 
@@ -1069,7 +1366,10 @@ class StreamsController(CoreController):
                     self.mass.player_queues.track_loaded_in_buffer(
                         queue.queue_id, queue_track.queue_item_id
                     )
-                if total_chunks_received < 10 and smart_fades_mode != SmartFadesMode.DISABLED:
+                if (
+                    total_chunks_received < 10
+                    and smart_fades_mode != SmartFadesMode.DISABLED
+                ):
                     # we want a stream to start as quickly as possible
                     # so for the first 10 chunks we keep a very short buffer
                     req_buffer_size = pcm_format.pcm_sample_size
@@ -1193,7 +1493,9 @@ class StreamsController(CoreController):
             streamdetails.seconds_streamed = (
                 streamdetails.seconds_streamed or 0
             ) + last_part_seconds
-            streamdetails.duration = int((streamdetails.duration or 0) + last_part_seconds)
+            streamdetails.duration = int(
+                (streamdetails.duration or 0) + last_part_seconds
+            )
             last_fadeout_part = b""
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
@@ -1242,7 +1544,9 @@ class StreamsController(CoreController):
             if pre_announce:
                 async for chunk in get_ffmpeg_stream(
                     audio_input=pre_announce_url,
-                    input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
+                    input_format=AudioFormat(
+                        content_type=ContentType.try_parse(pre_announce_url)
+                    ),
                     output_format=pcm_format,
                     chunk_size=get_chunksize(pcm_format, 1),
                 ):
@@ -1250,7 +1554,10 @@ class StreamsController(CoreController):
             # pad silence while we're waiting for the announcement to be ready
             while announcement_data.empty():
                 yield b"\0" * int(
-                    pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels * 0.1
+                    pcm_format.sample_rate
+                    * (pcm_format.bit_depth / 8)
+                    * pcm_format.channels
+                    * 0.1
                 )
                 await asyncio.sleep(0.1)
             # stream announcement
@@ -1300,9 +1607,11 @@ class StreamsController(CoreController):
             async for chunk in get_ffmpeg_stream(
                 audio_input=cast(
                     "str | AsyncGenerator[bytes, None]",
-                    plugin_prov.get_audio_stream(player_id)
-                    if plugin_source.stream_type == StreamType.CUSTOM
-                    else plugin_source.path,
+                    (
+                        plugin_prov.get_audio_stream(player_id)
+                        if plugin_source.stream_type == StreamType.CUSTOM
+                        else plugin_source.path
+                    ),
                 ),
                 input_format=plugin_source.audio_format,
                 output_format=output_format,
@@ -1344,7 +1653,10 @@ class StreamsController(CoreController):
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
             filter_rule += ":print_format=json"
             filter_params.append(filter_rule)
-        elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.FIXED_GAIN:
+        elif (
+            streamdetails.volume_normalization_mode
+            == VolumeNormalizationMode.FIXED_GAIN
+        ):
             # apply user defined fixed volume/gain correction
             config_key = (
                 CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
@@ -1356,7 +1668,10 @@ class StreamsController(CoreController):
             )
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
-        elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
+        elif (
+            streamdetails.volume_normalization_mode
+            == VolumeNormalizationMode.MEASUREMENT_ONLY
+        ):
             # volume normalization with known loudness measurement
             # apply volume/gain correction
             target_loudness = (
@@ -1364,7 +1679,10 @@ class StreamsController(CoreController):
                 if streamdetails.target_loudness is not None
                 else 0.0
             )
-            if streamdetails.prefer_album_loudness and streamdetails.loudness_album is not None:
+            if (
+                streamdetails.prefer_album_loudness
+                and streamdetails.loudness_album is not None
+            ):
                 gain_correct = target_loudness - float(streamdetails.loudness_album)
             elif streamdetails.loudness is not None:
                 gain_correct = target_loudness - float(streamdetails.loudness)
@@ -1500,10 +1818,13 @@ class StreamsController(CoreController):
         if crossfade_data and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track
             crossfade_data = None
-        if crossfade_data and (crossfade_data.queue_item_id != queue_item.queue_item_id):
+        if crossfade_data and (
+            crossfade_data.queue_item_id != queue_item.queue_item_id
+        ):
             # edge case alert: the next item changed just while we were preloading/crossfading
             self.logger.warning(
-                "Skipping crossfade data for queue %s - next item changed!", queue.display_name
+                "Skipping crossfade data for queue %s - next item changed!",
+                queue.display_name,
             )
             crossfade_data = None
 
@@ -1528,15 +1849,19 @@ class StreamsController(CoreController):
         )
         crossfade_buffer_duration = min(
             crossfade_buffer_duration,
-            int(streamdetails.duration / 2)
-            if streamdetails.duration
-            else crossfade_buffer_duration,
+            (
+                int(streamdetails.duration / 2)
+                if streamdetails.duration
+                else crossfade_buffer_duration
+            ),
         )
         # Ensure crossfade buffer size is aligned to frame boundaries
         # Frame size = bytes_per_sample * channels
         bytes_per_sample = pcm_format.bit_depth // 8
         frame_size = bytes_per_sample * pcm_format.channels
-        crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
+        crossfade_buffer_size = int(
+            pcm_format.pcm_sample_size * crossfade_buffer_duration
+        )
         # Round down to nearest frame boundary
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
@@ -1545,7 +1870,8 @@ class StreamsController(CoreController):
             # Calculate discard amount in seconds (format-independent)
             # Use fade_in_pcm_format because fade_in_size is in the next track's original format
             fade_in_duration_seconds = (
-                crossfade_data.fade_in_size / crossfade_data.fade_in_pcm_format.pcm_sample_size
+                crossfade_data.fade_in_size
+                / crossfade_data.fade_in_pcm_format.pcm_sample_size
             )
             discard_seconds = int(fade_in_duration_seconds) - 1
             # Calculate discard amounts in CURRENT track's format
@@ -1600,7 +1926,9 @@ class StreamsController(CoreController):
                         pcm_format,
                     )
                     if resampled_data:
-                        for _chunk in divide_chunks(resampled_data, pcm_format.pcm_sample_size):
+                        for _chunk in divide_chunks(
+                            resampled_data, pcm_format.pcm_sample_size
+                        ):
                             yield _chunk
                         bytes_written += len(resampled_data)
                     else:
@@ -1611,7 +1939,9 @@ class StreamsController(CoreController):
                             queue.display_name,
                         )
                 else:
-                    for _chunk in divide_chunks(crossfade_data.data, pcm_format.pcm_sample_size):
+                    for _chunk in divide_chunks(
+                        crossfade_data.data, pcm_format.pcm_sample_size
+                    ):
                         yield _chunk
                     bytes_written += len(crossfade_data.data)
                 # clear vars
@@ -1652,7 +1982,9 @@ class StreamsController(CoreController):
                     )
                     crossfade_data = None
             if crossfade_data:
-                for _chunk in divide_chunks(crossfade_data.data, pcm_format.pcm_sample_size):
+                for _chunk in divide_chunks(
+                    crossfade_data.data, pcm_format.pcm_sample_size
+                ):
                     yield _chunk
                 bytes_written += len(crossfade_data.data)
                 crossfade_data = None
@@ -1741,7 +2073,9 @@ class StreamsController(CoreController):
                 crossfade_bytes = await self._smart_fades_mixer.mix(
                     fade_in_part=buffer,
                     fade_out_part=fade_out_data,
-                    fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
+                    fade_in_streamdetails=cast(
+                        "StreamDetails", next_queue_item.streamdetails
+                    ),
                     fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
@@ -1753,7 +2087,9 @@ class StreamsController(CoreController):
                 crossfade_second = crossfade_bytes[split_point:]
                 del crossfade_bytes
                 bytes_written += len(crossfade_first)
-                for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
+                for _chunk in divide_chunks(
+                    crossfade_first, pcm_format.pcm_sample_size
+                ):
                     yield _chunk
                 # store the other half for the next track
                 # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
@@ -1891,7 +2227,11 @@ class StreamsController(CoreController):
         supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
         # use highest supported rate within content rate
         output_sample_rate = max(
-            (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
+            (
+                r
+                for r in supported_sample_rates
+                if r <= streamdetails.audio_format.sample_rate
+            ),
             default=48000,  # sane/safe default
         )
         # work out pcm format based on streamdetails

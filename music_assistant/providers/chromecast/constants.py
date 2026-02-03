@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_OUTPUT_CODEC,
+    create_output_codec_config_entry,
     create_sample_rates_config_entry,
 )
 
@@ -22,8 +22,16 @@ CONF_SENDSPIN_CODEC = "sendspin_codec"
 DEFAULT_SENDSPIN_SYNC_DELAY = -300
 DEFAULT_SENDSPIN_CODEC = "flac"
 
+CONF_ENTRY_OUTPUT_CODEC_CAST = create_output_codec_config_entry(default_value="flac")
+CONF_ENTRY_OUTPUT_CODEC_CAST.options = [
+    ConfigValueOption("WAV (lossless, uncompressed, supports range requests)", "wav")
+    if opt.value == "wav"
+    else opt
+    for opt in (CONF_ENTRY_OUTPUT_CODEC_CAST.options or [])
+]
+
 CAST_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_OUTPUT_CODEC_CAST,
     CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry(
         key=CONF_USE_MASS_APP,

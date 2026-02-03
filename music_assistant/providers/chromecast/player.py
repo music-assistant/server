@@ -785,6 +785,10 @@ class ChromecastPlayer(Player):
 
     def _create_cc_media_item(self, media: PlayerMedia) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
+        uri = media.uri or ""
+        clean_uri = uri.split("?", 1)[0].split("#", 1)[0].lower()
+        content_type = "audio/wav" if clean_uri.endswith(".wav") else "audio/flac"
+
         if media.media_type == MediaType.TRACK:
             stream_type = STREAM_TYPE_BUFFERED
         else:
@@ -803,7 +807,7 @@ class ChromecastPlayer(Player):
                 "uri": media.uri,
                 "queue_item_id": media.uri,
             },
-            "contentType": "audio/flac",
+            "contentType": content_type,
             "streamType": stream_type,
             "metadata": metadata,
             "duration": media.duration,
