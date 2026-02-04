@@ -450,13 +450,20 @@ class AppleMusicProvider(MusicProvider):
         )
         for item in playlist_items:
             is_favourite = rating_library_response.get(item["id"])
-            # Prefer catalog information over library information in case of public playlists
-            if item["attributes"]["hasCatalog"]:
-                yield await self.get_playlist(
-                    item["attributes"]["playParams"]["globalId"], is_favourite
+            try:
+                # Prefer catalog information over library information in case of public playlists
+                if item["attributes"]["hasCatalog"]:
+                    yield await self.get_playlist(
+                        item["attributes"]["playParams"]["globalId"], is_favourite
+                    )
+                elif item and item["id"]:
+                    yield self._parse_playlist(item, is_favourite)
+            except MediaNotFoundError:
+                self.logger.exception(
+                    "get_library_playlists failed for item id=%s payload=%s",
+                    item.get("id"),
+                    item,
                 )
-            elif item and item["id"]:
-                yield self._parse_playlist(item, is_favourite)
 
     @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
