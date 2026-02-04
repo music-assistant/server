@@ -73,6 +73,7 @@ srptools>=1.0.0
 sxm==0.2.8
 unidecode==1.4.0
 uv>=0.8.0
+vkpymusic==3.5.1
 websocket-client==1.9.0
 xmltodict==1.0.2
 yandex-music==2.2.0
