@@ -14,6 +14,7 @@ import sys
 import threading
 import urllib.parse
 from collections.abc import Callable
+from contextlib import suppress
 from time import sleep
 from typing import Any
 
@@ -57,6 +58,7 @@ class MusicAssistantControl:
         self._seek_offset = 0.0
         self._socket: socket.socket | None = None
         self._stopped = False
+        self._shutdown_event = threading.Event()
         self._socket_thread = threading.Thread(target=self._socket_loop, args=())
         self._socket_thread.name = "massControl"
         self._socket_thread.start()
@@ -65,8 +67,16 @@ class MusicAssistantControl:
         """Stop the socket thread."""
         self._stopped = True
         if self._socket:
-            self._socket.close()
-        self._socket_thread.join()
+            with suppress(OSError):
+                self._socket.close()
+        if threading.current_thread() is not self._socket_thread:
+            self._socket_thread.join()
+
+    def shutdown(self) -> None:
+        """Exit the control script."""
+        logger.info("Shutdown requested by server")
+        self.stop()
+        self._shutdown_event.set()
 
     def handle_snapcast_request(self, request: dict[str, Any]) -> None:
         """Handle (JSON RPC) message from Snapcast."""
@@ -225,6 +235,10 @@ class MusicAssistantControl:
             logger.error(f"Invalid JSON: {e}")
             return
 
+        if data.get("command") == "shutdown":
+            self.shutdown()
+            return
+
         # Request response
         if "message_id" in data:
             message_id = data["message_id"]
@@ -364,7 +378,10 @@ if __name__ == "__main__":
 
     # keep listening for messages on stdin and forward them
     try:
-        for line in sys.stdin:
+        while not ctrl._shutdown_event.is_set():
+            line = sys.stdin.readline()
+            if not line:  # EOF
+                break
             try:
                 ctrl.handle_snapcast_request(json.loads(line))
             except Exception as e:
@@ -375,5 +392,6 @@ if __name__ == "__main__":
                         "id": id,
                     }
                 )
-    except (SystemExit, KeyboardInterrupt):
+    finally:
+        ctrl.stop()
         sys.exit(0)
