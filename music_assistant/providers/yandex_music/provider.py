@@ -199,18 +199,7 @@ class YandexMusicProvider(MusicProvider):
         yandex_track = await self.client.get_track(prov_track_id)
         if not yandex_track:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
-        track = parse_track(self, yandex_track)
-        lyrics_result = await self.client.get_track_lyrics(prov_track_id)
-        lyrics_plain, lyrics_lrc = (
-            lyrics_result
-            if isinstance(lyrics_result, tuple) and len(lyrics_result) == 2
-            else (None, None)
-        )
-        if lyrics_plain:
-            track.metadata.lyrics = lyrics_plain
-        if lyrics_lrc:
-            track.metadata.lrc_lyrics = lyrics_lrc
-        return track
+        return parse_track(self, yandex_track)
 
     @use_cache(3600 * 24 * 30)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

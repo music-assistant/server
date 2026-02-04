@@ -195,34 +195,6 @@ class YandexMusicClient:
             LOGGER.error("Error fetching tracks: %s", err)
             return []
 
-    async def get_track_lyrics(self, track_id: str) -> tuple[str | None, str | None]:
-        """Get lyrics for a track (plain text and optional LRC).
-
-        Uses API GET /tracks/{id}/lyrics (same as web); fetches content via
-        TrackLyrics.fetch_lyrics_async() from the signed download URL.
-
-        :param track_id: Track ID.
-        :return: (lyrics_plain, lyrics_lrc) or (None, None) if not available.
-        """
-        client = self._ensure_connected()
-        lyrics_plain: str | None = None
-        lyrics_lrc: str | None = None
-        try:
-            lyrics_obj = await client.tracks_lyrics(track_id, format_="TEXT")
-            if lyrics_obj and hasattr(lyrics_obj, "fetch_lyrics_async"):
-                raw = await lyrics_obj.fetch_lyrics_async()
-                lyrics_plain = (raw.strip() if raw else None) or None
-        except Exception as err:  # NotFoundError, UnauthorizedError, etc.
-            LOGGER.debug("Lyrics for track %s: %s", track_id, err)
-        try:
-            lrc_obj = await client.tracks_lyrics(track_id, format_="LRC")
-            if lrc_obj and hasattr(lrc_obj, "fetch_lyrics_async"):
-                raw = await lrc_obj.fetch_lyrics_async()
-                lyrics_lrc = (raw.strip() if raw else None) or None
-        except Exception:  # noqa: S110
-            pass
-        return (lyrics_plain, lyrics_lrc)
-
     async def get_album(self, album_id: str) -> YandexAlbum | None:
         """Get a single album by ID.
 
