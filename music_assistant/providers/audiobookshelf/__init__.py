@@ -603,7 +603,7 @@ for more details.
         tracks = abs_session.audio_tracks
 
         if len(tracks) == 0:
-            raise MediaNotFoundError("Session has not tracks.")
+            raise MediaNotFoundError("Session has no tracks.")
 
         content_type = ContentType.UNKNOWN
         if abs_session.audio_tracks[0].metadata is not None:
