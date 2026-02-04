@@ -105,6 +105,7 @@ from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard, SessionHelpe
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
+    from aioaudiobookshelf.schema.streams import Stream as AbsStream
     from aioaudiobookshelf.schema.user import User
     from music_assistant_models.media_items import Podcast
     from music_assistant_models.provider import ProviderManifest
@@ -195,6 +196,7 @@ async def get_config_entries(
             description="Use an HLS stream when streaming from audiobookshelf.",
             required=False,
             default_value=False,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_HLS_FORMATS,
@@ -205,6 +207,7 @@ async def get_config_entries(
             f" Separate with ;. E.g. m4b or m4b;aac or {HLS_ALL_FORMATS}",
             required=False,
             default_value="m4b",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -356,6 +359,8 @@ for more details.
         self._client_socket.set_refresh_token_expired_callback(
             on_refresh_token_expired=self._socket_abs_refresh_token_expired
         )
+
+        self._client_socket.set_stream_callbacks(on_stream_open=self._socket_stream_open)
 
         # progress guard
         self.progress_guard = ProgressGuard()
@@ -588,11 +593,16 @@ for more details.
         # In the case of hls the session has an hls stream as track.
         if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
             session = await self._get_playback_session(mass_item_id=item_id)
-            return await self._get_stream_details_session(session, media_type=media_type)
+            return await self._get_stream_details_session(
+                session, session_helper=self.sessions[item_id], media_type=media_type
+            )
         raise MediaNotFoundError("Stream unknown")
 
     async def _get_stream_details_session(
-        self, abs_session: AbsPlaybackSessionExpanded, media_type: MediaType
+        self,
+        abs_session: AbsPlaybackSessionExpanded,
+        session_helper: SessionHelper,
+        media_type: MediaType,
     ) -> StreamDetails:
         """Streamdetails audiobook.
 
@@ -628,6 +638,14 @@ for more details.
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         stream_type = StreamType.HLS if "hls" in file_parts[0].path else StreamType.HTTP
+        if stream_type == StreamType.HLS:
+            # wait for stream to be ready
+            try:
+                await asyncio.wait_for(session_helper.hls_stream_open.wait(), 10)
+            except TimeoutError:
+                self.logger.warning(
+                    "Did not receive HLS stream open event after 10s, continuing anyways."
+                )
 
         return StreamDetails(
             provider=self.instance_id,
@@ -713,7 +731,9 @@ for more details.
                 self.logger.debug("Using an HLS stream for playback.")
 
             self.sessions[mass_item_id] = SessionHelper(
-                abs_session_id=session.id_, last_sync_time=time.time()
+                abs_session_id=session.id_,
+                last_sync_time=time.time(),
+                hls_stream_open=asyncio.Event(),
             )
             return session
 
@@ -1490,6 +1510,13 @@ for more details.
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()
+
+    async def _socket_stream_open(self, stream: AbsStream) -> None:
+        # stream's id is the same as the playback session id
+        for session_helper in self.sessions.values():
+            if session_helper.abs_session_id == stream.id_:
+                session_helper.hls_stream_open.set()
+                break
 
     async def reauthenticate(self) -> None:
         """Reauthorize the abs session config if refresh token expired."""
