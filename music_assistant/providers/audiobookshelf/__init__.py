@@ -257,7 +257,8 @@ class Audiobookshelf(MusicProvider):
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         self._on_unload_callbacks: list[Callable[[], None]] = []
-        self.sessions: dict[str, SessionHelper] = {}  # key is the media_item_id
+        self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
+        self.create_session_lock = asyncio.Lock()
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
@@ -585,57 +586,13 @@ for more details.
         # so we only use the session to update our progress.
         #
         # In the case of hls the session has an hls stream as track.
-        _item_ids = item_id.split(" ")
-        abs_item_id = _item_ids[0]
-        episode_id = _item_ids[1] if len(_item_ids) == 2 else None
-
-        # Check HLS usage
-        use_hls = bool(self.config.get_value(CONF_USE_HLS))
-        hls_formats = str(self.config.get_value(CONF_HLS_FORMATS))
-        if use_hls and hls_formats != HLS_ALL_FORMATS:
-            use_hls = False  # only for certain formats
-            extensions = [x.lstrip(".") for x in hls_formats.split(HLS_FORMATS_SPLIT)]
-            if episode_id is None:
-                if (
-                    metadata := (await self._get_abs_expanded_audiobook(item_id))
-                    .media.tracks[0]
-                    .metadata
-                ):
-                    if metadata.ext.lstrip(".") in extensions:
-                        use_hls = True
-            else:
-                podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_item_id)
-                episode = None
-                for episode in podcast.media.episodes:
-                    if episode.id_ == episode_id:
-                        break
-                if episode and (metadata := episode.audio_track.metadata):
-                    if metadata.ext.lstrip(".") in extensions:
-                        use_hls = True
-
-        # Create an ABS session
-        session: AbsPlaybackSessionExpanded | None = None
-        if session_helper := self.sessions.get(item_id):
-            with suppress(AbsSessionNotFoundError):
-                session = await self._client.get_open_session(
-                    session_id=session_helper.abs_session_id
-                )
-                self.logger.debug("Using an already available session.")
-        if session is None:
-            session = await self._get_playback_session(
-                abs_item_id=abs_item_id, episode_id=episode_id, use_hls=use_hls
-            )
-            self.logger.debug("Playback session of type %s.", session.play_method)
-            self.sessions[item_id] = SessionHelper(
-                abs_session_id=session.id_, last_sync_time=time.time()
-            )
-
         if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
-            return await self._get_stream_details_session(session, media_type, use_hls)
+            session = await self._get_playback_session(mass_item_id=item_id)
+            return await self._get_stream_details_session(session, media_type=media_type)
         raise MediaNotFoundError("Stream unknown")
 
     async def _get_stream_details_session(
-        self, abs_session: AbsPlaybackSessionExpanded, media_type: MediaType, use_hls: bool
+        self, abs_session: AbsPlaybackSessionExpanded, media_type: MediaType
     ) -> StreamDetails:
         """Streamdetails audiobook.
 
@@ -651,14 +608,6 @@ for more details.
         content_type = ContentType.UNKNOWN
         if abs_session.audio_tracks[0].metadata is not None:
             content_type = ContentType.try_parse(abs_session.audio_tracks[0].metadata.ext)
-
-        if use_hls:
-            # some safety checks
-            track = tracks[0]
-            track_url = track.content_url
-            if track_url.split("/")[1] != "hls":
-                raise MediaNotFoundError("Did expect HLS stream for session playback")
-            self.logger.error("Using an HLS stream for playback.")
 
         file_parts: list[MultiPartPath] = []
         if self.is_token_user:
@@ -678,46 +627,95 @@ for more details.
                 )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
+        stream_type = StreamType.HLS if "hls" in file_parts[0].path else StreamType.HTTP
+
         return StreamDetails(
             provider=self.instance_id,
             item_id=abs_session.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=media_type,
-            stream_type=StreamType.HLS if use_hls else StreamType.HTTP,
+            stream_type=stream_type,
             duration=int(abs_session.duration),
             path=file_parts[0].path if len(file_parts) == 1 else file_parts,
             can_seek=True,
             allow_seek=True,
         )
 
-    async def _get_playback_session(
-        self, abs_item_id: str, episode_id: str | None, use_hls: bool
-    ) -> AbsPlaybackSessionExpanded:
-        client_name = f"Music Assistant {self.instance_id}"
-        device_info = AbsDeviceInfo(
-            device_id=self.instance_id,
-            client_name=client_name,
-            client_version=self.mass.version,
-            manufacturer="",
-            model=self.mass.server_id,
-        )
+    async def _get_playback_session(self, mass_item_id: str) -> AbsPlaybackSessionExpanded:
+        """Either creates or returns an open abs session."""
+        async with self.create_session_lock:
+            # check for an available open session
+            if session_helper := self.sessions.get(mass_item_id):
+                with suppress(AbsSessionNotFoundError):
+                    return await self._client.get_open_session(
+                        session_id=session_helper.abs_session_id
+                    )
 
-        # this will either create or return an open one.
-        return await self._client.get_playback_session(
-            # These parameters give an hls if we don't enforce direct play stream,
-            # which is only a concat of the individual file's at abs
-            session_parameters=AbsPlaybackSessionParameters(
-                device_info=device_info,
-                force_direct_play=not use_hls,
-                force_transcode=use_hls,
-                # mimetypes are only checked for abs' internal "should transcode
-                # see https://github.com/advplyr/audiobookshelf/blob/master/server/managers/PlaybackSessionManager.js
-                supported_mime_types=[],
-                media_player=client_name,
-            ),
-            item_id=abs_item_id,
-            episode_id=episode_id,
-        )
+            item_ids = mass_item_id.split(" ")
+            abs_item_id = item_ids[0]
+            episode_id = item_ids[1] if len(item_ids) == 2 else None
+
+            # Create a new session
+            ## Check HLS usage
+            use_hls = bool(self.config.get_value(CONF_USE_HLS))
+            hls_formats = str(self.config.get_value(CONF_HLS_FORMATS))
+            if use_hls and hls_formats != HLS_ALL_FORMATS:
+                use_hls = False  # only for certain formats
+                extensions = [x.lstrip(".") for x in hls_formats.split(HLS_FORMATS_SPLIT)]
+                if episode_id is None:
+                    if (
+                        metadata := (await self._get_abs_expanded_audiobook(abs_item_id))
+                        .media.tracks[0]
+                        .metadata
+                    ):
+                        if metadata.ext.lstrip(".") in extensions:
+                            use_hls = True
+                else:
+                    podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_item_id)
+                    episode = None
+                    for episode in podcast.media.episodes:
+                        if episode.id_ == episode_id:
+                            break
+                    if episode and (metadata := episode.audio_track.metadata):
+                        if metadata.ext.lstrip(".") in extensions:
+                            use_hls = True
+
+            client_name = f"Music Assistant {self.instance_id}"
+            device_info = AbsDeviceInfo(
+                device_id=self.instance_id,
+                client_name=client_name,
+                client_version=self.mass.version,
+                manufacturer="",
+                model=self.mass.server_id,
+            )
+
+            session = await self._client.get_playback_session(
+                # These parameters give an hls if we don't enforce direct play stream,
+                # which is only a concat of the individual file's at abs
+                session_parameters=AbsPlaybackSessionParameters(
+                    device_info=device_info,
+                    force_direct_play=not use_hls,
+                    force_transcode=use_hls,
+                    # mimetypes are only checked for abs' internal "should transcode
+                    # see https://github.com/advplyr/audiobookshelf/blob/master/server/managers/PlaybackSessionManager.js
+                    supported_mime_types=[],
+                    media_player=client_name,
+                ),
+                item_id=abs_item_id,
+                episode_id=episode_id,
+            )
+
+            if use_hls:
+                # Safety check.
+                track_url = session.audio_tracks[0].content_url
+                if track_url.split("/")[1] != "hls":
+                    raise MediaNotFoundError("Did expect HLS stream for session playback")
+                self.logger.debug("Using an HLS stream for playback.")
+
+            self.sessions[mass_item_id] = SessionHelper(
+                abs_session_id=session.id_, last_sync_time=time.time()
+            )
+            return session
 
     @handle_refresh_token
     async def _handle_session_part_request(self, request: web.Request) -> web.Response:
@@ -753,29 +751,12 @@ for more details.
     @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return finished:bool, position_ms: int."""
-        if session_helper := self.sessions.get(item_id):
-            with suppress(AbsSessionNotFoundError):
-                # suppress: fall back to standard approach if session is not found/ yet available
-                session = await self._client.get_open_session(
-                    session_id=session_helper.abs_session_id
-                )
-                finished = session.current_time > session.duration - 30
-                return finished, int(session.current_time * 1000)
-        progress: None | MediaProgress = None
-        if media_type == MediaType.PODCAST_EPISODE:
-            abs_podcast_id, abs_episode_id = item_id.split(" ")
-            progress = await self._client.get_my_media_progress(
-                item_id=abs_podcast_id, episode_id=abs_episode_id
-            )
-
-        if media_type == MediaType.AUDIOBOOK:
-            progress = await self._client.get_my_media_progress(item_id=item_id)
-
-        if progress is not None and progress.current_time is not None:
-            self.logger.debug("Resume position: obtained.")
-            return progress.is_finished, int(progress.current_time * 1000)
-
-        return False, 0
+        # this method is called _before_ get_stream_details, so the playback session
+        # is created here.
+        session = await self._get_playback_session(mass_item_id=item_id)
+        finished = session.current_time > session.duration - 30
+        self.logger.debug("Resume position: obtained.")
+        return finished, int(session.current_time * 1000)
 
     @handle_refresh_token
     async def recommendations(self) -> list[RecommendationFolder]:
@@ -1015,10 +996,10 @@ for more details.
                         duration=duration,
                     ),
                 )
+                session_helper.last_sync_time = now
                 self.logger.debug("Synced playback session, position %s s.", position)
             except AbsSessionNotFoundError:
                 self.logger.error("Was unable to sync session.")
-            session_helper.last_sync_time = now
 
         if media_type == MediaType.PODCAST_EPISODE:
             abs_podcast_id, abs_episode_id = prov_item_id.split(" ")
