@@ -341,15 +341,15 @@ async def is_port_in_use(port: int) -> bool:
         # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
         # A port is considered free if it can be bound on at least one address family.
         for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
-            with socket.socket(family, socket.SOCK_STREAM) as _sock:
-                # Set SO_REUSEADDR to match asyncio.start_server behavior
-                # This allows binding to ports in TIME_WAIT state
-                _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                try:
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as _sock:
+                    # Set SO_REUSEADDR to match asyncio.start_server behavior
+                    # This allows binding to ports in TIME_WAIT state
+                    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     _sock.bind((addr, port))
                     return False
-                except OSError:
-                    continue
+            except OSError:
+                continue
         return True
 
     return await asyncio.to_thread(_is_port_in_use)

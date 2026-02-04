@@ -123,7 +123,9 @@ class WebserverController(CoreController):
         # Determine if SSL is enabled from values
         ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
         protocol = "https" if ssl_enabled else "http"
-        default_base_url = f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
+        default_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
+        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
