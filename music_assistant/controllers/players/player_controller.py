@@ -60,6 +60,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
+    ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -680,16 +681,13 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/volume_set")
     @handle_player_command
-    async def cmd_volume_set(
-        self, player_id: str, volume_level: int, preserve_mute: bool = False
-    ) -> None:
+    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
-        :param preserve_mute: if True, do not auto-unmute the player.
         """
-        await self._handle_cmd_volume_set(player_id, volume_level, preserve_mute=preserve_mute)
+        await self._handle_cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -813,9 +811,6 @@ class PlayerController(CoreController):
             ):
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
-            return
-        # treat as normal player mute
-        await self.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/volume_mute")
     @handle_player_command
@@ -827,6 +822,15 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
         assert player
+
+        # Set/clear mute lock for players in a group
+        # This prevents auto-unmute when group volume changes
+        is_in_group = bool(player.synced_to or player.group_members)
+        if muted and is_in_group:
+            player.extra_data[ATTR_MUTE_LOCK] = True
+        elif not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
         if player.mute_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support muting"
@@ -1690,8 +1694,8 @@ class PlayerController(CoreController):
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
             # Use private method to skip permission check - already validated on group
-            # preserve_mute=True so group volume changes don't unmute individual players
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume, preserve_mute=True))
+            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
+            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
@@ -2366,9 +2370,7 @@ class PlayerController(CoreController):
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _handle_cmd_volume_set(
-        self, player_id: str, volume_level: int, preserve_mute: bool = False
-    ) -> None:
+    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Handle Player volume set command.
 
@@ -2386,12 +2388,15 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support volume control"
             )
 
+        # Check if player has mute lock (set when individually muted in a group)
+        # If locked, don't auto-unmute when volume changes
+        has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
-            not preserve_mute
+            not has_mute_lock
             and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.volume_muted
         ):
-            # if player is muted, we unmute it first
+            # if player is muted and not locked, we unmute it first
             # skip this for fake mute since it uses volume to simulate mute
             self.logger.debug(
                 "Unmuting player %s before setting volume",
