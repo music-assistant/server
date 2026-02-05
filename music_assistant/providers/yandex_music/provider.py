@@ -281,11 +281,13 @@ class YandexMusicProvider(MusicProvider):
             self.logger.debug(
                 "Playlist %s/%s: track_count=%s but no tracks in response, "
                 "calling fetch_tracks_async",
-                owner_id, kind, track_count,
+                owner_id,
+                kind,
+                track_count,
             )
             try:
                 tracks_list = await playlist.fetch_tracks_async()
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
             if not tracks_list:
                 raise ResourceTemporarilyUnavailable(
@@ -313,9 +315,7 @@ class YandexMusicProvider(MusicProvider):
             full_tracks.extend(batch_result or [])
 
         if track_ids and not full_tracks:
-            raise ResourceTemporarilyUnavailable(
-                "Failed to load track details; try again later"
-            )
+            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
 
         tracks = []
         for track in full_tracks:
