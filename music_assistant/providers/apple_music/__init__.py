@@ -450,20 +450,13 @@ class AppleMusicProvider(MusicProvider):
         )
         for item in playlist_items:
             is_favourite = rating_library_response.get(item["id"])
-            try:
-                # Prefer catalog information over library information in case of public playlists
-                if item["attributes"]["hasCatalog"]:
-                    yield await self.get_playlist(
-                        item["attributes"]["playParams"]["globalId"], is_favourite
-                    )
-                elif item and item["id"]:
-                    yield self._parse_playlist(item, is_favourite)
-            except MediaNotFoundError:
-                self.logger.exception(
-                    "get_library_playlists failed for item id=%s payload=%s",
-                    item.get("id"),
-                    item,
+            # Prefer catalog information over library information in case of public playlists
+            if item["attributes"]["hasCatalog"]:
+                yield await self.get_playlist(
+                    item["attributes"]["playParams"]["globalId"], is_favourite
                 )
+            elif item and item["id"]:
+                yield self._parse_playlist(item, is_favourite)
 
     @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
@@ -1135,7 +1128,7 @@ class AppleMusicProvider(MusicProvider):
         """Check a library ID matches known format."""
         if not isinstance(library_id, str):
             return False
-        valid = re.findall(r"^(?:[a|i|l|p]{1}\.|pl\.u\-)[a-zA-Z0-9]+$", library_id)
+        valid = re.findall(r"^(?:[ailp]\.)[a-zA-Z0-9]+$", library_id)
         return bool(valid)
 
     def _is_catalog_id(self, catalog_id: str) -> bool:
