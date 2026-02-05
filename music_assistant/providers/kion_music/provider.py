@@ -278,19 +278,24 @@ class KionMusicProvider(MusicProvider):
         track_count = getattr(playlist, "track_count", None) or 0
         self.logger.debug(
             "Playlist %s/%s: track_count=%s, tracks_in_response=%s",
-            owner_id, kind, track_count, len(tracks_list),
+            owner_id,
+            kind,
+            track_count,
+            len(tracks_list),
         )
         if not tracks_list and track_count > 0:
             self.logger.debug("No tracks in response, calling fetch_tracks_async...")
             try:
                 tracks_list = await playlist.fetch_tracks_async()
                 self.logger.debug("fetch_tracks_async returned %s tracks", len(tracks_list or []))
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 self.logger.warning("fetch_tracks_async failed: %s", err)
             if not tracks_list and track_count > 0:
                 self.logger.warning(
                     "Playlist %s/%s: expected %s tracks but got none",
-                    owner_id, kind, track_count,
+                    owner_id,
+                    kind,
+                    track_count,
                 )
                 raise ResourceTemporarilyUnavailable(
                     "Playlist tracks not available; try again later"
