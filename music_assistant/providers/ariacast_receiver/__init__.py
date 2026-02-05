@@ -546,6 +546,7 @@ class AriaCastReceiverProvider(PluginProvider):
                         continue
 
                     self.frame_queue.append(data)
+                    self.received_frames += 1
                     self.frame_available.set()
 
                     # Start playback after prebuffering
