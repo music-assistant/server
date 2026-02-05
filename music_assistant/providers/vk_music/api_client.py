@@ -15,6 +15,13 @@ from vkpymusic.vk_api import VkApiException
 
 from .constants import DEFAULT_LIMIT, DEFAULT_USER_AGENT
 
+# Prevent vkpymusic from writing log files into project logs/
+_vkpymusic_logger = logging.getLogger("vkpymusic")
+for _h in list(_vkpymusic_logger.handlers):
+    if isinstance(_h, logging.FileHandler):
+        _vkpymusic_logger.removeHandler(_h)
+        _h.close()
+
 # Error message for tokens without audio API access
 AUDIO_ACCESS_DENIED_MSG = (
     "VK Music token does not have audio API access. "

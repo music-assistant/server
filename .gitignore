@@ -19,3 +19,4 @@ venv/
 .idea
 .coverage
 uv.lock
+logs/
