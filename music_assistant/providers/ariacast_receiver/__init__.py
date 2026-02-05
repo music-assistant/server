@@ -314,11 +314,8 @@ class AriaCastReceiverProvider(PluginProvider):
         if self._active_player_id:
             if self.mass.players.get(self._active_player_id):
                 return self._active_player_id
-                return self._active_player_id
             # Active player no longer exists; clear related state
             self._active_player_id = None
-            if self._source_details is not None:
-                self._source_details.in_use_by = None
             if self._source_details is not None:
                 self._source_details.in_use_by = None
 
