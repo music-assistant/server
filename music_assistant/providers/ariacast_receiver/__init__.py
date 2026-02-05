@@ -190,6 +190,7 @@ class AriaCastReceiverProvider(PluginProvider):
         # Audio buffer
         self.max_frames = 50  # 1 second buffer
         self.frame_queue: deque[bytes] = deque(maxlen=self.max_frames)
+        self.frame_available = asyncio.Event()  # Signal when new frames are available
         self.received_frames = 0
         self.played_frames = 0
 
@@ -274,6 +275,7 @@ class AriaCastReceiverProvider(PluginProvider):
         # Update default player
         new_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         if new_player_id != self._default_player_id:
+            self.logger.debug("Default player changed to %s", new_player_id)
             self._default_player_id = new_player_id
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -282,7 +284,8 @@ class AriaCastReceiverProvider(PluginProvider):
 
         # Close audio client if connected
         if self._audio_client and not self._audio_client.closed:
-            await self._audio_client.close()
+            with suppress(asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(self._audio_client.close(), timeout=2.0)
 
         # Stop server task
         if self._server_task and not self._server_task.done():
@@ -352,9 +355,16 @@ class AriaCastReceiverProvider(PluginProvider):
             current_target = self._get_target_player_id()
             if new_player_id != current_target:
                 self.logger.debug(
-                    "Manual player switching disabled, ignoring selection on %s", new_player_id
+                    "Manual player switching disabled: rejecting selection on %s "
+                    "and restoring source to %s",
+                    new_player_id,
+                    current_target,
                 )
+                # Restore the source usage to the current target (if any)
                 self._source_details.in_use_by = current_target
+                # Ensure both players get a state update so their UIs stay consistent
+                if current_target:
+                    self.mass.players.trigger_player_update(current_target)
                 self.mass.players.trigger_player_update(new_player_id)
                 return
 
@@ -387,6 +397,8 @@ class AriaCastReceiverProvider(PluginProvider):
 
     def _save_last_player_id(self, player_id: str) -> None:
         """Persist the selected player ID to config as the new default."""
+        # Note: We persist manual selections even if the current mode is "Auto",
+        # ensuring that the next time the plugin starts, it has a valid default.
         if self._default_player_id == player_id:
             return
         old_player_id = self._default_player_id
@@ -395,6 +407,7 @@ class AriaCastReceiverProvider(PluginProvider):
                 self.instance_id, CONF_MASS_PLAYER_ID, player_id
             )
             self._default_player_id = player_id
+            self.logger.debug("Persisted last player ID: %s", player_id)
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
             # Revert in-memory state on failure
@@ -533,7 +546,7 @@ class AriaCastReceiverProvider(PluginProvider):
                         continue
 
                     self.frame_queue.append(data)
-                    self.received_frames += 1
+                    self.frame_available.set()
 
                     # Start playback after prebuffering
                     if not self._playback_started and len(self.frame_queue) >= prebuffer:
@@ -578,6 +591,10 @@ class AriaCastReceiverProvider(PluginProvider):
 
         peer = request.remote
         self.logger.debug("Metadata client connected: %s", peer)
+
+        # Note: In a home LAN environment, we trust connected clients for simplicity.
+        # Future improvements could include authentication or limiting updates
+        # to the client currently streaming audio.
 
         # Add to metadata clients list
         self.metadata_clients.append(ws)
@@ -674,20 +691,46 @@ class AriaCastReceiverProvider(PluginProvider):
         peer = request.remote
         self.logger.debug("Stats client connected: %s", peer)
 
+        # Track the last known number of received frames so we can detect periods of inactivity
+        last_received_frames = self.received_frames
+        idle_iterations = 0
+
         try:
             while not ws.closed and not self._stop_called:
+                buffered_frames = len(self.frame_queue)
+                current_received_frames = self.received_frames
+
+                # Consider the receiver "idle" if nothing is buffered and the total number of
+                # received frames has not changed since the last iteration.
+                if buffered_frames == 0 and current_received_frames == last_received_frames:
+                    idle_iterations += 1
+                else:
+                    idle_iterations = 0
+
+                last_received_frames = current_received_frames
+
                 # Send current stats
                 stats = {
-                    "bufferedFrames": len(self.frame_queue),
+                    "bufferedFrames": buffered_frames,
                     # droppedFrames metric is not yet tracked (deque with maxlen drops silently)
                     "droppedFrames": None,
-                    "receivedFrames": self.received_frames,
+                    "receivedFrames": current_received_frames,
                 }
                 try:
                     await ws.send_json(stats)
                 except Exception:
                     break
-                await asyncio.sleep(1)  # Update every second
+
+                # Use a shorter interval when audio is active and back off gradually when idle
+                # to reduce unnecessary updates while no audio is playing.
+                sleep_interval: float
+                if idle_iterations == 0:
+                    sleep_interval = 1.0
+                else:
+                    # Increase the interval as idle time grows, up to a reasonable maximum.
+                    sleep_interval = min(1.0 + (idle_iterations * 0.5), 10.0)
+
+                await asyncio.sleep(sleep_interval)
         except Exception as e:
             self.logger.debug("Error in stats handler: %s", e)
         finally:
@@ -714,13 +757,11 @@ class AriaCastReceiverProvider(PluginProvider):
         peer = request.remote
         self.logger.debug("Control client connected: %s", peer)
 
+        # We don't expect any incoming messages from the client on this control channel.
+        # Keep the connection open until the client disconnects or an error occurs.
         try:
-            async for msg in ws:
-                # We don't expect any incoming text/binary messages from the client.
-                # The connection is mainly used for sending control commands TO the client.
-                if msg.type == web.WSMsgType.ERROR:
-                    self.logger.error("Control WebSocket error: %s", ws.exception())
-                    break
+            async for _ in ws:
+                pass
         except Exception as e:
             self.logger.error("Error in control handler: %s", e)
         finally:
@@ -776,8 +817,9 @@ class AriaCastReceiverProvider(PluginProvider):
             "data": metadata,
         }
 
-        # Broadcast to all metadata clients
-        for client in self.metadata_clients[:]:  # Copy list to avoid modification during iteration
+        # Broadcast to all metadata clients. We keep track of dead clients to remove them after.
+        dead_clients = []
+        for client in self.metadata_clients:
             if client == exclude_ws:
                 continue
             try:
@@ -787,9 +829,12 @@ class AriaCastReceiverProvider(PluginProvider):
                 await client.send_json(message)
             except Exception as e:
                 self.logger.debug("Failed to send metadata to client: %s", e)
-                # Remove dead clients
-                if client in self.metadata_clients:
-                    self.metadata_clients.remove(client)
+                dead_clients.append(client)
+
+        # Remove dead clients
+        for client in dead_clients:
+            if client in self.metadata_clients:
+                self.metadata_clients.remove(client)
 
     def _update_source_metadata(self, metadata: dict[str, Any]) -> None:
         """Update source metadata from received metadata.
@@ -837,6 +882,7 @@ class AriaCastReceiverProvider(PluginProvider):
         # Handle both artwork_url (snake_case) and artworkUrl (camelCase)
         artwork_url = metadata.get("artwork_url") or metadata.get("artworkUrl")
         if artwork_url and isinstance(artwork_url, str) and artwork_url.startswith("http"):
+            # Note: Fetching over LAN is acceptable for artwork without HTTPS.
             # Schedule download in background
             self.mass.create_task(self._download_artwork(artwork_url))
 
@@ -859,7 +905,7 @@ class AriaCastReceiverProvider(PluginProvider):
                 new_position = int(int(position) / 1000)
                 # Always update position as it changes constantly
                 meta.elapsed_time = new_position
-                meta.elapsed_time_last_updated = int(time.time())
+                meta.elapsed_time_last_updated = time.time()
                 has_changes = True
             except (ValueError, TypeError):
                 # Ignore invalid position value
@@ -977,11 +1023,12 @@ class AriaCastReceiverProvider(PluginProvider):
                         yield frame
                     except IndexError:
                         # Queue became empty between the check and the pop; treat as no data
-                        await asyncio.sleep(0.05)
                         continue
                 else:
-                    # No data available, wait a bit to avoid busy loop
-                    await asyncio.sleep(0.05)
+                    # No data available, wait for new frames or stop
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self.frame_available.wait(), timeout=1.0)
+                    self.frame_available.clear()
         finally:
             self.logger.debug("Audio stream ended for player %s", player_id)
             self._playback_started = False
@@ -1040,6 +1087,8 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     @staticmethod
     def _get_local_ip() -> str:
         """Get local IP address."""
+        # Note: In a home LAN environment, connecting to a public IP is a reliable
+        # way to determine the correct local interface to use.
         s: socket.socket | None = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

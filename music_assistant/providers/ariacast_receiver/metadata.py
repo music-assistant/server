@@ -25,9 +25,15 @@ class MetadataHandler:
     def update(self, metadata: dict[str, Any]) -> None:
         """Update current metadata with new values.
 
+        This method processes both snake_case and camelCase keys.
+        Note: The input dictionary is not mutated.
+
         Args:
             metadata: Dictionary containing metadata updates
         """
+        # Create a local copy to avoid mutating the original dictionary
+        metadata_update = metadata.copy()
+
         # Map common camelCase keys to snake_case
         key_mapping = {
             "durationMs": "duration_ms",
@@ -38,13 +44,13 @@ class MetadataHandler:
 
         # Merge mapped keys into metadata (preferring existing snake_case if present)
         for camel, snake in key_mapping.items():
-            if camel in metadata and snake not in metadata:
-                metadata[snake] = metadata[camel]
+            if camel in metadata_update and snake not in metadata_update:
+                metadata_update[snake] = metadata_update[camel]
 
         # Update only known metadata fields, using current_metadata as the source of truth
         for key in self.current_metadata:
-            if key in metadata and metadata[key] is not None:
-                self.current_metadata[key] = metadata[key]
+            if key in metadata_update and metadata_update[key] is not None:
+                self.current_metadata[key] = metadata_update[key]
 
     def clear(self) -> None:
         """Clear all metadata."""
