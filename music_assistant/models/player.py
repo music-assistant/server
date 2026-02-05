@@ -892,7 +892,7 @@ class Player(ABC):
         active_groups = self.active_groups
         return active_groups[0] if active_groups else None
 
-    @cached_property
+    @property
     @final
     def group_members(self) -> list[str]:
         """
@@ -903,32 +903,7 @@ class Player(ABC):
         Returns native group_members first, then adds members from active protocol.
         Protocol player IDs are translated back to visible player IDs.
         """
-        if self.synced_to:
-            # If player is synced to another player, it has no group members itself
-            return []
-
-        members = self._group_members.copy()
-        # If there's an active linked protocol, include its group members (translated)
-        if self.__attr_active_output_protocol and self.__attr_active_output_protocol not in (
-            "native",
-            self.player_id,
-        ):
-            if protocol_player := self.mass.players.get(self.__attr_active_output_protocol):
-                # Translate protocol player IDs to visible player IDs
-                protocol_members = self._translate_protocol_ids_to_visible(
-                    set(protocol_player.group_members)
-                )
-                for member_id in protocol_members:
-                    if member_id not in members:
-                        members.append(member_id)
-
-        # Ensure the player_id is first in the group_members list
-        if len(members) > 0 and members[0] != self.player_id:
-            members = [self.player_id, *[m for m in members if m != self.player_id]]
-        # If the only member is self, return empty list
-        if members == [self.player_id]:
-            return []
-        return members
+        return self.__attr_group_members or []
 
     @cached_property
     @final
@@ -1510,6 +1485,7 @@ class Player(ABC):
         self.__attr_current_media = self.__calculate_current_media()
         self.__attr_source_list = self.__calculate_source_list()
         self.__attr_synced_to = self.__calculate_synced_to()
+        self.__attr_group_members = self.__calculate_group_members()
         # correct active output protocol if needed
         if (
             self.__attr_active_output_protocol is None
@@ -1788,6 +1764,38 @@ class Player(ABC):
             else:
                 sources.append(plugin_source)
         return sources
+
+    __attr_group_members: list[str] | None = None
+
+    @final
+    def __calculate_group_members(self) -> list[str]:
+        """Calculate the final group members for caching."""
+        if self.synced_to:
+            # If player is synced to another player, it has no group members itself
+            return []
+
+        members = self._group_members.copy()
+        # If there's an active linked protocol, include its group members (translated)
+        if self.__attr_active_output_protocol and self.__attr_active_output_protocol not in (
+            "native",
+            self.player_id,
+        ):
+            if protocol_player := self.mass.players.get(self.__attr_active_output_protocol):
+                # Translate protocol player IDs to visible player IDs
+                protocol_members = self._translate_protocol_ids_to_visible(
+                    set(protocol_player.group_members)
+                )
+                for member_id in protocol_members:
+                    if member_id not in members:
+                        members.append(member_id)
+
+        # Ensure the player_id is first in the group_members list
+        if len(members) > 0 and members[0] != self.player_id:
+            members = [self.player_id, *[m for m in members if m != self.player_id]]
+        # If the only member is self, return empty list
+        if members == [self.player_id]:
+            return []
+        return members
 
     @final
     def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[str]:
