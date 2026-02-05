@@ -293,8 +293,9 @@ class AriaCastReceiverProvider(PluginProvider):
                 clients_to_close.append(client.close())
 
         if clients_to_close:
-            with suppress(asyncio.TimeoutError, Exception):
-                await asyncio.wait_for(asyncio.gather(*clients_to_close), timeout=2.0)
+            for close_coro in clients_to_close:
+                with suppress(asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(close_coro, timeout=2.0)
 
         # Stop server task
         if self._server_task and not self._server_task.done():
