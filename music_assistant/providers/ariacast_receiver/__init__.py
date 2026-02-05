@@ -784,7 +784,7 @@ class AriaCastReceiverProvider(PluginProvider):
 
                 await asyncio.sleep(sleep_interval)
         except Exception as e:
-            self.logger.debug("Error in stats handler: %s", e)
+            self.logger.error("Error in stats handler: %s", e)
         finally:
             self.logger.debug("Stats client disconnected: %s", peer)
 
