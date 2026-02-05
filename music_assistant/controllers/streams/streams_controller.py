@@ -1844,11 +1844,23 @@ class StreamsController(CoreController):
             output_sample_rate = min(48000, output_sample_rate)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
+        output_channels = 1 if output_channels_str != "stereo" else 2
+        # For WAV format, explicitly set output_format_str with PCM parameters.
+        # This is needed for slimproto players which parse these parameters from the
+        # Content-Type header to configure the correct bit depth for decoding.
+        if content_type == ContentType.WAV:
+            wav_output_format_str = (
+                f"wav;rate={output_sample_rate};bitrate={output_bit_depth};"
+                f"channels={output_channels}"
+            )
+        else:
+            wav_output_format_str = ""
         return AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
-            channels=1 if output_channels_str != "stereo" else 2,
+            channels=output_channels,
+            output_format_str=wav_output_format_str,
         )
 
     async def _select_flow_format(
