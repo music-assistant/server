@@ -696,16 +696,15 @@ class AriaCastReceiverProvider(PluginProvider):
         try:
             # Explicitly check content length to prevent large payload attacks.
             # 64KB is more than enough for simple metadata JSON.
-            if request.content_length and request.content_length > 64 * 1024:
+            content_length = request.content_length
+            if content_length is None:
+                return web.Response(status=411, text="Content-Length header required")
+            if content_length > 64 * 1024:
                 return web.Response(status=413, text="Payload too large")
 
             text = await request.text()
             if not text:
                 return web.Response(status=400, text="Empty payload")
-
-            if len(text) > 64 * 1024:
-                return web.Response(status=413, text="Payload too large")
-
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
