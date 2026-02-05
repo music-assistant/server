@@ -371,10 +371,36 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
+        Performs case-insensitive matching against the player's state name
+        (the final name visible in clients and API).
+        If multiple players match, logs a warning and returns the first match.
+
         :param name: Name of the player.
         :return: Player object or None.
         """
-        return next((x for x in self._players.values() if x.name == name), None)
+        name_normalized = name.strip().lower()
+        matches: list[Player] = []
+
+        for player in self._players.values():
+            if player.state.name.strip().lower() == name_normalized:
+                matches.append(player)
+
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            player_ids = [p.player_id for p in matches]
+            self.logger.warning(
+                "players/get_by_name: Multiple players found with name '%s': %s - "
+                "returning first match (%s). "
+                "Consider using the players/get API with player_id instead "
+                "for unambiguous lookups.",
+                name,
+                player_ids,
+                matches[0].player_id,
+            )
+
+        return matches[0]
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:

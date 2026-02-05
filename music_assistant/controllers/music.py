@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
@@ -66,7 +67,7 @@ from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFAD
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
-from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
@@ -1672,6 +1673,34 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         db_item = await ctrl.get_library_item(db_id)
         await ctrl.match_providers(db_item)
+
+    async def update_provider_mapping(
+        self,
+        media_type: MediaType,
+        db_id: str | int,
+        provider_instance_id: str,
+        provider_item_id: str,
+        *,
+        available: bool | Any = UNSET,
+        in_library: bool | Any = UNSET,
+        is_unique: bool | None | Any = UNSET,
+        url: str | None | Any = UNSET,
+        details: str | None | Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
+    ) -> None:
+        """Update an existing provider mapping for a library item."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.update_provider_mapping(
+            item_id=db_id,
+            provider_instance_id=provider_instance_id,
+            provider_item_id=provider_item_id,
+            available=available,
+            in_library=in_library,
+            is_unique=is_unique,
+            url=url,
+            details=details,
+            audio_format=audio_format,
+        )
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""

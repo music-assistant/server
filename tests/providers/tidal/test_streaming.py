@@ -1,11 +1,14 @@
 """Test Tidal Streaming Manager."""
 
+from collections.abc import Coroutine
+from sqlite3 import OperationalError
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
 
@@ -361,3 +364,193 @@ async def test_get_stream_details_with_isrc_fallback(
 
     assert stream_details.item_id == "123"
     assert stream_details.path == "https://example.com/stream.flac"
+
+
+async def test_get_stream_details_schedules_background_mapping_update(
+    streaming_manager: TidalStreamingManager,
+    provider_mock: Mock,
+    mock_track: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure get_stream_details schedules the background mapping update task."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+
+    created: list[tuple[str, AudioFormat]] = []
+
+    async def _fake_worker(provider_track_id: str, resolved_audio_format: AudioFormat) -> None:
+        created.append((provider_track_id, resolved_audio_format))
+
+    # Patch the worker method so we can validate the coroutine is created with expected args
+    monkeypatch.setattr(
+        streaming_manager, "_async_update_provider_mapping_audio_format", _fake_worker
+    )
+
+    captured_coros: list[Coroutine[Any, Any, None]] = []
+
+    def _fake_create_task(coro: Coroutine[Any, Any, None]) -> None:
+        # Don't schedule; just capture the coroutine so the test can await it.
+        captured_coros.append(coro)
+
+    provider_mock.mass.create_task = _fake_create_task
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    assert len(captured_coros) == 1
+
+    # Execute the captured coroutine (safe because we patched the worker)
+    await captured_coros[0]
+
+    assert created == [("123", stream_details.audio_format)]
+
+
+async def test_async_update_provider_mapping_audio_format_no_library_item(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure no update occurs when no library item is found."""
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = None
+    provider_mock.mass.music.tracks.update_provider_mapping = AsyncMock()
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+        ),
+    )
+
+    provider_mock.mass.music.tracks.update_provider_mapping.assert_not_called()
+
+
+async def test_async_update_provider_mapping_audio_format_no_mapping(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure no update occurs when no provider mapping is found."""
+    lib_track = Mock()
+    lib_track.item_id = 1
+    lib_track.provider_mappings = set()
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
+    provider_mock.mass.music.tracks.update_provider_mapping = AsyncMock()
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+        ),
+    )
+
+    provider_mock.mass.music.tracks.update_provider_mapping.assert_not_called()
+
+
+async def test_async_update_provider_mapping_audio_format_same_format_no_update(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure no update occurs when the audio format is unchanged."""
+    fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16)
+    mapping = Mock()
+    mapping.provider_instance = provider_mock.instance_id
+    mapping.item_id = "123"
+    mapping.audio_format = fmt
+
+    lib_track = Mock()
+    lib_track.item_id = 1
+    lib_track.provider_mappings = {mapping}
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
+    provider_mock.mass.music.tracks.update_provider_mapping = AsyncMock()
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=fmt,
+    )
+
+    provider_mock.mass.music.tracks.update_provider_mapping.assert_not_called()
+
+
+async def test_async_update_provider_mapping_audio_format_different_format_updates(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure update occurs when the audio format is different."""
+    old_fmt = AudioFormat(content_type=ContentType.MP4, sample_rate=44100, bit_depth=16)
+    new_fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16)
+
+    mapping = Mock()
+    mapping.provider_instance = provider_mock.instance_id
+    mapping.item_id = "123"
+    mapping.audio_format = old_fmt
+
+    lib_track = Mock()
+    lib_track.item_id = 1
+    lib_track.provider_mappings = {mapping}
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
+    provider_mock.mass.music.tracks.update_provider_mapping = AsyncMock()
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=new_fmt,
+    )
+
+    provider_mock.mass.music.tracks.update_provider_mapping.assert_awaited_once()
+    provider_mock.mass.music.tracks.update_provider_mapping.assert_awaited_with(
+        item_id=1,
+        provider_instance_id=provider_mock.instance_id,
+        provider_item_id="123",
+        audio_format=new_fmt,
+    )
+
+
+async def test_async_update_provider_mapping_audio_format_sqlite_operational_error_logs_debug(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure OperationalError is logged at debug level."""
+    provider_mock.logger = Mock()
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.side_effect = OperationalError(
+        "database is locked"
+    )
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+        ),
+    )
+
+    provider_mock.logger.debug.assert_called()
+
+
+async def test_async_update_provider_mapping_audio_format_unexpected_error_logs_exception(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Ensure unexpected errors are logged at exception level."""
+    provider_mock.logger = Mock()
+
+    lib_track = Mock()
+    lib_track.item_id = 1
+    lib_track.provider_mappings = set()
+    provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
+
+    # Force an unexpected error after resolving lib_track
+    provider_mock.mass.music.tracks.update_provider_mapping = AsyncMock(
+        side_effect=RuntimeError("boom")
+    )
+
+    # Create a mapping that triggers the update path
+    mapping = Mock()
+    mapping.provider_instance = provider_mock.instance_id
+    mapping.item_id = "123"
+    mapping.audio_format = AudioFormat(
+        content_type=ContentType.MP4, sample_rate=44100, bit_depth=16
+    )
+    lib_track.provider_mappings = {mapping}
+
+    await streaming_manager._async_update_provider_mapping_audio_format(
+        provider_track_id="123",
+        resolved_audio_format=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+        ),
+    )
+
+    provider_mock.logger.exception.assert_called()
