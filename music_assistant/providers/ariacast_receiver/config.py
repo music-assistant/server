@@ -7,19 +7,22 @@ from dataclasses import dataclass
 
 @dataclass
 class AudioConfig:
-    """Audio stream configuration parameters."""
+    """Audio stream configuration parameters.
+
+    Note: Instances of this class should be treated as immutable after creation.
+    Modifying audio parameters at runtime will not trigger recalculation of
+    derived values like frame_size.
+    """
 
     sample_rate: int = 48000
     channels: int = 2
     sample_width: int = 2  # 16-bit = 2 bytes
     frame_duration_ms: int = 20
-    frame_size: int = 3840  # Default value, re-calculated in __post_init__
 
-    def __post_init__(self) -> None:
-        """Compute derived values."""
-        # Dynamically calculate frame_size based on the current audio parameters to
-        # avoid relying on a hardcoded value that assumes specific defaults.
-        self.frame_size = int(
+    @property
+    def frame_size(self) -> int:
+        """Return the frame size in bytes derived from the current audio parameters."""
+        return int(
             self.sample_rate * self.channels * self.sample_width * self.frame_duration_ms / 1000
         )
 

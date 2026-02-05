@@ -185,6 +185,7 @@ class AriaCastReceiverProvider(PluginProvider):
         self._discovery_task: asyncio.Task[None] | None = None
         self._audio_client: web.WebSocketResponse | None = None
         self._control_client: web.WebSocketResponse | None = None
+        self._stats_client: web.WebSocketResponse | None = None
         self._control_lock = asyncio.Lock()
         self._playback_started: bool = False
         self._bad_frame_count: int = 0
@@ -288,14 +289,19 @@ class AriaCastReceiverProvider(PluginProvider):
             clients_to_close.append(self._audio_client.close())
         if self._control_client and not self._control_client.closed:
             clients_to_close.append(self._control_client.close())
+        if self._stats_client and not self._stats_client.closed:
+            clients_to_close.append(self._stats_client.close())
         for client in self.metadata_clients:
             if not client.closed:
                 clients_to_close.append(client.close())
 
         if clients_to_close:
-            for close_coro in clients_to_close:
-                with suppress(asyncio.TimeoutError, Exception):
-                    await asyncio.wait_for(close_coro, timeout=2.0)
+            # Use gather with return_exceptions to ensure all clients are attempted
+            # to be closed even if some fail.
+            await asyncio.gather(
+                *(asyncio.wait_for(coro, timeout=2.0) for coro in clients_to_close),
+                return_exceptions=True,
+            )
 
         # Stop server task
         if self._server_task and not self._server_task.done():
@@ -613,6 +619,14 @@ class AriaCastReceiverProvider(PluginProvider):
     async def _start_playback(self, player_id: str) -> None:
         """Start playback on the selected player."""
         try:
+            # Validate player still exists before proceeding (race condition guard)
+            if not self.mass.players.get(player_id):
+                self.logger.warning(
+                    "Player %s no longer exists, aborting playback start", player_id
+                )
+                self._playback_started = False
+                return
+
             # Set in_use_by BEFORE selecting source, to avoid race conditions
             # where the player connects before select_source returns
             self._source_details.in_use_by = player_id
@@ -717,8 +731,7 @@ class AriaCastReceiverProvider(PluginProvider):
             metadata = data.get("data") if isinstance(data, dict) else None
             if metadata is None:
                 if isinstance(data, dict) and any(
-                    k in data
-                    for k in ["title", "artist", "album", "durationMs", "isPlaying", "positionMs"]
+                    k in data for k in ["title", "artist", "album", "durationMs", "positionMs"]
                 ):
                     metadata = data
                 else:
@@ -743,6 +756,18 @@ class AriaCastReceiverProvider(PluginProvider):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
+        # Limit to one stats client at a time to avoid unnecessary load
+        if self._stats_client is not None and not self._stats_client.closed:
+            try:
+                await ws.send_json({"error": "Another stats client is already connected"})
+            except Exception as err:
+                self.logger.debug("Failed to send stats WebSocket error response: %s", err)
+            finally:
+                with suppress(Exception):
+                    await ws.close()
+            return ws
+
+        self._stats_client = ws
         peer = request.remote
         self.logger.debug("Stats client connected: %s", peer)
 
@@ -790,6 +815,8 @@ class AriaCastReceiverProvider(PluginProvider):
             self.logger.error("Error in stats handler: %s", e)
         finally:
             self.logger.debug("Stats client disconnected: %s", peer)
+            if self._stats_client == ws:
+                self._stats_client = None
 
         return ws
 
@@ -1162,19 +1189,35 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
         except Exception as e:
             self.logger.debug("Error handling discovery request: %s", e)
 
-    @staticmethod
-    def _get_local_ip() -> str:
-        """Get local IP address."""
-        # Note: In a home LAN environment, connecting to a public IP is a reliable
-        # way to determine the correct local interface to use.
+    def _get_local_ip(self) -> str:
+        """Get local IP address.
+
+        Attempts to determine the local IP by connecting to a public DNS server.
+        Falls back to iterating through local interfaces if that fails.
+        """
+        # Primary method: connect to a public DNS to determine the outbound interface
         s: socket.socket | None = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1.0)
             s.connect(("8.8.8.8", 80))
             return str(s.getsockname()[0])
-        except Exception:
-            return "127.0.0.1"
+        except Exception as e:
+            self.logger.debug("Could not determine IP via DNS connect: %s", e)
         finally:
             if s is not None:
                 with suppress(Exception):
                     s.close()
+
+        # Fallback: iterate through local interfaces to find a non-loopback address
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = str(info[4][0])
+                if ip and not ip.startswith("127."):
+                    return ip
+        except Exception as e:
+            self.logger.warning("Failed to determine local IP address via interfaces: %s", e)
+
+        # Last resort fallback - this won't work for LAN discovery but at least logs a warning
+        self.logger.warning("Could not determine LAN IP address; discovery may not work correctly")
+        return "127.0.0.1"
