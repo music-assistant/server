@@ -623,8 +623,11 @@ class AriaCastReceiverProvider(PluginProvider):
             self._source_details.in_use_by = player_id
         except Exception as e:
             self.logger.error("Failed to start playback on %s: %s", player_id, e)
-            self._source_details.in_use_by = None
-            self._active_player_id = None
+            # Only clear ownership if it is still assigned to this player_id
+            if self._source_details.in_use_by == player_id:
+                self._source_details.in_use_by = None
+            if self._active_player_id == player_id:
+                self._active_player_id = None
             self._playback_started = False
             # Clear any queued audio frames to avoid unbounded memory growth
             self.frame_queue.clear()
