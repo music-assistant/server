@@ -1083,7 +1083,11 @@ class AriaCastReceiverProvider(PluginProvider):
                     # No data available, wait for new frames or stop
                     with suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(self.frame_available.wait(), timeout=1.0)
-                    self.frame_available.clear()
+                        # Only clear the event if the queue is still empty.
+                        # This avoids a race where new frames arrive while processing,
+                        # leaving the event set, but then it gets cleared unconditionally.
+                        if not self.frame_queue:
+                            self.frame_available.clear()
         finally:
             self.logger.debug("Audio stream ended for player %s", player_id)
             self._playback_started = False
