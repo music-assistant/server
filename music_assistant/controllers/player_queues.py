@@ -714,9 +714,10 @@ class PlayerQueuesController(CoreController):
 
             for modifier in self._queue_modifiers.values():
                 # Check if modifier wants a custom insert index
-                if idx := modifier.calculate_insert_index(
+                idx = modifier.calculate_insert_index(
                     queue_id, queue_items, playback_user, queue.current_index, queue_length
-                ):
+                )
+                if idx is not None:
                     custom_insert_index = idx
                 # Check if modifier wants to prevent shuffling
                 if not modifier.should_shuffle_items(queue_id, queue_items, playback_user):
