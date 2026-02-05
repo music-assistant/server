@@ -258,11 +258,11 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number for pagination.
         :return: List of Track objects.
         """
-        # Yandex Music API returns all playlist tracks in one call (no server-side pagination)
+        # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
+        # Return empty list for page > 0 so the controller pagination loop terminates.
         if page > 0:
             return []
 
-        self.logger.debug("get_playlist_tracks called: %s", prov_playlist_id)
         # Parse the playlist ID (format: owner_id:kind)
         if PLAYLIST_ID_SPLITTER in prov_playlist_id:
             owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
@@ -270,37 +270,31 @@ class YandexMusicProvider(MusicProvider):
             owner_id = str(self.client.user_id)
             kind = prov_playlist_id
 
-        self.logger.debug("Fetching playlist %s/%s from API...", owner_id, kind)
         playlist = await self.client.get_playlist(owner_id, kind)
         if not playlist:
-            self.logger.debug("Playlist %s/%s not found", owner_id, kind)
             return []
 
         # API sometimes returns playlist without tracks; fetch them explicitly if needed
         tracks_list = playlist.tracks or []
         track_count = getattr(playlist, "track_count", None) or 0
-        self.logger.debug(
-            "Playlist %s/%s: track_count=%s, tracks_in_response=%s",
-            owner_id, kind, track_count, len(tracks_list),
-        )
         if not tracks_list and track_count > 0:
-            self.logger.debug("No tracks in response, calling fetch_tracks_async...")
+            self.logger.debug(
+                "Playlist %s/%s: track_count=%s but no tracks in response, "
+                "calling fetch_tracks_async",
+                owner_id,
+                kind,
+                track_count,
+            )
             try:
                 tracks_list = await playlist.fetch_tracks_async()
-                self.logger.debug("fetch_tracks_async returned %s tracks", len(tracks_list or []))
-            except Exception as err:  # noqa: BLE001
-                self.logger.warning("fetch_tracks_async failed: %s", err)
-            if not tracks_list and track_count > 0:
-                self.logger.warning(
-                    "Playlist %s/%s: expected %s tracks but got none",
-                    owner_id, kind, track_count,
-                )
+            except Exception as err:
+                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
+            if not tracks_list:
                 raise ResourceTemporarilyUnavailable(
                     "Playlist tracks not available; try again later"
-                ) from None
+                )
 
         if not tracks_list:
-            self.logger.debug("Playlist %s/%s has no tracks", owner_id, kind)
             return []
 
         # Yandex returns TrackShort objects, we need to fetch full track info
@@ -312,22 +306,16 @@ class YandexMusicProvider(MusicProvider):
         if not track_ids:
             return []
 
-        self.logger.debug("Fetching full details for %s tracks...", len(track_ids))
         # Fetch full track details in batches to avoid timeouts
         batch_size = 50
         full_tracks = []
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i : i + batch_size]
-            self.logger.debug("Fetching batch %s-%s...", i, i + len(batch))
             batch_result = await self.client.get_tracks(batch)
-            self.logger.debug("Batch returned %s tracks", len(batch_result or []))
             full_tracks.extend(batch_result or [])
 
         if track_ids and not full_tracks:
-            self.logger.warning("Got 0 full tracks for %s IDs", len(track_ids))
-            raise ResourceTemporarilyUnavailable(
-                "Failed to load track details; try again later"
-            ) from None
+            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
 
         tracks = []
         for track in full_tracks:
@@ -335,7 +323,6 @@ class YandexMusicProvider(MusicProvider):
                 tracks.append(parse_track(self, track))
             except InvalidDataError as err:
                 self.logger.debug("Error parsing playlist track: %s", err)
-        self.logger.debug("Returning %s parsed tracks", len(tracks))
         return tracks
 
     @use_cache(3600 * 24 * 7)
