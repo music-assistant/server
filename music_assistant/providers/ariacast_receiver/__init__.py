@@ -744,17 +744,22 @@ class AriaCastReceiverProvider(PluginProvider):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
-        if self._control_client is not None:
-            try:
-                await ws.send_json({"error": "Another control client is already connected"})
-            except Exception as err:
-                self.logger.debug("Failed to send control WebSocket error response: %s", err)
-            finally:
-                with suppress(Exception):
-                    await ws.close()
-            return ws
+        # Lazily initialize a lock to protect control client connection logic.
+        if not hasattr(self, "_control_lock"):
+            self._control_lock = asyncio.Lock()
 
-        self._control_client = ws
+        async with self._control_lock:
+            if self._control_client is not None:
+                try:
+                    await ws.send_json({"error": "Another control client is already connected"})
+                except Exception as err:
+                    self.logger.debug("Failed to send control WebSocket error response: %s", err)
+                finally:
+                    with suppress(Exception):
+                        await ws.close()
+                return ws
+
+            self._control_client = ws
         peer = request.remote
         self.logger.debug("Control client connected: %s", peer)
 
