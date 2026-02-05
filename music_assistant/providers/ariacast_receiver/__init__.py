@@ -188,6 +188,7 @@ class AriaCastReceiverProvider(PluginProvider):
         self._stats_client: web.WebSocketResponse | None = None
         self._control_lock = asyncio.Lock()
         self._playback_started: bool = False
+        self._playback_ready = asyncio.Event()  # Signals when player is ready to consume audio
         self._bad_frame_count: int = 0
 
         # Audio buffer
@@ -406,6 +407,7 @@ class AriaCastReceiverProvider(PluginProvider):
         prev_player_id = self._active_player_id
         self._active_player_id = None
         self._source_details.in_use_by = None
+        self._playback_ready.clear()  # Reset ready state
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
@@ -508,6 +510,7 @@ class AriaCastReceiverProvider(PluginProvider):
 
         self._audio_client = ws
         self._playback_started = False
+        self._playback_ready.clear()  # Reset ready state for new connection
         self.frame_queue.clear()
         peer = request.remote
         self.logger.debug("Audio client connected: %s", peer)
@@ -606,8 +609,17 @@ class AriaCastReceiverProvider(PluginProvider):
                     if target_player_id:
                         self._playback_started = True  # Prevent multiple calls
                         self._active_player_id = target_player_id
+                        self._playback_ready.clear()  # Ensure event is clear before starting
                         # Use a task to not block the receiver loop
                         self.mass.create_task(self._start_playback(target_player_id))
+                        # Wait briefly for player to be ready (non-blocking with timeout)
+                        # This reduces frame loss during player setup without blocking indefinitely
+                        try:
+                            await asyncio.wait_for(self._playback_ready.wait(), timeout=2.0)
+                        except TimeoutError:
+                            self.logger.warning(
+                                "Player did not become ready within timeout, continuing anyway"
+                            )
                     else:
                         self.logger.warning("No player available for AriaCast playback")
                         self._playback_started = False
@@ -1108,6 +1120,10 @@ class AriaCastReceiverProvider(PluginProvider):
         """
         self.logger.debug("Audio stream requested by player %s", player_id)
 
+        # Signal that the player is ready to consume audio.
+        # This unblocks _handle_audio_messages which may be waiting for the player.
+        self._playback_ready.set()
+
         # Stream audio frames from the queue until playback stops
         try:
             # Check stopping condition: stop called OR (in_use_by matches AND player matches active)
@@ -1137,6 +1153,7 @@ class AriaCastReceiverProvider(PluginProvider):
         finally:
             self.logger.debug("Audio stream ended for player %s", player_id)
             self._playback_started = False
+            self._playback_ready.clear()  # Reset ready state for next session
             self.frame_queue.clear()
 
 
