@@ -186,12 +186,22 @@ class YandexMusicClient:
 
         :param track_ids: List of track IDs.
         :return: List of track objects.
+        :raises ResourceTemporarilyUnavailable: On network errors after retry.
         """
         client = self._ensure_connected()
         try:
             result = await client.tracks(track_ids)
             return result or []
-        except (BadRequestError, NetworkError) as err:
+        except NetworkError as err:
+            # Retry once on network errors (timeout, disconnect, etc.)
+            LOGGER.warning("Network error fetching tracks, retrying once: %s", err)
+            try:
+                result = await client.tracks(track_ids)
+                return result or []
+            except NetworkError as retry_err:
+                LOGGER.error("Error fetching tracks (retry failed): %s", retry_err)
+                raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from retry_err
+        except BadRequestError as err:
             LOGGER.error("Error fetching tracks: %s", err)
             return []
 
@@ -292,6 +302,7 @@ class YandexMusicClient:
         :param user_id: User ID (owner of the playlist).
         :param playlist_id: Playlist ID (kind).
         :return: Playlist object or None if not found.
+        :raises ResourceTemporarilyUnavailable: On network errors.
         """
         client = self._ensure_connected()
         try:
@@ -299,7 +310,10 @@ class YandexMusicClient:
             if isinstance(result, list):
                 return result[0] if result else None
             return result
-        except (BadRequestError, NetworkError) as err:
+        except NetworkError as err:
+            LOGGER.warning("Network error fetching playlist %s/%s: %s", user_id, playlist_id, err)
+            raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
+        except BadRequestError as err:
             LOGGER.error("Error fetching playlist %s/%s: %s", user_id, playlist_id, err)
             return None
 
