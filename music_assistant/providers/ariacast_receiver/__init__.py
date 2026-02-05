@@ -411,17 +411,33 @@ class AriaCastReceiverProvider(PluginProvider):
         # ensuring that the next time the plugin starts, it has a valid default.
         if self._default_player_id == player_id:
             return
-        old_player_id = self._default_player_id
-        try:
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_MASS_PLAYER_ID, player_id
-            )
-            self._default_player_id = player_id
-            self.logger.debug("Persisted last player ID: %s", player_id)
-        except Exception as err:
-            self.logger.debug("Failed to persist player ID: %s", err)
-            # Revert in-memory state on failure
-            self._default_player_id = old_player_id
+        max_attempts = 3
+        delay = 0.1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_MASS_PLAYER_ID, player_id
+                )
+                # Only update in-memory state once persistence succeeds
+                self._default_player_id = player_id
+                self.logger.debug("Persisted last player ID: %s", player_id)
+                break
+            except Exception as err:
+                if attempt == max_attempts:
+                    self.logger.error(
+                        "Failed to persist player ID after %s attempts: %s",
+                        max_attempts,
+                        err,
+                    )
+                else:
+                    self.logger.debug(
+                        "Failed to persist player ID (attempt %s/%s): %s",
+                        attempt,
+                        max_attempts,
+                        err,
+                    )
+                    time.sleep(delay)
+                    delay *= 2
 
     async def _run_discovery(self) -> None:
         """Run UDP discovery server."""
