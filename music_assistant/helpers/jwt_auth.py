@@ -75,12 +75,11 @@ class JWTHelper:
         :return: Decoded token payload.
         :raises jwt.InvalidTokenError: If token is invalid or expired.
         """
-        options = {"verify_exp": verify_exp}
         payload: dict[str, Any] = jwt.decode(
             token,
             self.secret_key,
             algorithms=[self.algorithm],
-            options=options,
+            options={"verify_exp": verify_exp},
         )
         return payload
 
