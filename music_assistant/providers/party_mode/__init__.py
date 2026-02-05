@@ -545,6 +545,7 @@ class PartyModePlugin(PluginProvider):
         user: User | None,
         current_index: int | None,
         queue_length: int,
+        existing_items: list[QueueItem] | None = None,
     ) -> int | None:
         """Calculate custom insert index for guest priority queue.
 
@@ -557,13 +558,16 @@ class PartyModePlugin(PluginProvider):
         :param user: The user performing the action.
         :param current_index: Current playing index.
         :param queue_length: Total queue length.
+        :param existing_items: The current items already in the queue.
         :returns: Insert index for guest items, or None for default behavior.
         """
         if not user or user.role != UserRole.GUEST:
             return None
 
         # Calculate the guest section end index
-        return self._find_guest_section_end(queue_id, current_index, queue_length)
+        return self._find_guest_section_end(
+            queue_id, current_index, queue_length, existing_items or []
+        )
 
     def should_shuffle_items(
         self,
@@ -602,7 +606,11 @@ class PartyModePlugin(PluginProvider):
         }
 
     def _find_guest_section_end(
-        self, queue_id: str, current_index: int | None, queue_length: int
+        self,
+        queue_id: str,
+        current_index: int | None,
+        queue_length: int,
+        existing_items: list[QueueItem],
     ) -> int:
         """Find the index where the guest priority section ends.
 
@@ -612,28 +620,27 @@ class PartyModePlugin(PluginProvider):
         :param queue_id: The ID of the queue to search.
         :param current_index: Current playing index in the queue.
         :param queue_length: Total number of items in the queue.
+        :param existing_items: The current items in the queue.
         :returns: The index where new guest items should be inserted.
         """
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             return queue_length
 
-        queue_items = self.mass.player_queues._queue_items.get(queue_id, [])
-
         # Start searching from after the currently playing/buffered item
         start_index = (queue.index_in_buffer or current_index or 0) + 1
 
         # If start_index is beyond the queue, return the queue length
-        if start_index >= len(queue_items):
-            return len(queue_items)
+        if start_index >= len(existing_items):
+            return len(existing_items)
 
         # Find the first non-guest item after current position
-        for i, item in enumerate(queue_items[start_index:], start=start_index):
+        for i, item in enumerate(existing_items[start_index:], start=start_index):
             if item.extra_attributes.get("added_by_user_role") != UserRole.GUEST.value:
                 return i
 
         # All remaining items are guest items (or queue is empty after current)
-        return len(queue_items)
+        return len(existing_items)
 
     async def _revoke_guest_tokens(self) -> None:
         """Revoke all guest access tokens and codes for party mode.

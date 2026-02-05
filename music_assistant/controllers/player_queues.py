@@ -160,6 +160,7 @@ class QueueModifier(Protocol):
         user: User | None,
         current_index: int | None,
         queue_length: int,
+        existing_items: list[QueueItem] | None = None,
     ) -> int | None:
         """Calculate custom insert index for ADD operations.
 
@@ -171,6 +172,7 @@ class QueueModifier(Protocol):
         :param user: The user performing the action, if known.
         :param current_index: Current playing index in the queue.
         :param queue_length: Total number of items in the queue.
+        :param existing_items: The current items already in the queue.
         :returns: Custom insert index, or None for default behavior.
         """
         ...
@@ -712,11 +714,18 @@ class PlayerQueuesController(CoreController):
             allow_shuffle = True
             queue_length = len(self._queue_items[queue_id])
 
+            existing_items = self._queue_items[queue_id]
+
             for modifier in self._queue_modifiers.values():
                 # Check if modifier wants a custom insert index
                 if custom_insert_index is None:
                     idx = modifier.calculate_insert_index(
-                        queue_id, queue_items, playback_user, queue.current_index, queue_length
+                        queue_id,
+                        queue_items,
+                        playback_user,
+                        queue.current_index,
+                        queue_length,
+                        existing_items=existing_items,
                     )
                     if idx is not None:
                         custom_insert_index = idx
