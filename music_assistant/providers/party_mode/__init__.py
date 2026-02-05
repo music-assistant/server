@@ -651,8 +651,8 @@ class PartyModePlugin(PluginProvider):
         """
         auth = self.mass.webserver.auth
 
-        # Revoke all pending join codes first
-        codes_revoked = await auth.revoke_join_codes()
+        # Revoke pending join codes for party mode only
+        codes_revoked = await auth.revoke_join_codes(provider_name="party_mode")
         if codes_revoked > 0:
             self.logger.info("Revoked %d pending join codes", codes_revoked)
 

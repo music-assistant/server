@@ -1658,21 +1658,28 @@ class AuthenticationManager:
         self.logger.debug("Join code exchanged for token (user=%s)", user.username)
         return token
 
-    async def revoke_join_codes(self, user_id: str | None = None) -> int:
-        """Revoke all join codes, optionally for a specific user.
+    async def revoke_join_codes(
+        self,
+        user_id: str | None = None,
+        provider_name: str | None = None,
+    ) -> int:
+        """Revoke join codes, optionally filtered by user and/or provider.
 
-        :param user_id: Optional user ID to revoke codes for (default: all codes).
+        :param user_id: Optional user ID to revoke codes for.
+        :param provider_name: Optional provider name to revoke codes for.
         :return: Number of codes revoked.
         """
+        match: dict[str, str] = {}
         if user_id:
-            # Count codes first
-            rows = await self.database.get_rows("join_codes", {"user_id": user_id})
-            count = len(list(rows))
-            await self.database.delete("join_codes", {"user_id": user_id})
+            match["user_id"] = user_id
+        if provider_name:
+            match["provider_name"] = provider_name
+
+        rows = await self.database.get_rows("join_codes", match or None)
+        count = len(list(rows))
+        if match:
+            await self.database.delete("join_codes", match)
         else:
-            # Revoke all join codes
-            rows = await self.database.get_rows("join_codes")
-            count = len(list(rows))
             await self.database.execute("DELETE FROM join_codes")
 
         await self.database.commit()
