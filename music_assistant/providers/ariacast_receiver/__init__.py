@@ -947,13 +947,23 @@ class AriaCastReceiverProvider(PluginProvider):
 
                     # Check content length if available (limit to 5MB)
                     content_length = response.headers.get("Content-Length")
-                    if content_length and int(content_length) > 5 * 1024 * 1024:
-                        self.logger.debug(
-                            "Skipping artwork download from %s: size too large (%s bytes)",
-                            artwork_url,
-                            content_length,
-                        )
-                        return
+                    if content_length:
+                        try:
+                            content_length_int = int(content_length)
+                        except ValueError:
+                            self.logger.debug(
+                                "Invalid Content-Length header for %s: %s",
+                                artwork_url,
+                                content_length,
+                            )
+                        else:
+                            if content_length_int > 5 * 1024 * 1024:
+                                self.logger.debug(
+                                    "Skipping artwork download from %s: size too large (%s bytes)",
+                                    artwork_url,
+                                    content_length,
+                                )
+                                return
 
                     img_data = await response.read()
                     if not img_data:
