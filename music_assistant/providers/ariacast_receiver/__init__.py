@@ -536,13 +536,15 @@ class AriaCastReceiverProvider(PluginProvider):
         self, ws: web.WebSocketResponse, audio: AudioConfig, prebuffer: int
     ) -> None:
         """Handle incoming audio messages from the WebSocket."""
+        # Precompute a zero-filled frame for efficient silence detection
+        silent_frame = bytes(audio.frame_size)
         async for msg in ws:
             if msg.type == web.WSMsgType.BINARY:
                 # Receive audio frame
                 data = msg.data
                 if len(data) == audio.frame_size:
                     # Drop silent/muted frames to avoid buffer buildup during silence
-                    if data == bytes(len(data)):
+                    if data == silent_frame:
                         continue
 
                     self.frame_queue.append(data)
