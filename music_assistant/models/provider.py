@@ -88,9 +88,7 @@ class Provider:
                 self.instance_id,
             )
             task_id = f"provider_reload_{self.instance_id}"
-            self.mass.call_later(
-                1, self.mass.load_provider_config, config, self.instance_id, task_id=task_id
-            )
+            self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
