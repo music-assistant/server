@@ -161,13 +161,13 @@ class AriaCastReceiverProvider(PluginProvider):
 
         # Server configuration - use BASIC_CONFIG as base
         ariacast_name = (
-            cast("str", self.config.get_value(CONF_ARIACAST_NAME)) or BASIC_CONFIG.SERVER_NAME
+            cast("str", self.config.get_value(CONF_ARIACAST_NAME)) or BASIC_CONFIG.server_name
         )
         streaming_port = (
-            cast("int", self.config.get_value(CONF_STREAMING_PORT)) or BASIC_CONFIG.STREAMING_PORT
+            cast("int", self.config.get_value(CONF_STREAMING_PORT)) or BASIC_CONFIG.streaming_port
         )
         discovery_port = (
-            cast("int", self.config.get_value(CONF_DISCOVERY_PORT)) or BASIC_CONFIG.DISCOVERY_PORT
+            cast("int", self.config.get_value(CONF_DISCOVERY_PORT)) or BASIC_CONFIG.discovery_port
         )
 
         self.server_config = ServerConfig(
@@ -185,7 +185,9 @@ class AriaCastReceiverProvider(PluginProvider):
         self._discovery_task: asyncio.Task[None] | None = None
         self._audio_client: web.WebSocketResponse | None = None
         self._control_client: web.WebSocketResponse | None = None
+        self._control_lock = asyncio.Lock()
         self._playback_started: bool = False
+        self._bad_frame_count: int = 0
 
         # Audio buffer
         self.max_frames = 50  # 1 second buffer
@@ -252,8 +254,6 @@ class AriaCastReceiverProvider(PluginProvider):
             self.logger.debug("Server name changed from '%s' to '%s'", old_name, new_name)
             # Update the config
             self.server_config.server_name = new_name
-            # Re-sync uppercase alias for backward compatibility
-            self.server_config.SERVER_NAME = new_name
             # Update source details (ensure metadata exists)
             if self._source_details.metadata is None:
                 self._source_details.metadata = StreamMetadata(title=f"AriaCast | {new_name}")
@@ -282,10 +282,19 @@ class AriaCastReceiverProvider(PluginProvider):
         """Handle close/cleanup of the provider."""
         self._stop_called = True
 
-        # Close audio client if connected
+        # Close all connected clients
+        clients_to_close = []
         if self._audio_client and not self._audio_client.closed:
+            clients_to_close.append(self._audio_client.close())
+        if self._control_client and not self._control_client.closed:
+            clients_to_close.append(self._control_client.close())
+        for client in self.metadata_clients:
+            if not client.closed:
+                clients_to_close.append(client.close())
+
+        if clients_to_close:
             with suppress(asyncio.TimeoutError, Exception):
-                await asyncio.wait_for(self._audio_client.close(), timeout=2.0)
+                await asyncio.wait_for(asyncio.gather(*clients_to_close), timeout=2.0)
 
         # Stop server task
         if self._server_task and not self._server_task.done():
@@ -419,11 +428,11 @@ class AriaCastReceiverProvider(PluginProvider):
         try:
             transport, _protocol = await asyncio.get_event_loop().create_datagram_endpoint(
                 lambda: UDPDiscoveryProtocol(self, self.logger),
-                local_addr=("0.0.0.0", self.server_config.DISCOVERY_PORT),
+                local_addr=("0.0.0.0", self.server_config.discovery_port),
                 allow_broadcast=True,  # Enable broadcast reception
             )
             self.logger.debug(
-                "UDP Discovery listening on port %s", self.server_config.DISCOVERY_PORT
+                "UDP Discovery listening on port %s", self.server_config.discovery_port
             )
 
             # Keep the task running
@@ -447,10 +456,10 @@ class AriaCastReceiverProvider(PluginProvider):
 
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", self.server_config.STREAMING_PORT)
+        site = web.TCPSite(runner, "0.0.0.0", self.server_config.streaming_port)
         await site.start()
 
-        self.logger.info("AriaCast Server listening on port %s", self.server_config.STREAMING_PORT)
+        self.logger.info("AriaCast Server listening on port %s", self.server_config.streaming_port)
 
         # Keep the server running
         try:
@@ -542,27 +551,43 @@ class AriaCastReceiverProvider(PluginProvider):
             if msg.type == web.WSMsgType.BINARY:
                 # Receive audio frame
                 data = msg.data
-                if len(data) == audio.frame_size:
-                    # Drop silent/muted frames to avoid buffer buildup during silence
-                    if data == silent_frame:
-                        continue
+                if len(data) != audio.frame_size:
+                    # Log and drop frames with unexpected size to aid debugging
+                    self._bad_frame_count += 1
+                    if self._bad_frame_count <= 5:
+                        self.logger.warning(
+                            "Dropping audio frame with unexpected size %d (expected %d)",
+                            len(data),
+                            audio.frame_size,
+                        )
+                    else:
+                        self.logger.debug(
+                            "Dropping audio frame with unexpected size %d (expected %d)",
+                            len(data),
+                            audio.frame_size,
+                        )
+                    continue
 
-                    self.frame_queue.append(data)
-                    self.received_frames += 1
-                    self.frame_available.set()
+                # Drop silent/muted frames to avoid buffer buildup during silence
+                if data == silent_frame:
+                    continue
 
-                    # Start playback after prebuffering
-                    if not self._playback_started and len(self.frame_queue) >= prebuffer:
-                        # Note: check for target player first
-                        target_player_id = self._get_target_player_id()
-                        if target_player_id:
-                            self._playback_started = True  # Prevent multiple calls
-                            self._active_player_id = target_player_id
-                            # Use a task to not block the receiver loop
-                            self.mass.create_task(self._start_playback(target_player_id))
-                        else:
-                            self.logger.warning("No player available for AriaCast playback")
-                            self._playback_started = False
+                self.frame_queue.append(data)
+                self.received_frames += 1
+                self.frame_available.set()
+
+                # Start playback after prebuffering
+                if not self._playback_started and len(self.frame_queue) >= prebuffer:
+                    # Note: check for target player first
+                    target_player_id = self._get_target_player_id()
+                    if target_player_id:
+                        self._playback_started = True  # Prevent multiple calls
+                        self._active_player_id = target_player_id
+                        # Use a task to not block the receiver loop
+                        self.mass.create_task(self._start_playback(target_player_id))
+                    else:
+                        self.logger.warning("No player available for AriaCast playback")
+                        self._playback_started = False
 
             elif msg.type == web.WSMsgType.ERROR:
                 self.logger.error("WebSocket error: %s", ws.exception())
@@ -652,9 +677,17 @@ class AriaCastReceiverProvider(PluginProvider):
     async def handle_metadata_api(self, request: web.Request) -> web.Response:
         """HTTP API handler for metadata updates (POST)."""
         try:
+            # Explicitly check content length to prevent large payload attacks.
+            # 64KB is more than enough for simple metadata JSON.
+            if request.content_length and request.content_length > 64 * 1024:
+                return web.Response(status=413, text="Payload too large")
+
             text = await request.text()
             if not text:
                 return web.Response(status=400, text="Empty payload")
+
+            if len(text) > 64 * 1024:
+                return web.Response(status=413, text="Payload too large")
 
             try:
                 data = json.loads(text)
@@ -684,7 +717,7 @@ class AriaCastReceiverProvider(PluginProvider):
             return web.Response(status=200, text="OK")
         except Exception as e:
             self.logger.exception("Error handling metadata API: %s", e)
-            return web.Response(status=500, text=str(e))
+            return web.Response(status=500, text="Internal server error")
 
     async def handle_stats_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket handler for /stats endpoint."""
@@ -745,10 +778,6 @@ class AriaCastReceiverProvider(PluginProvider):
         """WebSocket handler for /control endpoint."""
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-
-        # Lazily initialize a lock to protect control client connection logic.
-        if not hasattr(self, "_control_lock"):
-            self._control_lock = asyncio.Lock()
 
         async with self._control_lock:
             if self._control_client is not None:
@@ -972,6 +1001,14 @@ class AriaCastReceiverProvider(PluginProvider):
                         self.logger.debug(
                             "Skipping artwork download from %s due to empty response body",
                             artwork_url,
+                        )
+                        return
+
+                    if len(img_data) > 5 * 1024 * 1024:
+                        self.logger.debug(
+                            "Skipping artwork download from %s: size %d exceeds 5MB limit",
+                            artwork_url,
+                            len(img_data),
                         )
                         return
 
