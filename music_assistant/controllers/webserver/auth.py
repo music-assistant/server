@@ -1638,19 +1638,15 @@ class AuthenticationManager:
             await self.database.commit()
             return None
 
-        # Check use limit
-        max_uses = code_row["max_uses"]
-        use_count = code_row["use_count"]
-        if max_uses > 0 and use_count >= max_uses:
-            return None
-
-        # Update use count
+        # Atomically check use limit and increment count to avoid TOCTOU race
         now = utc()
-        await self.database.update(
-            "join_codes",
-            {"code_id": code_row["code_id"]},
-            {"use_count": use_count + 1, "last_used_at": now.isoformat()},
+        cursor = await self.database.execute(
+            "UPDATE join_codes SET use_count = use_count + 1, last_used_at = :last_used_at "
+            "WHERE code_id = :code_id AND (max_uses = 0 OR use_count < max_uses)",
+            {"code_id": code_row["code_id"], "last_used_at": now.isoformat()},
         )
+        if cursor.rowcount == 0:
+            return None
         await self.database.commit()
 
         # Get user and create token
