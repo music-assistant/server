@@ -56,11 +56,11 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # Basic hardcoded configuration (like standalone server)
 BASIC_CONFIG = ServerConfig(
-    SERVER_NAME="Music Assistant",
-    VERSION="1.0",
-    PLATFORM="MusicAssistant",
-    DISCOVERY_PORT=12888,
-    STREAMING_PORT=12889,
+    server_name="Music Assistant",
+    version="1.0",
+    platform="MusicAssistant",
+    discovery_port=12888,
+    streaming_port=12889,
 )
 
 
@@ -73,16 +73,11 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # Keep parameters referenced so external callers can pass them by name
-    # and linters won't complain about unused args.
-    _ = instance_id
-    _ = action
-    _ = values
     return (
         CONF_ENTRY_WARN_PREVIEW,
         ConfigEntry(
@@ -176,11 +171,11 @@ class AriaCastReceiverProvider(PluginProvider):
         )
 
         self.server_config = ServerConfig(
-            SERVER_NAME=ariacast_name,
-            VERSION=BASIC_CONFIG.VERSION,
-            PLATFORM=BASIC_CONFIG.PLATFORM,
-            STREAMING_PORT=streaming_port,
-            DISCOVERY_PORT=discovery_port,
+            server_name=ariacast_name,
+            version=BASIC_CONFIG.version,
+            platform=BASIC_CONFIG.platform,
+            streaming_port=streaming_port,
+            discovery_port=discovery_port,
         )
 
         # State
@@ -248,13 +243,15 @@ class AriaCastReceiverProvider(PluginProvider):
         """
         # Update configuration values
         new_name = (
-            cast("str", self.config.get_value(CONF_ARIACAST_NAME)) or BASIC_CONFIG.SERVER_NAME
+            cast("str", self.config.get_value(CONF_ARIACAST_NAME)) or BASIC_CONFIG.server_name
         )
-        old_name = self.server_config.SERVER_NAME
+        old_name = self.server_config.server_name
 
         if new_name != old_name:
             self.logger.debug("Server name changed from '%s' to '%s'", old_name, new_name)
             # Update the config
+            self.server_config.server_name = new_name
+            # Re-sync uppercase alias for backward compatibility
             self.server_config.SERVER_NAME = new_name
             # Update source details (ensure metadata exists)
             if self._source_details.metadata is None:
@@ -314,7 +311,10 @@ class AriaCastReceiverProvider(PluginProvider):
         if self._active_player_id:
             if self.mass.players.get(self._active_player_id):
                 return self._active_player_id
+            # Active player no longer exists; clear related state
             self._active_player_id = None
+            if self._source_details is not None:
+                self._source_details.in_use_by = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
@@ -389,6 +389,7 @@ class AriaCastReceiverProvider(PluginProvider):
         """Persist the selected player ID to config as the new default."""
         if self._default_player_id == player_id:
             return
+        old_player_id = self._default_player_id
         try:
             self.mass.config.set_raw_provider_config_value(
                 self.instance_id, CONF_MASS_PLAYER_ID, player_id
@@ -396,12 +397,15 @@ class AriaCastReceiverProvider(PluginProvider):
             self._default_player_id = player_id
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
+            # Revert in-memory state on failure
+            self._default_player_id = old_player_id
 
     async def _run_discovery(self) -> None:
         """Run UDP discovery server."""
+        transport: asyncio.DatagramTransport | None = None
         try:
-            transport, protocol = await asyncio.get_event_loop().create_datagram_endpoint(
-                lambda: UDPDiscoveryProtocol(self.server_config, self.logger),
+            transport, _protocol = await asyncio.get_event_loop().create_datagram_endpoint(
+                lambda: UDPDiscoveryProtocol(self, self.logger),
                 local_addr=("0.0.0.0", self.server_config.DISCOVERY_PORT),
                 allow_broadcast=True,  # Enable broadcast reception
             )
@@ -416,7 +420,7 @@ class AriaCastReceiverProvider(PluginProvider):
         except Exception as e:
             self.logger.error("UDP Discovery error: %s", e)
         finally:
-            if "transport" in locals():
+            if transport:
                 transport.close()
 
     async def _run_server(self) -> None:
@@ -448,8 +452,13 @@ class AriaCastReceiverProvider(PluginProvider):
         await ws.prepare(request)
 
         if self._audio_client is not None:
-            await ws.send_json({"error": "Another client is already connected"})
-            await ws.close()
+            try:
+                await ws.send_json({"error": "Another client is already connected"})
+            except Exception as err:
+                self.logger.debug("Failed to send audio WebSocket error response: %s", err)
+            finally:
+                with suppress(Exception):
+                    await ws.close()
             return ws
 
         self._audio_client = ws
@@ -461,52 +470,31 @@ class AriaCastReceiverProvider(PluginProvider):
         # Send handshake
         try:
             # Use a local typed reference to avoid optional attribute type issues
-            audio = cast("AudioConfig", self.server_config.AUDIO)
+            audio = cast("AudioConfig", self.server_config.audio)
             # Combine READY status with legacy handshake parameters
             # This satisfies both new (waiting for READY) and old (waiting for params) clients
             handshake = {
                 "status": "READY",
                 "type": "handshake",
-                "sampleRate": audio.SAMPLE_RATE,
-                "channels": audio.CHANNELS,
-                "sampleWidth": audio.SAMPLE_WIDTH,
-                "frameSize": audio.FRAME_SIZE,
+                "sampleRate": audio.sample_rate,
+                "channels": audio.channels,
+                "sampleWidth": audio.sample_width,
+                "frameSize": audio.frame_size,
             }
             await ws.send_json(handshake)
         except Exception as e:
             self.logger.warning("Failed to send handshake: %s", e)
 
-        prebuffer = 15  # 15 frames minimal prebuffer (300ms)
+        # Minimal prebuffer before starting playback.
+        # Default is 15 frames (~300ms at the configured sample rate), which balances
+        # startup latency against resilience to network jitter on typical home networks.
+        # This can be overridden by defining PREBUFFER_FRAMES on the AudioConfig used
+        # by this plugin. Increase this value on unstable networks or low-powered
+        # devices to reduce underruns at the cost of added latency.
+        prebuffer = getattr(audio, "PREBUFFER_FRAMES", 15)
 
         try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.BINARY:
-                    # Receive audio frame
-                    data = msg.data
-                    if len(data) == audio.FRAME_SIZE:
-                        # Drop muted frames to avoid buffer buildup during silence
-                        if not any(data):
-                            continue
-
-                        self.frame_queue.append(data)
-                        self.received_frames += 1
-
-                        # Start playback after prebuffering
-                        if not self._playback_started and len(self.frame_queue) >= prebuffer:
-                            self._playback_started = True  # Prevent multiple calls
-                            target_player_id = self._get_target_player_id()
-                            if target_player_id:
-                                self._active_player_id = target_player_id
-                                # Use a task to not block the receiver loop
-                                self.mass.create_task(self._start_playback(target_player_id))
-                            else:
-                                self.logger.warning("No player available for AriaCast playback")
-                                self._playback_started = False
-
-                elif msg.type == web.WSMsgType.ERROR:
-                    self.logger.error("WebSocket error: %s", ws.exception())
-                    break
-
+            await self._handle_audio_messages(ws, audio, prebuffer)
         except Exception as e:
             self.logger.error("Error in audio handler: %s", e)
         finally:
@@ -520,9 +508,49 @@ class AriaCastReceiverProvider(PluginProvider):
 
             # Deselect source from player
             if current_player_id:
-                await self.mass.players.select_source(current_player_id, None)
+                try:
+                    await self.mass.players.select_source(current_player_id, None)
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to deselect AriaCast source from player %s: %s",
+                        current_player_id,
+                        e,
+                    )
 
         return ws
+
+    async def _handle_audio_messages(
+        self, ws: web.WebSocketResponse, audio: AudioConfig, prebuffer: int
+    ) -> None:
+        """Handle incoming audio messages from the WebSocket."""
+        async for msg in ws:
+            if msg.type == web.WSMsgType.BINARY:
+                # Receive audio frame
+                data = msg.data
+                if len(data) == audio.frame_size:
+                    # Drop silent/muted frames to avoid buffer buildup during silence
+                    if data == bytes(len(data)):
+                        continue
+
+                    self.frame_queue.append(data)
+                    self.received_frames += 1
+
+                    # Start playback after prebuffering
+                    if not self._playback_started and len(self.frame_queue) >= prebuffer:
+                        # Note: check for target player first
+                        target_player_id = self._get_target_player_id()
+                        if target_player_id:
+                            self._playback_started = True  # Prevent multiple calls
+                            self._active_player_id = target_player_id
+                            # Use a task to not block the receiver loop
+                            self.mass.create_task(self._start_playback(target_player_id))
+                        else:
+                            self.logger.warning("No player available for AriaCast playback")
+                            self._playback_started = False
+
+            elif msg.type == web.WSMsgType.ERROR:
+                self.logger.error("WebSocket error: %s", ws.exception())
+                break
 
     async def _start_playback(self, player_id: str) -> None:
         """Start playback on the selected player."""
@@ -540,6 +568,8 @@ class AriaCastReceiverProvider(PluginProvider):
             self._source_details.in_use_by = None
             self._active_player_id = None
             self._playback_started = False
+            # Clear any queued audio frames to avoid unbounded memory growth
+            self.frame_queue.clear()
 
     async def handle_metadata_ws(self, request: web.Request) -> web.WebSocketResponse:
         """WebSocket handler for /metadata endpoint."""
@@ -584,7 +614,9 @@ class AriaCastReceiverProvider(PluginProvider):
                             # Broadcast to all other metadata clients
                             await self._broadcast_metadata(metadata, exclude_ws=ws)
                     except json.JSONDecodeError:
-                        pass
+                        self.logger.debug(
+                            "Failed to decode JSON metadata from %s: %r", peer, msg.data
+                        )
                 elif msg.type == web.WSMsgType.ERROR:
                     break
         except Exception as e:
@@ -623,7 +655,10 @@ class AriaCastReceiverProvider(PluginProvider):
             if metadata:
                 self.metadata_handler.update(metadata)
                 self._update_source_metadata(metadata)
-                # Broadcast using the canonical message type 'metadata'
+                # Broadcast using the canonical message type 'metadata'.
+                # Note: the HTTP API intentionally broadcasts to all WebSocket clients,
+                # without excluding any potential originator, so every client sees the
+                # canonical metadata update regardless of how it was submitted.
                 await self._broadcast_metadata(metadata)
 
             return web.Response(status=200, text="OK")
@@ -644,7 +679,8 @@ class AriaCastReceiverProvider(PluginProvider):
                 # Send current stats
                 stats = {
                     "bufferedFrames": len(self.frame_queue),
-                    "droppedFrames": 0,
+                    # droppedFrames metric is not yet tracked (deque with maxlen drops silently)
+                    "droppedFrames": None,
                     "receivedFrames": self.received_frames,
                 }
                 try:
@@ -664,12 +700,24 @@ class AriaCastReceiverProvider(PluginProvider):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
+        if self._control_client is not None:
+            try:
+                await ws.send_json({"error": "Another control client is already connected"})
+            except Exception as err:
+                self.logger.debug("Failed to send control WebSocket error response: %s", err)
+            finally:
+                with suppress(Exception):
+                    await ws.close()
+            return ws
+
         self._control_client = ws
         peer = request.remote
         self.logger.debug("Control client connected: %s", peer)
 
         try:
             async for msg in ws:
+                # We don't expect any incoming text/binary messages from the client.
+                # The connection is mainly used for sending control commands TO the client.
                 if msg.type == web.WSMsgType.ERROR:
                     self.logger.error("Control WebSocket error: %s", ws.exception())
                     break
@@ -801,6 +849,7 @@ class AriaCastReceiverProvider(PluginProvider):
                     meta.duration = new_duration
                     has_changes = True
             except (ValueError, TypeError):
+                # Ignore invalid duration value
                 pass
 
         # Update position/elapsed time (store seconds as int)
@@ -813,6 +862,7 @@ class AriaCastReceiverProvider(PluginProvider):
                 meta.elapsed_time_last_updated = int(time.time())
                 has_changes = True
             except (ValueError, TypeError):
+                # Ignore invalid position value
                 pass
 
         # Trigger update on connected player
@@ -834,7 +884,34 @@ class AriaCastReceiverProvider(PluginProvider):
                 artwork_url, timeout=ClientTimeout(total=10)
             ) as response:
                 if response.status == 200:
-                    self._artwork_bytes = await response.read()
+                    content_type = response.headers.get("Content-Type", "")
+                    if not content_type.startswith("image/"):
+                        self.logger.debug(
+                            "Skipping artwork download from %s due to unexpected content type: %s",
+                            artwork_url,
+                            content_type or "unknown",
+                        )
+                        return
+
+                    # Check content length if available (limit to 5MB)
+                    content_length = response.headers.get("Content-Length")
+                    if content_length and int(content_length) > 5 * 1024 * 1024:
+                        self.logger.debug(
+                            "Skipping artwork download from %s: size too large (%s bytes)",
+                            artwork_url,
+                            content_length,
+                        )
+                        return
+
+                    img_data = await response.read()
+                    if not img_data:
+                        self.logger.debug(
+                            "Skipping artwork download from %s due to empty response body",
+                            artwork_url,
+                        )
+                        return
+
+                    self._artwork_bytes = img_data
                     self._artwork_timestamp = int(time.time() * 1000)
 
                     # Create proxy URL using Music Assistant's image system
@@ -894,12 +971,17 @@ class AriaCastReceiverProvider(PluginProvider):
                     break
 
                 if self.frame_queue:
-                    frame = self.frame_queue.popleft()
-                    self.played_frames += 1
-                    yield frame
+                    try:
+                        frame = self.frame_queue.popleft()
+                        self.played_frames += 1
+                        yield frame
+                    except IndexError:
+                        # Queue became empty between the check and the pop; treat as no data
+                        await asyncio.sleep(0.05)
+                        continue
                 else:
                     # No data available, wait a bit to avoid busy loop
-                    await asyncio.sleep(0.005)
+                    await asyncio.sleep(0.05)
         finally:
             self.logger.debug("Audio stream ended for player %s", player_id)
             self._playback_started = False
@@ -909,9 +991,9 @@ class AriaCastReceiverProvider(PluginProvider):
 class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     """UDP discovery protocol handler."""
 
-    def __init__(self, config: ServerConfig, logger: logging.Logger) -> None:
+    def __init__(self, provider: AriaCastReceiverProvider, logger: logging.Logger) -> None:
         """Initialize the protocol."""
-        self.config = config
+        self.provider = provider
         self.logger = logger
         self.transport: asyncio.DatagramTransport | None = None
 
@@ -935,16 +1017,19 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle discovery request."""
         try:
+            # Note: Basic discovery without authentication or rate limiting.
+            # Hostile network environments might require adding rate limiting per source IP.
             message = data.decode("utf-8").strip()
             if message == "DISCOVER_AUDIOCAST":
                 local_ip = self._get_local_ip()
-                audio = cast("AudioConfig", self.config.AUDIO)
+                config = self.provider.server_config
+                audio = cast("AudioConfig", config.audio)
                 response = {
-                    "server_name": self.config.SERVER_NAME,
+                    "server_name": config.server_name,
                     "ip": local_ip,
-                    "port": self.config.STREAMING_PORT,
-                    "samplerate": audio.SAMPLE_RATE,
-                    "channels": audio.CHANNELS,
+                    "port": config.streaming_port,
+                    "samplerate": audio.sample_rate,
+                    "channels": audio.channels,
                 }
                 if self.transport:
                     self.transport.sendto(json.dumps(response).encode(), addr)
@@ -955,11 +1040,14 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
     @staticmethod
     def _get_local_ip() -> str:
         """Get local IP address."""
+        s: socket.socket | None = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
-            ip = str(s.getsockname()[0])
-            s.close()
-            return ip
+            return str(s.getsockname()[0])
         except Exception:
             return "127.0.0.1"
+        finally:
+            if s is not None:
+                with suppress(Exception):
+                    s.close()
