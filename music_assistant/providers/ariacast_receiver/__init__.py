@@ -1066,7 +1066,7 @@ class UDPDiscoveryProtocol(asyncio.DatagramProtocol):
         try:
             # Note: Basic discovery without authentication or rate limiting.
             # Hostile network environments might require adding rate limiting per source IP.
-            message = data.decode("utf-8").strip()
+            message = data.decode("utf-8", errors="ignore").strip()
             if message == "DISCOVER_AUDIOCAST":
                 local_ip = self._get_local_ip()
                 config = self.provider.server_config
