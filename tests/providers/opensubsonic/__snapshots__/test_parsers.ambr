@@ -299,6 +299,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/91c3901ac465b9efc439e4be4270c2b6',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -314,6 +315,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-1',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -329,6 +331,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-2',
         'version': '',
+        'year': None,
       }),
     ]),
     'date_added': None,
@@ -423,6 +426,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/91c3901ac465b9efc439e4be4270c2b6',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -438,6 +442,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-1',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -453,6 +458,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-2',
         'version': '',
+        'year': None,
       }),
     ]),
     'date_added': None,
@@ -1644,6 +1650,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -2001,6 +2008,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -2358,6 +2366,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -2374,6 +2383,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -2389,6 +2399,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-1',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -2404,6 +2415,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-2',
         'version': '',
+        'year': None,
       }),
     ]),
     'date_added': None,
@@ -2565,6 +2577,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -2580,6 +2593,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-1',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -2595,6 +2609,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/ar-2',
         'version': '',
+        'year': None,
       }),
     ]),
     'date_added': None,
