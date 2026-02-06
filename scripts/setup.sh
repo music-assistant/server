@@ -4,9 +4,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Help llvmlite/numba find LLVM when building from source
-export LLVM_DIR="${LLVM_DIR:-/usr/local/opt/llvm@20/lib/cmake/llvm}"
-
 # Check if uv is installed
 if ! command -v uv &>/dev/null; then
     echo "❌ uv is not installed. Please install it first:"
