@@ -34,7 +34,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
@@ -77,7 +77,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).

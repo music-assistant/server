@@ -164,7 +164,6 @@ class TidalAPIClient:
         self,
         endpoint: str,
         item_key: str = "items",
-        nested_key: str | None = None,
         limit: int = 50,
         cursor_based: bool = False,
         **kwargs: Any,
@@ -192,10 +191,7 @@ class TidalAPIClient:
                 break
 
             for item in items:
-                if nested_key and nested_key in item and item[nested_key]:
-                    yield item[nested_key]
-                else:
-                    yield item
+                yield item
 
             if cursor_based:
                 cursor = response.get("cursor")

@@ -11,7 +11,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 
 from .constants import RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
-from .helpers import enhance_title_with_upcoming  # noqa: F401
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
@@ -48,17 +47,12 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
     return radio
 
 
-def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]) -> StreamMetadata:  # noqa: ARG001
-    """Build StreamMetadata with current track info and upcoming tracks.
+def build_stream_metadata(current_song: dict[str, Any]) -> StreamMetadata:
+    """Build StreamMetadata with current track info.
 
-    Args:
-        current_song: Current track data from Radio Paradise API
-        metadata: Full metadata response with next song and block data
-
-    Returns:
-        StreamMetadata with track info and upcoming track previews
+    :param current_song: Current track data from Radio Paradise now_playing API.
     """
-    # Extract track info
+    # Extract track info from now_playing API response
     artist = current_song.get("artist", "Unknown Artist")
     title = current_song.get("title", "Unknown Title")
     album = current_song.get("album")
@@ -71,28 +65,12 @@ def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]
     elif year:
         album_display = str(year)
 
-    # Get cover image URL
-    cover_path = current_song.get("cover")
-    image_url = None
-    if cover_path:
-        image_url = f"https://img.radioparadise.com/{cover_path}"
-
-    # Get track duration
-    duration = current_song.get("duration")
-    if duration:
-        duration = int(duration) // 1000  # Convert from ms to seconds
-
-    # Add upcoming tracks info to title for scrolling display
-    # next_song = metadata.get("next")
-    # block_data = metadata.get("block_data")
-    # TODO: Find a way to forward the next_song data to the frontend in the stream metadata
-    # enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
-    # enhanced_title = title  # TODO remove after frontend update
+    # Get cover image URL - now_playing API returns full URL
+    image_url = current_song.get("cover")
 
     return StreamMetadata(
         title=title,
         artist=artist,
         album=album_display,
         image_url=image_url,
-        duration=duration,
     )

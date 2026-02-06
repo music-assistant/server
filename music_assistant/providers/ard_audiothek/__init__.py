@@ -263,10 +263,10 @@ class ARDAudiothek(MusicProvider):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
             )
-            self.update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
-            self.update_config_value(CONF_USERID, self.user_id, encrypted=True)
-            self.update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self.update_config_value(
+            self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
+            self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
+            self._update_config_value(CONF_DISPLAY_NAME, _display_name)
+            self._update_config_value(
                 CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
             )
             self._client_initialized = False

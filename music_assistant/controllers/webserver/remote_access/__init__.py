@@ -131,6 +131,8 @@ class RemoteAccessManager:
             # Pass callback to get fresh ICE servers for each client connection
             # This ensures TURN credentials are always valid
             ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            # Pass callback to set sendspin player on websocket client
+            set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
         )
 
         await self.gateway.start()
