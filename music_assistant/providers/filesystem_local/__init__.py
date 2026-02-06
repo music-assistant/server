@@ -451,6 +451,9 @@ class LocalFileSystemProvider(MusicProvider):
                         audiobook = await self._parse_audiobook(item, tags)
                     except IsChapterFile:
                         return
+                    # add/update audiobook to db
+                    # note that filesystem items are always overwriting existing info
+                    # when they are detected as changedCollapse comment
                     await self.mass.music.audiobooks.add_item_to_library(
                         audiobook, overwrite_existing=prev_checksum is not None
                     )
