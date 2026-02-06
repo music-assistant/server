@@ -520,7 +520,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     seek_position=queue_item.streamdetails.seek_position,
                 ),
-                buffer_size=2 if queue_item.media_type == MediaType.RADIO else 10,
+                buffer_size=10,
                 min_buffer_before_yield=1,
             )
         # stream the audio
