@@ -88,5 +88,5 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
-    ("Juke Audio", "*"),
+    # ("Juke Audio", "*"),  # Disabled - RAOP works better with Shairport Sync
 )
