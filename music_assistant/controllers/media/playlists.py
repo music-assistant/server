@@ -20,7 +20,6 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
     PLAYLIST_MEDIA_TYPES,
-    PLAYLIST_NON_TRACK_ITEM_CLASSES,
     PlaylistItem,
 )
 from music_assistant.helpers.compare import create_safe_string
@@ -247,61 +246,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # Non-track items: convert library URIs to provider URIs to survive DB rebuilds
-                if media_type != MediaType.TRACK:
-                    # For library URIs, we need to resolve to the actual provider URI
-                    # (which contains the real stream URL for radio, episode URL for podcasts, etc.)
-                    if provider_instance_id_or_domain == "library":
-                        # Get the full item from library to access provider mappings
-                        full_item = await self.mass.music.get_item_by_uri(uri)
-                        # Type check for supported media items with provider mappings
-                        # Exclude Track since it has separate logic below (quality sorting, etc.)
-                        if isinstance(full_item, PLAYLIST_NON_TRACK_ITEM_CLASSES):
-                            # Use the first available provider mapping
-                            for prov_mapping in full_item.provider_mappings:  # type: ignore[union-attr]
-                                if not prov_mapping.available:
-                                    continue
-                                item_prov = self.mass.get_provider(prov_mapping.provider_instance)
-                                if not item_prov:
-                                    continue
-                                # Create provider URI from the mapping
-                                provider_uri = create_uri(
-                                    media_type,
-                                    item_prov.instance_id,
-                                    prov_mapping.item_id,
-                                )
-                                if provider_uri not in ids_to_add:
-                                    ids_to_add.append(provider_uri)
-                                self.logger.info(
-                                    "Adding %s to playlist %s",
-                                    provider_uri,
-                                    playlist.name,
-                                )
-                                break
-                            else:
-                                self.logger.warning(
-                                    "Can't add %s to playlist %s - no available provider mapping",
-                                    uri,
-                                    playlist.name,
-                                )
-                        else:
-                            self.logger.warning(
-                                "Can't add %s to playlist %s - unsupported media type",
-                                uri,
-                                playlist.name,
-                            )
-                    else:
-                        # Already a provider URI, add directly
-                        if uri not in ids_to_add:
-                            ids_to_add.append(uri)
-                        self.logger.info(
-                            "Adding %s to playlist %s",
-                            uri,
-                            playlist.name,
-                        )
-                    continue
-                # For tracks: only add non-library URIs directly (they're portable)
-                # Library track URIs fall through to matching logic below to find provider URIs
+                # For non-library URIs, add directly (they're already portable provider URIs)
                 if provider_instance_id_or_domain != "library":
                     if uri not in ids_to_add:
                         ids_to_add.append(uri)
@@ -311,6 +256,68 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         playlist.name,
                     )
                     continue
+                # For library URIs, convert to provider URIs to survive DB rebuilds
+                # Get the full item from library to access all provider mappings
+                full_item = await self.mass.music.get_item_by_uri(uri)
+                if not hasattr(full_item, "provider_mappings"):
+                    self.logger.warning(
+                        "Can't add %s to playlist %s - unsupported media type",
+                        uri,
+                        playlist.name,
+                    )
+                    continue
+
+                # For tracks, try to match to playlist provider and sort by quality
+                # For non-track items, just use first available (they typically have one mapping)
+                provider_mappings = full_item.provider_mappings
+                if media_type == MediaType.TRACK:
+                    # Try to match the track to additional providers
+                    track_prov_domains = {x.provider_domain for x in provider_mappings}
+                    if (
+                        playlist_prov.is_streaming_provider
+                        and playlist_prov.domain not in track_prov_domains
+                    ):
+                        provider_mappings.update(
+                            await self.mass.music.tracks.match_provider(
+                                full_item, playlist_prov, strict=False
+                            )
+                        )
+                    # Sort by quality (highest first) for tracks
+                    provider_mappings = sorted(
+                        provider_mappings, key=lambda x: x.quality, reverse=True
+                    )
+
+                # Add first available provider mapping
+                for prov_mapping in provider_mappings:
+                    if not prov_mapping.available:
+                        continue
+                    item_prov = self.mass.get_provider(prov_mapping.provider_instance)
+                    if not item_prov:
+                        continue
+                    # Create provider URI from the mapping
+                    provider_uri = create_uri(
+                        media_type,
+                        item_prov.instance_id,
+                        prov_mapping.item_id,
+                    )
+                    if (
+                        provider_uri not in ids_to_add
+                        and provider_uri not in cur_playlist_track_uris
+                    ):
+                        ids_to_add.append(provider_uri)
+                        self.logger.info(
+                            "Adding %s to playlist %s",
+                            provider_uri,
+                            playlist.name,
+                        )
+                    break
+                else:
+                    self.logger.warning(
+                        "Can't add %s to playlist %s - no available provider mapping",
+                        uri,
+                        playlist.name,
+                    )
+                continue
 
             # if target playlist is an exact provider match, we can add it
             if provider_instance_id_or_domain != "library":
@@ -327,7 +334,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         ids_to_add.append(item_id)
                     continue
 
-            # ensure we have a full (library) track (including all provider mappings)
+            # For provider-specific playlists: match tracks with quality sorting
+            # (Non-track items can only be added to builtin playlists, validated earlier)
             full_track = await self.mass.music.tracks.get(
                 item_id,
                 provider_instance_id_or_domain,
@@ -370,16 +378,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         playlist.name,
                     )
                     break  # already existing in the playlist
-                if playlist_prov.domain == "builtin":
-                    # the builtin provider can handle uri's from all providers (with uri as id)
-                    if track_version_uri not in ids_to_add:
-                        ids_to_add.append(track_version_uri)
-                    self.logger.info(
-                        "Adding %s to playlist %s",
-                        full_track.name,
-                        playlist.name,
-                    )
-                    break
+                # Add track to provider-specific playlist
                 if item_prov.instance_id == playlist_prov.instance_id:
                     if track_version.item_id not in ids_to_add:
                         ids_to_add.append(track_version.item_id)
