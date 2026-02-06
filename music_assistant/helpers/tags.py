@@ -950,7 +950,7 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
     """Parse artist-related tags from Vorbis comments into result dict.
 
     Handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec, as well as
-    explicit ARTISTS/ALBUMARTISTS tags which take precedence.
+    explicit ARTISTS tag which take precedence.
 
     :param tags: VCommentDict from mutagen.
     :param result: Dictionary to store parsed tags.
