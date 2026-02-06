@@ -398,14 +398,13 @@ class MusicCastPlayer(Player):
                             name=option_name,
                             value=str(option_key),
                             type=PlayerOptionType.STRING,
-                            read_only=False,
                         )
                     )
                 self._attr_options.append(
                     PlayerOption(
                         key=capability.id,
                         name=capability.name,
-                        type=PlayerOptionType.OPTIONS,
+                        type=PlayerOptionType.STRING,
                         value=str(capability.current),
                         read_only=False,
                         options=UniqueList(options),
