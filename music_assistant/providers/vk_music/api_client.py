@@ -189,6 +189,35 @@ class VKMusicClient:
             LOGGER.error("Error fetching playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
 
+    async def get_playlist_info(self, owner_id: int, playlist_id: int) -> VKPlaylist | None:
+        """Find a specific playlist by owner_id and playlist_id.
+
+        Since VK API lacks a direct get-playlist-by-id endpoint,
+        we search through the owner's playlists to find a match.
+
+        :param owner_id: Playlist owner ID.
+        :param playlist_id: Playlist ID.
+        :return: Playlist object or None if not found.
+        """
+        service = self._ensure_connected()
+        try:
+            offset = 0
+            while True:
+                playlists = await service.get_playlists_by_userid_async(
+                    owner_id, DEFAULT_LIMIT, offset
+                )
+                if not playlists:
+                    break
+                for playlist in playlists:
+                    if playlist.playlist_id == playlist_id:
+                        return playlist
+                offset += DEFAULT_LIMIT
+                if len(playlists) < DEFAULT_LIMIT:
+                    break
+        except VkApiException as err:
+            LOGGER.debug("Error looking up playlist %s_%s: %s", owner_id, playlist_id, err)
+        return None
+
     # Search
 
     async def search_tracks(

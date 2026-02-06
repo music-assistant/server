@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType
@@ -31,13 +30,13 @@ if TYPE_CHECKING:
 def _create_synthetic_artist_id(artist_name: str) -> str:
     """Create a synthetic artist ID from the artist name.
 
-    VK Music doesn't have artist IDs, only names, so we generate
-    a deterministic ID from the name hash.
+    VK Music doesn't have artist IDs, only names, so we use
+    the artist name directly as the ID.
 
     :param artist_name: Artist name string.
-    :return: Synthetic artist ID.
+    :return: Artist name used as synthetic artist ID.
     """
-    return hashlib.md5(artist_name.encode()).hexdigest()[:16]
+    return artist_name
 
 
 def _create_synthetic_artist(provider: VKMusicProvider, artist_name: str) -> ItemMapping:
@@ -60,7 +59,7 @@ def parse_artist(provider: VKMusicProvider, artist_name: str) -> Artist:
     """Create an Artist object from a name string.
 
     VK Music doesn't have artist entities, only name strings in tracks.
-    We create synthetic artists with hash-based IDs.
+    We create synthetic artists using the name as the ID.
 
     :param provider: The VK Music provider instance.
     :param artist_name: Artist name string.
@@ -119,6 +118,24 @@ def parse_track(provider: VKMusicProvider, song: VKSong) -> Track:
     # Parse artist (VK only has single artist string)
     if song.artist:
         track.artists = UniqueList([_create_synthetic_artist(provider, song.artist)])
+
+    # Try to add cover image if available on the song object.
+    # vkpymusic Song (v3.5.1) does not expose album cover data,
+    # but we check for common attributes for forward compatibility.
+    for img_attr in ("photo", "album_cover", "cover_url", "thumb"):
+        img_url = getattr(song, img_attr, None)
+        if img_url and isinstance(img_url, str) and img_url.startswith("http"):
+            track.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img_url,
+                        provider=provider.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+            break
 
     return track
 

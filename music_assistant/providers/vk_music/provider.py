@@ -128,6 +128,20 @@ class VKMusicProvider(MusicProvider):
             except ResourceTemporarilyUnavailable as err:
                 self.logger.warning("Playlist search unavailable: %s", err)
 
+            # Also search albums (VK treats albums as playlists)
+            try:
+                existing_ids = {p.item_id for p in result.playlists}
+                albums = await self.client.search_albums(search_query, count=limit)
+                for album in albums[:limit]:
+                    try:
+                        parsed = parse_playlist(self, album)
+                        if parsed.item_id not in existing_ids:
+                            result.playlists = [*result.playlists, parsed]
+                    except InvalidDataError as err:
+                        self.logger.debug("Error parsing album as playlist: %s", err)
+            except ResourceTemporarilyUnavailable as err:
+                self.logger.warning("Album search unavailable: %s", err)
+
         return result
 
     # Get single items
@@ -185,10 +199,14 @@ class VKMusicProvider(MusicProvider):
         playlist_id = int(parts[1])
         access_key = parts[2] if len(parts) > 2 else None
 
-        # VK API doesn't have direct get_playlist - verify it exists by fetching tracks
+        # Try to fetch full playlist metadata from the owner's playlists
+        vk_playlist = await self.client.get_playlist_info(owner_id, playlist_id)
+        if vk_playlist:
+            return parse_playlist(self, vk_playlist)
+
+        # Fallback: verify existence by fetching tracks, return minimal object
         await self.client.get_playlist_tracks(owner_id, playlist_id, access_key, count=1, offset=0)
 
-        # Create minimal playlist object
         return Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
