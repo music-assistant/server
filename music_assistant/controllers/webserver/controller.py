@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import inspect
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -98,8 +99,8 @@ class WebserverController(CoreController):
 
     @property
     def base_url(self) -> str:
-        """Return the base_url for the streamserver."""
-        return self._server.base_url
+        """Return the base_url for the webserver."""
+        return str(self.config.get_value(CONF_BASE_URL)).removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -131,6 +132,7 @@ class WebserverController(CoreController):
                 label="Allow User Self-Registration",
                 description="Allow users to create accounts via Home Assistant OAuth.",
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -140,6 +142,7 @@ class WebserverController(CoreController):
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
                 "the webserver behind a reverse proxy.",
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -147,6 +150,7 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key="webserver_warn",
@@ -169,6 +173,7 @@ class WebserverController(CoreController):
                 label="Enable SSL/TLS",
                 description="Enable HTTPS by providing an SSL certificate and private key. \n"
                 "This encrypts all communication with the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
@@ -181,6 +186,7 @@ class WebserverController(CoreController):
                 "Both RSA and ECDSA certificates are supported.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_PRIVATE_KEY,
@@ -193,6 +199,7 @@ class WebserverController(CoreController):
                 "This is securely encrypted and stored.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ACTION_VERIFY_SSL,
@@ -226,7 +233,9 @@ class WebserverController(CoreController):
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
         )
 
@@ -567,7 +576,7 @@ class WebserverController(CoreController):
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             return web.json_response(result, dumps=json_dumps)
         except Exception as e:

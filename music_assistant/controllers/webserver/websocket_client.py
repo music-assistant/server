@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
@@ -238,7 +239,7 @@ class WebsocketClientHandler:
                         )
                         items = []
                 result = items
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:

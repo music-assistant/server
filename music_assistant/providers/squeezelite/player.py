@@ -18,6 +18,7 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -224,6 +225,11 @@ class SqueezelitePlayer(Player):
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
+
+        # Clear next media item during announcements to prevent playing the
+        # next enqueued track after it finishes.
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            self.client._next_media = None
 
         if not self.group_members:
             # Simple, single-player playback

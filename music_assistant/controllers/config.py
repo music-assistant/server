@@ -44,7 +44,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
     CONF_CORE,
@@ -102,8 +101,8 @@ from music_assistant.constants import (
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
+    SYNCGROUP_PREFIX,
 )
-from music_assistant.controllers.players.sync_groups import SyncGroupPlayer
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
@@ -140,7 +139,6 @@ class ConfigController:
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
-        self._value_cache: dict[str, ConfigValueType] = {}
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -342,23 +340,20 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
-        cache_key = f"prov_conf_value_{instance_id}.{key}"
-        if (cached_value := self._value_cache.get(cache_key)) is not None:
-            return cached_value
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_provider_config_value(instance_id, key)) is not None:
+            return raw_value
         conf = await self.get_provider_config(instance_id)
         if key not in conf.values:
             if default is not None:
                 return default
             msg = f"Config key {key} not found for provider {instance_id}"
             raise KeyError(msg)
-        val = (
+        return (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
-        # store value in cache because this method can potentially be called very often
-        self._value_cache[cache_key] = val
-        return val
 
     @api_command("config/providers/get_entries")
     async def get_provider_config_entries(  # noqa: PLR0915
@@ -391,9 +386,6 @@ class ConfigController:
             msg = f"Unknown provider domain: {provider_domain}"
             LOGGER.exception(msg)
             return []
-
-        if values is None:
-            values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
         # add dynamic optional config entries that depend on features
         if instance_id and (provider := self.mass.get_provider(instance_id)):
@@ -466,10 +458,14 @@ class ConfigController:
                 self.mass, instance_id=instance_id, action=action, values=values
             ),
         ]
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @api_command("config/providers/save", required_role="admin")
@@ -529,25 +525,37 @@ class ConfigController:
             return
         self.remove(conf_key)
 
+    def set_provider_default_name(self, instance_id: str, default_name: str) -> None:
+        """Set (or update) the default name for a provider."""
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
+        self.set(conf_key, default_name)
+
     @api_command("config/players")
     async def get_player_configs(
-        self, provider: str | None = None, include_values: bool = False
+        self,
+        provider: str | None = None,
+        include_values: bool = False,
+        include_unavailable: bool = True,
+        include_disabled: bool = True,
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
         for raw_conf in list(self.get(CONF_PLAYERS, {}).values()):
-            # filter out unavailable providers
-            if raw_conf["provider"] not in get_global_cache_value("available_providers", []):
-                continue
             # optional provider filter
             if provider is not None and raw_conf["provider"] != provider:
                 continue
             # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
+            # note that we only check for missing players in the player controller,
+            # and we do allow players that are temporary unavailable (player.available = false)
+            # because this can also mean that the player needs additional configuration
+            # such as airplay devices that need pairing.
             player = self.mass.players.get(raw_conf["player_id"], False)
-            if (not player or not player.available) and raw_conf.get("enabled", True):
+            if not include_unavailable and player is None and raw_conf.get("enabled", True):
                 continue
-
+            # filter out disabled players
+            if not include_disabled and not raw_conf.get("enabled", True):
+                continue
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:
@@ -603,22 +611,24 @@ class ConfigController:
         if not (player := self.mass.players.get(player_id, False)):
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
-
-        if values is None:
-            values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
-
-        player_entries = await player.get_config_entries(action=action, values=values)
+        # get player(protocol) specific entries
+        player_entries = await self._get_player_config_entries(player, action=action, values=values)
+        # get default entries which are common for all players
         default_entries = self._get_default_player_config_entries(player)
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
-            *player_entries,
             # ignore default entries that were overridden by the player specific ones
             *[x for x in default_entries if x.key not in player_entries_keys],
+            *player_entries,
         ]
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @overload
@@ -687,6 +697,10 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
+            if not unpack_splitted_values:
+                return raw_value
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
             if default is not None:
@@ -803,6 +817,54 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
+    def set_player_type(self, player_id: str, player_type: PlayerType) -> None:
+        """Set (or update) the type for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/player_type"
+        self.set(conf_key, player_type)
+
+    def create_default_player_config(
+        self,
+        player_id: str,
+        provider: str,
+        player_type: PlayerType,
+        name: str | None = None,
+        enabled: bool = True,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> None:
+        """
+        Create default/empty PlayerConfig.
+
+        This is meant as helper to create default configs when a player is registered.
+        Called by the player manager on player register.
+        """
+        # return early if the config already exists
+        if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # update default name if needed
+            if name and name != existing_conf.get("default_name"):
+                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            # update player_type if needed
+            if existing_conf.get("player_type") != player_type:
+                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            return
+        # config does not yet exist, create a default one
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        default_conf = PlayerConfig(
+            values={},
+            provider=provider,
+            player_id=player_id,
+            enabled=enabled,
+            name=name,
+            default_name=name,
+            player_type=player_type,
+        )
+        default_conf_raw = default_conf.to_raw()
+        if values is not None:
+            default_conf_raw["values"] = values
+        self.set(
+            conf_key,
+            default_conf_raw,
+        )
+
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
@@ -880,44 +942,6 @@ class ConfigController:
         self.mass.signal_event(
             EventType.DSP_PRESETS_UPDATED,
             data=all_presets,
-        )
-
-    def create_default_player_config(
-        self,
-        player_id: str,
-        provider: str,
-        name: str | None = None,
-        enabled: bool = True,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> None:
-        """
-        Create default/empty PlayerConfig.
-
-        This is meant as helper to create default configs when a player is registered.
-        Called by the player manager on player register.
-        """
-        # return early if the config already exists
-        if self.get(f"{CONF_PLAYERS}/{player_id}"):
-            # update default name if needed
-            if name:
-                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            return
-        # config does not yet exist, create a default one
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        default_conf = PlayerConfig(
-            values={},
-            provider=provider,
-            player_id=player_id,
-            enabled=enabled,
-            name=name,
-            default_name=name,
-        )
-        default_conf_raw = default_conf.to_raw()
-        if values is not None:
-            default_conf_raw["values"] = values
-        self.set(
-            conf_key,
-            default_conf_raw,
         )
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
@@ -1034,6 +1058,9 @@ class ConfigController:
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
+        # prefer stored value so we don't have to retrieve all config entries every time
+        if (raw_value := self.get_raw_core_config_value(domain, key)) is not None:
+            return raw_value
         conf = await self.get_core_config(domain)
         if key not in conf.values:
             if default is not None:
@@ -1060,17 +1087,19 @@ class ConfigController:
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        if values is None:
-            values = self.get(f"{CONF_CORE}/{domain}/values", {})
         controller: CoreController = getattr(self.mass, domain)
         all_entries = list(
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
-        # set current value from stored values
-        for entry in all_entries:
-            if entry.value is None:
-                entry.value = values.get(entry.key, None)
+        if action and values is not None:
+            # set current value from passed values for config entries
+            # only do this if we're passed values (e.g. during an action)
+            # deepcopy here to avoid modifying original entries
+            all_entries = [deepcopy(entry) for entry in all_entries]
+            for entry in all_entries:
+                if entry.value is None:
+                    entry.value = values.get(entry.key, entry.default_value)
         return all_entries
 
     @api_command("config/core/save", required_role="admin")
@@ -1220,7 +1249,6 @@ class ConfigController:
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
-        self._value_cache = {}
         if self._timer_handle is not None:
             self._timer_handle.cancel()
             self._timer_handle = None
@@ -1375,6 +1403,17 @@ class ConfigController:
             LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
             changed = True
 
+        # Remove corrupt player configurations that are missing the required 'provider' key
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if "provider" in player_config:
+                continue
+            self._data[CONF_PLAYERS].pop(player_id, None)
+            # Also remove any DSP config for this player
+            if CONF_PLAYER_DSP in self._data:
+                self._data[CONF_PLAYER_DSP].pop(player_id, None)
+            LOGGER.warning("Removed corrupt player configuration (missing provider): %s", player_id)
+            changed = True
+
         # migrate player configs: always use instance_id for provider
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if "provider" not in player_config:
@@ -1457,6 +1496,11 @@ class ConfigController:
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
             await prov_instance.update_config(config, changed_keys)
+            # push instance name to config (to persist it if it was autogenerated)
+            if prov_instance.default_name != config.default_name:
+                self.set_provider_default_name(
+                    prov_instance.instance_id, prov_instance.default_name
+                )
         elif config.enabled:
             # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)
@@ -1549,30 +1593,74 @@ class ConfigController:
             self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
         return config
 
-    def _get_default_player_config_entries(self, player: Player) -> list[ConfigEntry]:
-        """Return the default player config entries."""
-        entries: list[ConfigEntry] = []
-        # default protocol-player config entries
-        if player.type == PlayerType.PROTOCOL:
-            # bare minimum: only playback related entries
-            entries += [
-                CONF_ENTRY_OUTPUT_CHANNELS,
+    async def _get_player_config_entries(
+        self,
+        player: Player,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """
+        Return Player(protocol) specific config entries, without any default entries.
+
+        In general this returns entries that are specific to this provider/player type only,
+        and includes audio related entries that are not part of the default set.
+
+        player: the player instance
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
+        default_entries: list[ConfigEntry]
+        is_dedicated_group_player = player.type in (
+            PlayerType.GROUP,
+            PlayerType.STEREO_PAIR,
+        ) and not player.player_id.startswith(("universal_", SYNCGROUP_PREFIX))
+        is_http_based_player_protocol = player.provider.domain not in NON_HTTP_PROVIDERS
+        if player.type == PlayerType.GROUP and not is_dedicated_group_player:
+            # no audio related entries for universal group players or sync group players
+            default_entries = []
+        else:
+            # default output/audio related entries
+            default_entries = [
+                # output channel is always configurable per player(protocol)
+                CONF_ENTRY_OUTPUT_CHANNELS
             ]
-            if not player.requires_flow_mode:
-                entries.append(CONF_ENTRY_FLOW_MODE)
-            if player.provider.domain not in NON_HTTP_PROVIDERS:
-                entries += [
+            if is_http_based_player_protocol:
+                # for http based players we can add the http streaming related entries
+                default_entries += [
                     CONF_ENTRY_SAMPLE_RATES,
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
-            return entries
+                # add flow mode entry for http-based players that do not already enforce it
+                if not player.requires_flow_mode:
+                    default_entries.append(CONF_ENTRY_FLOW_MODE)
+        # request player specific entries
+        player_entries = await player.get_config_entries(action=action, values=values)
+        players_keys = {entry.key for entry in player_entries}
+        # filter out any default entries that are already provided by the player
+        default_entries = [entry for entry in default_entries if entry.key not in players_keys]
+        return [*player_entries, *default_entries]
+
+    def _get_default_player_config_entries(self, player: Player) -> list[ConfigEntry]:
+        """
+        Return the default (generic) player config entries.
+
+        This does not return audio/protocol specific entries, those are handled elsewhere.
+        """
+        entries: list[ConfigEntry] = []
+        # default protocol-player config entries
+        if player.type == PlayerType.PROTOCOL:
+            # protocol players have no generic config entries
+            # only audio/protocol specific ones
+            return []
 
         # some base entries for all player types
+        # note that these may NOT be playback/audio related
         entries += [
             CONF_ENTRY_SMART_FADES_MODE,
             CONF_ENTRY_CROSSFADE_DURATION,
+            # we allow volume normalization/output limiter here as it is a per-queue(player) setting
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_OUTPUT_LIMITER,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
@@ -1600,7 +1688,8 @@ class ConfigController:
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
                 default_value=player.hidden_by_default,
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
             # add entry to expose player to HA
             ConfigEntry(
@@ -1609,53 +1698,26 @@ class ConfigController:
                 label="Expose this player to Home Assistant",
                 description="Expose this player to the Home Assistant integration. \n"
                 "If disabled, this player will not be imported into Home Assistant.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 default_value=player.expose_to_ha_by_default,
             ),
         ]
-
         # group-player config entries
         if player.type == PlayerType.GROUP:
-            is_dedicated_group_player = (
-                not isinstance(player, SyncGroupPlayer)
-                and player.provider.domain != "universal_group"
-            )
             entries += [
                 CONF_ENTRY_PLAYER_ICON_GROUP,
             ]
-            if is_dedicated_group_player and not player.requires_flow_mode:
-                entries.append(CONF_ENTRY_FLOW_MODE)
-            if is_dedicated_group_player and player.provider.domain not in NON_HTTP_PROVIDERS:
-                entries += [
-                    CONF_ENTRY_SAMPLE_RATES,
-                    CONF_ENTRY_OUTPUT_CODEC,
-                    CONF_ENTRY_HTTP_PROFILE,
-                    CONF_ENTRY_ENABLE_ICY_METADATA,
-                ]
             return entries
-
         # normal player (or stereo pair) config entries
         entries += [
             CONF_ENTRY_PLAYER_ICON,
-            CONF_ENTRY_OUTPUT_CHANNELS,
             # add default entries for announce feature
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
         ]
-        # add flow mode config entry for players that not already explicitly enable it
-        if not player.requires_flow_mode:
-            entries.append(CONF_ENTRY_FLOW_MODE)
-        # add HTTP streaming config entries for non-http players
-        if player.provider.domain not in NON_HTTP_PROVIDERS:
-            entries += [
-                CONF_ENTRY_SAMPLE_RATES,
-                CONF_ENTRY_OUTPUT_CODEC,
-                CONF_ENTRY_HTTP_PROFILE,
-                CONF_ENTRY_ENABLE_ICY_METADATA,
-            ]
-
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
