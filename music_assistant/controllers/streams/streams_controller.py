@@ -514,10 +514,14 @@ class StreamsController(CoreController):
             )
         else:
             # no crossfade, just a regular single item stream
-            audio_input = self.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=queue_item.streamdetails.seek_position,
+            audio_input = buffered(
+                self.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=queue_item.streamdetails.seek_position,
+                ),
+                buffer_size=2 if queue_item.media_type == MediaType.RADIO else 10,
+                min_buffer_before_yield=1,
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
