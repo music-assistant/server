@@ -453,7 +453,7 @@ class LocalFileSystemProvider(MusicProvider):
                         return
                     # add/update audiobook to db
                     # note that filesystem items are always overwriting existing info
-                    # when they are detected as changedCollapse comment
+                    # when they are detected as changed
                     await self.mass.music.audiobooks.add_item_to_library(
                         audiobook, overwrite_existing=prev_checksum is not None
                     )
