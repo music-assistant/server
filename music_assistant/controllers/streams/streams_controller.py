@@ -521,7 +521,7 @@ class StreamsController(CoreController):
                     seek_position=queue_item.streamdetails.seek_position,
                 ),
                 buffer_size=10,
-                min_buffer_before_yield=1,
+                min_buffer_before_yield=2,
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
