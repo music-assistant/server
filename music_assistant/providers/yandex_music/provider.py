@@ -196,10 +196,10 @@ class YandexMusicProvider(MusicProvider):
         :return: Track object.
         :raises MediaNotFoundError: If track not found.
         """
-        track = await self.client.get_track(prov_track_id)
-        if not track:
+        yandex_track = await self.client.get_track(prov_track_id)
+        if not yandex_track:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
-        return parse_track(self, track)
+        return parse_track(self, yandex_track)
 
     @use_cache(3600 * 24 * 30)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

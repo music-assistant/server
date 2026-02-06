@@ -67,6 +67,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -90,7 +91,12 @@ from .sync_groups import SyncGroupController, SyncGroupPlayer
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+        PlayerConfig,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -220,6 +226,14 @@ class PlayerController(CoreController):
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
         self._sync_groups: SyncGroupController = SyncGroupController(self)
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return Config Entries for the Player Controller."""
+        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -371,10 +385,36 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
+        Performs case-insensitive matching against the player's state name
+        (the final name visible in clients and API).
+        If multiple players match, logs a warning and returns the first match.
+
         :param name: Name of the player.
         :return: Player object or None.
         """
-        return next((x for x in self._players.values() if x.name == name), None)
+        name_normalized = name.strip().lower()
+        matches: list[Player] = []
+
+        for player in self._players.values():
+            if player.state.name.strip().lower() == name_normalized:
+                matches.append(player)
+
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            player_ids = [p.player_id for p in matches]
+            self.logger.warning(
+                "players/get_by_name: Multiple players found with name '%s': %s - "
+                "returning first match (%s). "
+                "Consider using the players/get API with player_id instead "
+                "for unambiguous lookups.",
+                name,
+                player_ids,
+                matches[0].player_id,
+            )
+
+        return matches[0]
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
