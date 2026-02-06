@@ -115,10 +115,7 @@ class SnapCastProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
-        # Stop all socket servers
-        for socket_server in list(self._socket_servers.values()):
-            await socket_server.stop()
-        self._socket_servers.clear()
+
         for snap_client in self._snapserver.clients:
             player_id = self._get_ma_id(snap_client.identifier)
             if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
@@ -231,21 +228,34 @@ class SnapCastProvider(PlayerProvider):
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
-            # keep reading from stdout until exit
-            async for raw_data in snapserver_proc.iter_any():
-                text = raw_data.decode().strip()
-                for line in text.split("\n"):
-                    logger.debug(line)
-                    if "(Snapserver) Version 0." in line:
-                        # delay init a small bit to prevent race conditions
-                        # where we try to connect too soon
-                        self.mass.loop.call_later(2, self._snapserver_started.set)
-                        # Copy control script after snapserver starts
-                        # (run in executor to avoid blocking)
-                        loop = asyncio.get_running_loop()
-                        self._controlscript_available = await loop.run_in_executor(
-                            None, self._setup_controlscript
-                        )
+            try:
+                # keep reading from stdout until exit
+                async for raw_data in snapserver_proc.iter_any():
+                    text = raw_data.decode().strip()
+                    for line in text.split("\n"):
+                        logger.debug(line)
+                        if "(Snapserver) Version 0." in line:
+                            # delay init a small bit to prevent race conditions
+                            # where we try to connect too soon
+                            self.mass.loop.call_later(2, self._snapserver_started.set)
+                            # Copy control script after snapserver starts
+                            # (run in executor to avoid blocking)
+                            loop = asyncio.get_running_loop()
+                            self._controlscript_available = await loop.run_in_executor(
+                                None, self._setup_controlscript
+                            )
+            except asyncio.CancelledError:
+                # Currently, MA doesn't guarantee a defined shutdown order;
+                # Make sure to close socket servers before
+                # shutting down the snapcast server.
+                #
+                # The snapserver doesn't always cleanup the control script processes
+                # properly. We do it explicitly when closing a socket server.
+                # Should be fixed on the server side, though.
+                for socket_server in list(self._socket_servers.values()):
+                    await socket_server.stop()
+                self._socket_servers.clear()
+                raise
 
     def _get_ma_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse

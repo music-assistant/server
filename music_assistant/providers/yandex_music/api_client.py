@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -16,11 +16,18 @@ from yandex_music import ClientAsync, Search, TrackShort
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
+from yandex_music.utils.sign_request import get_sign_request
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
 from .constants import DEFAULT_LIMIT
+
+# get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
+# Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
+GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
+# get-file-info: same host as library (all requests go through one API)
+GET_FILE_INFO_BASE_URL = "https://api.music.yandex.net"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -205,11 +212,23 @@ class YandexMusicClient:
     async def get_album_with_tracks(self, album_id: str) -> YandexAlbum | None:
         """Get an album with its tracks.
 
+        Uses the same semantics as the web client: albums/{id}/with-tracks
+        with resumeStream, richTracks, withListeningFinished when the library
+        passes them through.
+
         :param album_id: Album ID.
         :return: Album object with tracks or None if not found.
         """
         client = self._ensure_connected()
         try:
+            return await client.albums_with_tracks(
+                album_id,
+                resumeStream=True,
+                richTracks=True,
+                withListeningFinished=True,
+            )
+        except TypeError:
+            # Older yandex-music may not accept these kwargs
             return await client.albums_with_tracks(album_id)
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching album with tracks %s: %s", album_id, err)
@@ -302,6 +321,70 @@ class YandexMusicClient:
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
+
+    async def get_track_file_info_lossless(self, track_id: str) -> dict[str, Any] | None:
+        """Request lossless stream via get-file-info (quality=lossless).
+
+        The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
+        with quality=lossless and codecs=flac,... returns FLAC when available.
+
+        :param track_id: Track ID.
+        :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
+        """
+        client = self._ensure_connected()
+        sign = get_sign_request(track_id)
+        base_params = {
+            "ts": sign.timestamp,
+            "trackId": track_id,
+            "quality": "lossless",
+            "codecs": GET_FILE_INFO_CODECS,
+            "sign": sign.value,
+        }
+
+        def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+            if not raw or not isinstance(raw, dict):
+                return None
+            download_info = raw.get("download_info")
+            if not download_info or not download_info.get("url"):
+                return None
+            return cast("dict[str, Any]", download_info)
+
+        url = f"{GET_FILE_INFO_BASE_URL}/get-file-info"
+        params_encraw = {**base_params, "transports": "encraw"}
+        try:
+            result = await client._request.get(url, params=params_encraw)
+            return _parse_file_info_result(result)
+        except (BadRequestError, NetworkError) as err:
+            LOGGER.debug(
+                "get-file-info lossless for track %s: %s %s",
+                track_id,
+                type(err).__name__,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+            return None
+        except UnauthorizedError as err:
+            LOGGER.debug(
+                "get-file-info lossless for track %s (transports=encraw): %s %s",
+                track_id,
+                type(err).__name__,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+            LOGGER.debug(
+                "If you have Yandex Music Plus and this track has lossless, "
+                "try a token from the web client (music.yandex.ru)."
+            )
+            params_raw = {**base_params, "transports": "raw"}
+            try:
+                result = await client._request.get(url, params=params_raw)
+                return _parse_file_info_result(result)
+            except (BadRequestError, NetworkError, UnauthorizedError) as retry_err:
+                LOGGER.debug(
+                    "get-file-info lossless for track %s (transports=raw): %s %s",
+                    track_id,
+                    type(retry_err).__name__,
+                    getattr(retry_err, "message", str(retry_err)) or repr(retry_err),
+                )
+                return None
 
     # Library modifications
 

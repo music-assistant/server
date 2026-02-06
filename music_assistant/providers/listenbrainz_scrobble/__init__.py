@@ -129,6 +129,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
                 listen = self._make_listen(report)
                 listen.listened_at = int(time.time())
                 self._client.submit_single_listen(listen)
+                self.logger.debug(f"track {report.uri} scrobbled")
                 self._last_scrobbled = report.uri
             except Exception as err:
                 self.logger.exception(err)
