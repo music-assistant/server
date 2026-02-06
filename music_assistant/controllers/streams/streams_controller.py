@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -80,6 +79,7 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     divide_chunks,
+    format_ip_for_url,
     get_ip_addresses,
     get_total_system_memory,
     select_free_port,
@@ -185,7 +185,7 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
@@ -302,7 +302,6 @@ class StreamsController(CoreController):
                 category="generic",
                 advanced=True,
             ),
-            CONF_ENTRY_ZEROCONF_INTERFACES,
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -334,7 +333,7 @@ class StreamsController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{self.publish_ip}:{self.publish_port}",
+            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
