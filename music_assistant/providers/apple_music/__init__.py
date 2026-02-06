@@ -415,8 +415,8 @@ class AppleMusicProvider(MusicProvider):
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
-        # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
-        max_limit = 200
+        # Obtain catalog info per 150 songs, the documented limit of 300 results in a 504 timeout
+        max_limit = 150
         for i in range(0, len(song_catalog_ids), max_limit):
             catalog_ids = song_catalog_ids[i : i + max_limit]
             catalog_endpoint = f"catalog/{self._storefront}/songs"

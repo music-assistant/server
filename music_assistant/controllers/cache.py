@@ -119,10 +119,14 @@ class CacheController(CoreController):
             return cache_data[0]
         # fall back to db cache
         if (
-            db_row := await self.database.get_row(
-                DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
+            (
+                db_row := await self.database.get_row(
+                    DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
+                )
             )
-        ) and (not checksum or (db_row["checksum"] == checksum and db_row["expires"] >= cur_time)):
+            and db_row["expires"] >= cur_time
+            and (not checksum or db_row["checksum"] == checksum)
+        ):
             try:
                 data = await async_json_loads(db_row["data"])
             except Exception as exc:
