@@ -150,12 +150,11 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         # create shared zeroconf instance
-        # TODO: enumerate interfaces and enable IPv6 support
         zeroconf_interfaces = self.config.get_raw_core_config_value(
             "streams", CONF_ZEROCONF_INTERFACES, "default"
         )
         self.aiozc = AsyncZeroconf(
-            ip_version=IPVersion.V4Only,
+            ip_version=IPVersion.All,
             interfaces=InterfaceChoice.All
             if zeroconf_interfaces == "all"
             else InterfaceChoice.Default,

@@ -403,6 +403,7 @@
       'translation_key': None,
       'uri': 'yandex_music_instance://album/20',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({

@@ -1,0 +1,90 @@
+# Dependency Approval via Comment Command
+# Allows maintainers to approve dependency changes by commenting /approve-dependencies
+
+name: Dependency Approval Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  approve-via-command:
+    runs-on: ubuntu-latest
+    # Only run on PRs, not issues
+    if: github.event.issue.pull_request
+    steps:
+      - name: Check for approval command
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = context.payload.comment;
+            const commentBody = comment.body.trim();
+
+            // Check if comment contains the approval command
+            if (!commentBody.match(/^\/approve-dependencies$/m)) {
+              core.info('Not an approval command, skipping');
+              return;
+            }
+
+            // Check if the comment creator is a maintainer/admin
+            const userPermission = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: comment.user.login
+            });
+
+            const hasPermission = ['admin', 'write'].includes(userPermission.data.permission);
+
+            if (!hasPermission) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ @${comment.user.login} does not have permission to approve dependencies. Only maintainers with write access can approve.`
+              });
+              return;
+            }
+
+            // Check if already approved
+            const labels = context.payload.issue.labels.map(l => l.name);
+            const alreadyApproved = labels.includes('dependencies-reviewed');
+
+            if (alreadyApproved) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `ℹ️  Dependencies already approved - \`dependencies-reviewed\` label is present.`
+              });
+              return;
+            }
+
+            // Add the dependencies-reviewed label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['dependencies-reviewed']
+            });
+
+            // Add a confirmation comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ **Dependencies approved** by @${comment.user.login}\n\nThe \`dependencies-reviewed\` label has been added. Security checks will now pass and this PR can be merged.`
+            });
+
+            // Add a reaction to the command comment
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: comment.id,
+              content: '+1'
+            });
+
+            core.info('✅ Dependencies approved and label added');

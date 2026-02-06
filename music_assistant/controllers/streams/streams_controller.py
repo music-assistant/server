@@ -80,6 +80,7 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     divide_chunks,
+    format_ip_for_url,
     get_ip_addresses,
     get_total_system_memory,
     select_free_port,
@@ -185,7 +186,7 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
@@ -334,7 +335,7 @@ class StreamsController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{self.publish_ip}:{self.publish_port}",
+            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
@@ -1844,23 +1845,11 @@ class StreamsController(CoreController):
             output_sample_rate = min(48000, output_sample_rate)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
-        output_channels = 1 if output_channels_str != "stereo" else 2
-        # For WAV format, explicitly set output_format_str with PCM parameters.
-        # This is needed for slimproto players which parse these parameters from the
-        # Content-Type header to configure the correct bit depth for decoding.
-        if content_type == ContentType.WAV:
-            wav_output_format_str = (
-                f"wav;rate={output_sample_rate};bitrate={output_bit_depth};"
-                f"channels={output_channels}"
-            )
-        else:
-            wav_output_format_str = ""
         return AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
-            channels=output_channels,
-            output_format_str=wav_output_format_str,
+            channels=1 if output_channels_str != "stereo" else 2,
         )
 
     async def _select_flow_format(
