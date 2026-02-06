@@ -66,6 +66,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -92,7 +93,12 @@ from .sync_groups import SyncGroupController, SyncGroupPlayer
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+        PlayerConfig,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -128,6 +134,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._universal_player_locks: dict[str, asyncio.Lock] = {}
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return Config Entries for the Player Controller."""
+        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
