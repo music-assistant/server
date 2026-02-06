@@ -271,6 +271,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # For non-track items, just use first available (they typically have one mapping)
                 provider_mappings = full_item.provider_mappings
                 if media_type == MediaType.TRACK:
+                    # Cast to Track for mypy - we know it's a track from media_type check
+                    full_track = cast("Track", full_item)
                     # Try to match the track to additional providers
                     track_prov_domains = {x.provider_domain for x in provider_mappings}
                     if (
@@ -279,7 +281,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ):
                         provider_mappings.update(
                             await self.mass.music.tracks.match_provider(
-                                full_item, playlist_prov, strict=False
+                                full_track, playlist_prov, strict=False
                             )
                         )
                     # Sort by quality (highest first) for tracks
