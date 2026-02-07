@@ -137,6 +137,7 @@ TRACK_EXTENSIONS = {
     "ape",
     "mpc",
     "mp2",
+    "m2a",
     "mp1",
     "dra",
     "mpeg",
