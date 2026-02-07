@@ -347,11 +347,7 @@ class SnapCastPlayer(Player):
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
         extra_args = ""
-        if (
-            self.provider._use_builtin_server
-            and queue_id
-            and self.provider._controlscript_available
-        ):
+        if self.provider.queue_control_available and queue_id:
             # Create socket server for control script communication
             socket_path = await self.provider.get_or_create_socket_server(queue_id)
             extra_args = (
