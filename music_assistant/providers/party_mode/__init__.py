@@ -7,9 +7,9 @@ to add songs to the queue with configurable rate limiting.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -22,13 +22,14 @@ from music_assistant_models.enums import (
     ProviderFeature,
     QueueOption,
 )
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import DEFAULT_PORT
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
-    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -80,6 +81,10 @@ BADGE_COLOR_OPTIONS = [
 # Guest user configuration
 PARTY_GUEST_USERNAME = "party_guest"
 PARTY_GUEST_DISPLAY_NAME = "Party Guest"
+
+# Extra attribute keys for tracking guest items in the queue
+ATTR_PARTY_MODE_GUEST = "party_mode_guest"
+ATTR_PARTY_MODE_BOOSTED = "party_mode_boosted"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
@@ -357,9 +362,13 @@ class PartyModePlugin(PluginProvider):
         self._unregister_handles.append(
             self.mass.register_api_command("party_mode/config", self.get_party_mode_config)
         )
-
-        # Register as a queue modifier to implement guest priority queue behavior
-        self.mass.player_queues.register_queue_modifier(self.instance_id, self)
+        # Guest action commands - these are called by the guest frontend
+        self._unregister_handles.append(
+            self.mass.register_api_command("party_mode/add_to_queue", self.add_to_queue)
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command("party_mode/skip", self.skip_current)
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call when the provider is being unloaded.
@@ -367,9 +376,6 @@ class PartyModePlugin(PluginProvider):
         :param is_removed: Whether the provider is being removed (vs just reloaded).
         """
         self.logger.debug("Party mode unload called, is_removed=%s", is_removed)
-
-        # Unregister queue modifier
-        self.mass.player_queues.unregister_queue_modifier(self.instance_id)
 
         # Unregister all API commands
         for unregister in self._unregister_handles:
@@ -389,6 +395,8 @@ class PartyModePlugin(PluginProvider):
             await self._revoke_guest_tokens()
 
         await super().unload(is_removed)
+
+    # ==================== Configuration API Commands ====================
 
     async def _get_or_create_party_guest_user(self) -> str:
         """Get or create the party mode guest user.
@@ -506,141 +514,171 @@ class PartyModePlugin(PluginProvider):
             "qr_instruction_text": cast("str", self.config.get_value(CONF_QR_INSTRUCTION_TEXT)),
         }
 
-    # ==================== QueueModifier Protocol Implementation ====================
-    # These methods implement the QueueModifier protocol to provide guest priority
-    # queue behavior. Guest items are inserted at the front of the queue and
-    # protected from shuffling.
+    # ==================== Guest Action API Commands ====================
 
-    def modify_enqueue_option(
+    async def add_to_queue(
         self,
-        queue_id: str,
-        option: QueueOption | None,
-        user: User | None,
-        queue_state: PlaybackState,
-    ) -> QueueOption | None:
-        """Auto-start playback when a guest adds to an idle queue.
+        uri: str,
+        boost: bool = False,
+    ) -> dict[str, Any]:
+        """Add a media item to the party mode queue.
 
-        When a guest user adds songs while nothing is playing, convert ADD/NEXT to PLAY.
-        This provides a better experience for guests who expect music to start playing.
+        This is the primary API for guests to add songs. The provider handles all
+        queue logic including priority positioning for guest items.
 
-        :param queue_id: The queue being modified.
-        :param option: The original queue option.
-        :param user: The user performing the action.
-        :param queue_state: Current playback state.
-        :returns: PLAY if guest is adding to idle queue, otherwise None for default.
+        :param uri: The URI of the media item to add (e.g., "spotify://track/xxx").
+        :param boost: If True, insert at the front of the guest section (play next).
+        :returns: Result dict with success status and queue position info.
         """
-        if (
-            user
-            and user.role == UserRole.GUEST
-            and queue_state != PlaybackState.PLAYING
-            and option in (QueueOption.ADD, QueueOption.NEXT)
-        ):
-            return QueueOption.PLAY
-        return None
+        user = get_current_user()
 
-    def calculate_insert_index(
-        self,
-        queue_id: str,
-        items: list[QueueItem],
-        user: User | None,
-        current_index: int | None,
-        queue_length: int,
-        existing_items: list[QueueItem] | None = None,
-    ) -> int | None:
-        """Calculate custom insert index for guest priority queue.
-
-        Guest items are inserted at the end of the guest section, which is before
-        any non-guest items but after other guest requests. This ensures guest
-        requests play with priority over playlists/albums queued by others.
-
-        :param queue_id: The queue being modified.
-        :param items: The items being inserted.
-        :param user: The user performing the action.
-        :param current_index: Current playing index.
-        :param queue_length: Total queue length.
-        :param existing_items: The current items already in the queue.
-        :returns: Insert index for guest items, or None for default behavior.
-        """
+        # Verify user is a guest
         if not user or user.role != UserRole.GUEST:
-            return None
+            raise InvalidDataError("This endpoint is only available to party mode guests")
 
-        # Calculate the guest section end index
-        return self._find_guest_section_end(
-            queue_id, current_index, queue_length, existing_items or []
+        # Check if guest access is enabled
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party mode guest access is disabled")
+
+        # Check feature toggles
+        if boost and not self.config.get_value(CONF_ENABLE_BOOST):
+            raise InvalidDataError("Boost feature is disabled")
+        if not self.config.get_value(CONF_ENABLE_ADD_QUEUE):
+            raise InvalidDataError("Add to queue feature is disabled")
+
+        # Get the party mode queue
+        queue_id = await self.get_party_mode_player()
+        if not queue_id:
+            # Fall back to first available player
+            players = list(self.mass.players.all(False, False))
+            if not players:
+                raise InvalidDataError("No players available")
+            queue_id = players[0].player_id
+
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise InvalidDataError(f"Queue not found: {queue_id}")
+
+        # Determine the queue option based on queue state
+        if queue.state != PlaybackState.PLAYING:
+            # If nothing is playing, start playback
+            option = QueueOption.PLAY
+        elif boost:
+            # Boost = play next
+            option = QueueOption.NEXT
+        else:
+            # Regular add = add to end of guest section
+            option = QueueOption.ADD
+
+        # Add to queue using the standard queue controller
+        # Pass the URI directly - the queue controller will resolve it
+        await self.mass.player_queues.play_media(
+            queue_id=queue_id,
+            media=uri,
+            option=option,
         )
 
-    def should_shuffle_items(
-        self,
-        queue_id: str,
-        items: list[QueueItem],
-        user: User | None,
-    ) -> bool:
-        """Determine if items should be shuffled.
+        # After adding, mark the item as a party mode guest item using extra_attributes
+        # We need to find the item we just added and update its extra_attributes
+        queue_items = self.mass.player_queues.items(queue_id)
+        if queue_items:
+            # Find the most recently added item matching our media
+            for item in reversed(queue_items):
+                if item.media_item and item.media_item.uri == uri:
+                    item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                    if boost:
+                        item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+                    break
 
-        Guest items should not be shuffled to maintain their request order.
+        self.logger.info(
+            "Guest added to queue: %s (boost=%s, option=%s)",
+            uri,
+            boost,
+            option.value,
+        )
 
-        :param queue_id: The queue being modified.
-        :param items: The items being inserted.
-        :param user: The user performing the action.
-        :returns: False for guest users (don't shuffle), True otherwise.
-        """
-        return not (user and user.role == UserRole.GUEST)
-
-    def get_protected_item_ids(
-        self,
-        queue_id: str,
-        items: list[QueueItem],
-    ) -> set[str]:
-        """Get IDs of guest items that should be protected from shuffle.
-
-        Guest items maintain their order at the front of the queue during shuffle.
-
-        :param queue_id: The queue being shuffled.
-        :param items: Items in the queue after current position.
-        :returns: Set of queue_item_ids for guest-added items.
-        """
         return {
-            item.queue_item_id
-            for item in items
-            if item.extra_attributes.get("added_by_user_role") == UserRole.GUEST.value
+            "success": True,
+            "queue_id": queue_id,
+            "boosted": boost,
+            "started_playback": option == QueueOption.PLAY,
         }
 
-    def _find_guest_section_end(
-        self,
-        queue_id: str,
-        current_index: int | None,
-        queue_length: int,
-        existing_items: list[QueueItem],
-    ) -> int:
+    async def skip_current(self) -> dict[str, Any]:
+        """Skip the currently playing track.
+
+        :returns: Result dict with success status.
+        """
+        user = get_current_user()
+
+        # Verify user is a guest
+        if not user or user.role != UserRole.GUEST:
+            raise InvalidDataError("This endpoint is only available to party mode guests")
+
+        # Check if guest access and skip are enabled
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party mode guest access is disabled")
+        if not self.config.get_value(CONF_ENABLE_SKIP_SONG):
+            raise InvalidDataError("Skip song feature is disabled")
+
+        # Get the party mode queue
+        queue_id = await self.get_party_mode_player()
+        if not queue_id:
+            players = list(self.mass.players.all(False, False))
+            if not players:
+                raise InvalidDataError("No players available")
+            queue_id = players[0].player_id
+
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise InvalidDataError(f"Queue not found: {queue_id}")
+
+        if queue.state != PlaybackState.PLAYING:
+            raise InvalidDataError("Nothing is currently playing")
+
+        # Skip to next track
+        await self.mass.player_queues.next(queue_id)
+
+        self.logger.info("Guest skipped current track on queue: %s", queue_id)
+
+        return {
+            "success": True,
+            "queue_id": queue_id,
+        }
+
+    # ==================== Helper Methods ====================
+
+    def _find_guest_section_end(self, queue_id: str) -> int:
         """Find the index where the guest priority section ends.
 
         Returns the index of the first non-guest item after the current playing position,
         or the end of the queue if all remaining items are guest items.
 
         :param queue_id: The ID of the queue to search.
-        :param current_index: Current playing index in the queue.
-        :param queue_length: Total number of items in the queue.
-        :param existing_items: The current items in the queue.
         :returns: The index where new guest items should be inserted.
         """
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
-            return queue_length
+            return 0
+
+        queue_items = self.mass.player_queues.items(queue_id)
+        if not queue_items:
+            return 0
 
         # Start searching from after the currently playing/buffered item
-        start_index = (queue.index_in_buffer or current_index or 0) + 1
+        start_index = (queue.index_in_buffer or queue.current_index or 0) + 1
 
         # If start_index is beyond the queue, return the queue length
-        if start_index >= len(existing_items):
-            return len(existing_items)
+        if start_index >= len(queue_items):
+            return len(queue_items)
 
         # Find the first non-guest item after current position
-        for i, item in enumerate(existing_items[start_index:], start=start_index):
-            if item.extra_attributes.get("added_by_user_role") != UserRole.GUEST.value:
+        for i, item in enumerate(queue_items[start_index:], start=start_index):
+            if not item.extra_attributes.get(ATTR_PARTY_MODE_GUEST):
                 return i
 
         # All remaining items are guest items (or queue is empty after current)
-        return len(existing_items)
+        return len(queue_items)
 
     async def _revoke_guest_tokens(self) -> None:
         """Revoke all guest access tokens and codes for party mode.

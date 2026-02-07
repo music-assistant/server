@@ -403,6 +403,15 @@ class AuthenticationManager:
 
         return await provider.authenticate(credentials)
 
+    @staticmethod
+    def _is_jwt_token(token: str) -> bool:
+        """Check if token appears to be a JWT (3 dot-separated parts).
+
+        :param token: The token string to check.
+        :return: True if token has JWT format, False otherwise.
+        """
+        return token.count(".") == 2
+
     async def authenticate_with_token(self, token: str) -> User | None:
         """
         Authenticate a user with an access token (JWT or legacy).
@@ -1622,15 +1631,19 @@ class AuthenticationManager:
             await self.database.commit()
             return None
 
-        # Atomically check use limit and increment count to avoid TOCTOU race
-        now = utc()
-        cursor = await self.database.execute(
-            "UPDATE join_codes SET use_count = use_count + 1, last_used_at = :last_used_at "
-            "WHERE code_id = :code_id AND (max_uses = 0 OR use_count < max_uses)",
-            {"code_id": code_row["code_id"], "last_used_at": now.isoformat()},
-        )
-        if cursor.rowcount == 0:
+        # Check use limit
+        max_uses = code_row["max_uses"]
+        use_count = code_row["use_count"]
+        if max_uses > 0 and use_count >= max_uses:
             return None
+
+        # Update use count
+        now = utc()
+        await self.database.update(
+            "join_codes",
+            {"code_id": code_row["code_id"]},
+            {"use_count": use_count + 1, "last_used_at": now.isoformat()},
+        )
         await self.database.commit()
 
         # Get user and create token
@@ -1656,23 +1669,35 @@ class AuthenticationManager:
         user_id: str | None = None,
         provider_name: str | None = None,
     ) -> int:
-        """Revoke join codes, optionally filtered by user and/or provider.
+        """Revoke join codes, optionally filtered by user or provider.
 
         :param user_id: Optional user ID to revoke codes for.
         :param provider_name: Optional provider name to revoke codes for.
         :return: Number of codes revoked.
         """
-        match: dict[str, str] = {}
-        if user_id:
-            match["user_id"] = user_id
-        if provider_name:
-            match["provider_name"] = provider_name
-
-        rows = await self.database.get_rows("join_codes", match or None)
-        count = len(list(rows))
-        if match:
-            await self.database.delete("join_codes", match)
+        if user_id and provider_name:
+            # Filter by both user and provider
+            rows = await self.database.get_rows(
+                "join_codes", {"user_id": user_id, "provider_name": provider_name}
+            )
+            count = len(list(rows))
+            await self.database.delete(
+                "join_codes", {"user_id": user_id, "provider_name": provider_name}
+            )
+        elif user_id:
+            # Filter by user only
+            rows = await self.database.get_rows("join_codes", {"user_id": user_id})
+            count = len(list(rows))
+            await self.database.delete("join_codes", {"user_id": user_id})
+        elif provider_name:
+            # Filter by provider only
+            rows = await self.database.get_rows("join_codes", {"provider_name": provider_name})
+            count = len(list(rows))
+            await self.database.delete("join_codes", {"provider_name": provider_name})
         else:
+            # Revoke all join codes
+            rows = await self.database.get_rows("join_codes")
+            count = len(list(rows))
             await self.database.execute("DELETE FROM join_codes")
 
         await self.database.commit()
