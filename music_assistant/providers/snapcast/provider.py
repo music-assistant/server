@@ -190,7 +190,7 @@ class SnapCastProvider(PlayerProvider):
                 logger.debug("Copied controlscript to: %s", control_dest)
                 return str(plugin_dir)
             except (OSError, PermissionError) as err:
-                logger.debug(f"Could not copy controlscript to {plugin_dir!s} : {err!s}")
+                logger.debug("Could not copy controlscript to %s : %s", plugin_dir, err)
         logger.warning("Could not copy controlscript (metadata/control disabled)")
         return None
 
@@ -253,7 +253,9 @@ class SnapCastProvider(PlayerProvider):
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
-        if plugin_dir := self._setup_controlscript():
+        loop = asyncio.get_running_loop()
+        plugin_dir = await loop.run_in_executor(None, self._setup_controlscript)
+        if plugin_dir is not None:
             args.append(f"--stream.plugin_dir={plugin_dir}")
             self._controlscript_available = True
 
