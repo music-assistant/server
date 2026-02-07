@@ -896,6 +896,7 @@ ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
