@@ -101,7 +101,7 @@ class KionMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on Yandex Music.
+        """Perform search on KION Music.
 
         :param search_query: The search query.
         :param media_types: List of media types to search for.
@@ -111,7 +111,7 @@ class KionMusicProvider(MusicProvider):
         result = SearchResults()
 
         # Determine search type based on requested media types
-        # Map MediaType to Yandex API search type
+        # Map MediaType to KION API search type
         type_mapping = {
             MediaType.TRACK: "track",
             MediaType.ALBUM: "album",
@@ -290,7 +290,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("fetch_tracks_async returned %s tracks", len(tracks_list or []))
             except Exception as err:
                 self.logger.warning("fetch_tracks_async failed: %s", err)
-            if not tracks_list and track_count > 0:
+            if not tracks_list:
                 self.logger.warning(
                     "Playlist %s/%s: expected %s tracks but got none",
                     owner_id,
@@ -305,7 +305,7 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Playlist %s/%s has no tracks", owner_id, kind)
             return []
 
-        # Yandex returns TrackShort objects, we need to fetch full track info
+        # API returns TrackShort objects, we need to fetch full track info
         track_ids = [
             str(track.track_id) if hasattr(track, "track_id") else str(track.id)
             for track in tracks_list
@@ -375,7 +375,7 @@ class KionMusicProvider(MusicProvider):
     # Library methods
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from Yandex Music."""
+        """Retrieve library artists from KION Music."""
         artists = await self.client.get_liked_artists()
         for artist in artists:
             try:
@@ -384,7 +384,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library artist: %s", err)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from Yandex Music."""
+        """Retrieve library albums from KION Music."""
         albums = await self.client.get_liked_albums()
         for album in albums:
             try:
@@ -393,7 +393,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library album: %s", err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve library tracks from Yandex Music."""
+        """Retrieve library tracks from KION Music."""
         track_shorts = await self.client.get_liked_tracks()
         if not track_shorts:
             return
@@ -411,7 +411,7 @@ class KionMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing library track: %s", err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve library playlists from Yandex Music."""
+        """Retrieve library playlists from KION Music."""
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:

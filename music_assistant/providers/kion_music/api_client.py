@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 from .constants import DEFAULT_LIMIT
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
-# Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
+# Prefer flac-mp4/aac-mp4
 GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
 # get-file-info: same host as library (all requests go through one API)
-GET_FILE_INFO_BASE_URL = "https://music.mts.ru/ya_api"
+KION_BASE_URL = "https://music.mts.ru/ya_api"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class KionMusicClient:
         :raises LoginFailed: If the token is invalid.
         """
         try:
-            self._client = await ClientAsync(self._token).init()
+            self._client = await ClientAsync(self._token, base_url=KION_BASE_URL).init()
             if self._client.me is None or self._client.me.account is None:
                 raise LoginFailed("Failed to get account info")
             self._user_id = self._client.me.account.uid
@@ -128,8 +128,13 @@ class KionMusicClient:
                 except (BadRequestError, NetworkError) as batch_err:
                     LOGGER.warning("Error fetching album details batch: %s", batch_err)
                     # Fall back to minimal data for this batch
+                    batch_set = set(batch)
                     for like in result:
-                        if like.album is not None and like.album.id and str(like.album.id) in batch:
+                        if (
+                            like.album is not None
+                            and like.album.id
+                            and str(like.album.id) in batch_set
+                        ):
                             full_albums.append(like.album)
             return full_albums
         except (BadRequestError, NetworkError) as err:
@@ -382,7 +387,7 @@ class KionMusicClient:
                 return None
             return cast("dict[str, Any]", download_info)
 
-        url = f"{GET_FILE_INFO_BASE_URL}/get-file-info"
+        url = f"{KION_BASE_URL}/get-file-info"
         params_encraw = {**base_params, "transports": "encraw"}
         try:
             result = await client._request.get(url, params=params_encraw)
