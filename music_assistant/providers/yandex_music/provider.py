@@ -312,7 +312,17 @@ class YandexMusicProvider(MusicProvider):
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i : i + batch_size]
             batch_result = await self.client.get_tracks(batch)
-            full_tracks.extend(batch_result or [])
+            if not batch_result:
+                self.logger.warning(
+                    "Received empty result for playlist %s tracks batch %s-%s",
+                    prov_playlist_id,
+                    i,
+                    i + len(batch) - 1,
+                )
+                raise ResourceTemporarilyUnavailable(
+                    "Playlist tracks not fully available; try again later"
+                )
+            full_tracks.extend(batch_result)
 
         if track_ids and not full_tracks:
             raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
