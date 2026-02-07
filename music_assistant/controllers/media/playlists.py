@@ -20,7 +20,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
     PLAYLIST_MEDIA_TYPES,
-    PlaylistItem,
+    PlaylistPlayableItem,
 )
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -91,7 +91,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-    ) -> AsyncGenerator[PlaylistItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
@@ -504,16 +504,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
-    ) -> list[PlaylistItem]:
+    ) -> list[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
-            # Builtin provider overrides to return list[PlaylistItem], others return list[Track].
-            # Since Track is part of PlaylistItem union, this is safe at runtime.
-            # Type ignore needed because list is invariant and mypy can't verify this.
+            # Builtin provider overrides to return list[PlaylistPlayableItem],
+            # others return list[Track]. Since Track is part of PlaylistPlayableItem union,
+            # this is safe at runtime. Type ignore needed because list is invariant.
             return await provider.get_playlist_tracks(item_id, page=page)  # type: ignore[return-value]
 
     async def radio_mode_base_tracks(

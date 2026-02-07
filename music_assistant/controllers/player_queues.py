@@ -66,7 +66,7 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
-    PlaylistItem,
+    PlaylistPlayableItem,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -1575,9 +1575,9 @@ class PlayerQueuesController(CoreController):
 
     async def get_playlist_tracks(
         self, playlist: Playlist, start_item: str | None
-    ) -> list[PlaylistItem]:
+    ) -> list[PlaylistPlayableItem]:
         """Return tracks for given playlist, based on user preference."""
-        result: list[PlaylistItem] = []
+        result: list[PlaylistPlayableItem] = []
         start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",

@@ -39,7 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import (
     MASS_LOGO,
     VARIOUS_ARTISTS_FANART,
-    PlaylistItem,
+    PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
@@ -360,7 +360,7 @@ class BuiltinProvider(MusicProvider):
 
     async def get_playlist_tracks(  # type: ignore[override]
         self, prov_playlist_id: str, page: int = 0
-    ) -> list[PlaylistItem]:
+    ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks.
 
         Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
@@ -373,7 +373,7 @@ class BuiltinProvider(MusicProvider):
             # System-generated playlists (favorites, random, etc.) only contain tracks
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         # User-created playlists can contain Track, Radio, PodcastEpisode, and Audiobook items
-        result: list[PlaylistItem] = []
+        result: list[PlaylistPlayableItem] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
@@ -389,8 +389,8 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                if isinstance(track, get_args(PlaylistItem)):
-                    playlist_item = cast("PlaylistItem", track)
+                if isinstance(track, get_args(PlaylistPlayableItem)):
+                    playlist_item = cast("PlaylistPlayableItem", track)
                     playlist_item.position = index
                     result.append(playlist_item)
                 else:

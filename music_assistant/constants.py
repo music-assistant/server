@@ -21,9 +21,9 @@ from music_assistant_models.media_items import (
 APPLICATION_NAME: Final = "Music Assistant"
 
 # Type alias for items that can be added to playlists
-PlaylistItem = Track | Radio | PodcastEpisode | Audiobook
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
 
-# Corresponding MediaType enum values (must match PlaylistItem types above)
+# Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
 PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.TRACK,
     MediaType.RADIO,
