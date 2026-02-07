@@ -125,8 +125,8 @@ class TestCacheInvalidationAfterGrouping:
         mock_mass.players = controller
 
         # Populate caches
-        _ = leader.can_group_with
-        _ = other.can_group_with
+        _ = leader.state.can_group_with
+        _ = other.state.can_group_with
 
         # Simulate grouping (normally done by provider's set_members implementation)
         leader._attr_group_members = ["leader", "member"]
@@ -161,6 +161,10 @@ class TestGroupUngroup:
             "member": Throttler(1, 0.05),
         }
         mock_mass.players = controller
+
+        # Update state after modifying attributes and registering with controller
+        leader.update_state(signal_event=False)
+        member.update_state(signal_event=False)
 
         # Track if set_members was called
         set_members_called = False

@@ -551,16 +551,16 @@ class ConfigController:
             # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
             # note that we only check for missing players in the player controller,
-            # and we do allow players that are temporary unavailable (player.available = false)
-            # because this can also mean that the player needs additional configuration
-            # such as airplay devices that need pairing.
-            player = self.mass.players.get(raw_conf["player_id"], False)
+            # and we do allow players that are temporary unavailable
+            # (player.state.available = false) because this can also mean that the
+            # player needs additional configuration such as airplay devices that need pairing.
+            player = self.mass.players.get_player(raw_conf["player_id"], False)
             if not include_unavailable and player is None and raw_conf.get("enabled", True):
                 continue
             # filter out protocol players
             # their configuration is handled differently as part of their parent player
             if raw_conf.get("player_type") == PlayerType.PROTOCOL or (
-                player and player.type == PlayerType.PROTOCOL
+                player and player.state.type == PlayerType.PROTOCOL
             ):
                 continue
             # filter out disabled players
@@ -570,9 +570,9 @@ class ConfigController:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:
                 raw_conf["default_name"] = (
-                    player.display_name if player else raw_conf.get("default_name")
+                    player.state.name if player else raw_conf.get("default_name")
                 )
-                raw_conf["available"] = player.available if player else False
+                raw_conf["available"] = player.state.available if player else False
                 result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
         return result
 
@@ -585,8 +585,8 @@ class ConfigController:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
-            if player := self.mass.players.get(player_id, False):
-                raw_conf["default_name"] = player.display_name
+            if player := self.mass.players.get_player(player_id, False):
+                raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
                 config_entries = await self.get_player_config_entries(
                     player_id,
@@ -620,13 +620,13 @@ class ConfigController:
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        if not (player := self.mass.players.get(player_id, False)):
+        if not (player := self.mass.players.get_player(player_id, False)):
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
 
         default_entries: list[ConfigEntry]
         player_entries: list[ConfigEntry]
-        if player.type == PlayerType.PROTOCOL:
+        if player.state.type == PlayerType.PROTOCOL:
             default_entries = []
             player_entries = await self._get_player_config_entries(
                 player, action=action, values=values
@@ -833,7 +833,7 @@ class ConfigController:
         if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
-        if self.mass.players.get(player_id):
+        if self.mass.players.get_player(player_id):
             try:
                 await self.mass.players.remove(player_id)
             except UnsupportedFeaturedException:
@@ -1646,12 +1646,12 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         default_entries: list[ConfigEntry]
-        is_dedicated_group_player = player.type in (
+        is_dedicated_group_player = player.state.type in (
             PlayerType.GROUP,
             PlayerType.STEREO_PAIR,
         ) and not player.player_id.startswith(("universal_", SYNCGROUP_PREFIX))
         is_http_based_player_protocol = player.provider.domain not in NON_HTTP_PROVIDERS
-        if player.type == PlayerType.GROUP and not is_dedicated_group_player:
+        if player.state.type == PlayerType.GROUP and not is_dedicated_group_player:
             # no audio related entries for universal group players or sync group players
             default_entries = []
         else:
@@ -1686,7 +1686,7 @@ class ConfigController:
         """
         entries: list[ConfigEntry] = []
         # default protocol-player config entries
-        if player.type == PlayerType.PROTOCOL:
+        if player.state.type == PlayerType.PROTOCOL:
             # protocol players have no generic config entries
             # only audio/protocol specific ones
             return []
@@ -1740,7 +1740,7 @@ class ConfigController:
             ),
         ]
         # group-player config entries
-        if player.type == PlayerType.GROUP:
+        if player.state.type == PlayerType.GROUP:
             entries += [
                 CONF_ENTRY_PLAYER_ICON_GROUP,
             ]
@@ -1763,9 +1763,9 @@ class ConfigController:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         # work out player supported features
-        supports_power = PlayerFeature.POWER in player.supported_features
-        supports_volume = PlayerFeature.VOLUME_SET in player.supported_features
-        supports_mute = PlayerFeature.VOLUME_MUTE in player.supported_features
+        supports_power = PlayerFeature.POWER in player.state.supported_features
+        supports_volume = PlayerFeature.VOLUME_SET in player.state.supported_features
+        supports_mute = PlayerFeature.VOLUME_MUTE in player.state.supported_features
         # create base options per control type (and add defaults like native and fake)
         base_power_options: list[ConfigValueOption] = [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
@@ -1804,7 +1804,7 @@ class ConfigController:
                     *(ConfigValueOption(x.name, x.id) for x in power_controls),
                 ],
                 category="player_controls",
-                hidden=player.type == PlayerType.GROUP,
+                hidden=player.state.type == PlayerType.GROUP,
             ),
             # Volume control config entry
             ConfigEntry(
@@ -1818,7 +1818,7 @@ class ConfigController:
                     *(ConfigValueOption(x.name, x.id) for x in volume_controls),
                 ],
                 category="player_controls",
-                hidden=player.type == PlayerType.GROUP,
+                hidden=player.state.type == PlayerType.GROUP,
             ),
             # Mute control config entry
             ConfigEntry(
@@ -1832,7 +1832,7 @@ class ConfigController:
                     *[ConfigValueOption(x.name, x.id) for x in mute_controls],
                 ],
                 category="player_controls",
-                hidden=player.type == PlayerType.GROUP,
+                hidden=player.state.type == PlayerType.GROUP,
             ),
             # auto-play on power on control config entry
             CONF_ENTRY_AUTO_PLAY,
@@ -1938,7 +1938,7 @@ class ConfigController:
                     entry.category_translation_params = [protocol_name]
                     all_entries.append(entry)
 
-            elif protocol_player := self.mass.players.get(protocol.output_protocol_id):
+            elif protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
 
@@ -1995,7 +1995,7 @@ class ConfigController:
             if proto_values.get(CONF_ENABLED):
                 # wait max 10 seconds for protocol to become available
                 for _ in range(10):
-                    protocol_player = self.mass.players.get(protocol_player_id)
+                    protocol_player = self.mass.players.get_player(protocol_player_id)
                     if protocol_player is not None:
                         break
                     await asyncio.sleep(1)

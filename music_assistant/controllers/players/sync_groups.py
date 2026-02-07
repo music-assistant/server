@@ -116,22 +116,22 @@ class SyncGroupPlayer(GroupPlayer):
         """Return the supported features of the player."""
         members = self.group_members
         reference_player: Player | None = self.sync_leader or (
-            self.mass.players.get(members[0]) if members else None
+            self.mass.players.get_player(members[0]) if members else None
         )
         if reference_player:
             base_features = self._supported_features.copy()
             # add features supported by the sync leader
             for feature in OPTIONAL_FEATURES:
-                if feature in reference_player._supported_features:
+                if feature in reference_player.supported_features:
                     base_features.add(feature)
             return base_features
         return self._attr_supported_features
 
     @property
-    def _playback_state(self) -> PlaybackState:
+    def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         if self.powered:
-            return self.sync_leader._playback_state if self.sync_leader else PlaybackState.IDLE
+            return self.sync_leader.state.playback_state if self.sync_leader else PlaybackState.IDLE
         return PlaybackState.IDLE
 
     @property
@@ -142,30 +142,32 @@ class SyncGroupPlayer(GroupPlayer):
         return False
 
     @property
-    def _elapsed_time(self) -> float | None:
+    def elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
-        return self.sync_leader._elapsed_time if self.sync_leader else None
+        return self.sync_leader.state.elapsed_time if self.sync_leader else None
 
     @property
-    def _elapsed_time_last_updated(self) -> float | None:
+    def elapsed_time_last_updated(self) -> float | None:
         """Return when the elapsed time was last updated."""
-        return self.sync_leader._elapsed_time_last_updated if self.sync_leader else None
+        return self.sync_leader.state.elapsed_time_last_updated if self.sync_leader else None
 
     @property
-    def _current_media(self) -> PlayerMedia | None:
+    def current_media(self) -> PlayerMedia | None:
         """Return the current media item (if any) loaded in the player."""
-        return self.sync_leader._current_media if self.sync_leader else self._attr_current_media
+        return (
+            self.sync_leader.state.current_media if self.sync_leader else self._attr_current_media
+        )
 
     @property
-    def _active_source(self) -> str | None:
+    def active_source(self) -> str | None:
         """Return the active source id (if any) of the player."""
-        return self.sync_leader._active_source if self.sync_leader else self._attr_active_source
+        return self.sync_leader.active_source if self.sync_leader else self._attr_active_source
 
     @property
-    def _source_list(self) -> list[PlayerSource]:
+    def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         if self.sync_leader:
-            return self.sync_leader._source_list
+            return self.sync_leader.source_list
         return []
 
     @property
@@ -177,7 +179,7 @@ class SyncGroupPlayer(GroupPlayer):
         or just the provider's instance_id if all players can group with each other.
         """
         if self.is_dynamic and (leader := self.sync_leader):
-            return leader._can_group_with
+            return leader._attr_can_group_with
         if self.is_dynamic:
             return {self.provider.instance_id}
         return set()
@@ -265,8 +267,12 @@ class SyncGroupPlayer(GroupPlayer):
         if powered:
             # ensure static members are present when powering on
             for static_group_member in self._attr_static_group_members:
-                member_player = self.mass.players.get(static_group_member)
-                if not member_player or not member_player.available or not member_player.enabled:
+                member_player = self.mass.players.get_player(static_group_member)
+                if (
+                    not member_player
+                    or not member_player.state.available
+                    or not member_player.state.enabled
+                ):
                     if static_group_member in self._attr_group_members:
                         self._attr_group_members.remove(static_group_member)
                     continue
@@ -390,7 +396,7 @@ class SyncGroupPlayer(GroupPlayer):
             # if the group still has the same leader, we need to (re)sync the members
             # Handle collisions for newly added players
             for player_id in final_players_to_add:
-                if player := self.mass.players.get(player_id):
+                if player := self.mass.players.get_player(player_id):
                     await self._handle_member_collisions(player)
 
             await self.sync_leader.set_members(
@@ -492,10 +498,10 @@ class SyncGroupPlayer(GroupPlayer):
             return self.sync_leader
         for prefer_sync_leader in (True, False):
             for child_player in self.mass.players.iter_group_members(self):
-                if prefer_sync_leader and child_player.synced_to:
+                if prefer_sync_leader and child_player.state.synced_to:
                     # prefer the first player that already has sync children
                     continue
-                if child_player.active_group not in (
+                if child_player.state.active_group not in (
                     None,
                     self.player_id,
                     child_player.player_id,
@@ -508,27 +514,27 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def _handle_member_collisions(self, member: Player) -> None:
         """Handle collisions when adding a member to the sync group."""
-        active_groups = member.active_groups
-        for group in active_groups:
-            if group == self.player_id:
-                continue
-            # collision: child player is part another group that is already active !
-            # solve this by trying to leave the group first
-            if other_group := self.mass.players.get(group):
-                if (
-                    other_group.supports_feature(PlayerFeature.SET_MEMBERS)
-                    and member.player_id not in other_group.static_group_members
-                ):
-                    await other_group.set_members(player_ids_to_remove=[member.player_id])
-                else:
-                    # if the other group does not support SET_MEMBERS or it is a static
-                    # member, we need to power it off to leave the group
-                    await other_group.power(False)
+        if not (active_group := member.state.active_group):
+            return
+        if active_group == self.player_id:
+            return
+        # collision: child player is part another group that is already active !
+        # solve this by trying to leave the group first
+        if other_group := self.mass.players.get_player(active_group):
+            if (
+                other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                and member.player_id not in other_group.static_group_members
+            ):
+                await other_group.set_members(player_ids_to_remove=[member.player_id])
+            else:
+                # if the other group does not support SET_MEMBERS or it is a static
+                # member, we need to power it off to leave the group
+                await other_group.power(False)
         if (
             member.synced_to is not None
             and self.sync_leader
             and member.synced_to != self.sync_leader.player_id
-            and (synced_to_player := self.mass.players.get(member.synced_to))
+            and (synced_to_player := self.mass.players.get_player(member.synced_to))
             and member.player_id in synced_to_player.group_members
         ):
             # collision: child player is synced to another player and still in that group
@@ -602,7 +608,7 @@ class SyncGroupController:
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
         # unregister existing syncgroup players for this provider
-        for player in self.mass.players.all(
+        for player in self.mass.players.all_players(
             provider_filter=provider.instance_id, return_sync_groups=True
         ):
             if player.player_id.startswith(SYNCGROUP_PREFIX):

@@ -413,7 +413,7 @@ class StreamsController(CoreController):
         session_id = request.match_info["session_id"]
         if queue.session_id and session_id != queue.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        queue_player = self.mass.players.get(queue_id)
+        queue_player = self.mass.players.get_player(queue_id)
         queue_item_id = request.match_info["queue_item_id"]
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
@@ -491,13 +491,13 @@ class StreamsController(CoreController):
             )
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
-            and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
+            and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.state.supported_features
         ):
             # crossfade is not supported on this player due to missing gapless playback
             self.logger.warning(
                 "Crossfade disabled: Player %s does not support gapless playback, "
                 "consider enabling flow mode to enable crossfade on this player.",
-                queue_player.display_name if queue_player else "Unknown Player",
+                queue_player.state.name if queue_player else "Unknown Player",
             )
             smart_fades_mode = SmartFadesMode.DISABLED
 
@@ -589,7 +589,7 @@ class StreamsController(CoreController):
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
-        if not (queue_player := self.mass.players.get(queue_id)):
+        if not (queue_player := self.mass.players.get_player(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
@@ -768,7 +768,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.display_name,
+            player.state.name,
         )
         async for chunk in self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
@@ -784,7 +784,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.display_name,
+            player.state.name,
         )
 
         return resp
@@ -798,7 +798,7 @@ class StreamsController(CoreController):
             raise ProviderUnavailableError(f"Unknown PluginSource: {plugin_source_id}")
         # work out output format/details
         player_id = request.match_info["player_id"]
-        player = self.mass.players.get(player_id)
+        player = self.mass.players.get_player(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         plugin_source = provider.get_source()
@@ -909,7 +909,7 @@ class StreamsController(CoreController):
         ):
             # special case: member player accessing UGP stream
             # Check URI to distinguish from the UGP accessing its own stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get_player(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             if ugp_stream.base_pcm_format == pcm_format:
@@ -1674,7 +1674,7 @@ class StreamsController(CoreController):
             queue.index_in_buffer = self.mass.player_queues.index_by_id(
                 queue.queue_id, next_queue_item.queue_item_id
             )
-            queue_player = self.mass.players.get(queue.queue_id)
+            queue_player = self.mass.players.get_player(queue.queue_id)
             assert queue_player is not None
             next_queue_item_pcm_format = await self._select_pcm_format(
                 player=queue_player,
@@ -1918,7 +1918,7 @@ class StreamsController(CoreController):
         """Get the crossfade config for a queue item."""
         if smart_fades_mode == SmartFadesMode.DISABLED:
             return False
-        if not (self.mass.players.get(queue_item.queue_id)):
+        if not (self.mass.players.get_player(queue_item.queue_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")

@@ -155,7 +155,7 @@ class SnapCastPlayer(Player):
                 # Set default stream and stop ungrouped players
                 removed_snapclient = self.provider._snapserver.client(snapcast_id)
                 await removed_snapclient.group.set_stream("default")
-                if removed_player := self.mass.players.get(player_id):
+                if removed_player := self.mass.players.get_player(player_id):
                     await removed_player.stop()
         self.update_state()
 
@@ -413,7 +413,7 @@ class SnapCastPlayer(Player):
         for child_player_id in self.group_members:
             if child_player_id == self.player_id:
                 continue
-            if mass_child_player := self.mass.players.get(child_player_id):
+            if mass_child_player := self.mass.players.get_player(child_player_id):
                 mass_child_player._attr_playback_state = self._attr_playback_state
                 mass_child_player.update_state()
 

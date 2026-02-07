@@ -129,7 +129,7 @@ class UniversalGroupPlayer(GroupPlayer):
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
                     ConfigValueOption(x.display_name, x.player_id)
-                    for x in self.mass.players.all(True, False)
+                    for x in self.mass.players.all_players(True, False)
                     if x.type != PlayerType.GROUP
                 ],
             ),
@@ -173,7 +173,7 @@ class UniversalGroupPlayer(GroupPlayer):
             self._attr_group_members = []
             for static_group_member in self._attr_static_group_members:
                 if (
-                    (member_player := self.mass.players.get(static_group_member))
+                    (member_player := self.mass.players.get_player(static_group_member))
                     and member_player.available
                     and member_player.enabled
                 ):
@@ -188,11 +188,14 @@ class UniversalGroupPlayer(GroupPlayer):
                 ):
                     # stop playing existing content on member if we start the group player
                     await member.stop()
-                if member.active_group is not None and member.active_group != self.player_id:
+                if (
+                    member.state.active_group is not None
+                    and member.state.active_group != self.player_id
+                ):
                     # collision: child player is part of multiple groups
                     # and another group already active !
                     # solve this by trying to leave the group first
-                    if other_group := self.mass.players.get(member.active_group):
+                    if other_group := self.mass.players.get_player(member.state.active_group):
                         if (
                             other_group.supports_feature(PlayerFeature.SET_MEMBERS)
                             and member.player_id not in other_group.static_group_members
@@ -285,7 +288,7 @@ class UniversalGroupPlayer(GroupPlayer):
                 raise UnsupportedFeaturedException(
                     f"Cannot add {self.display_name} to itself as a member!"
                 )
-            child_player = self.mass.players.get(player_id, True)
+            child_player = self.mass.players.get_player(player_id, True)
             assert child_player  # for type checking
             if child_player.synced_to:
                 # This is player is part of a syncgroup - ungroup it first
@@ -311,7 +314,7 @@ class UniversalGroupPlayer(GroupPlayer):
                     f"Cannot remove {self.display_name} from itself as a member!"
                 )
             self._attr_group_members.remove(player_id)
-            child_player = self.mass.players.get(player_id, True)
+            child_player = self.mass.players.get_player(player_id, True)
             assert child_player is not None  # for type checking
             if child_player.playback_state in (
                 PlaybackState.PLAYING,
@@ -358,7 +361,7 @@ class UniversalGroupPlayer(GroupPlayer):
         child_player_id = request.query.get("player_id")  # optional!
         output_format_str = request.path.rsplit(".")[-1]
 
-        if child_player_id and (child_player := self.mass.players.get(child_player_id)):
+        if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
             # Use the preferred output format of the child player
             output_format = await self.mass.streams.get_output_format(
                 output_format_str=output_format_str,
@@ -375,7 +378,7 @@ class UniversalGroupPlayer(GroupPlayer):
             output_format = AudioFormat(content_type=ContentType.MP3)
             http_profile = "chunked"
 
-        if not (ugp_player := self.mass.players.get(ugp_player_id)):
+        if not (ugp_player := self.mass.players.get_player(ugp_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
 
         if not self.stream or self.stream.done:

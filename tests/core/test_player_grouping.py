@@ -61,9 +61,13 @@ class TestCanGroupWithBasics:
         controller._players = {"player_a": player_a, "player_b": player_b}
         mock_mass.players = controller
 
+        # Trigger state calculation
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+
         # Both players should be able to group with each other
-        assert "player_b" in player_a.can_group_with
-        assert "player_a" in player_b.can_group_with
+        assert "player_b" in player_a.state.can_group_with
+        assert "player_a" in player_b.state.can_group_with
 
     def test_unavailable_players_excluded(self, mock_mass):
         """Test that unavailable players are excluded from can_group_with."""
@@ -80,8 +84,12 @@ class TestCanGroupWithBasics:
         controller._players = {"player_a": player_a, "player_b": player_b}
         mock_mass.players = controller
 
+        # Trigger state calculation
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+
         # Unavailable player should be excluded
-        assert "player_b" not in player_a.can_group_with
+        assert "player_b" not in player_a.state.can_group_with
 
     def test_playing_players_with_different_source_excluded(self, mock_mass):
         """Test that players playing different sources are excluded."""
@@ -101,8 +109,12 @@ class TestCanGroupWithBasics:
         controller._players = {"player_a": player_a, "player_b": player_b}
         mock_mass.players = controller
 
+        # Trigger state calculation
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+
         # Player with different active source should be excluded
-        assert "player_b" not in player_a.can_group_with
+        assert "player_b" not in player_a.state.can_group_with
 
 
 class TestSyncedPlayers:
@@ -140,11 +152,11 @@ class TestSyncedPlayers:
         other.update_state(signal_event=False)
 
         # The synced player should NOT appear in other's can_group_with
-        assert "synced" not in other.can_group_with
+        assert "synced" not in other.state.can_group_with
         # The leader should also NOT appear (has group members)
-        assert "leader" not in other.can_group_with
+        assert "leader" not in other.state.can_group_with
         # Other should only see itself as ungrouped
-        assert other.can_group_with == set()
+        assert other.state.can_group_with == set()
 
     def test_sync_leader_excludes_itself_from_members_can_group_with(self, mock_mass):
         """Test that sync leader doesn't appear in its members' can_group_with."""
@@ -166,7 +178,7 @@ class TestSyncedPlayers:
         member.update_state(signal_event=False)
 
         # Member is synced, so can_group_with should be empty
-        assert member.can_group_with == set()
+        assert member.state.can_group_with == set()
 
     def test_group_members_included_in_leader_can_group_with(self, mock_mass):
         """
@@ -198,8 +210,8 @@ class TestSyncedPlayers:
         member_b.update_state(signal_event=False)
 
         # Leader should be able to see its own members (for ungrouping)
-        assert "member_a" in leader.can_group_with
-        assert "member_b" in leader.can_group_with
+        assert "member_a" in leader.state.can_group_with
+        assert "member_b" in leader.state.can_group_with
 
 
 class TestSyncLeaderBehavior:
@@ -230,7 +242,7 @@ class TestSyncLeaderBehavior:
         other.update_state(signal_event=False)
 
         # Leader should NOT appear in other's can_group_with (has group members)
-        assert "leader" not in other.can_group_with
+        assert "leader" not in other.state.can_group_with
 
 
 class TestCircularDependency:
@@ -258,8 +270,8 @@ class TestCircularDependency:
         member.update_state(signal_event=False)
 
         # This should not cause infinite recursion
-        assert member.synced_to == "leader"
-        assert leader.synced_to is None
+        assert member.state.synced_to == "leader"
+        assert leader.state.synced_to is None
 
 
 class TestCacheInvalidation:
@@ -279,21 +291,25 @@ class TestCacheInvalidation:
         controller._players = {"player_a": player_a, "player_b": player_b}
         mock_mass.players = controller
 
+        # Update state after setting attributes and registering with controller
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+
         # Get can_group_with to populate cache
-        initial = player_a.can_group_with
+        initial = player_a.state.can_group_with
         assert "player_b" in initial
 
         # Modify underlying data
         player_a._attr_can_group_with = set()
 
         # Cache should still have old value
-        assert player_a.can_group_with == initial
+        assert player_a.state.can_group_with == initial
 
         # Clear cache via update_state
         player_a.update_state(signal_event=False)
 
         # Cache should be cleared, new value should be returned
-        assert player_a.can_group_with == set()
+        assert player_a.state.can_group_with == set()
 
 
 class TestProviderInstanceIdExpansion:
@@ -320,8 +336,13 @@ class TestProviderInstanceIdExpansion:
         # Set up get_provider to return the provider for instance ID
         mock_mass.get_provider = MagicMock(return_value=provider)
 
+        # Trigger state calculation
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+        player_c.update_state(signal_event=False)
+
         # Provider instance ID should expand to include all players from that provider
-        can_group = player_a.can_group_with
+        can_group = player_a.state.can_group_with
         assert "player_b" in can_group
         assert "player_c" in can_group
 

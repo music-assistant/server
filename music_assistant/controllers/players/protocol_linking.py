@@ -67,7 +67,7 @@ class ProtocolLinkingMixin:
         _universal_player_locks: dict[str, asyncio.Lock]
         logger: logging.Logger
 
-        def all(  # noqa: D102
+        def all_players(  # noqa: D102
             self,
             return_unavailable: bool = True,
             return_disabled: bool = False,
@@ -76,7 +76,7 @@ class ProtocolLinkingMixin:
             return_protocol_players: bool = False,
         ) -> list[Player]: ...
 
-        def get(self, player_id: str) -> Player | None: ...  # noqa: D102
+        def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
 
         def unregister(  # noqa: D102
             self, player_id: str, permanent: bool = False
@@ -90,7 +90,7 @@ class ProtocolLinkingMixin:
         they are generic streaming endpoints (e.g., AirPlay receiver, Chromecast device)
         without vendor-specific native support in Music Assistant.
         """
-        return player.type == PlayerType.PROTOCOL
+        return player.state.type == PlayerType.PROTOCOL
 
     async def _enrich_player_identifiers(self, player: Player) -> None:
         """
@@ -122,7 +122,7 @@ class ProtocolLinkingMixin:
             player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
             self.logger.debug(
                 "Resolved real MAC for %s: %s -> %s",
-                player.display_name,
+                player.state.name,
                 reported_mac,
                 real_mac,
             )
@@ -135,7 +135,7 @@ class ProtocolLinkingMixin:
         1. If it's from a protocol provider - try to link to a native player.
         2. If it's a native player - try to link any existing protocol players.
         """
-        if player.type == PlayerType.PROTOCOL:
+        if player.state.type == PlayerType.PROTOCOL:
             # Protocol player: try to find a native parent
             self._try_link_protocol_to_native(player)
         else:
@@ -150,7 +150,7 @@ class ProtocolLinkingMixin:
         cached_parent_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
         if cached_parent_id:
             protocol_player.set_protocol_parent_id(cached_parent_id)
-            if parent_player := self.get(cached_parent_id):
+            if parent_player := self.get_player(cached_parent_id):
                 if not any(
                     link.output_protocol_id == protocol_player.player_id
                     for link in parent_player.linked_output_protocols
@@ -167,11 +167,11 @@ class ProtocolLinkingMixin:
         # 1. True native players (Sonos, etc.)
         # 2. Universal players
         # NOT to other protocol players (they get merged via universal_player)
-        for native_player in self.all(return_protocol_players=False):
+        for native_player in self.all_players(return_protocol_players=False):
             if native_player.player_id == protocol_player.player_id:
                 continue
             # Skip all protocol players - they should be handled via universal_player
-            if native_player.type == PlayerType.PROTOCOL:
+            if native_player.state.type == PlayerType.PROTOCOL:
                 continue
 
             # For universal players, check if this protocol player is in its stored list
@@ -230,7 +230,7 @@ class ProtocolLinkingMixin:
 
         # Check if this protocol player has a cached parent (was previously linked)
         cached_parent_id = self._get_cached_protocol_parent_id(player_id)
-        if cached_parent_id and not self.get(cached_parent_id):
+        if cached_parent_id and not self.get_player(cached_parent_id):
             # Previously linked to a native player that hasn't registered yet
             # Use longer delay to give native providers time to start up
             delay = 30.0
@@ -261,7 +261,7 @@ class ProtocolLinkingMixin:
         """
         self._pending_protocol_evaluations.pop(player_id, None)
 
-        protocol_player = self.get(player_id)
+        protocol_player = self.get_player(player_id)
         if not protocol_player or protocol_player.protocol_parent_id:
             return
 
@@ -290,10 +290,10 @@ class ProtocolLinkingMixin:
         """
         matching = [protocol_player]
 
-        for other_player in self.all(return_protocol_players=True):
+        for other_player in self.all_players(return_protocol_players=True):
             if other_player.player_id == protocol_player.player_id:
                 continue
-            if other_player.type != PlayerType.PROTOCOL:
+            if other_player.state.type != PlayerType.PROTOCOL:
                 continue
             if other_player.protocol_parent_id:
                 continue
@@ -458,7 +458,7 @@ class ProtocolLinkingMixin:
         )
 
         for player in sorted_players:
-            player_name = player.display_name
+            player_name = player.state.name
             if is_valid_name(player_name):
                 return player_name
 
@@ -472,7 +472,7 @@ class ProtocolLinkingMixin:
         for player in protocol_players:
             # Clean up if linked to another player
             if player.protocol_parent_id:
-                if parent := self.get(player.protocol_parent_id):
+                if parent := self.get_player(player.protocol_parent_id):
                     self._remove_protocol_link(parent, player.player_id)
                 player.set_protocol_parent_id(None)
             # Link to universal player
@@ -517,7 +517,7 @@ class ProtocolLinkingMixin:
                 return
 
             # Add to existing universal player
-            if existing := self.get(universal_player_id):
+            if existing := self.get_player(universal_player_id):
                 for player in protocol_players:
                     if not player.protocol_parent_id:
                         self._add_protocol_link(existing, player, player.provider.domain)
@@ -550,8 +550,8 @@ class ProtocolLinkingMixin:
         self._check_replace_universal_player(native_player)
 
         # Look for protocol players that should be linked
-        for protocol_player in self.all(return_protocol_players=True):
-            if protocol_player.type != PlayerType.PROTOCOL:
+        for protocol_player in self.all_players(return_protocol_players=True):
+            if protocol_player.state.type != PlayerType.PROTOCOL:
                 continue
             if protocol_player.protocol_parent_id:
                 # Already linked to a parent (could be this native player after replacement)
@@ -582,7 +582,7 @@ class ProtocolLinkingMixin:
 
             # Transfer all protocol links from universal player to native player
             for linked in list(player.linked_output_protocols):
-                if protocol_player := self.get(linked.output_protocol_id):
+                if protocol_player := self.get_player(linked.output_protocol_id):
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
@@ -650,7 +650,7 @@ class ProtocolLinkingMixin:
         native_player.set_linked_output_protocols(updated_protocols)
 
         # Clear parent reference on protocol player if it still exists
-        if protocol_player := self.get(protocol_player_id):
+        if protocol_player := self.get_player(protocol_player_id):
             if protocol_player.protocol_parent_id == native_player.player_id:
                 protocol_player.set_protocol_parent_id(None)
 
@@ -780,7 +780,7 @@ class ProtocolLinkingMixin:
             priority = PROTOCOL_PRIORITY.get(protocol_provider, 100)
 
             # Check if protocol player is available (registered)
-            protocol_player = self.get(protocol_id)
+            protocol_player = self.get_player(protocol_id)
             is_available = protocol_player is not None and protocol_player.available
 
             # Add the OutputProtocol entry
@@ -803,10 +803,10 @@ class ProtocolLinkingMixin:
 
     def _cleanup_protocol_links(self, player: Player) -> None:
         """Clean up protocol links when a player is permanently removed."""
-        if player.type == PlayerType.PROTOCOL:
+        if player.state.type == PlayerType.PROTOCOL:
             # Protocol player being removed: remove link from parent
             if parent_id := player.protocol_parent_id:
-                if parent_player := self.get(parent_id):
+                if parent_player := self.get_player(parent_id):
                     # Use permanent=True to also remove from cached protocol IDs
                     self._remove_protocol_link(parent_player, player.player_id, permanent=True)
                     if (
@@ -827,7 +827,7 @@ class ProtocolLinkingMixin:
             # Native player being removed: schedule protocol evaluation for linked protocols
             # so they can be assigned to a universal player
             for linked in player.linked_output_protocols:
-                if protocol_player := self.get(linked.output_protocol_id):
+                if protocol_player := self.get_player(linked.output_protocol_id):
                     protocol_player.set_protocol_parent_id(None)
                     protocol_player.update_state()
                     self.logger.debug(
@@ -922,30 +922,30 @@ class ProtocolLinkingMixin:
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Selecting output protocol for %s",
-            player.display_name,
+            player.state.name,
         )
 
         # 0. Check if active output protocol is already set
         if player.active_output_protocol and player.active_output_protocol != "native":
-            if protocol_player := self.get(player.active_output_protocol):
+            if protocol_player := self.get_player(player.active_output_protocol):
                 if protocol_player.available:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (already active)",
-                        player.display_name,
-                        protocol_player.display_name,
+                        player.state.name,
+                        protocol_player.state.name,
                     )
                     return protocol_player, player.active_output_protocol
 
         # 1. Check if any output protocol is currently grouped
         for linked in player.linked_output_protocols:
-            if protocol_player := self.get(linked.output_protocol_id):
+            if protocol_player := self.get_player(linked.output_protocol_id):
                 if protocol_player.available and self._is_protocol_grouped(protocol_player):
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (grouped)",
-                        player.display_name,
-                        protocol_player.display_name,
+                        player.state.name,
+                        protocol_player.state.name,
                     )
                     return protocol_player, linked.output_protocol_id
 
@@ -959,19 +959,19 @@ class ProtocolLinkingMixin:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: native (user preference)",
-                        player.display_name,
+                        player.state.name,
                     )
                     return player, "native"
             else:
                 for linked in player.linked_output_protocols:
                     if linked.output_protocol_id == preferred:
-                        if protocol_player := self.get(linked.output_protocol_id):
+                        if protocol_player := self.get_player(linked.output_protocol_id):
                             if protocol_player.available:
                                 self.logger.log(
                                     VERBOSE_LOG_LEVEL,
                                     "Selected protocol for %s: %s (user preference)",
-                                    player.display_name,
-                                    protocol_player.display_name,
+                                    player.state.name,
+                                    protocol_player.state.name,
                                 )
                                 return protocol_player, linked.output_protocol_id
                         break
@@ -979,23 +979,23 @@ class ProtocolLinkingMixin:
         # 3. Use native playback if available
         if PlayerFeature.PLAY_MEDIA in player.supported_features:
             self.logger.log(
-                VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.display_name
+                VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.state.name
             )
             return player, "native"
 
         # 4. Fall back to best protocol by priority
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
-            if protocol_player := self.get(linked.output_protocol_id):
+            if protocol_player := self.get_player(linked.output_protocol_id):
                 if protocol_player.available:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (priority-based)",
-                        player.display_name,
-                        protocol_player.display_name,
+                        player.state.name,
+                        protocol_player.state.name,
                     )
                     return protocol_player, linked.output_protocol_id
 
-        raise PlayerCommandFailed(f"Player {player.display_name} has no available output protocols")
+        raise PlayerCommandFailed(f"Player {player.state.name} has no available output protocols")
 
     def _is_protocol_grouped(self, protocol_player: Player) -> bool:
         """
@@ -1005,15 +1005,17 @@ class ProtocolLinkingMixin:
         ensuring consistent playback across grouped players.
         """
         is_grouped = bool(
-            protocol_player.synced_to
-            or (protocol_player.group_members and len(protocol_player.group_members) > 1)
-            or protocol_player.active_group
+            protocol_player.state.synced_to
+            or (
+                protocol_player.state.group_members and len(protocol_player.state.group_members) > 1
+            )
+            or protocol_player.state.active_group
         )
         if is_grouped:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Protocol player %s is grouped",
-                protocol_player.display_name,
+                protocol_player.state.name,
             )
         return is_grouped
 
@@ -1034,7 +1036,7 @@ class ProtocolLinkingMixin:
         """
         self.logger.debug(
             "Translating members to remove for %s: player_ids=%s, parent_protocol_domain=%s",
-            parent_player.display_name,
+            parent_player.state.name,
             player_ids,
             parent_protocol_domain,
         )
@@ -1042,7 +1044,7 @@ class ProtocolLinkingMixin:
         native_members: list[str] = []
 
         for child_player_id in player_ids:
-            child_player = self.get(child_player_id)
+            child_player = self.get_player(child_player_id)
             if not child_player:
                 continue
 
@@ -1090,7 +1092,7 @@ class ProtocolLinkingMixin:
         )
         self.logger.debug(
             "Protocol grouping on %s: filtered_add=%s, filtered_remove=%s",
-            parent_protocol_player.display_name,
+            parent_protocol_player.state.name,
             filtered_protocol_add,
             filtered_protocol_remove,
         )
@@ -1100,7 +1102,7 @@ class ProtocolLinkingMixin:
 
         self.logger.info(
             "Calling set_members on protocol player %s with add=%s, remove=%s",
-            parent_protocol_player.display_name,
+            parent_protocol_player.state.name,
             filtered_protocol_add,
             filtered_protocol_remove,
         )
@@ -1110,7 +1112,7 @@ class ProtocolLinkingMixin:
         )
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
-            parent_protocol_player.display_name,
+            parent_protocol_player.state.name,
             parent_protocol_player.group_members,
             parent_protocol_player.synced_to,
         )
@@ -1119,11 +1121,25 @@ class ProtocolLinkingMixin:
         if filtered_protocol_add and parent_protocol_player.player_id:
             self.logger.info(
                 "Setting active output protocol on %s to %s",
-                parent_player.display_name,
+                parent_player.state.name,
                 parent_protocol_player.player_id,
             )
             parent_player.set_active_output_protocol(parent_protocol_player.player_id)
             parent_player.update_state()
+
+            # Also set active output protocol on child players
+            for child_protocol_id in filtered_protocol_add:
+                if child_protocol := self.get_player(child_protocol_id):
+                    if child_protocol.protocol_parent_id:
+                        if child_player := self.get_player(child_protocol.protocol_parent_id):
+                            self.logger.info(
+                                "Setting active output protocol on %s to %s",
+                                child_player.state.name,
+                                child_protocol_id,
+                            )
+                            child_player.set_active_output_protocol(child_protocol_id)
+                            child_player.update_state()
+
         # Clear active protocol if all protocol members were removed
         elif (
             filtered_protocol_remove
@@ -1135,19 +1151,32 @@ class ProtocolLinkingMixin:
             self.logger.debug(
                 "Checking if should clear active protocol on %s: "
                 "protocol_members_count=%s, removing=%s",
-                parent_player.display_name,
+                parent_player.state.name,
                 members_count,
                 filtered_protocol_remove,
             )
             if members_count <= 1:
                 self.logger.info(
                     "Clearing active output protocol on %s (no protocol members left)",
-                    parent_player.display_name,
+                    parent_player.state.name,
                 )
                 parent_player.set_active_output_protocol(None)
                 parent_player.update_state()
-            else:
-                self.logger.debug(
-                    "NOT clearing active protocol - still has %s members",
-                    members_count,
-                )
+
+        # Clear active output protocol on removed child players
+        if filtered_protocol_remove:
+            for child_protocol_id in filtered_protocol_remove:
+                if child_protocol := self.get_player(child_protocol_id):
+                    if child_protocol.protocol_parent_id:
+                        if child_player := self.get_player(child_protocol.protocol_parent_id):
+                            if child_player.active_output_protocol == child_protocol_id:
+                                self.logger.info(
+                                    "Clearing active output protocol on %s",
+                                    child_player.state.name,
+                                )
+                                child_player.set_active_output_protocol(None)
+                                child_player.update_state()
+            self.logger.debug(
+                "NOT clearing active protocol - still has %s members",
+                members_count,
+            )

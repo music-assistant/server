@@ -578,13 +578,21 @@ class AirPlayPlayer(Player):
                     if child_player.player_id in self._attr_group_members:
                         self._attr_group_members.remove(child_player.player_id)
 
+            # If group leader is left alone after removals, clear the group_members list
+            if (
+                self._attr_group_members
+                and len(self._attr_group_members) == 1
+                and self.player_id in self._attr_group_members
+            ):
+                self._attr_group_members = []
+
         # handle additions
         for player_id in player_ids_to_add or []:
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
             child_player_to_add: AirPlayPlayer | None = cast(
-                "AirPlayPlayer | None", self.mass.players.get(player_id)
+                "AirPlayPlayer | None", self.mass.players.get_player(player_id)
             )
             if not child_player_to_add:
                 # should not happen, but guard against it
@@ -594,7 +602,7 @@ class AirPlayPlayer(Player):
 
             # ensure the child does not have an existing stream session active
             if child_player_to_add := cast(
-                "AirPlayPlayer | None", self.mass.players.get(player_id)
+                "AirPlayPlayer | None", self.mass.players.get_player(player_id)
             ):
                 if (
                     child_player_to_add.playback_state == PlaybackState.PAUSED
@@ -615,6 +623,11 @@ class AirPlayPlayer(Player):
             if stream_session:
                 await stream_session.add_client(child_player_to_add)
 
+        # Ensure group leader includes itself in group_members when it has members
+        # This is required for the synced_to property to work correctly
+        if self._attr_group_members and self.player_id not in self._attr_group_members:
+            self._attr_group_members.insert(0, self.player_id)
+
         # always update the state after modifying group members
         self.update_state()
 
@@ -622,7 +635,7 @@ class AirPlayPlayer(Player):
         """Handle callback when the current media of the player is updated."""
         if not self.stream or not self.stream.running or not self.stream.session:
             return
-        metadata = self.current_media
+        metadata = self.state.current_media
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
@@ -716,6 +729,6 @@ class AirPlayPlayer(Player):
         group_child_ids = {self.player_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := cast("AirPlayPlayer | None", self.mass.players.get(child_id)):
+            if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
         return sync_clients

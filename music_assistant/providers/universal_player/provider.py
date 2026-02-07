@@ -167,7 +167,7 @@ class UniversalPlayerProvider(PlayerProvider):
         player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
 
         # Check if player already exists
-        if existing := self.mass.players.get(player_id):
+        if existing := self.mass.players.get_player(player_id):
             # Update existing player with new protocol players
             if isinstance(existing, UniversalPlayer):
                 for pid in protocol_player_ids:
@@ -294,7 +294,7 @@ class UniversalPlayerProvider(PlayerProvider):
 
     def get_universal_player(self, player_id: str) -> UniversalPlayer | None:
         """Get a UniversalPlayer by ID if it exists and is managed by this provider."""
-        if player := self.mass.players.get(player_id):
+        if player := self.mass.players.get_player(player_id):
             if isinstance(player, UniversalPlayer):
                 return player
         return None

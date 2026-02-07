@@ -175,7 +175,7 @@ class ChromecastPlayer(Player):
         """Return the linked sendspin player if available/enabled."""
         if enabled_only and not self.sendspin_mode_enabled:
             return None
-        if not (sendspin_player := self.mass.players.get(self.sendspin_player_id)):
+        if not (sendspin_player := self.mass.players.get_player(self.sendspin_player_id)):
             return None
         if not sendspin_player.available:
             return None
@@ -203,7 +203,7 @@ class ChromecastPlayer(Player):
         if not sendspin_player_id.startswith("cast-"):
             return None
         # Search for a Chromecast player with matching sendspin_player_id
-        for player in self.mass.players.all():
+        for player in self.mass.players.all_players():
             if hasattr(player, "sendspin_player_id"):
                 if player.sendspin_player_id == sendspin_player_id:
                     return player.player_id
@@ -671,7 +671,7 @@ class ChromecastPlayer(Player):
         if self._attr_powered and not new_powered and self.type == PlayerType.GROUP:
             # group is being powered off, update group childs
             for child_id in self.group_members:
-                if child := self.mass.players.get(child_id):
+                if child := self.mass.players.get_player(child_id):
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
@@ -689,7 +689,7 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            if not (group_player := self.mass.players.get(self.active_cast_group)):
+            if not (group_player := self.mass.players.get_player(self.active_cast_group)):
                 return
             if not isinstance(group_player, ChromecastPlayer):
                 return
@@ -758,7 +758,7 @@ class ChromecastPlayer(Player):
         # so we need to update the group child(s) manually
         if self.type == PlayerType.GROUP and self.powered:
             for child_id in self.group_members:
-                if child := self.mass.players.get(child_id):
+                if child := self.mass.players.get_player(child_id):
                     assert isinstance(child, ChromecastPlayer)  # for type checking
                     if not child.cast_info.is_multichannel_group:
                         continue
@@ -948,7 +948,7 @@ class ChromecastPlayer(Player):
         """Wait for the Sendspin player to connect and become available."""
         start_time = time.time()
         while (time.time() - start_time) < timeout:
-            if sendspin_player := self.mass.players.get(self.sendspin_player_id):
+            if sendspin_player := self.mass.players.get_player(self.sendspin_player_id):
                 if sendspin_player.available:
                     self.logger.debug(
                         "Sendspin player %s is now available", self.sendspin_player_id

@@ -227,7 +227,7 @@ class CastStatusListener:
     def multizone_new_cast_status(self, group_uuid, cast_status) -> None:
         """Handle reception of a new CastStatus for a group."""
         mass = self.castplayer.mass
-        if group_player := mass.players.get(group_uuid):
+        if group_player := mass.players.get_player(group_uuid):
             if TYPE_CHECKING:
                 assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:

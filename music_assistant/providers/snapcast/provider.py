@@ -118,7 +118,7 @@ class SnapCastProvider(PlayerProvider):
 
         for snap_client in self._snapserver.clients:
             player_id = self._get_ma_id(snap_client.identifier)
-            if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
+            if not (player := self.mass.players.get_player(player_id, raise_unavailable=False)):
                 continue
             if player.playback_state != PlaybackState.PLAYING:
                 continue
@@ -280,7 +280,7 @@ class SnapCastProvider(PlayerProvider):
     def _handle_player_init(self, snap_client: Snapclient) -> SnapCastPlayer:
         """Process Snapcast add to Player controller."""
         player_id = self._generate_and_register_id(snap_client.identifier)
-        player = self.mass.players.get(player_id, raise_unavailable=False)
+        player = self.mass.players.get_player(player_id, raise_unavailable=False)
         if not player:
             snap_client = cast(
                 "Snapclient", self._snapserver.client(self._get_snapclient_id(player_id))
@@ -310,7 +310,7 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
+            if player := self.mass.players.get_player(self._get_ma_id(snap_client.identifier)):
                 ma_player = cast("SnapCastPlayer", player)
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_group in self._snapserver.groups:
@@ -319,7 +319,7 @@ class SnapCastProvider(PlayerProvider):
     def _handle_group_update(self, snap_group: Snapgroup) -> None:
         """Process Snapcast group callback."""
         for snap_client in self._snapserver.clients:
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
+            if ma_player := self.mass.players.get_player(self._get_ma_id(snap_client.identifier)):
                 assert isinstance(ma_player, SnapCastPlayer)  # for type checking
                 ma_player._handle_player_update(snap_client)
 

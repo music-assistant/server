@@ -89,7 +89,7 @@ class SonosPlayerProvider(PlayerProvider):
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
         # handle update for existing device
-        if sonos_player := self.mass.players.get(player_id):
+        if sonos_player := self.mass.players.get_player(player_id):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
@@ -116,7 +116,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        assert not self.mass.players.get(player_id)
+        assert not self.mass.players.get_player(player_id)
         address = get_primary_ip_address(info)
         if address is None:
             return
@@ -149,7 +149,7 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue ItemWindow request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get_player(sonos_player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -179,7 +179,7 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Version request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get_player(sonos_player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -200,7 +200,7 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Context request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get_player(sonos_player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)
@@ -251,7 +251,7 @@ class SonosPlayerProvider(PlayerProvider):
         json_body = await request.json()
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get_player(sonos_player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)

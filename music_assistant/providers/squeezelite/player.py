@@ -335,7 +335,7 @@ class SqueezelitePlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player = cast("SqueezelitePlayer | None", self.mass.players.get(player_id))
+            child_player = cast("SqueezelitePlayer | None", self.mass.players.get_player(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -350,7 +350,7 @@ class SqueezelitePlayer(Player):
 
         if (
             (players_added or player_ids_to_remove)
-            and self.current_media
+            and self.state.current_media
             and self._attr_playback_state == PlaybackState.PLAYING
         ):
             # restart stream session if it was already playing

@@ -480,7 +480,7 @@ class SonosPlayer(Player):
             self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
-            group_parent: SonosPlayer = self.mass.players.get(
+            group_parent: SonosPlayer = self.mass.players.get_player(
                 self.client.player.group.coordinator_id
             )
             if not group_parent or not group_parent.client or not group_parent.client.player:
@@ -617,7 +617,7 @@ class SonosPlayer(Player):
             await self.client.connect()
         except (ConnectionFailed, ClientConnectorError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass.players.get(self.player_id):
+            if not retry_on_fail or not self.mass.players.get_player(self.player_id):
                 raise
             self._attr_available = False
             self.update_state()

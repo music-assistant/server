@@ -149,7 +149,7 @@ class AirPlayStreamSession:
         )
         if not allow_late_join:
             await self.stop()
-            if sync_leader.current_media:
+            if sync_leader.state.current_media:
                 self.mass.call_later(
                     0.5,
                     self.mass.players.cmd_resume(sync_leader.player_id),

@@ -73,6 +73,9 @@ class MockPlayer(Player):
         # Clear cached properties after modifying attributes
         self._cache.clear()
 
+        # Update state to reflect the modified attributes
+        self.update_state(signal_event=False)
+
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
 
@@ -1047,6 +1050,9 @@ class TestPlayerGrouping:
             player_type=PlayerType.PROTOCOL,
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
         )
+        wiim_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        wiim_airplay._attr_can_group_with = {"airplay_sonos"}
+        wiim_airplay._cache.clear()
 
         # Link protocols (DLNA has lower priority than AirPlay)
         sonos_player.set_linked_output_protocols(
@@ -1102,6 +1108,10 @@ class TestPlayerGrouping:
             "airplay_sonos": Throttler(1, 0.05),
             "airplay_wiim": Throttler(1, 0.05),
         }
+
+        # Update state after modifying attributes
+        sonos_airplay.update_state(signal_event=False)
+        wiim_airplay.update_state(signal_event=False)
 
         # Translate members - should skip DLNA (no SET_MEMBERS) and select AirPlay
         protocol_members, _native_members, protocol_player, protocol_domain = (
@@ -1190,8 +1200,13 @@ class TestCanGroupWith:
             "airplay_sonos": Throttler(1, 0.05),
         }
 
+        # Update state after modifying attributes and registering with controller
+        sonos_player.update_state(signal_event=False)
+        sonos_player_b.update_state(signal_event=False)
+        sonos_airplay.update_state(signal_event=False)
+
         # Get can_group_with while native is active
-        groupable = sonos_player.can_group_with
+        groupable = sonos_player.state.can_group_with
 
         # Should only show native players (sonos_456), not AirPlay options
         assert "sonos_456" in groupable
@@ -1252,7 +1267,22 @@ class TestCanGroupWith:
             player_type=PlayerType.PROTOCOL,
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
         )
+        airplay_other._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_other._attr_can_group_with = {"airplay_sonos"}
+        airplay_other._cache.clear()
         airplay_other.set_protocol_parent_id("wiim_789")
+
+        wiim_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_other",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                ),
+            ]
+        )
 
         sonos_player.set_linked_output_protocols(
             [
@@ -1285,8 +1315,20 @@ class TestCanGroupWith:
             "airplay_other": Throttler(1, 0.05),
         }
 
+        # Clear cache after setting linked protocols
+        sonos_player._cache.clear()
+        wiim_player._cache.clear()
+
+        # Update state after modifying attributes and registering with controller
+        # IMPORTANT: Update protocol players FIRST, then parent players
+        sonos_airplay.update_state(signal_event=False)
+        airplay_other.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        sonos_player_b.update_state(signal_event=False)
+        wiim_player.update_state(signal_event=False)
+
         # Get can_group_with while AirPlay is active
-        groupable = sonos_player.can_group_with
+        groupable = sonos_player.state.can_group_with
 
         # Should show native players (sonos_456) + AirPlay players (wiim_789 via airplay_other)
         assert "sonos_456" in groupable
@@ -1361,6 +1403,9 @@ class TestCanGroupWith:
             player_type=PlayerType.PROTOCOL,
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
         )
+        airplay_other._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_other._attr_can_group_with = {"airplay_sonos"}
+        airplay_other._cache.clear()
         airplay_other.set_protocol_parent_id("wiim_789")
 
         sonos_player.set_linked_output_protocols(
@@ -1382,6 +1427,22 @@ class TestCanGroupWith:
             ]
         )
 
+        wiim_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_other",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                ),
+            ]
+        )
+
+        # Clear cache after setting linked protocols (output_protocols is cached)
+        sonos_player._cache.clear()
+        wiim_player._cache.clear()
+
         # Wire up mock_mass.players to controller so get_linked_protocol works
         mock_mass.players = controller
 
@@ -1402,8 +1463,20 @@ class TestCanGroupWith:
             "dlna_sonos": Throttler(1, 0.05),
         }
 
+        # Update state after modifying attributes and registering with controller
+        # Note: set_linked_output_protocols calls trigger_player_update, but since mass.players
+        # is a MagicMock, we need to manually call update_state
+        # IMPORTANT: Update protocol players FIRST, then parent players, because parent players
+        # access protocol_player.state.can_group_with during their update_state()
+        sonos_airplay.update_state(signal_event=False)
+        airplay_other.update_state(signal_event=False)
+        sonos_dlna.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        sonos_player_b.update_state(signal_event=False)
+        wiim_player.update_state(signal_event=False)
+
         # Get can_group_with with no active protocol
-        groupable = sonos_player.can_group_with
+        groupable = sonos_player.state.can_group_with
 
         # Should show native players + AirPlay players (supports SET_MEMBERS)
         # but NOT DLNA players (no SET_MEMBERS support)

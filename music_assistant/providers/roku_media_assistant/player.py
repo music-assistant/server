@@ -302,14 +302,17 @@ class MediaAssistantPlayer(Player):
 
                 self.update_state()
 
-                if not self.current_media or self._attr_playback_state != PlaybackState.PLAYING:
+                if (
+                    not self.state.current_media
+                    or self._attr_playback_state != PlaybackState.PLAYING
+                ):
                     return
 
-                image_url = self.current_media.image_url or ""
+                image_url = self.state.current_media.image_url or ""
 
-                album_name = self.current_media.album or ""
-                song_name = self.current_media.title or ""
-                artist_name = self.current_media.artist or ""
+                album_name = self.state.current_media.album or ""
+                song_name = self.state.current_media.title or ""
+                artist_name = self.state.current_media.artist or ""
                 if app_running and self.flow_mode:
                     await self.roku_input(
                         {

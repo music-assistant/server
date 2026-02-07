@@ -289,13 +289,13 @@ class SonosPlayer(Player):
 
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_remove.soco.unjoin)
                     self.mass.call_later(2, player_to_remove.poll)
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
-                if player_to_add := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_add.soco.join, self.soco)
                     self.mass.call_later(2, player_to_add.poll)
 
@@ -702,7 +702,7 @@ class SonosPlayer(Player):
             group_members_ids = []
 
             for uid in group:
-                speaker = self.mass.players.get(uid)
+                speaker = self.mass.players.get_player(uid)
                 if speaker:
                     group_members_ids.append(uid)
                 else:
@@ -762,7 +762,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all(provider_filter=_provider.instance_id):
+        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 

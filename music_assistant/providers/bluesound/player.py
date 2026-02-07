@@ -211,7 +211,7 @@ class BluesoundPlayer(Player):
             return
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
-            client = self.mass.players.get(player_id, raise_unavailable=True)
+            client = self.mass.players.get_player(player_id, raise_unavailable=True)
             return PairedPlayer(client.ip_address, client.port)
 
         if player_ids_to_remove:
@@ -224,7 +224,7 @@ class BluesoundPlayer(Player):
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
                     self.logger.debug(f"Could not remove players: {err!s}")
                     continue
-                removed_player = self.mass.players.get(player_id)
+                removed_player = self.mass.players.get_player(player_id)
                 if removed_player:
                     removed_player._set_polling_dynamic()
                     removed_player._attr_current_media = None
@@ -239,7 +239,7 @@ class BluesoundPlayer(Player):
                     self.logger.debug(f"Could not add player {paired_player}: {err!s}")
                     continue
                 self._attr_group_members.append(player_id)
-                added_player = self.mass.players.get(player_id)
+                added_player = self.mass.players.get_player(player_id)
                 if added_player:
                     added_player._set_polling_dynamic()
                     added_player.update_state()
@@ -251,7 +251,7 @@ class BluesoundPlayer(Player):
         """Handle UNGROUP command for BluOS player."""
         leader = self.client.leader
         leader_player_id = self.client.provider.player_map((leader.ip, leader.port))
-        await self.mass.player.get(leader_player_id).set_members(None, [self.player_id])
+        await self.mass.players.get_player(leader_player_id).set_members(None, [self.player_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""
