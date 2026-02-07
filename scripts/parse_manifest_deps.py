@@ -7,6 +7,7 @@ to identify changes in the requirements field.
 
 # ruff: noqa: T201
 import json
+import re
 import sys
 
 
@@ -56,17 +57,28 @@ def main() -> int:
         print("No dependency changes")
         return 0
 
-    # Output in markdown format
+    # Helper to extract package name and create PyPI link
+    def format_with_link(req: str, emoji: str) -> str:
+        """Format requirement with PyPI link."""
+        match = re.match(r"^([a-zA-Z0-9_-]+)", req)
+        if match:
+            package = match.group(1)
+            version = req[len(package) :].strip()
+            pypi_url = f"https://pypi.org/project/{package}/"
+            return f"- {emoji} [{package}]({pypi_url}) {version}"
+        return f"- {emoji} {req}"
+
+    # Output in markdown format with PyPI links
     if added:
         print("**Added:**")
         for req in sorted(added):
-            print(f"- ✅ `{req}`")
+            print(format_with_link(req, "✅"))
         print()
 
     if removed:
         print("**Removed:**")
         for req in sorted(removed):
-            print(f"- ❌ `{req}`")
+            print(format_with_link(req, "❌"))
         print()
 
     if unchanged and (added or removed):
@@ -74,7 +86,7 @@ def main() -> int:
         print("<summary>Unchanged dependencies</summary>")
         print()
         for req in sorted(unchanged):
-            print(f"- `{req}`")
+            print(format_with_link(req, ""))
         print()
         print("</details>")
 

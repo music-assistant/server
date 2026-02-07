@@ -5,9 +5,11 @@ name: Dependency Security Check
 
 on:
   pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "requirements_all.txt"
       - "**/manifest.json"
+      - "pyproject.toml"
     branches:
       - stable
       - dev
@@ -52,7 +54,33 @@ jobs:
         run: |
           pip install pip-audit
 
-      # Step 1: Run pip-audit for known vulnerabilities
+      # Step 1: Verify requirements_all.txt is in sync
+      - name: Check requirements_all.txt sync
+        id: req_sync
+        run: |
+          # Save current requirements_all.txt
+          cp requirements_all.txt requirements_all.txt.original
+
+          # Regenerate requirements_all.txt
+          python3 scripts/gen_requirements_all.py
+
+          # Check if it changed
+          if ! diff -q requirements_all.txt.original requirements_all.txt > /dev/null; then
+            echo "status=out_of_sync" >> $GITHUB_OUTPUT
+            echo "⚠️  **requirements_all.txt is out of sync**" > sync_report.md
+            echo "" >> sync_report.md
+            echo "The \`requirements_all.txt\` file should be auto-generated from \`pyproject.toml\` and provider manifests." >> sync_report.md
+            echo "" >> sync_report.md
+            echo "**Action required:** Run \`python scripts/gen_requirements_all.py\` and commit the changes." >> sync_report.md
+            # Restore original
+            mv requirements_all.txt.original requirements_all.txt
+          else
+            echo "status=synced" >> $GITHUB_OUTPUT
+            echo "✅ requirements_all.txt is properly synchronized" > sync_report.md
+            rm requirements_all.txt.original
+          fi
+
+      # Step 2: Run pip-audit for known vulnerabilities
       - name: Run pip-audit on all requirements
         id: pip_audit
         continue-on-error: true
@@ -232,40 +260,46 @@ jobs:
         run: |
           echo "# 🔒 Dependency Security Report" > security_report.md
           echo "" >> security_report.md
-          echo "Automated security check for dependency changes in this PR." >> security_report.md
-          echo "" >> security_report.md
-          echo "---" >> security_report.md
-          echo "" >> security_report.md
-
-          # Add all report sections
-          cat audit_report.md >> security_report.md
-          echo "" >> security_report.md
-          echo "---" >> security_report.md
-          echo "" >> security_report.md
-
-          cat deps_report.md >> security_report.md
-          echo "" >> security_report.md
-
-          if [ -f manifest_report.md ]; then
-            echo "---" >> security_report.md
-            echo "" >> security_report.md
-            cat manifest_report.md >> security_report.md
-            echo "" >> security_report.md
-          fi
-
-          if [ -f safety_report.md ]; then
-            echo "---" >> security_report.md
-            echo "" >> security_report.md
-            cat safety_report.md >> security_report.md
-            echo "" >> security_report.md
-          fi
-
-          echo "---" >> security_report.md
-          echo "" >> security_report.md
-          echo "## 📋 Security Checks" >> security_report.md
-          echo "" >> security_report.md
 
           if [ "${{ steps.deps_check.outputs.has_changes }}" == "true" ] || [ "${{ steps.manifest_check.outputs.has_changes }}" == "true" ]; then
+            # 1. Show sync status if out of sync
+            if [ "${{ steps.req_sync.outputs.status }}" == "out_of_sync" ]; then
+              cat sync_report.md >> security_report.md
+              echo "" >> security_report.md
+              echo "---" >> security_report.md
+              echo "" >> security_report.md
+            fi
+
+            # 2. Modified Dependencies Section (consolidated)
+            echo "## 📦 Modified Dependencies" >> security_report.md
+            echo "" >> security_report.md
+
+            # Combine requirements_all.txt and manifest changes
+            HAS_DEPS=false
+
+            if [ "${{ steps.manifest_check.outputs.has_changes }}" == "true" ]; then
+              cat manifest_report.md | grep -v "^## " >> security_report.md
+              HAS_DEPS=true
+            fi
+
+            if [ "${{ steps.deps_check.outputs.has_changes }}" == "true" ]; then
+              if [ "$HAS_DEPS" = "true" ]; then
+                echo "" >> security_report.md
+              fi
+              cat deps_report.md | grep -v "^## " >> security_report.md
+            fi
+
+            echo "" >> security_report.md
+            echo "---" >> security_report.md
+            echo "" >> security_report.md
+
+            # 3. Vulnerability Scan Results
+            cat audit_report.md >> security_report.md
+            echo "" >> security_report.md
+            echo "---" >> security_report.md
+            echo "" >> security_report.md
+
+            # 4. Automated Security Checks
             echo "### Automated Security Checks" >> security_report.md
             echo "" >> security_report.md
 
@@ -324,7 +358,7 @@ jobs:
             if [ "${{ steps.pr_type.outputs.is_automated }}" == "true" ]; then
               echo "_Automated PRs with all checks passing will be auto-approved._" >> security_report.md
             else
-              echo "_After review, add the **\`dependencies-reviewed\`** label to approve this PR._" >> security_report.md
+              echo "**To approve:** Comment \`/approve-dependencies\` or manually add the \`dependencies-reviewed\` label." >> security_report.md
             fi
           else
             echo "✅ No dependency changes detected in this PR." >> security_report.md
@@ -337,7 +371,7 @@ jobs:
 
       # Step 6: Post comment to PR
       - name: Post security report to PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
@@ -378,7 +412,7 @@ jobs:
         if: |
           (steps.deps_check.outputs.has_changes == 'true' ||
            steps.manifest_check.outputs.has_changes == 'true')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const labels = context.payload.pull_request.labels.map(l => l.name);

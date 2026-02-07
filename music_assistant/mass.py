@@ -151,13 +151,13 @@ class MusicAssistant:
         await self.config.setup()
         # create shared zeroconf instance
         zeroconf_interfaces = self.config.get_raw_core_config_value(
-            "streams", CONF_ZEROCONF_INTERFACES, "default"
+            "players", CONF_ZEROCONF_INTERFACES, "default"
         )
+        # IPv6 requires InterfaceChoice.All, so only enable when zeroconf_interfaces is "all"
+        use_all_interfaces = zeroconf_interfaces == "all"
         self.aiozc = AsyncZeroconf(
-            ip_version=IPVersion.All,
-            interfaces=InterfaceChoice.All
-            if zeroconf_interfaces == "all"
-            else InterfaceChoice.Default,
+            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
+            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
         )
         # load all available providers from manifest files
         await self.__load_provider_manifests()
