@@ -18,11 +18,13 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import (
     ConfigEntryType,
+    MediaType,
     PlaybackState,
     ProviderFeature,
     QueueOption,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import DEFAULT_PORT
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -559,51 +561,185 @@ class PartyModePlugin(PluginProvider):
         if not queue:
             raise InvalidDataError(f"Queue not found: {queue_id}")
 
-        # Determine the queue option based on queue state
+        # Handle different scenarios based on queue state and boost mode
+        started_playback = False
+
         if queue.state != PlaybackState.PLAYING:
-            # If nothing is playing, start playback
-            option = QueueOption.PLAY
+            # If nothing is playing, start playback immediately
+            await self.mass.player_queues.play_media(
+                queue_id=queue_id,
+                media=uri,
+                option=QueueOption.PLAY,
+            )
+            started_playback = True
+            # Mark the newly added item
+            queue_items = self.mass.player_queues.items(queue_id)
+            if queue_items:
+                # The item we just added should be at current_index
+                current_idx = queue.current_index or 0
+                if current_idx < len(queue_items):
+                    queue_items[current_idx].extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                    if boost:
+                        queue_items[current_idx].extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
         elif boost:
-            # Boost = play next
-            option = QueueOption.NEXT
+            # Boost = insert after other boosted songs, before regular guest songs
+            # This creates a priority within the guest section
+            await self._add_to_boost_section(queue_id, uri)
         else:
-            # Regular add = add to end of guest section
-            option = QueueOption.ADD
-
-        # Record queue state before adding to find the new item afterwards
-        queue_items_before = self.mass.player_queues.items(queue_id)
-        existing_item_ids = {item.queue_item_id for item in queue_items_before}
-
-        # Add to queue using the standard queue controller
-        # Pass the URI directly - the queue controller will resolve it
-        await self.mass.player_queues.play_media(
-            queue_id=queue_id,
-            media=uri,
-            option=option,
-        )
-
-        # After adding, mark the new item(s) as party mode guest items
-        # Find items by comparing queue before/after (more reliable than URI matching)
-        queue_items_after = self.mass.player_queues.items(queue_id)
-        for item in queue_items_after:
-            if item.queue_item_id not in existing_item_ids:
-                item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-                if boost:
-                    item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+            # Regular add = insert at end of guest section (priority queue)
+            # This ensures guest items play before regular queue items
+            await self._add_to_guest_section(queue_id, uri)
 
         self.logger.info(
-            "Guest added to queue: %s (boost=%s, option=%s)",
+            "Guest added to queue: %s (boost=%s, started_playback=%s)",
             uri,
             boost,
-            option.value,
+            started_playback,
         )
 
         return {
             "success": True,
             "queue_id": queue_id,
             "boosted": boost,
-            "started_playback": option == QueueOption.PLAY,
+            "started_playback": started_playback,
         }
+
+    async def _add_to_guest_section(self, queue_id: str, uri: str) -> None:
+        """Add a media item to the end of the guest priority section.
+
+        Guest items are inserted after other guest items but before regular
+        queue items. This creates a priority queue where guest requests
+        play before the regular queue.
+
+        :param queue_id: The queue ID to add to.
+        :param uri: The URI of the media item to add.
+        """
+        # Resolve the media item from URI
+        media_item = await self.mass.music.get_item_by_uri(uri)
+        if not media_item or media_item.media_type not in (
+            MediaType.TRACK,
+            MediaType.RADIO,
+        ):
+            raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+
+        # Create a QueueItem from the media item
+        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+
+        # Find the insert position (end of guest section)
+        queue = self.mass.player_queues.get(queue_id)
+        queue_items = self.mass.player_queues.items(queue_id)
+        current_index = queue.current_index or 0 if queue else 0
+
+        # Find where to insert: after last guest item, before first non-guest item
+        insert_index = self._find_guest_section_end(queue_items, current_index)
+
+        # Load the item at the calculated position
+        await self.mass.player_queues.load(
+            queue_id=queue_id,
+            queue_items=[queue_item],
+            insert_at_index=insert_index,
+            keep_remaining=True,
+            keep_played=True,
+            shuffle=False,
+        )
+
+    def _find_guest_section_end(self, queue_items: list[QueueItem], current_index: int) -> int:
+        """Find the index where the guest section ends.
+
+        Scans from current_index + 1 forward to find where guest items end
+        and regular items begin. Returns the position where a new guest item
+        should be inserted.
+
+        :param queue_items: List of queue items.
+        :param current_index: The currently playing index.
+        :returns: The index where new guest items should be inserted.
+        """
+        # Start after current playing item
+        search_start = current_index + 1
+
+        # If queue is empty or we're at the end, append at the end
+        if not queue_items or search_start >= len(queue_items):
+            return len(queue_items)
+
+        # Find the last consecutive guest item after current_index
+        guest_section_end = search_start
+        for i in range(search_start, len(queue_items)):
+            if queue_items[i].extra_attributes.get(ATTR_PARTY_MODE_GUEST):
+                guest_section_end = i + 1  # Insert after this guest item
+            else:
+                # Found a non-guest item, stop here
+                break
+
+        return guest_section_end
+
+    async def _add_to_boost_section(self, queue_id: str, uri: str) -> None:
+        """Add a media item to the boost section (after other boosts, before regular guests).
+
+        Boosted items have priority over regular guest items but not over other
+        boosted items. New boosts go at the end of the boost section.
+
+        :param queue_id: The queue ID to add to.
+        :param uri: The URI of the media item to add.
+        """
+        # Resolve the media item from URI
+        media_item = await self.mass.music.get_item_by_uri(uri)
+        if not media_item or media_item.media_type not in (
+            MediaType.TRACK,
+            MediaType.RADIO,
+        ):
+            raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+
+        # Create a QueueItem from the media item
+        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+        queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+
+        # Find the insert position (end of boost section)
+        queue = self.mass.player_queues.get(queue_id)
+        queue_items = self.mass.player_queues.items(queue_id)
+        current_index = queue.current_index or 0 if queue else 0
+
+        # Find where to insert: after last boosted item, before first non-boosted guest item
+        insert_index = self._find_boost_section_end(queue_items, current_index)
+
+        # Load the item at the calculated position
+        await self.mass.player_queues.load(
+            queue_id=queue_id,
+            queue_items=[queue_item],
+            insert_at_index=insert_index,
+            keep_remaining=True,
+            keep_played=True,
+            shuffle=False,
+        )
+
+    def _find_boost_section_end(self, queue_items: list[QueueItem], current_index: int) -> int:
+        """Find the index where the boost section ends.
+
+        Scans from current_index + 1 forward to find where boosted items end.
+        The boost section is at the front of the guest section.
+
+        :param queue_items: List of queue items.
+        :param current_index: The currently playing index.
+        :returns: The index where new boosted items should be inserted.
+        """
+        # Start after current playing item
+        search_start = current_index + 1
+
+        # If queue is empty or we're at the end, insert right after current
+        if not queue_items or search_start >= len(queue_items):
+            return min(search_start, len(queue_items))
+
+        # Find the last consecutive boosted item after current_index
+        boost_section_end = search_start
+        for i in range(search_start, len(queue_items)):
+            if queue_items[i].extra_attributes.get(ATTR_PARTY_MODE_BOOSTED):
+                boost_section_end = i + 1  # Insert after this boosted item
+            else:
+                # Found a non-boosted item, stop here
+                break
+
+        return boost_section_end
 
     async def skip_current(self) -> dict[str, Any]:
         """Skip the currently playing track.
@@ -648,38 +784,6 @@ class PartyModePlugin(PluginProvider):
         }
 
     # ==================== Helper Methods ====================
-
-    def _find_guest_section_end(self, queue_id: str) -> int:
-        """Find the index where the guest priority section ends.
-
-        Returns the index of the first non-guest item after the current playing position,
-        or the end of the queue if all remaining items are guest items.
-
-        :param queue_id: The ID of the queue to search.
-        :returns: The index where new guest items should be inserted.
-        """
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue:
-            return 0
-
-        queue_items = self.mass.player_queues.items(queue_id)
-        if not queue_items:
-            return 0
-
-        # Start searching from after the currently playing/buffered item
-        start_index = (queue.index_in_buffer or queue.current_index or 0) + 1
-
-        # If start_index is beyond the queue, return the queue length
-        if start_index >= len(queue_items):
-            return len(queue_items)
-
-        # Find the first non-guest item after current position
-        for i, item in enumerate(queue_items[start_index:], start=start_index):
-            if not item.extra_attributes.get(ATTR_PARTY_MODE_GUEST):
-                return i
-
-        # All remaining items are guest items (or queue is empty after current)
-        return len(queue_items)
 
     async def _revoke_guest_tokens(self) -> None:
         """Revoke all guest access tokens and codes for party mode.
