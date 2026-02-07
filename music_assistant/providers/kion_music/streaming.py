@@ -162,7 +162,7 @@ class KionMusicStreamingManager:
     def _get_content_type(self, codec: str | None) -> ContentType:
         """Determine content type from codec string.
 
-        :param codec: Codec string from Yandex API.
+        :param codec: Codec string from API.
         :return: ContentType enum value.
         """
         if not codec:
