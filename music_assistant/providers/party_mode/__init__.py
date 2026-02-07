@@ -570,6 +570,10 @@ class PartyModePlugin(PluginProvider):
             # Regular add = add to end of guest section
             option = QueueOption.ADD
 
+        # Record queue state before adding to find the new item afterwards
+        queue_items_before = self.mass.player_queues.items(queue_id)
+        existing_item_ids = {item.queue_item_id for item in queue_items_before}
+
         # Add to queue using the standard queue controller
         # Pass the URI directly - the queue controller will resolve it
         await self.mass.player_queues.play_media(
@@ -578,17 +582,14 @@ class PartyModePlugin(PluginProvider):
             option=option,
         )
 
-        # After adding, mark the item as a party mode guest item using extra_attributes
-        # We need to find the item we just added and update its extra_attributes
-        queue_items = self.mass.player_queues.items(queue_id)
-        if queue_items:
-            # Find the most recently added item matching our media
-            for item in reversed(queue_items):
-                if item.media_item and item.media_item.uri == uri:
-                    item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-                    if boost:
-                        item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
-                    break
+        # After adding, mark the new item(s) as party mode guest items
+        # Find items by comparing queue before/after (more reliable than URI matching)
+        queue_items_after = self.mass.player_queues.items(queue_id)
+        for item in queue_items_after:
+            if item.queue_item_id not in existing_item_ids:
+                item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                if boost:
+                    item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
 
         self.logger.info(
             "Guest added to queue: %s (boost=%s, option=%s)",
