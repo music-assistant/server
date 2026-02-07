@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import os
 import random
+import time
+import weakref
 from base64 import b64decode
+from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
@@ -28,9 +33,89 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
+_IMAGE_CACHE_TTL_SECONDS = 900
+_IMAGE_CACHE_MAX_ENTRIES = 256
+_MAX_CONCURRENT_EMBEDDED_IMAGE_EXTRACTIONS = 2
+
+
+@dataclass(slots=True)
+class _ImageHelperState:
+    """Runtime state for image helper cache/throttling."""
+
+    cache: OrderedDict[str, tuple[float, bytes]] = field(default_factory=OrderedDict)
+    embedded_image_semaphore: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(_MAX_CONCURRENT_EMBEDDED_IMAGE_EXTRACTIONS)
+    )
+
+
+_IMAGE_HELPER_STATES: weakref.WeakKeyDictionary[MusicAssistant, _ImageHelperState] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _get_helper_state(mass: MusicAssistant) -> _ImageHelperState:
+    """Return/create helper state for this Music Assistant instance."""
+    if state := _IMAGE_HELPER_STATES.get(mass):
+        return state
+    state = _ImageHelperState()
+    _IMAGE_HELPER_STATES[mass] = state
+    return state
+
+
+def _create_cache_key(provider: str, path_or_url: str) -> str:
+    """Create deterministic cache key for image requests."""
+    return f"{provider}.{path_or_url}"
+
+
+def _create_task_id(provider: str, path_or_url: str) -> str:
+    """Create compact task_id for in-flight request de-duplication."""
+    cache_key = _create_cache_key(provider, path_or_url)
+    cache_key_hash = hashlib.md5(cache_key.encode(), usedforsecurity=False).hexdigest()
+    return f"image_data.{cache_key_hash}"
+
+
+def _get_cached_image(state: _ImageHelperState, cache_key: str) -> bytes | None:
+    """Get image bytes from local memory cache."""
+    cache_entry = state.cache.get(cache_key)
+    if cache_entry is None:
+        return None
+    expires_at, image_data = cache_entry
+    if expires_at <= time.monotonic():
+        state.cache.pop(cache_key, None)
+        return None
+    state.cache.move_to_end(cache_key)
+    return image_data
+
+
+def _set_cached_image(state: _ImageHelperState, cache_key: str, image_data: bytes) -> None:
+    """Store image bytes in local memory cache."""
+    state.cache[cache_key] = (time.monotonic() + _IMAGE_CACHE_TTL_SECONDS, image_data)
+    state.cache.move_to_end(cache_key)
+    while len(state.cache) > _IMAGE_CACHE_MAX_ENTRIES:
+        state.cache.popitem(last=False)
+
+
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
     """Create thumbnail from image url."""
-    # TODO: add local cache here !
+    state = _get_helper_state(mass)
+    cache_key = _create_cache_key(provider, path_or_url)
+    if (cached_image := _get_cached_image(state, cache_key)) is not None:
+        return cached_image
+    task: asyncio.Task[bytes] = mass.create_task(
+        _get_image_data_uncached,
+        mass,
+        path_or_url,
+        provider,
+        task_id=_create_task_id(provider, path_or_url),
+        abort_existing=False,
+    )
+    image_data = await asyncio.shield(task)
+    _set_cached_image(state, cache_key, image_data)
+    return image_data
+
+
+async def _get_image_data_uncached(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
+    """Fetch image bytes without using local cache."""
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
         if resolved_image := await prov.resolve_image(path_or_url):
@@ -54,8 +139,11 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read())
     # use ffmpeg for embedded images
-    if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
-        return img_data
+    if is_safe_path(path_or_url):
+        state = _get_helper_state(mass)
+        async with state.embedded_image_semaphore:
+            if img_data := await get_embedded_image(path_or_url):
+                return img_data
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
 
