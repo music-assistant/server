@@ -265,8 +265,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     )
                     continue
 
-                # For tracks, try to match to playlist provider and sort by quality
-                # For non-track items, just use first available (they typically have one mapping)
+                # For tracks, try to match to playlist provider
+                # For non-track items, just use first available mapping
                 provider_mappings = full_item.provider_mappings
                 if media_type == MediaType.TRACK:
                     # Cast to Track for mypy - we know it's a track from media_type check
@@ -282,10 +282,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                                 full_track, playlist_prov, strict=False
                             )
                         )
-                    # Sort by quality (highest first) for tracks
-                    provider_mappings = sorted(
-                        provider_mappings, key=lambda x: x.quality, reverse=True
-                    )
+
+                # Sort by quality (highest first) for deterministic selection
+                provider_mappings = sorted(provider_mappings, key=lambda x: x.quality, reverse=True)
 
                 # Add first available provider mapping
                 for prov_mapping in provider_mappings:
