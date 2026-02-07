@@ -128,8 +128,13 @@ class YandexMusicClient:
                 except (BadRequestError, NetworkError) as batch_err:
                     LOGGER.warning("Error fetching album details batch: %s", batch_err)
                     # Fall back to minimal data for this batch
+                    batch_set = set(batch)
                     for like in result:
-                        if like.album is not None and like.album.id and str(like.album.id) in batch:
+                        if (
+                            like.album is not None
+                            and like.album.id
+                            and str(like.album.id) in batch_set
+                        ):
                             full_albums.append(like.album)
             return full_albums
         except (BadRequestError, NetworkError) as err:
