@@ -31,9 +31,6 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.AUDIOBOOK,
 )
 
-# Non-track playlist item classes (for cases where Track needs separate handling)
-PLAYLIST_NON_TRACK_ITEM_CLASSES: Final[tuple[type, ...]] = (Radio, PodcastEpisode, Audiobook)
-
 
 API_SCHEMA_VERSION: Final[int] = 28
 MIN_SCHEMA_VERSION: Final[int] = 28

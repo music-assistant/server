@@ -33,8 +33,6 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant import MusicAssistant
 
 
