@@ -59,6 +59,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
+    ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -759,6 +760,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
+    @api_command("players/cmd/group_volume_mute")
+    @handle_player_command
+    async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME_MUTE command to all players in a group.
+
+        - player_id: player_id of the group player or sync leader.
+        - muted: bool if group should be muted.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checker
+        if player.type == PlayerType.GROUP or player.group_members:
+            # dedicated group player or sync leader
+            coros = []
+            for child_player in self.iter_group_members(
+                player, only_powered=True, exclude_self=False
+            ):
+                coros.append(self.cmd_volume_mute(child_player.player_id, muted))
+            await asyncio.gather(*coros)
+
     @api_command("players/cmd/volume_mute")
     @handle_player_command
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
@@ -769,6 +789,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player
+
+        # Set/clear mute lock for players in a group
+        # This prevents auto-unmute when group volume changes
+        is_in_group = bool(player.state.synced_to or player.state.group_members)
+        if muted and is_in_group:
+            player.extra_data[ATTR_MUTE_LOCK] = True
+        elif not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
         if player.mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
             async with self._player_throttlers[player_id]:
@@ -1750,6 +1779,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
             # Use private method to skip permission check - already validated on group
+            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
@@ -2578,12 +2608,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_group_volume(player_id, volume_level)
             return
 
+        # Check if player has mute lock (set when individually muted in a group)
+        # If locked, don't auto-unmute when volume changes
+        has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
+            not has_mute_lock
             # use player.state here to get accumulated mute control from any linked protocol players
-            player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            and player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.state.volume_muted
         ):
-            # if player is muted, we unmute it first
+            # if player is muted and not locked, we unmute it first
             # skip this for fake mute since it uses volume to simulate mute
             self.logger.debug(
                 "Unmuting player %s before setting volume",
