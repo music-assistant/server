@@ -1,23 +1,25 @@
 """SnapCastProvider."""
 
+from __future__ import annotations
+
 import asyncio
+import hashlib
 import logging
 import re
 import shutil
 import socket
+from contextlib import suppress
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from bidict import bidict
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import SetupFailedError
-from snapcast.control import create_server
-from snapcast.control.client import Snapclient
-from snapcast.control.group import Snapgroup
-from snapcast.control.server import Snapserver
+from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
@@ -32,18 +34,37 @@ from music_assistant.providers.snapcast.constants import (
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
     CONTROL_SCRIPT,
-    CONTROL_SOCKET_PATH_TEMPLATE,
     DEFAULT_SNAPSERVER_PORT,
+    MASS_ANNOUNCEMENT_POSTFIX,
+    MASS_STREAM_PREFIX,
     SNAPWEB_DIR,
 )
+from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.snapcast.player import SnapCastPlayer
-from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
+
+    from .snap_cntrl_proto import SnapclientProto, SnapgroupProto, SnapserverProto
+
+
+async def _create_cntrl_server(
+    loop: asyncio.AbstractEventLoop,
+    host: str,
+    port: int = CONTROL_PORT,
+    reconnect: bool = False,
+) -> SnapserverProto:
+    """Server factory."""
+    server = Snapserver(loop, host, port, reconnect)
+    await server.start()
+    return cast("SnapserverProto", server)
 
 
 class SnapCastProvider(PlayerProvider):
     """SnapCastProvider."""
 
-    _snapserver: Snapserver
+    _snapserver: SnapserverProto
     _snapserver_runner: asyncio.Task[None] | None
     _snapserver_started: asyncio.Event | None
     _snapcast_server_host: str
@@ -52,7 +73,17 @@ class SnapCastProvider(PlayerProvider):
     _use_builtin_server: bool
     _stop_called: bool
     _controlscript_available: bool
-    _socket_servers: dict[str, SnapcastSocketServer]  # queue_id -> socket server
+    _snapcast_ma_streams: dict[str, SnapcastMAStream]
+    _snapcast_ma_streams_lock: asyncio.Lock
+
+    @property
+    def use_queue_control(self) -> bool:
+        """Return whether queue-based control scripts are available.
+
+        Indicates if the Snapcast control script has been successfully initialized
+        and can be used to control playback via a queue-specific control channel.
+        """
+        return self._controlscript_available
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -61,11 +92,12 @@ class SnapCastProvider(PlayerProvider):
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
         self._controlscript_available = False
-        self._socket_servers = {}
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
-            self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_buffer_size = cast(
+                "int", self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            )
             self._snapcast_server_chunk_ms = self.config.get_value(CONF_SERVER_CHUNK_MS)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
             self._snapcast_server_send_to_muted = self.config.get_value(
@@ -82,13 +114,16 @@ class SnapCastProvider(PlayerProvider):
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._ids_map = bidict({})
 
+        self._snapcast_ma_streams = {}
+        self._snapcast_ma_streams_lock = asyncio.Lock()
+
         if self._use_builtin_server:
             await self._start_builtin_server()
         else:
             self._snapserver_runner = None
             self._snapserver_started = None
         try:
-            self._snapserver = await create_server(
+            self._snapserver = await _create_cntrl_server(
                 self.mass.loop,
                 self._snapcast_server_host,
                 port=self._snapcast_server_control_port,
@@ -123,6 +158,10 @@ class SnapCastProvider(PlayerProvider):
             if player.playback_state != PlaybackState.PLAYING:
                 continue
             await player.stop()
+
+        for stream_name in list(self._snapcast_ma_streams):
+            await self.delete_ma_stream(stream_name)
+
         self._snapserver.stop()
         await self._stop_builtin_server()
 
@@ -252,9 +291,9 @@ class SnapCastProvider(PlayerProvider):
                 # The snapserver doesn't always cleanup the control script processes
                 # properly. We do it explicitly when closing a socket server.
                 # Should be fixed on the server side, though.
-                for socket_server in list(self._socket_servers.values()):
-                    await socket_server.stop()
-                self._socket_servers.clear()
+                for stream_name in list(self._snapcast_ma_streams):
+                    await self.delete_ma_stream(stream_name)
+                self._snapcast_ma_streams.clear()
                 raise
 
     def _get_ma_id(self, snap_client_id: str) -> str:
@@ -277,19 +316,16 @@ class SnapCastProvider(PlayerProvider):
             return new_id
         return self._get_ma_id(snap_client_id)
 
-    def _handle_player_init(self, snap_client: Snapclient) -> SnapCastPlayer:
+    def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer:
         """Process Snapcast add to Player controller."""
         player_id = self._generate_and_register_id(snap_client.identifier)
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
-            snap_client = cast(
-                "Snapclient", self._snapserver.client(self._get_snapclient_id(player_id))
-            )
+            snap_client = self._snapserver.client(self._get_snapclient_id(player_id))
             player = SnapCastPlayer(
                 provider=self,
                 player_id=player_id,
                 snap_client=snap_client,
-                snap_client_id=self._get_snapclient_id(player_id),
             )
             player.setup()
         else:
@@ -310,22 +346,21 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                ma_player = cast("SnapCastPlayer", player)
-                snap_client.set_callback(ma_player._handle_player_update)
-        for snap_group in self._snapserver.groups:
-            snap_group.set_callback(self._handle_group_update)
+            if player := self.get_snap_player(client_id=snap_client.identifier):
+                snap_client.set_callback(player._handle_player_update)
+        self._update_group_callbacks()
 
-    def _handle_group_update(self, snap_group: Snapgroup) -> None:
+    def poke_group_members(self, snap_group: SnapgroupProto) -> None:
         """Process Snapcast group callback."""
-        for snap_client in self._snapserver.clients:
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                assert isinstance(ma_player, SnapCastPlayer)  # for type checking
-                ma_player._handle_player_update(snap_client)
+        for snap_client_id in snap_group.clients:
+            if ma_player := self.get_snap_player(client_id=snap_client_id):
+                ma_player.poke_player_update()
 
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
         if self._stop_called or self.mass.closing:
+            # prevent auto-reconnecting of snapcast controller
+            self._snapserver.stop()
             # we're instructed to stop/exit, so no need to restart the connection
             return
         self.logger.info(
@@ -345,34 +380,288 @@ class SnapCastProvider(PlayerProvider):
         else:
             self.logger.warning("Unable to remove snapclient %s: %s", player_id, error_msg)
 
-    async def get_or_create_socket_server(self, queue_id: str) -> str:
-        """Get or create a socket server for the given queue.
+    def _update_group_callbacks(self, poke: bool = False) -> None:
+        for grp in self._snapserver.groups:
+            grp.set_callback(self.poke_group_members)
+            if poke:
+                self.poke_group_members(grp)
 
-        :param queue_id: The queue ID to create a socket server for.
-        :return: The path to the Unix socket.
+    async def ensure_player_owned_group(
+        self, ma_player_id: str, set_stream_id: str | None = None
+    ) -> SnapgroupProto | None:
+        """Ensure a Snapcast group is owned by the given player.
+
+        This method guarantees that the returned Snapcast group is *owned* by the
+        specified Music Assistant player, meaning the group name equals the
+        player's ID and the player is the group leader.
+
+        Behavior:
+        - If the player is already the leader of its current group, that group is
+        returned unchanged.
+        - If the player is a member of another group (but not the leader), the
+        player is removed from that group, which causes Snapcast to create a new
+        single-client group for the player.
+        - The resulting group is renamed to the player's ID.
+
+        If `set_stream_id` is provided and a new group is created, the group's
+        stream is updated accordingly.
+
+        Args:
+            ma_player_id: Music Assistant player ID.
+            set_stream_id: Optional Snapcast stream ID to assign to the player's group.
+
+        Returns:
+            The Snapcast group owned by the player, or ``None`` if the player is not
+            currently part of any group.
         """
-        if queue_id in self._socket_servers:
-            return self._socket_servers[queue_id].socket_path
+        player_client = self.get_snap_client(player_id=ma_player_id)
+        if player_client is None:
+            return None
 
-        socket_path = CONTROL_SOCKET_PATH_TEMPLATE.format(queue_id=queue_id)
-        socket_server = SnapcastSocketServer(
-            mass=self.mass,
-            queue_id=queue_id,
-            socket_path=socket_path,
-            streamserver_ip=str(self.mass.streams.publish_ip),
-            streamserver_port=cast("int", self.mass.streams.publish_port),
+        curr_group = player_client.group
+
+        if curr_group is None:
+            return None
+
+        if curr_group.name == ma_player_id:
+            return curr_group
+
+        group_members = list(curr_group.clients)
+        if len(group_members) > 1 and curr_group.name:
+            # player is member of other player group, remove it, which results in a new group
+            group_members.remove(player_client.identifier)
+            res = await self._snapserver.group_clients(curr_group.identifier, group_members)
+            if not (isinstance(res, dict) and "server" in res):
+                raise RuntimeError("Couldn't remove client from group")
+            self._snapserver.synchronize(res)
+            curr_group = player_client.group
+            if curr_group is None:
+                return None
+            if set_stream_id:
+                await curr_group.set_stream(set_stream_id)
+
+        await curr_group.set_name(ma_player_id)
+        return curr_group
+
+    async def isolate_player_to_dedicated_group(
+        self,
+        target_player_id: str,
+        target_stream_id: str | None = None,
+        others_stream_id: str | None = "default",
+    ) -> None:
+        """Isolate a player into a dedicated Snapcast group.
+
+        Ensures that the target player ends up in a group where it is the sole
+        member and group leader.
+
+        Behavior:
+        - The target player is first ensured to own its group.
+        - All other members of that group are removed.
+        - Each removed player is placed into its own dedicated group.
+        - Removed players' groups are optionally assigned `others_stream_id`.
+        - The target group is optionally assigned `target_stream_id`.
+
+        Callbacks for affected clients and groups are temporarily disabled during
+        the operation to avoid intermediate state updates.
+
+        Args:
+            target_player_id: Music Assistant player ID to isolate.
+            target_stream_id: Optional stream ID to assign to the target player's group.
+            others_stream_id: Stream ID assigned to newly created groups for removed players.
+        """
+        this_client_id = self._get_snapclient_id(target_player_id)
+        target_group = await self.ensure_player_owned_group(
+            target_player_id, set_stream_id=target_stream_id
         )
-        await socket_server.start()
-        self._socket_servers[queue_id] = socket_server
-        self.logger.debug("Created socket server for queue %s at %s", queue_id, socket_path)
-        return socket_path
 
-    async def stop_socket_server(self, queue_id: str) -> None:
-        """Stop and remove the socket server for the given queue.
+        if target_group is None:
+            return
 
-        :param queue_id: The queue ID to stop the socket server for.
+        target_group.set_callback(None)
+        group_members = list(target_group.clients)
+        group_members.remove(this_client_id)
+        for client_id in group_members:
+            client = self._snapserver.client(client_id)
+            client.set_callback(None)
+        if group_members:
+            res = await self._snapserver.group_clients(target_group.identifier, [this_client_id])
+            if not (isinstance(res, dict) and "server" in res):
+                raise RuntimeError("Couldn't remove client from group")
+            self._snapserver.synchronize(res)
+            for client_id in group_members:
+                ma_player_id = self._get_ma_id(client_id)
+                if ma_player := cast("SnapCastPlayer", self.mass.players.get(ma_player_id)):
+                    client = self._snapserver.client(client_id)
+                    if client is not None:
+                        if client.group is not None:
+                            await client.group.set_name(ma_player_id)
+                            if others_stream_id:
+                                await client.group.set_stream(others_stream_id)
+                        client.set_callback(ma_player._handle_player_update)
+
+        if target_stream_id is not None:
+            await target_group.set_stream(target_stream_id)
+
+    async def get_snapcast_media_stream(
+        self,
+        media: PlayerMedia,
+        filter_settings_owner: str | None = None,
+        existing_only: bool = False,
+    ) -> SnapcastMAStream | None:
+        """Get or create a Snapcast Music Assistant stream for the given media.
+
+        Determines a deterministic Snapcast stream name based on the media type
+        and source, and either returns an existing stream or creates a new one.
+
+        Behavior:
+        - Announcement and generic media streams use a hashed name.
+        - Plugin and queue-backed sources reuse a stable stream name.
+        - Queue-backed streams may persist across playback sessions.
+        - If `existing_only` is True, no new stream will be created.
+
+        Newly created streams are registered with the Snapcast server and fully
+        set up before being returned.
+
+        Args:
+            media: Media item to stream.
+            filter_settings_owner: Optional player/entity ID used to resolve DSP filters.
+            existing_only: If True, only return an existing stream.
+
+        Returns:
+            A ``SnapcastMAStream`` instance, or ``None`` if no stream exists and
+            `existing_only` is True.
         """
-        if queue_id in self._socket_servers:
-            await self._socket_servers[queue_id].stop()
-            del self._socket_servers[queue_id]
-            self.logger.debug("Stopped socket server for queue %s", queue_id)
+        stream_name: str = ""
+        name_suffix: str = ""
+        queue_id: str | None = None
+        source_id: str | None = None
+        destroy_on_stop = True
+
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            stream_name += hashlib.md5(media.uri.encode()).hexdigest()[:6]
+            name_suffix = MASS_ANNOUNCEMENT_POSTFIX
+        elif media.media_type == MediaType.PLUGIN_SOURCE:
+            custom_data = media.custom_data or {}
+            plugin: str = media.title or custom_data.get("provider") or ""
+            player: str = f" {custom_data.get('player_id', '')}"
+            stream_name += f"{plugin} {player}"
+            source_id = custom_data.get("source_id")
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
+            stream_name += media.source_id
+        elif media.source_id and media.queue_item_id:
+            stream_name += media.source_id
+            queue_id = media.source_id
+            source_id = media.source_id
+            destroy_on_stop = False
+        else:
+            stream_name += hashlib.md5(media.uri.encode()).hexdigest()[:6]
+
+        stream_name = create_safe_string(stream_name, lowercase=False)
+        stream_name = f"{MASS_STREAM_PREFIX}{stream_name}{name_suffix}"
+        async with self._snapcast_ma_streams_lock:
+            if not (stream := self._snapcast_ma_streams.get(stream_name)):
+                if existing_only:
+                    return None
+
+                stream = SnapcastMAStream(
+                    provider=self,
+                    media=media,
+                    stream_name=stream_name,
+                    filter_settings_owner=filter_settings_owner,
+                    source_id=source_id,
+                    use_cntrl_script=bool(queue_id) and self.use_queue_control,
+                    destroy_on_stop=destroy_on_stop,
+                )
+                self._snapcast_ma_streams[stream_name] = stream
+            else:
+                stream.update_media(media)
+        await stream.setup()
+        return stream
+
+    def get_snap_ma_stream(self, stream_name: str) -> SnapcastMAStream | None:
+        """Return an existing Music Assistant Snapcast stream by name.
+
+        Args:
+            stream_name: Snapcast stream name.
+
+        Returns:
+            The corresponding ``SnapcastMAStream`` instance, or ``None`` if not found.
+        """
+        return self._snapcast_ma_streams.get(stream_name)
+
+    async def delete_ma_stream(self, stream_name: str) -> None:
+        """Remove and destroy a Music Assistant Snapcast stream.
+
+        The stream is removed from internal tracking and its resources are
+        destroyed asynchronously. Errors during destruction are logged but
+        otherwise ignored.
+
+        Args:
+            stream_name: Snapcast stream name to delete.
+        """
+        async with self._snapcast_ma_streams_lock:
+            stream = self._snapcast_ma_streams.pop(stream_name, None)
+
+        if not stream:
+            return
+
+        try:
+            await stream.destroy()
+        except Exception:
+            self.logger.exception("Failed to destroy stream session %s", stream_name)
+
+    def update_stream_usage(self) -> None:
+        """Update usage state for all tracked Snapcast streams.
+
+        Marks streams as "in use" if they are currently assigned to any Snapcast
+        group, and schedules unused streams for delayed shutdown.
+
+        This method should be called whenever group or stream assignments change
+        on the Snapcast server.
+        """
+        unused_streams = set(self._snapcast_ma_streams.keys())
+        for grp in self._snapserver.groups:
+            stream_id = grp.stream
+            if stream_id in self._snapcast_ma_streams:
+                ma_stream = self._snapcast_ma_streams[stream_id]
+                ma_stream.set_in_use(True)
+                unused_streams.discard(stream_id)
+
+            if not unused_streams:
+                break
+
+        for stream_id in unused_streams:
+            self._snapcast_ma_streams[stream_id].set_in_use(False)
+
+    def get_snap_client(
+        self, *, client_id: str | None = None, player_id: str | None = None
+    ) -> SnapclientProto | None:
+        """Return the snapclient for either given client_id or player_id."""
+        if player_id is not None:
+            if client_id is not None and client_id != self._get_snapclient_id(client_id):
+                raise ValueError("provided client_id and player_id do not match")
+            client_id = self._get_snapclient_id(player_id)
+
+        if client_id:
+            with suppress(KeyError):
+                return self._snapserver.client(client_id)
+
+        return None
+
+    def get_snap_player(
+        self, *, client_id: str | None = None, player_id: str | None = None
+    ) -> SnapCastPlayer | None:
+        """Return the MA SnapCastPlayer for either given client_id or player_id."""
+        if client_id is not None:
+            if player_id is not None and player_id != self._get_ma_id(client_id):
+                raise ValueError("provided client_id and player_id do not match")
+            player_id = self._get_ma_id(client_id)
+
+        if player_id is None:
+            return None
+
+        if ma_player := self.mass.players.get(player_id):
+            assert isinstance(ma_player, SnapCastPlayer)  # for type checking
+            return ma_player
+
+        return None

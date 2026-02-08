@@ -1,7 +1,6 @@
 """Constants for snapcast provider."""
 
 import pathlib
-from enum import StrEnum
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
@@ -60,10 +59,3 @@ DEFAULT_SNAPCAST_PCM_FORMAT = AudioFormat(
     bit_depth=16,
     channels=2,
 )
-
-
-class SnapCastStreamType(StrEnum):
-    """Enum for Snapcast Stream Type."""
-
-    MUSIC = "MUSIC"
-    ANNOUNCEMENT = "ANNOUNCEMENT"

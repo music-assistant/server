@@ -281,10 +281,10 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="generic",
@@ -448,9 +448,11 @@ class StreamsController(CoreController):
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
+        # see https://github.com/music-assistant/support/issues/4913
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name,
+            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
