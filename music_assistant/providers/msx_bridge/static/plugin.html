@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Music Assistant MSX Plugin</title>
+    <script src="/msx/tvx-plugin-module.min.js"></script>
+</head>
+<body>
+<script>
+(function() {
+    var BRIDGE = window.location.protocol + "//" + window.location.host;
+
+    function MAHandler() {}
+
+    MAHandler.prototype.handleRequest = function(dataId, data, callback) {
+        if (dataId === "init") {
+            callback({
+                name: "Music Assistant",
+                version: "1.0.0",
+                headline: "Music Assistant",
+                menu: [
+                    { icon: "search", label: "Search", data: BRIDGE + "/msx/search-page.json" },
+                    { icon: "album", label: "Albums", data: BRIDGE + "/msx/albums.json" },
+                    { icon: "person", label: "Artists", data: BRIDGE + "/msx/artists.json" },
+                    { icon: "queue-music", label: "Playlists", data: BRIDGE + "/msx/playlists.json" },
+                    { icon: "audiotrack", label: "Tracks", data: BRIDGE + "/msx/tracks.json" }
+                ]
+            });
+        }
+    };
+
+    tvx.PluginTools.onReady(function() {
+        tvx.InteractionPlugin.setupHandler(new MAHandler());
+        tvx.InteractionPlugin.init();
+    });
+})();
+</script>
+</body>
+</html>
