@@ -194,7 +194,7 @@ class Provider:
         logging_name = self.domain
         if getattr(self, "available", False):
             # async_init completed
-            logging_name = f"{self.domain} ({self.name})"
+            logging_name = self.name
         self.logger = mass_logger.getChild(logging_name)
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
