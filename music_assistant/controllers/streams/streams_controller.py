@@ -448,9 +448,11 @@ class StreamsController(CoreController):
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
+        # see https://github.com/music-assistant/support/issues/4913
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name,
+            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
