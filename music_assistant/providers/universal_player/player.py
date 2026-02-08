@@ -17,11 +17,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import (
-    ACTIVE_PROTOCOL_FEATURES,
-    CONF_PREFERRED_OUTPUT_PROTOCOL,
-    PROTOCOL_FEATURES,
-)
+from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
@@ -68,21 +64,8 @@ class UniversalPlayer(Player):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features (based on output protocols)."""
-        base_features = set()
-        if self.active_output_protocol:
-            # Active linked protocol: add from that specific protocol
-            if protocol_player := self.mass.players.get_player(self.active_output_protocol):
-                for feature in protocol_player.supported_features:
-                    if feature in ACTIVE_PROTOCOL_FEATURES:
-                        base_features.add(feature)
-            return base_features
-        # No active protocol: add from all linked protocols
-        for linked in self.linked_output_protocols:
-            if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                for feature in protocol_player.supported_features:
-                    if feature in PROTOCOL_FEATURES:
-                        base_features.add(feature)
-        return base_features
+        # a universal player does not have any features on its own, it delegates to protocol players
+        return set()
 
     async def volume_set(self, volume_level: int) -> None:
         """

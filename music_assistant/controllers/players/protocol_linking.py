@@ -27,9 +27,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_locally_administered_mac, resolve_real_mac_address
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import Player
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
-from music_assistant.providers.universal_player.constants import UNIVERSAL_PLAYER_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -52,7 +51,6 @@ class ProtocolLinkingMixin:
     - mass: MusicAssistant instance
     - _players: dict of registered players
     - _pending_protocol_evaluations: dict of pending protocol evaluations
-    - _universal_player_locks: dict of locks for universal player creation
     - logger: logging.Logger instance
     - all(): method to get all players
     - get(): method to get a player by ID
@@ -64,7 +62,6 @@ class ProtocolLinkingMixin:
         mass: MusicAssistant
         _players: dict[str, Player]
         _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
-        _universal_player_locks: dict[str, asyncio.Lock]
         logger: logging.Logger
 
         def all_players(  # noqa: D102
@@ -337,44 +334,6 @@ class ProtocolLinkingMixin:
         protocol_player.update_state()
         universal_player.update_state()
 
-    def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
-        """
-        Generate a device key from protocol players' identifiers.
-
-        Prefers MAC address (most stable), falls back to UUID, then player_id.
-        IP address is not used as it can change with DHCP and cause incorrect matches.
-        """
-        uuid_key: str | None = None
-        for player in protocol_players:
-            identifiers = player.device_info.identifiers
-            # Prefer MAC address (most reliable)
-            if mac := identifiers.get(IdentifierType.MAC_ADDRESS):
-                return mac.replace(":", "").replace("-", "").lower()
-            # Fall back to UUID (reliable for DLNA, Chromecast)
-            if not uuid_key and (uuid := identifiers.get(IdentifierType.UUID)):
-                # Normalize UUID: remove special characters, lowercase
-                uuid_key = uuid.replace("-", "").replace(":", "").replace("_", "").lower()
-        if uuid_key:
-            return uuid_key
-        # Last resort: use player_id as device key for protocol players without identifiers
-        # (e.g., Sendspin players that don't expose IP/MAC)
-        if protocol_players:
-            return protocol_players[0].player_id.replace(":", "").replace("-", "").lower()
-        return None
-
-    def _aggregate_device_info(self, protocol_players: list[Player]) -> DeviceInfo:
-        """Aggregate device info from protocol players."""
-        first_player = protocol_players[0]
-        device_info = DeviceInfo(
-            model=first_player.device_info.model,
-            manufacturer=first_player.device_info.manufacturer,
-        )
-        # Merge identifiers from all protocol players
-        for player in protocol_players:
-            for conn_type, value in player.device_info.identifiers.items():
-                device_info.add_identifier(conn_type, value)
-        return device_info
-
     def _update_universal_device_info(
         self, universal_player: UniversalPlayer, protocol_player: Player
     ) -> None:
@@ -414,57 +373,6 @@ class ProtocolLinkingMixin:
 
         self.mass.create_task(_do_save())
 
-    def _get_clean_player_name(self, protocol_players: list[Player]) -> str:
-        """
-        Get the best display name from protocol players.
-
-        Prefers names from protocols that typically provide user-friendly names
-        (Chromecast, DLNA, AirPlay) over those that may use technical identifiers
-        (Squeezelite, SendSpin). Filters out names that look like MAC addresses,
-        UUIDs, or player IDs.
-        """
-        # Protocol priority for name selection (higher priority = better names typically)
-        # Chromecast and DLNA usually have good user-configured names
-        # AirPlay also provides sensible names
-        # Squeezelite and SendSpin may use MAC addresses or technical IDs
-        name_priority = {
-            "chromecast": 1,
-            "airplay": 2,
-            "dlna": 3,
-            "squeezelite": 4,
-            "sendspin": 5,
-        }
-
-        def is_valid_name(name: str) -> bool:
-            """Check if a name looks like a real user-friendly name, not a technical ID."""
-            if not name or len(name) < 2:
-                return False
-            name_lower = name.lower().replace(":", "").replace("-", "").replace("_", "")
-            # Filter out names that look like MAC addresses (12 hex chars)
-            if len(name_lower) == 12 and all(c in "0123456789abcdef" for c in name_lower):
-                return False
-            # Filter out names that look like UUIDs
-            if len(name_lower) >= 32 and all(c in "0123456789abcdef" for c in name_lower[:32]):
-                return False
-            # Filter out names that start with common player ID prefixes
-            return not name_lower.startswith(
-                ("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_")
-            )
-
-        # Sort players by protocol priority, then find the first valid name
-        sorted_players = sorted(
-            protocol_players,
-            key=lambda p: name_priority.get(p.provider.domain, 10),
-        )
-
-        for player in sorted_players:
-            player_name = player.state.name
-            if is_valid_name(player_name):
-                return player_name
-
-        # Fallback to first player's name if no valid name found
-        return protocol_players[0].display_name
-
     def _link_protocols_to_universal(
         self, universal_player: Player, protocol_players: list[Player]
     ) -> None:
@@ -487,8 +395,9 @@ class ProtocolLinkingMixin:
         """
         Create or update a UniversalPlayer for a set of protocol players.
 
-        Uses a per-device lock to prevent race conditions when multiple protocols
-        for the same device register simultaneously.
+        Delegates to the universal player provider which handles orchestration,
+        locking, and player creation. The controller then links the protocols
+        to the universal player.
         """
         # Get the universal_player provider
         universal_provider: UniversalPlayerProvider | None = None
@@ -500,49 +409,17 @@ class ProtocolLinkingMixin:
         if not universal_provider:
             return
 
-        device_key = self._get_device_key_from_players(protocol_players)
-        if not device_key:
+        # Delegate to provider - it handles locking, create/update decision, etc.
+        universal_player = await universal_provider.ensure_universal_player_for_protocols(
+            protocol_players
+        )
+
+        if not universal_player:
             return
 
-        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
-
-        # Use a per-device lock to prevent race conditions
-        if device_key not in self._universal_player_locks:
-            self._universal_player_locks[device_key] = asyncio.Lock()
-
-        async with self._universal_player_locks[device_key]:
-            # Re-check - another task may have already handled these players
-            protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
-            if not protocol_players:
-                return
-
-            # Add to existing universal player
-            if existing := self.get_player(universal_player_id):
-                for player in protocol_players:
-                    if not player.protocol_parent_id:
-                        self._add_protocol_link(existing, player, player.provider.domain)
-                        if isinstance(existing, UniversalPlayer):
-                            await universal_provider.add_protocol_to_universal_player(
-                                universal_player_id, player.player_id
-                            )
-                        player.update_state()
-                existing.update_state()
-                return
-
-            # Create new universal player
-            device_info = self._aggregate_device_info(protocol_players)
-            name = self._get_clean_player_name(protocol_players)
-            protocol_player_ids = [p.player_id for p in protocol_players]
-
-            universal_player = await universal_provider.create_universal_player(
-                device_key=device_key,
-                name=name,
-                device_info=device_info,
-                protocol_player_ids=protocol_player_ids,
-            )
-
-            self._link_protocols_to_universal(universal_player, protocol_players)
-            universal_player.update_state()
+        # Link the protocols to the universal player (controller manages cross-provider state)
+        self._link_protocols_to_universal(universal_player, protocol_players)
+        universal_player.update_state()
 
     def _try_link_protocols_to_native(self, native_player: Player) -> None:
         """Try to link protocol players to a native player."""
@@ -997,6 +874,47 @@ class ProtocolLinkingMixin:
 
         raise PlayerCommandFailed(f"Player {player.state.name} has no available output protocols")
 
+    def _get_control_target(
+        self,
+        player: Player,
+        required_feature: PlayerFeature,
+        require_active: bool = False,
+        allow_native: bool = True,
+    ) -> Player | None:
+        """
+        Get the best player(protocol) to send control commands to.
+
+        Prefers the active output protocol, otherwise uses the first available
+        protocol player that supports the needed feature.
+        """
+        # If we have an active protocol, use that
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(player.active_output_protocol))
+            and required_feature in protocol_player.supported_features
+        ):
+            return protocol_player
+
+        # if the player natively supports the required feature, use that
+        if allow_native and required_feature in player.supported_features:
+            return player
+
+        # If require_active is set, and no active protocol found, return None
+        if require_active:
+            return None
+
+        # Otherwise, use the first available linked protocol
+        for linked in player.linked_output_protocols:
+            if (
+                (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
+                and protocol_player.available
+                and required_feature in protocol_player.supported_features
+            ):
+                return protocol_player
+
+        return None
+
     def _is_protocol_grouped(self, protocol_player: Player) -> bool:
         """
         Check if a protocol player is currently grouped/synced with other players.
@@ -1067,6 +985,145 @@ class ProtocolLinkingMixin:
 
         return protocol_members, native_members
 
+    def _filter_protocol_members(self, member_ids: list[str], protocol_player: Player) -> list[str]:
+        """Filter member IDs to only include protocol players from the same domain."""
+        return [
+            pid
+            for pid in member_ids
+            if (p := self.get_player(pid))
+            and p.type == PlayerType.PROTOCOL
+            and p.provider.domain == protocol_player.provider.domain
+        ]
+
+    def _filter_native_members(self, member_ids: list[str], parent_player: Player) -> list[str]:
+        """Filter member IDs to only include players compatible with the parent."""
+        return [
+            pid
+            for pid in member_ids
+            if (p := self.get_player(pid))
+            and (
+                p.provider.instance_id == parent_player.provider.instance_id
+                or pid in parent_player._attr_can_group_with
+                or p.provider.instance_id in parent_player._attr_can_group_with
+            )
+        ]
+
+    def _translate_members_for_protocols(
+        self,
+        parent_player: Player,
+        player_ids: list[str],
+        parent_protocol_player: Player | None,
+        parent_protocol_domain: str | None,
+    ) -> tuple[list[str], list[str], Player | None, str | None]:
+        """
+        Translate member IDs to protocol or native IDs.
+
+        Returns tuple of (protocol_members, native_members, protocol_player, protocol_domain).
+        """
+        protocol_members: list[str] = []
+        native_members: list[str] = []
+
+        # Check if parent supports native grouping
+        parent_supports_native_grouping = (
+            PlayerFeature.SET_MEMBERS in parent_player.supported_features
+        )
+
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Translating members for %s: parent_supports_native=%s, parent_protocol=%s (%s)",
+            parent_player.state.name,
+            parent_supports_native_grouping,
+            parent_protocol_player.state.name if parent_protocol_player else "none",
+            parent_protocol_domain or "none",
+        )
+
+        for child_player_id in player_ids:
+            child_player = self.get_player(child_player_id)
+            if not child_player:
+                continue
+
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Processing child %s (type=%s, protocols=%s)",
+                child_player.state.name,
+                child_player.state.type,
+                [p.protocol_domain for p in child_player.output_protocols],
+            )
+
+            # Prefer native grouping over protocol grouping when both are available
+            if parent_supports_native_grouping and (
+                child_player.provider.instance_id == parent_player.provider.instance_id
+                or child_player_id in parent_player._attr_can_group_with
+                or child_player.provider.instance_id in parent_player._attr_can_group_with
+            ):
+                native_members.append(child_player_id)
+                continue
+
+            if parent_protocol_domain:
+                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
+                if child_protocol:
+                    protocol_members.append(child_protocol.output_protocol_id)
+                    continue
+            else:
+                # Find common protocol that supports set_members
+                selected_protocol = None
+                selected_child_protocol = None
+
+                for parent_output_protocol in parent_player.output_protocols:
+                    if not parent_output_protocol.available:
+                        continue
+                    child_protocol = child_player.get_linked_protocol(
+                        parent_output_protocol.protocol_domain
+                    )
+                    if child_protocol and child_protocol.available:
+                        protocol_player = self.get_player(parent_output_protocol.output_protocol_id)
+                        if protocol_player and (
+                            PlayerFeature.SET_MEMBERS in protocol_player.state.supported_features
+                        ):
+                            selected_protocol = parent_output_protocol
+                            selected_child_protocol = child_protocol
+                            self.logger.log(
+                                VERBOSE_LOG_LEVEL,
+                                "Selected protocol %s for grouping %s with %s",
+                                parent_output_protocol.protocol_domain,
+                                child_player.state.name,
+                                parent_player.state.name,
+                            )
+                            break
+
+                if selected_protocol and selected_child_protocol:
+                    if not parent_protocol_player:
+                        parent_protocol_player = self.get_player(
+                            selected_protocol.output_protocol_id
+                        )
+                        if parent_protocol_player:
+                            parent_protocol_domain = parent_protocol_player.provider.domain
+                    protocol_members.append(selected_child_protocol.output_protocol_id)
+                elif parent_supports_native_grouping:
+                    # No common protocol - fallback to native grouping
+                    native_members.append(child_player_id)
+                else:
+                    # No common protocol and parent doesn't support native grouping
+                    self.logger.warning(
+                        "Cannot group %s with %s: no compatible protocol supports set_members "
+                        "and parent doesn't support native grouping",
+                        child_player.state.name,
+                        parent_player.state.name,
+                    )
+                continue
+
+            # Parent has active protocol but child doesn't support it
+            if parent_supports_native_grouping:
+                native_members.append(child_player_id)
+            else:
+                self.logger.warning(
+                    "Cannot group %s with %s: incompatible protocols",
+                    child_player.state.name,
+                    parent_player.state.name,
+                )
+
+        return protocol_members, native_members, parent_protocol_player, parent_protocol_domain
+
     async def _forward_protocol_set_members(
         self,
         parent_player: Player,
@@ -1082,12 +1139,10 @@ class ProtocolLinkingMixin:
         :param protocol_members_to_add: Protocol player IDs to add.
         :param protocol_members_to_remove: Protocol player IDs to remove.
         """
-        # Access _filter_protocol_members from the PlayerController
-        # This mixin is used by PlayerController, so self has this method
-        filtered_protocol_add = self._filter_protocol_members(  # type: ignore[attr-defined]
+        filtered_protocol_add = self._filter_protocol_members(
             protocol_members_to_add, parent_protocol_player
         )
-        filtered_protocol_remove = self._filter_protocol_members(  # type: ignore[attr-defined]
+        filtered_protocol_remove = self._filter_protocol_members(
             protocol_members_to_remove, parent_protocol_player
         )
         self.logger.debug(

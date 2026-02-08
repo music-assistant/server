@@ -10,6 +10,7 @@ interface while delegating actual playback to the underlying protocol player(s).
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerType
@@ -40,6 +41,11 @@ class UniversalPlayerProvider(PlayerProvider):
     are registered, providing a unified interface while delegating playback to the
     underlying protocol player(s).
     """
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        # Lock to prevent race conditions during universal player creation
+        self._universal_player_locks: dict[str, asyncio.Lock] = {}
 
     async def discover_players(self) -> None:
         """
@@ -292,9 +298,149 @@ class UniversalPlayerProvider(PlayerProvider):
         """
         await self.mass.players.unregister(player_id, permanent=True)
 
+    async def ensure_universal_player_for_protocols(
+        self, protocol_players: list[Player]
+    ) -> Player | None:
+        """
+        Ensure a universal player exists for a set of protocol players.
+
+        This method handles the orchestration of creating or updating a universal player
+        for the given protocol players. It uses per-device locking to prevent race
+        conditions when multiple protocols for the same device register simultaneously.
+
+        :param protocol_players: List of protocol players for the same device.
+        :return: The created or updated universal player, or None if operation failed.
+        """
+        device_key = self._get_device_key_from_players(protocol_players)
+        if not device_key:
+            return None
+
+        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
+
+        # Use a per-device lock to prevent race conditions
+        if device_key not in self._universal_player_locks:
+            self._universal_player_locks[device_key] = asyncio.Lock()
+
+        async with self._universal_player_locks[device_key]:
+            # Re-check - another task may have already handled these players
+            # Filter out players that are already linked to a parent
+            protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
+            if not protocol_players:
+                return None
+
+            # Check if universal player already exists
+            if existing := self.mass.players.get_player(universal_player_id):
+                # Update existing universal player with new protocol players
+                protocol_player_ids = [p.player_id for p in protocol_players]
+                for player_id in protocol_player_ids:
+                    if isinstance(existing, UniversalPlayer):
+                        await self.add_protocol_to_universal_player(universal_player_id, player_id)
+                return existing
+
+            # Create new universal player
+            device_info = self._aggregate_device_info(protocol_players)
+            name = self._get_clean_player_name(protocol_players)
+            protocol_player_ids = [p.player_id for p in protocol_players]
+
+            return await self.create_universal_player(
+                device_key=device_key,
+                name=name,
+                device_info=device_info,
+                protocol_player_ids=protocol_player_ids,
+            )
+
     def get_universal_player(self, player_id: str) -> UniversalPlayer | None:
         """Get a UniversalPlayer by ID if it exists and is managed by this provider."""
         if player := self.mass.players.get_player(player_id):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
+
+    def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
+        """
+        Generate a device key from protocol players' identifiers.
+
+        Prefers MAC address (most stable), falls back to UUID, then player_id.
+        IP address is not used as it can change with DHCP and cause incorrect matches.
+        """
+        uuid_key: str | None = None
+        for player in protocol_players:
+            identifiers = player.device_info.identifiers
+            # Prefer MAC address (most reliable)
+            if mac := identifiers.get(IdentifierType.MAC_ADDRESS):
+                return mac.replace(":", "").replace("-", "").lower()
+            # Fall back to UUID (reliable for DLNA, Chromecast)
+            if not uuid_key and (uuid := identifiers.get(IdentifierType.UUID)):
+                # Normalize UUID: remove special characters, lowercase
+                uuid_key = uuid.replace("-", "").replace(":", "").replace("_", "").lower()
+        if uuid_key:
+            return uuid_key
+        # Last resort: use player_id as device key for protocol players without identifiers
+        # (e.g., Sendspin players that don't expose IP/MAC)
+        if protocol_players:
+            return protocol_players[0].player_id.replace(":", "").replace("-", "").lower()
+        return None
+
+    def _aggregate_device_info(self, protocol_players: list[Player]) -> DeviceInfo:
+        """Aggregate device info from protocol players."""
+        first_player = protocol_players[0]
+        device_info = DeviceInfo(
+            model=first_player.device_info.model,
+            manufacturer=first_player.device_info.manufacturer,
+        )
+        # Merge identifiers from all protocol players
+        for player in protocol_players:
+            for conn_type, value in player.device_info.identifiers.items():
+                device_info.add_identifier(conn_type, value)
+        return device_info
+
+    def _get_clean_player_name(self, protocol_players: list[Player]) -> str:
+        """
+        Get the best display name from protocol players.
+
+        Prefers names from protocols that typically provide user-friendly names
+        (Chromecast, DLNA, AirPlay) over those that may use technical identifiers
+        (Squeezelite, SendSpin). Filters out names that look like MAC addresses,
+        UUIDs, or player IDs.
+        """
+        # Protocol priority for name selection (higher priority = better names typically)
+        # Chromecast and DLNA usually have good user-configured names
+        # AirPlay also provides sensible names
+        # Squeezelite and SendSpin may use MAC addresses or technical IDs
+        name_priority = {
+            "chromecast": 1,
+            "airplay": 2,
+            "dlna": 3,
+            "squeezelite": 4,
+            "sendspin": 5,
+        }
+
+        def is_valid_name(name: str) -> bool:
+            """Check if a name looks like a real user-friendly name, not a technical ID."""
+            if not name or len(name) < 2:
+                return False
+            name_lower = name.lower().replace(":", "").replace("-", "").replace("_", "")
+            # Filter out names that look like MAC addresses (12 hex chars)
+            if len(name_lower) == 12 and all(c in "0123456789abcdef" for c in name_lower):
+                return False
+            # Filter out names that look like UUIDs
+            if len(name_lower) >= 32 and all(c in "0123456789abcdef" for c in name_lower[:32]):
+                return False
+            # Filter out names that start with common player ID prefixes
+            return not name_lower.startswith(
+                ("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_")
+            )
+
+        # Sort players by protocol priority, then find the first valid name
+        sorted_players = sorted(
+            protocol_players,
+            key=lambda p: name_priority.get(p.provider.domain, 10),
+        )
+
+        for player in sorted_players:
+            player_name = player.state.name
+            if is_valid_name(player_name):
+                return player_name
+
+        # Fallback to first player's name if no valid name found
+        return protocol_players[0].display_name

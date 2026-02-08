@@ -943,7 +943,6 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from protocol implementations
-    PlayerFeature.POWER,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -957,7 +956,5 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.MULTI_DEVICE_DSP,
-    PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
-    PlayerFeature.SEEK,
 }

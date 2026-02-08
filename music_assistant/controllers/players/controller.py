@@ -71,7 +71,6 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
-    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -130,8 +129,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._sync_groups: SyncGroupController = SyncGroupController(self)
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
-        # Lock to prevent race conditions during universal player creation
-        self._universal_player_locks: dict[str, asyncio.Lock] = {}
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
 
@@ -436,7 +433,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             target_player = protocol_player
-        # handle command on player directly
+            if PlayerFeature.POWER in target_player.supported_features:
+                # if protocol player supports/requires power,
+                # we power it off instead of just stopping
+                await self._handle_cmd_power(target_player.player_id, False)
+                return
+
+        # handle command on player(protocol) directly
         async with self._player_throttlers[target_player.player_id]:
             await target_player.stop()
 
@@ -453,7 +456,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 "Ignore PLAY request to player %s: player is already playing", player.state.name
             )
             return
-
         # Check if a plugin source is active with a play callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_play_pause and plugin_source.on_play:
@@ -472,15 +474,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
                 raise PlayerCommandFailed(msg)
             # Delegate to active protocol player if one is active
-            target_player = player
-            if (
-                player.active_output_protocol
-                and player.active_output_protocol != "native"
-                and (protocol_player := self.get_player(player.active_output_protocol))
-            ):
-                target_player = protocol_player
-            await target_player.play()
-            return
+            if target_player := self._get_control_target(player, PlayerFeature.PAUSE, True):
+                await target_player.play()
+                return
 
         # player is not paused: try to resume the player
         await self._handle_cmd_resume(player.player_id)
@@ -514,18 +510,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        target_player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (protocol_player := self.get_player(player.active_output_protocol))
-        ):
-            target_player = protocol_player
-        # if player does not support pause, we need to send stop
-        if PlayerFeature.PAUSE not in target_player.state.supported_features:
+        if not (target_player := self._get_control_target(player, PlayerFeature.PAUSE, True)):
+            # if player(protocol) does not support pause, we need to send stop
             self.logger.debug(
                 "Player/protocol %s does not support pause, using STOP instead",
-                target_player.state.name,
+                player.state.name,
             )
             await self.cmd_stop(player.player_id)
             return
@@ -567,30 +556,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
-
         # Check if a plugin source is active with a seek callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_seek and plugin_source.on_seek:
                 await plugin_source.on_seek(position)
                 return
-
         # Redirect to queue controller if it is active
-        if active_queue := self.get_active_queue(player):
+        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
-
         # handle command on player/source directly
-        active_source = next(
-            (x for x in player.state.source_list if x.id == player.state.active_source), None
-        )
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
-                f"{player.state.name} does not support seeking"
+                f"{player.display_name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
-        if PlayerFeature.SEEK not in player.state.supported_features:
-            msg = f"Player {player.state.name} does not support seeking"
+        if PlayerFeature.SEEK not in player.supported_features:
+            msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
         await player.seek(position)
@@ -600,18 +584,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-
         # Check if a plugin source is active with a next callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_next_previous and plugin_source.on_next:
                 await plugin_source.on_next()
                 return
-
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.next(active_queue.queue_id)
             return
-
         if PlayerFeature.NEXT_PREVIOUS in player.state.supported_features:
             # player has some other source active and native next/previous support
             active_source = next(
@@ -622,7 +603,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
-
+        # Player does not support next/previous feature
         msg = f"Player {player.state.name} does not support skipping to the next track."
         raise UnsupportedFeaturedException(msg)
 
@@ -631,18 +612,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-
         # Check if a plugin source is active with a previous callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_next_previous and plugin_source.on_previous:
                 await plugin_source.on_previous()
                 return
-
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.previous(active_queue.queue_id)
             return
-
         if PlayerFeature.NEXT_PREVIOUS in player.state.supported_features:
             # player has some other source active and native next/previous support
             active_source = next(
@@ -653,7 +631,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
-
+        # Player does not support next/previous feature
         msg = f"Player {player.state.name} does not support skipping to the previous track."
         raise UnsupportedFeaturedException(msg)
 
@@ -750,9 +728,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player = self.get_player(player_id, True)
-        assert group_player
-        cur_volume = group_player.group_volume
+        group_player_state = self.get_player_state(player_id, True)
+        assert group_player_state
+        cur_volume = group_player_state.group_volume
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -769,9 +747,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        group_player = self.get_player(player_id, True)
-        assert group_player
-        cur_volume = group_player.group_volume
+        group_player_state = self.get_player_state(player_id, True)
+        assert group_player_state
+        cur_volume = group_player_state.group_volume
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -791,15 +769,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player
-        if player.state.mute_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support muting"
-            )
-        if player.state.mute_control == PLAYER_CONTROL_NATIVE:
+        if player.mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
             async with self._player_throttlers[player_id]:
                 await player.volume_mute(muted)
-        elif player.state.mute_control == PLAYER_CONTROL_FAKE:
+        elif player.mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
             self.logger.debug(
                 "Using volume for muting for player %s",
@@ -815,10 +789,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.extra_data[ATTR_FAKE_MUTE] = False
                 player.update_state()
                 await self._handle_cmd_volume_set(player_id, prev_volume)
-        else:
+        elif player.mute_control != PLAYER_CONTROL_NONE:
             # handle external player control
-            player_control = self._controls.get(player.state.mute_control)
-            control_name = player_control.name if player_control else player.state.mute_control
+            player_control = self._controls.get(player.mute_control)
+            control_name = player_control.name if player_control else player.mute_control
             self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
             if not player_control or not player_control.supports_mute:
                 raise UnsupportedFeaturedException(
@@ -827,6 +801,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             async with self._player_throttlers[player_id]:
                 assert player_control.mute_set is not None
                 await player_control.mute_set(muted)
+        else:
+            # player has no mute support at all
+            # double check if it has a output protocol with mute support
+            if protocol_player := self._get_control_target(player, PlayerFeature.VOLUME_MUTE, True):
+                self.logger.debug(
+                    "Redirecting mute command to protocol player %s",
+                    protocol_player.state.name,
+                )
+                await self.cmd_volume_mute(protocol_player.player_id, muted)
+                return
+
+            # all options exhausted, player does not support muting, raise
+            raise UnsupportedFeaturedException(
+                f"Player {player.state.name} does not support muting"
+            )
 
     @api_command("players/cmd/play_announcement")
     @handle_player_command(lock=True)
@@ -860,23 +849,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # determine if the player has native announcements support
-            # or if any linked protocol has announcement support
-            announce_player: Player = player
-            native_announce_support = (
-                PlayerFeature.PLAY_ANNOUNCEMENT in player.state.supported_features
-            )
-            if not native_announce_support:
-                for linked in player.linked_output_protocols:
-                    if protocol_player := self.get_player(linked.output_protocol_id):
-                        if (
-                            protocol_player.state.available
-                            and PlayerFeature.PLAY_ANNOUNCEMENT
-                            in protocol_player.state.supported_features
-                        ):
-                            announce_player = protocol_player
-                            native_announce_support = True
-                            break
             # determine pre-announce from (group)player config
             if pre_announce is None and "tts" in url:
                 conf_pre_announce = self.mass.config.get_raw_player_config_value(
@@ -899,7 +871,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # we forward the request to each individual player
             if player.state.type == PlayerType.GROUP and (
                 all(
-                    PlayerFeature.PLAY_ANNOUNCEMENT in x.supported_features
+                    PlayerFeature.PLAY_ANNOUNCEMENT in x.state.supported_features
                     for x in self.iter_group_members(player)
                 )
             ):
@@ -922,6 +894,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 pre_announce,
                 url,
             )
+            # determine if the player has native announcements support
+            # or if any linked protocol has announcement support
+            if announce_player := self._get_control_target(
+                player,
+                required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
+                require_active=False,
+                allow_native=True,
+            ):
+                native_announce_support = True
+            else:
+                announce_player = player
             # create a PlayerMedia object for the announcement so
             # we can send a regular play-media call downstream
             announce_data = AnnounceData(
@@ -953,9 +936,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - media: The Media that needs to be played on the player.
         """
         player = self._get_player_with_redirect(player_id)
-        # power on the player if needed
-        if player.state.powered is False and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+        # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
@@ -964,19 +945,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol
-            self.logger.info(
+            self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
                 player.state.name,
                 protocol_id,
-                target_player.state.name,
+                target_player.display_name,
                 target_player.state.group_members,
             )
             player.set_active_output_protocol(protocol_id)
             player.update_state()
+            # if the (protocol)player has power control and is currently powered off,
+            # we need to power it on before playback
+            if (
+                target_player.state.powered is False
+                and target_player.power_control != PLAYER_CONTROL_NONE
+            ):
+                await self._handle_cmd_power(target_player.player_id, True)
+            # forward play media command to protocol player
             await target_player.play_media(media)
         else:
             # Native playback
-            self.logger.info(
+            self.logger.debug(
                 "Starting playback on %s via native, group_members=%s",
                 player.state.name,
                 player.state.group_members,
@@ -1043,6 +1032,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None  # for type checking
+        if target_player := self._get_control_target(
+            player, required_feature=PlayerFeature.ENQUEUE, require_active=True, allow_native=False
+        ):
+            self.logger.debug(
+                "Redirecting enqueue command to protocol player %s",
+                target_player.state.name,
+            )
+            await self.enqueue_next_media(target_player.player_id, media)
+            return
+
         if PlayerFeature.ENQUEUE not in player.state.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.state.name} does not support enqueueing"
@@ -2337,145 +2336,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         task_id = "update_all_players_on_registration"
         self.mass.call_later(delay, _update_all_players, task_id=task_id)
 
-    def _filter_protocol_members(self, member_ids: list[str], protocol_player: Player) -> list[str]:
-        """Filter member IDs to only include protocol players from the same domain."""
-        return [
-            pid
-            for pid in member_ids
-            if (p := self.get_player(pid))
-            and p.type == PlayerType.PROTOCOL
-            and p.provider.domain == protocol_player.provider.domain
-        ]
-
-    def _filter_native_members(self, member_ids: list[str], parent_player: Player) -> list[str]:
-        """Filter member IDs to only include players compatible with the parent."""
-        return [
-            pid
-            for pid in member_ids
-            if (p := self.get_player(pid))
-            and (
-                p.provider.instance_id == parent_player.provider.instance_id
-                or pid in parent_player._attr_can_group_with
-                or p.provider.instance_id in parent_player._attr_can_group_with
-            )
-        ]
-
-    def _translate_members_for_protocols(
-        self,
-        parent_player: Player,
-        player_ids: list[str],
-        parent_protocol_player: Player | None,
-        parent_protocol_domain: str | None,
-    ) -> tuple[list[str], list[str], Player | None, str | None]:
-        """
-        Translate member IDs to protocol or native IDs.
-
-        Returns tuple of (protocol_members, native_members, protocol_player, protocol_domain).
-        """
-        protocol_members: list[str] = []
-        native_members: list[str] = []
-
-        # Check if parent supports native grouping
-        parent_supports_native_grouping = (
-            PlayerFeature.SET_MEMBERS in parent_player.supported_features
-        )
-
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Translating members for %s: parent_supports_native=%s, parent_protocol=%s (%s)",
-            parent_player.state.name,
-            parent_supports_native_grouping,
-            parent_protocol_player.state.name if parent_protocol_player else "none",
-            parent_protocol_domain or "none",
-        )
-
-        for child_player_id in player_ids:
-            child_player = self.get_player(child_player_id)
-            if not child_player:
-                continue
-
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Processing child %s (type=%s, protocols=%s)",
-                child_player.state.name,
-                child_player.state.type,
-                [p.protocol_domain for p in child_player.output_protocols],
-            )
-
-            # Prefer native grouping over protocol grouping when both are available
-            if parent_supports_native_grouping and (
-                child_player.provider.instance_id == parent_player.provider.instance_id
-                or child_player_id in parent_player._attr_can_group_with
-                or child_player.provider.instance_id in parent_player._attr_can_group_with
-            ):
-                native_members.append(child_player_id)
-                continue
-
-            if parent_protocol_domain:
-                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
-                if child_protocol:
-                    protocol_members.append(child_protocol.output_protocol_id)
-                    continue
-            else:
-                # Find common protocol that supports set_members
-                selected_protocol = None
-                selected_child_protocol = None
-
-                for parent_output_protocol in parent_player.output_protocols:
-                    if not parent_output_protocol.available:
-                        continue
-                    child_protocol = child_player.get_linked_protocol(
-                        parent_output_protocol.protocol_domain
-                    )
-                    if child_protocol and child_protocol.available:
-                        protocol_player = self.get_player(parent_output_protocol.output_protocol_id)
-                        if protocol_player and (
-                            PlayerFeature.SET_MEMBERS in protocol_player.state.supported_features
-                        ):
-                            selected_protocol = parent_output_protocol
-                            selected_child_protocol = child_protocol
-                            self.logger.log(
-                                VERBOSE_LOG_LEVEL,
-                                "Selected protocol %s for grouping %s with %s",
-                                parent_output_protocol.protocol_domain,
-                                child_player.state.name,
-                                parent_player.state.name,
-                            )
-                            break
-
-                if selected_protocol and selected_child_protocol:
-                    if not parent_protocol_player:
-                        parent_protocol_player = self.get_player(
-                            selected_protocol.output_protocol_id
-                        )
-                        if parent_protocol_player:
-                            parent_protocol_domain = parent_protocol_player.provider.domain
-                    protocol_members.append(selected_child_protocol.output_protocol_id)
-                elif parent_supports_native_grouping:
-                    # No common protocol - fallback to native grouping
-                    native_members.append(child_player_id)
-                else:
-                    # No common protocol and parent doesn't support native grouping
-                    self.logger.warning(
-                        "Cannot group %s with %s: no compatible protocol supports set_members "
-                        "and parent doesn't support native grouping",
-                        child_player.state.name,
-                        parent_player.state.name,
-                    )
-                continue
-
-            # Parent has active protocol but child doesn't support it
-            if parent_supports_native_grouping:
-                native_members.append(child_player_id)
-            else:
-                self.logger.warning(
-                    "Cannot group %s with %s: incompatible protocols",
-                    child_player.state.name,
-                    parent_player.state.name,
-                )
-
-        return protocol_members, native_members, parent_protocol_player, parent_protocol_domain
-
     async def _handle_set_members_with_protocols(
         self,
         parent_player: Player,
@@ -2632,7 +2492,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # ungroup player at power off
         player_was_synced = player.state.synced_to is not None
-        if player.state.type == PlayerType.PLAYER and not powered:
+        if player.type == PlayerType.PLAYER and not powered:
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
@@ -2641,31 +2501,30 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if (
             not powered
             and not player_was_synced
-            and player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             await self.cmd_stop(player_id)
             # short sleep: allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
 
         # power off all synced childs when player is a sync leader
-        elif not powered and player.state.type == PlayerType.PLAYER and player.state.group_members:
+        elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:
             async with TaskManager(self.mass) as tg:
                 for member in self.iter_group_members(player, True):
                     if member.power_control == PLAYER_CONTROL_NONE:
                         continue
-                    # Use private method to skip permission check for child players
                     tg.create_task(self._handle_cmd_power(member.player_id, False))
 
         # handle actual power command
-        if player.state.power_control == PLAYER_CONTROL_NONE:
+        if player_state.power_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.state.name} does not support power control"
             )
-        if player.state.power_control == PLAYER_CONTROL_NATIVE:
+        if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             async with self._player_throttlers[player_id]:
                 await player.power(powered)
-        elif player.state.power_control == PLAYER_CONTROL_FAKE:
+        elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_POWER] = powered
@@ -2697,10 +2556,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle 'auto play on power on' feature
         if (
-            not player.state.active_group
+            not player_state.active_group
+            and not player_state.synced_to
             and powered
             and player.config.get_value(CONF_AUTO_PLAY)
-            and player.state.active_source in (None, player_id)
+            and player_state.active_source in (None, player_id)
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
             await self.mass.player_queues.resume(player_id)
@@ -2713,17 +2573,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.state.type == PlayerType.GROUP:
+        if player.type == PlayerType.GROUP:
             # redirect to special group volume control
             await self.cmd_group_volume(player_id, volume_level)
             return
 
-        if player.state.volume_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support volume control"
-            )
-
         if (
+            # use player.state here to get accumulated mute control from any linked protocol players
             player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.state.volume_muted
         ):
@@ -2739,28 +2595,49 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.on_volume:
                 await plugin_source.on_volume(volume_level)
-
-        if player.state.volume_control == PLAYER_CONTROL_NATIVE:
+        # Handle native volume control support
+        if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
             async with self._player_throttlers[player_id]:
                 await player.volume_set(volume_level)
             return
-        if player.state.volume_control == PLAYER_CONTROL_FAKE:
+        # Handle fake volume control support
+        if player.volume_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake volume control - so we (optimistically) update the state
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_VOLUME] = volume_level
             # trigger update
             player.update_state()
             return
-        # else: handle external player control
-        player_control = self._controls.get(player.state.volume_control)
-        control_name = player_control.name if player_control else player.state.volume_control
-        self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
-        if not player_control or not player_control.supports_volume:
-            raise UnsupportedFeaturedException(f"Player control {control_name} is not available")
-        async with self._player_throttlers[player_id]:
-            assert player_control.volume_set is not None
-            await player_control.volume_set(volume_level)
+        # handle external player control
+        if player.volume_control != PLAYER_CONTROL_NONE:
+            player_control = self._controls.get(player.state.volume_control)
+            control_name = player_control.name if player_control else player.state.volume_control
+            self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
+            if not player_control or not player_control.supports_volume:
+                raise UnsupportedFeaturedException(
+                    f"Player control {control_name} is not available"
+                )
+            async with self._player_throttlers[player_id]:
+                assert player_control.volume_set is not None
+                await player_control.volume_set(volume_level)
+            return
+
+        # player has no volume support at all
+        # double check if it has a output protocol with volume_set support, if not raise
+        for linked in player.linked_output_protocols:
+            if protocol_player := self.get_player(linked.output_protocol_id):
+                if (
+                    protocol_player.state.available
+                    and PlayerFeature.VOLUME_SET in protocol_player.state.supported_features
+                ):
+                    # redirect to protocol player volume control
+                    self.logger.debug(
+                        "Redirecting volume command to protocol player %s",
+                        protocol_player.state.name,
+                    )
+                    await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
+                    return
 
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
