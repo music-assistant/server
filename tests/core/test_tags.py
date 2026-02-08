@@ -1,15 +1,17 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, etc.)."""
 
 import pathlib
+from unittest.mock import MagicMock
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
-from music_assistant.helpers.tags import split_artists
+from music_assistant.helpers.tags import _parse_vorbis_tags, split_artists
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
 FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
 FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
+FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -72,6 +74,26 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
     assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
+
+
+async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
+    """Test parsing of FLAC file with multiple ARTIST fields (per Vorbis spec)."""
+    _tags = await tags.async_parse_tags(FILE_FLAC)
+    assert _tags.album == "Test Album"
+    assert _tags.title == "Test Track"
+    # Multiple ARTIST fields should be treated as authoritative list
+    assert _tags.artists == ("Artist One", "Artist Two", "Artist Three")
+    # Multiple ALBUMARTIST fields should be treated as authoritative list
+    assert _tags.album_artists == ("Album Artist 1", "Album Artist 2")
+    assert _tags.genres == ("Rock", "Pop")
+    assert _tags.year == 2024
+    # MusicBrainz IDs
+    assert _tags.musicbrainz_artistids == ("mb-artist-id-1", "mb-artist-id-2", "mb-artist-id-3")
+    assert _tags.musicbrainz_albumartistids == ("mb-albumartist-id-1", "mb-albumartist-id-2")
+    assert _tags.musicbrainz_recordingid == "mb-track-id"
+    # Track/disc from Vorbis comments
+    assert _tags.track == 5
+    assert _tags.disc == 1
 
 
 async def test_parse_metadata_from_filename() -> None:
@@ -186,3 +208,116 @@ def test_split_artists_with_not_split() -> None:
     # "with" SHOULD split when expected_count=2 indicates multiple artists
     result = split_artists("Artist A with Artist B", expected_count=2)
     assert result == ("Artist A", "Artist B")
+
+
+def _create_mock_vorbis_tags(tag_dict: dict[str, list[str]]) -> MagicMock:
+    """Create a mock VCommentDict with the given tags.
+
+    :param tag_dict: Dictionary mapping tag names to lists of values.
+    """
+    mock = MagicMock()
+    mock.get = lambda key: tag_dict.get(key.upper())
+    return mock
+
+
+def test_parse_vorbis_tags_multiple_artist_fields() -> None:
+    """Test that multiple ARTIST fields are treated as authoritative artist list."""
+    # Per Vorbis spec: multiple ARTIST fields should list all artists
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "TITLE": ["My Song"],
+            "ALBUM": ["My Album"],
+            "ARTIST": ["Artist 1", "Artist 2", "Artist 3"],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Multiple ARTIST fields should be stored as "artists" (plural)
+    assert result.get("artists") == ["Artist 1", "Artist 2", "Artist 3"]
+    # Single "artist" key should NOT be set when multiple artists are present
+    assert "artist" not in result
+    assert result.get("title") == "My Song"
+    assert result.get("album") == "My Album"
+
+
+def test_parse_vorbis_tags_single_artist_field() -> None:
+    """Test that a single ARTIST field is stored as singular artist."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "TITLE": ["My Song"],
+            "ARTIST": ["Single Artist"],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Single ARTIST should use singular key for normal parsing logic
+    assert result.get("artist") == "Single Artist"
+    assert "artists" not in result
+
+
+def test_parse_vorbis_tags_multiple_albumartist_fields() -> None:
+    """Test that multiple ALBUMARTIST fields are treated as authoritative list."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ALBUMARTIST": ["Album Artist 1", "Album Artist 2"],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Multiple ALBUMARTIST fields should be stored as "albumartists" (plural)
+    assert result.get("albumartists") == ["Album Artist 1", "Album Artist 2"]
+    assert "albumartist" not in result
+
+
+def test_parse_vorbis_tags_single_albumartist_field() -> None:
+    """Test that a single ALBUMARTIST field is stored as singular."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ALBUMARTIST": ["Single Album Artist"],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    assert result.get("albumartist") == "Single Album Artist"
+    assert "albumartists" not in result
+
+
+def test_parse_vorbis_tags_explicit_artists_tag_takes_precedence() -> None:
+    """Test that explicit ARTISTS tag takes precedence over multiple ARTIST fields."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ARTIST": ["Artist A", "Artist B"],  # Multiple ARTIST fields
+            "ARTISTS": [
+                "Explicit Artist 1",
+                "Explicit Artist 2",
+                "Explicit Artist 3",
+            ],  # Explicit tag
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # ARTISTS tag should take precedence
+    assert result.get("artists") == ["Explicit Artist 1", "Explicit Artist 2", "Explicit Artist 3"]
+
+
+def test_parse_vorbis_tags_musicbrainz_ids() -> None:
+    """Test that MusicBrainz IDs are parsed correctly from Vorbis tags."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ARTIST": ["Artist 1", "Artist 2"],
+            "MUSICBRAINZ_ARTISTID": ["mb-id-1", "mb-id-2"],
+            "MUSICBRAINZ_ALBUMID": ["mb-album-id"],
+            "MUSICBRAINZ_TRACKID": ["mb-track-id"],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
+    assert result.get("musicbrainzalbumid") == "mb-album-id"
+    assert result.get("musicbrainzrecordingid") == "mb-track-id"

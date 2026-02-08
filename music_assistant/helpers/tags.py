@@ -16,6 +16,7 @@ from typing import Any
 import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
+from mutagen._vorbis import VCommentDict
 from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -925,10 +926,149 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
+    """Get single value from Vorbis comments (first item if multiple exist).
+
+    :param tags: VCommentDict from mutagen.
+    :param key: Tag name (case insensitive).
+    """
+    values = tags.get(key)  # type: ignore[no-untyped-call]
+    return values[0] if values else None
+
+
+def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
+    """Get all values from Vorbis comments as a list.
+
+    :param tags: VCommentDict from mutagen.
+    :param key: Tag name (case insensitive).
+    """
+    values = tags.get(key)  # type: ignore[no-untyped-call]
+    return list(values) if values else None
+
+
+def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> None:
+    """Parse artist-related tags from Vorbis comments into result dict.
+
+    Handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec, as well as
+    explicit ARTISTS tag which take precedence.
+
+    :param tags: VCommentDict from mutagen.
+    :param result: Dictionary to store parsed tags.
+    """
+    # Artist tags - check for multiple values (per Vorbis spec recommendation)
+    # Multiple ARTIST fields are treated the same as an ARTISTS tag
+    artist_values = _vorbis_get_multi(tags, "ARTIST")
+    if artist_values:
+        if len(artist_values) > 1:
+            # Multiple ARTIST fields - treat as authoritative list (like ARTISTS tag)
+            result["artists"] = artist_values
+        else:
+            # Single ARTIST field - use normal parsing logic
+            result["artist"] = artist_values[0]
+
+    # Album artist tags - same logic for multiple values
+    albumartist_values = _vorbis_get_multi(tags, "ALBUMARTIST")
+    if albumartist_values:
+        if len(albumartist_values) > 1:
+            # Multiple ALBUMARTIST fields - treat as authoritative list
+            result["albumartists"] = albumartist_values
+        else:
+            result["albumartist"] = albumartist_values[0]
+
+    # Explicit ARTISTS tag takes precedence if present
+    if artists := _vorbis_get_multi(tags, "ARTISTS"):
+        result["artists"] = artists
+
+
+def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
+    """Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
+
+    Vorbis comments support multiple values for the same field name per the spec.
+    For example, multiple ARTIST fields can be used instead of a single ARTISTS field.
+    See: https://xiph.org/vorbis/doc/v-comment.html
+
+    :param tags: VCommentDict from mutagen (FLAC, OGG, etc.).
+    """
+    result: dict[str, Any] = {}
+
+    # Basic tags
+    if title := _vorbis_get_single(tags, "TITLE"):
+        result["title"] = title
+    if album := _vorbis_get_single(tags, "ALBUM"):
+        result["album"] = album
+
+    # Artist tags (handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec)
+    _parse_vorbis_artist_tags(tags, result)
+
+    # Genre (multi-value)
+    if genre := _vorbis_get_multi(tags, "GENRE"):
+        result["genre"] = genre
+
+    # MusicBrainz tags (single value)
+    if mb_album := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMID"):
+        result["musicbrainzalbumid"] = mb_album
+    if mb_rg := _vorbis_get_single(tags, "MUSICBRAINZ_RELEASEGROUPID"):
+        result["musicbrainzreleasegroupid"] = mb_rg
+    if mb_track := _vorbis_get_single(tags, "MUSICBRAINZ_TRACKID"):
+        result["musicbrainzrecordingid"] = mb_track
+    if mb_reltrack := _vorbis_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
+        result["musicbrainztrackid"] = mb_reltrack
+
+    # MusicBrainz tags (multi-value)
+    if mb_aa_ids := _vorbis_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
+        result["musicbrainzalbumartistid"] = mb_aa_ids
+    if mb_a_ids := _vorbis_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
+        result["musicbrainzartistid"] = mb_a_ids
+
+    # Additional tags
+    if barcode := _vorbis_get_multi(tags, "BARCODE"):
+        result["barcode"] = barcode
+    if isrc := _vorbis_get_multi(tags, "ISRC"):
+        result["isrc"] = isrc
+
+    # Date
+    if date := _vorbis_get_single(tags, "DATE"):
+        result["date"] = date
+
+    # Lyrics
+    if lyrics := _vorbis_get_single(tags, "LYRICS"):
+        result["lyrics"] = lyrics
+
+    # Compilation flag
+    if compilation := _vorbis_get_single(tags, "COMPILATION"):
+        result["compilation"] = compilation
+
+    # Album type (MusicBrainz)
+    if albumtype := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = albumtype
+    # Also check RELEASETYPE which is an alternative tag name
+    if not result.get("musicbrainzalbumtype"):
+        if releasetype := _vorbis_get_single(tags, "RELEASETYPE"):
+            result["musicbrainzalbumtype"] = releasetype
+
+    # ReplayGain tags
+    if rg_track := _vorbis_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
+        result["replaygaintrackgain"] = rg_track
+    if rg_album := _vorbis_get_single(tags, "REPLAYGAIN_ALBUM_GAIN"):
+        result["replaygainalbumgain"] = rg_album
+
+    # Sort tags
+    if artistsort := _vorbis_get_multi(tags, "ARTISTSORT"):
+        result["artistsort"] = artistsort
+    if albumartistsort := _vorbis_get_multi(tags, "ALBUMARTISTSORT"):
+        result["albumartistsort"] = albumartistsort
+    if titlesort := _vorbis_get_single(tags, "TITLESORT"):
+        result["titlesort"] = titlesort
+    if albumsort := _vorbis_get_single(tags, "ALBUMSORT"):
+        result["albumsort"] = albumsort
+
+    return result
+
+
 def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
     """Parse tags from an audio file using Mutagen.
 
-    Supports ID3 tags (MP3) and MP4 tags (AAC/M4A/ALAC).
+    Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), and MP4 tags (AAC/M4A/ALAC).
 
     :param input_file: Path to the audio file.
     """
@@ -941,8 +1081,13 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
         # Check if MP4/M4A/AAC file (uses MP4Tags)
         if isinstance(audio.tags, MP4Tags):
             result = _parse_mp4_tags(audio.tags)
+        # Check if Vorbis comments (FLAC, OGG Vorbis, OGG Opus, etc.)
+        elif isinstance(audio.tags, VCommentDict):
+            result = _parse_vorbis_tags(audio.tags)
         else:
             # ID3 tags (MP3) and other formats
+            # TODO: Add _parse_apev2_tags() for WavPack/Musepack/Monkey's Audio to extract
+            # MusicBrainz IDs and multi-artist tags (APEv2 uses different tag names than ID3).
             tags_dict = dict(audio.tags)
             result = _parse_id3_tags(tags_dict)
 
