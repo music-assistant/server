@@ -1,0 +1,13 @@
+{
+  "type": "audio_analysis",
+  "domain": "beat_this",
+  "name": "Beat This",
+  "description": "Beat tracking audio analysis using the Beat This neural network model. Provides beat and downbeat detection for smart crossfade timing.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["beat_this"],
+  "documentation": "https://github.com/CPJKU/beat_this",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": true,
+  "icon": "mdi-music-note-eighth"
+}

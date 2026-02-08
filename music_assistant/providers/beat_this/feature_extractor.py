@@ -1,4 +1,6 @@
-# processors/beat_this/features.py
+"""Log-mel spectrogram feature extractor for Beat This model."""
+
+from __future__ import annotations
 
 import asyncio
 
@@ -37,6 +39,16 @@ class AdvancedBeatFeatureExtractor:
         fmax: float = 11000.0,
         device: str = "cpu",
     ):
+        """Initialize the feature extractor.
+
+        :param sample_rate: Audio sample rate (default 22050 Hz).
+        :param n_fft: FFT window size.
+        :param hop_length: Hop length between frames.
+        :param n_mels: Number of mel frequency bins.
+        :param fmin: Minimum frequency for mel filter.
+        :param fmax: Maximum frequency for mel filter.
+        :param device: Torch device to use.
+        """
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.sample_rate = sample_rate

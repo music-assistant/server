@@ -60,6 +60,7 @@ from music_assistant.helpers.util import (
     load_provider_module,
 )
 from music_assistant.models import ProviderInstanceType
+from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -100,6 +101,13 @@ def is_music_provider(provider: ProviderInstanceType) -> TypeGuard[MusicProvider
 def is_player_provider(provider: ProviderInstanceType) -> TypeGuard[PlayerProvider]:
     """Type guard that returns true if a provider is a player provider."""
     return provider.type == ProviderType.PLAYER
+
+
+def is_audio_analysis_provider(
+    provider: ProviderInstanceType,
+) -> TypeGuard[AudioAnalysisProvider]:
+    """Type guard that returns true if a provider is an audio analysis provider."""
+    return provider.type == ProviderType.AUDIO_ANALYSIS
 
 
 class MusicAssistant:

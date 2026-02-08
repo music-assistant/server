@@ -1,4 +1,6 @@
-# processors/base.py
+"""Beat This streaming processor for real-time beat tracking."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -12,9 +14,7 @@ from beat_this.inference import Postprocessor, Spect2Frames
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.smart_fades.feature_extractors import (
-    AdvancedBeatFeatureExtractor,
-)
+from .feature_extractor import AdvancedBeatFeatureExtractor
 
 BEAT_THIS_ANALYSIS_AUDIO_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -24,20 +24,11 @@ BEAT_THIS_ANALYSIS_AUDIO_FORMAT = AudioFormat(
 )
 
 
-class StreamingAnalyzerProcessor:
-    async def process_pcm_chunk(self, pcm_chunk: bytes) -> None:
-        raise NotImplementedError
+class BeatThisStreamingProcessor:
+    """Beat This (final0) streaming analyzer.
 
-    async def finalize(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    async def reset(self) -> None:
-        raise NotImplementedError
-
-
-class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
-    """
-    Beat This (final0) streaming analyzer.
+    Processes PCM audio chunks in real-time to detect beats and downbeats
+    using the Beat This neural network model.
     """
 
     def __init__(
@@ -47,6 +38,13 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         device: str = "cpu",
         block_seconds: float = 10.0,
     ):
+        """Initialize the processor.
+
+        :param audio_format: Input audio format.
+        :param model_name: Beat This model checkpoint name.
+        :param device: Torch device to use.
+        :param block_seconds: Seconds of audio to accumulate before processing.
+        """
         self.input_audio_format = audio_format
         self.block_samples = int(block_seconds * BEAT_THIS_ANALYSIS_AUDIO_FORMAT.sample_rate)
 
@@ -84,10 +82,15 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         elif content_type == ContentType.PCM_F64LE:
             audio = torch.frombuffer(pcm_chunk, dtype=torch.float64).clone().to(torch.float32)
         elif content_type == ContentType.PCM_S32LE:
-            audio = torch.frombuffer(pcm_chunk, dtype=torch.int32).clone().to(torch.float32) / 2147483648.0
+            audio = (
+                torch.frombuffer(pcm_chunk, dtype=torch.int32).clone().to(torch.float32)
+                / 2147483648.0
+            )
         else:
             # Default: PCM_S16LE (most common)
-            audio = torch.frombuffer(pcm_chunk, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+            audio = (
+                torch.frombuffer(pcm_chunk, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+            )
 
         # Handle stereo to mono conversion
         if self.input_audio_format.channels == 2:
@@ -103,13 +106,17 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         return audio.numpy()
 
     async def process_pcm_chunk(self, pcm_chunk: bytes) -> None:
+        """Process a PCM audio chunk.
+
+        :param pcm_chunk: Raw PCM audio data.
+        """
         # Resample to 22050Hz mono in thread pool (avoids blocking event loop)
         pcm_22k = await asyncio.to_thread(self._resample_chunk_sync, pcm_chunk)
 
         if pcm_22k.size == 0:
             return
 
-        # 2. buffer resampled PCM
+        # Buffer resampled PCM
         self._pcm_buffer.append(pcm_22k)
         self._pcm_samples += len(pcm_22k)
         self._total_pcm_samples += len(pcm_22k)
@@ -118,6 +125,7 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
             await self._process_block()
 
     async def _process_block(self) -> None:
+        """Process accumulated PCM buffer into features."""
         pcm = np.concatenate(self._pcm_buffer)
         self._pcm_buffer.clear()
         self._pcm_samples = 0
@@ -130,31 +138,10 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
             self._feature_blocks.append(feats)
         self.logger.debug("Processed 10s of PCM chunks in %.1fms", elapsed_ms)
 
-    async def finalize(self) -> dict[str, Any]:
-        # 1. Process remaining buffered PCM
-        if self._pcm_samples:
-            await self._process_block()
-
-        # 2. Get final features with end padding (for center=True equivalence)
-        final_feats = await self._features.finalize()
-        if final_feats.size:
-            self._feature_blocks.append(final_feats)
-
-        if not self._feature_blocks:
-            return {}
-
-        # 3. Concatenate features
-        # NOTE: No per-track normalization - beat_this doesn't normalize features
-        feats = np.concatenate(self._feature_blocks, axis=0)
-
+    def _run_inference_sync(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Run model inference synchronously. Called from thread pool."""
         tensor = torch.from_numpy(feats).to(self._device)
-        self.logger.debug(
-            "Running model inference on %d frames (%.1fs of audio)",
-            feats.shape[0],
-            feats.shape[0] * 0.02,  # 20ms per frame (hop_length=441 at 22050Hz)
-        )
 
-        # 4. Single-shot model inference
         inference_start = time.perf_counter()
         with torch.no_grad():
             beat_logits, downbeat_logits = self._model(tensor)
@@ -172,10 +159,41 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
             len(downbeats),
         )
 
-        # 5. Calculate duration from total samples processed
+        return beats, downbeats
+
+    async def finalize(self) -> dict[str, Any]:
+        """Finalize analysis and return beat tracking results.
+
+        :return: Dictionary with beats, downbeats, and duration.
+        """
+        # Process remaining buffered PCM
+        if self._pcm_samples:
+            await self._process_block()
+
+        # Get final features with end padding (for center=True equivalence)
+        final_feats = await self._features.finalize()
+        if final_feats.size:
+            self._feature_blocks.append(final_feats)
+
+        if not self._feature_blocks:
+            return {}
+
+        # Concatenate features
+        feats = np.concatenate(self._feature_blocks, axis=0)
+
+        self.logger.debug(
+            "Running model inference on %d frames (%.1fs of audio)",
+            feats.shape[0],
+            feats.shape[0] * 0.02,  # 20ms per frame (hop_length=441 at 22050Hz)
+        )
+
+        # Run model inference in thread pool to avoid blocking event loop
+        beats, downbeats = await asyncio.to_thread(self._run_inference_sync, feats)
+
+        # Calculate duration from total samples processed
         duration = self._total_pcm_samples / BEAT_THIS_ANALYSIS_AUDIO_FORMAT.sample_rate
 
-        # 6. Free memory and reset state
+        # Free memory and reset state
         await self.reset()
 
         return {
@@ -185,6 +203,7 @@ class BeatThisStreamingProcessor(StreamingAnalyzerProcessor):
         }
 
     async def reset(self) -> None:
+        """Reset processor state for a new audio stream."""
         self._pcm_buffer.clear()
         self._feature_blocks.clear()
         self._pcm_samples = 0

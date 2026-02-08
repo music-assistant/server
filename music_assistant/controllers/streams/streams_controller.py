@@ -65,15 +65,10 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.controllers.streams.audio_analysis_controller import AudioAnalysisController
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
-from music_assistant.controllers.streams.smart_fades.extended_analysis import (
-    ExtendedAnalysisProcessor,
-)
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
-from music_assistant.controllers.streams.smart_fades.streaming_analyzer import (
-    SmartFadesStreamingAnalyzer,
-)
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
     get_buffered_media_stream,
@@ -96,7 +91,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
-from music_assistant.models.smart_fades import SmartFadesAnalysisFragment, SmartFadesMode
+from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
@@ -187,12 +182,7 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self._smart_fades_mixer = SmartFadesMixer(self)
         self._smart_fades_analyzer = SmartFadesAnalyzer(self)
-        # Extended smart fades feature extraction
-        self._active_extractors: dict[str, SmartFadesStreamingAnalyzer] = {}
-        self._extraction_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent extractions
-        self._extended_analysis_processor = ExtendedAnalysisProcessor(
-            self.logger.getChild("extended_analysis")
-        )
+        self._audio_analysis = AudioAnalysisController(self)
         # PCM capture for testing smart fades (enabled via SMART_FADES_TEST_MODE env var)
         self._pcm_captures: dict[str, PCMCaptureSession] = {}
 
@@ -1064,11 +1054,11 @@ class StreamsController(CoreController):
                 queue.display_name,
             )
 
-            # Start feature extraction for extended smart fades analysis
-            feature_extractor: SmartFadesStreamingAnalyzer | None = None
+            # Start audio analysis for extended smart fades analysis
+            analysis_session_key: str | None = None
             if smart_fades_mode != SmartFadesMode.DISABLED:
-                feature_extractor = await self._start_feature_extraction(
-                    queue_track, queue, pcm_format
+                analysis_session_key = await self._audio_analysis.start_analysis(
+                    queue_track, queue.queue_id, pcm_format
                 )
 
             # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
@@ -1128,9 +1118,9 @@ class StreamsController(CoreController):
                         else crossfade_buffer_size
                     )
 
-                # Queue chunk for feature extraction (non-blocking, just appends to list)
-                if feature_extractor:
-                    await feature_extractor.process_pcm_chunk(chunk)
+                # Queue chunk for audio analysis (non-blocking)
+                if analysis_session_key:
+                    await self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
 
                 # Write chunk to PCM capture file (test mode)
                 if pcm_capture_key:
@@ -1192,19 +1182,12 @@ class StreamsController(CoreController):
                     buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
-            # Stream data fully received - start final feature extraction analysis in background
+            # Stream data fully received - finalize audio analysis
             # We do this here (not after buffer handling) so analysis can run while
             # remaining audio is being sent to player
-            if feature_extractor:
-                analysis = await feature_extractor.finalize()
-                self.logger.info(
-                    "Analysis finished for %s. BPM: %.1f, Beats: %s\nDownbeats: %s",
-                    queue_track.streamdetails.stream_title,
-                    analysis.bpm,
-                    analysis.beats,
-                    analysis.downbeats,
-                )
-                feature_extractor = None  # Prevent double finalization
+            if analysis_session_key:
+                await self._audio_analysis.finalize(analysis_session_key)
+                analysis_session_key = None  # Prevent double finalization
 
             # Finalize PCM capture (test mode)
             if pcm_capture_key:
@@ -1594,10 +1577,12 @@ class StreamsController(CoreController):
             "true" if crossfade_data else "false",
         )
 
-        # Start feature extraction for extended smart fades analysis
-        feature_extractor: SmartFadesStreamingAnalyzer | None = None
+        # Start audio analysis for extended smart fades analysis
+        analysis_session_key: str | None = None
         if smart_fades_mode != SmartFadesMode.DISABLED:
-            feature_extractor = await self._start_feature_extraction(queue_item, queue, pcm_format)
+            analysis_session_key = await self._audio_analysis.start_analysis(
+                queue_item, queue.queue_id, pcm_format
+            )
 
         # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
         pcm_capture_key = self._start_pcm_capture(queue_item, pcm_format)
@@ -1660,9 +1645,9 @@ class StreamsController(CoreController):
             else:
                 req_buffer_size = crossfade_buffer_size
 
-            # Queue chunk for feature extraction
-            if feature_extractor:
-                await feature_extractor.process_pcm_chunk(chunk)
+            # Queue chunk for audio analysis
+            if analysis_session_key:
+                await self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
 
             # Write chunk to PCM capture file (test mode)
             if pcm_capture_key:
@@ -1716,16 +1701,10 @@ class StreamsController(CoreController):
                 buffer = buffer[pcm_format.pcm_sample_size :]
 
         #### HANDLE END OF TRACK
-        # Stream data fully received - finalize feature extraction
-        if feature_extractor:
-            analysis = await feature_extractor.finalize()
-            self.logger.info(
-                "Smart fades analysis for %s: %d beats, %d downbeats",
-                queue_item.name,
-                len(analysis.beats),
-                len(analysis.downbeats),
-            )
-            feature_extractor = None
+        # Stream data fully received - finalize audio analysis
+        if analysis_session_key:
+            await self._audio_analysis.finalize(analysis_session_key)
+            analysis_session_key = None
 
         # Finalize PCM capture (test mode)
         if pcm_capture_key:
@@ -2108,69 +2087,6 @@ class StreamsController(CoreController):
         else:
             self.smart_fades_analyzer.logger.setLevel(log_level)
             self.smart_fades_mixer.logger.setLevel(log_level)
-
-    async def _start_feature_extraction(
-        self,
-        queue_item: QueueItem,
-        queue: PlayerQueue,
-        pcm_format: AudioFormat,
-    ) -> SmartFadesStreamingAnalyzer | None:
-        """Start feature extraction for a queue item if eligible.
-
-        :param queue_item: The queue item being streamed.
-        :param queue: The player queue.
-        :param pcm_format: PCM format of the audio stream.
-        :return: Extractor instance if extraction started, None otherwise.
-        """
-        streamdetails = queue_item.streamdetails
-        if not streamdetails:
-            return None
-
-        # Eligibility checks
-        # 1. Only extract for tracks (not radio, etc.)
-        if streamdetails.media_type != MediaType.TRACK:
-            return None
-
-        # 2. Only extract when starting from beginning (no seek)
-        if streamdetails.seek_position > 0:
-            self.logger.debug(
-                "Skipping feature extraction for %s - seek position > 0",
-                queue_item.name,
-            )
-            return None
-
-        # 3. Check if we already have full-song analysis
-        existing = await self.mass.music.get_smart_fades_analysis(
-            streamdetails.item_id,
-            streamdetails.provider,
-            SmartFadesAnalysisFragment.FULL_SONG,
-        )
-        if existing:
-            self.logger.debug(
-                "Skipping feature extraction for %s - already have full-song analysis",
-                queue_item.name,
-            )
-            return None
-
-        # 4. Create extractor
-        extractor = SmartFadesStreamingAnalyzer(
-            streams=self,
-            item_id=streamdetails.item_id,
-            provider_instance_id_or_domain=streamdetails.provider,
-            audio_format=pcm_format,
-        )
-
-        # Track the extractor
-        extractor_key = f"{queue.queue_id}:{queue_item.queue_item_id}"
-        self._active_extractors[extractor_key] = extractor
-
-        self.logger.debug(
-            "Feature extraction started for %s (key: %s)",
-            queue_item.name,
-            extractor_key,
-        )
-
-        return extractor
 
     def _start_pcm_capture(
         self,
