@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class TrackedPlayerState(TypedDict, total=False):
-    """Tracked state for the Snpacast MA player.
+    """Tracked state for the Snapcast MA player.
 
     It is used for change detection and state synchronization, and may be
     partially populated depending on which information is
@@ -214,9 +214,16 @@ class SnapCastPlayer(Player):
         curr_stream_id = player_group.stream
         sync_group_player = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
-            media_src_id = curr_ma_stream.media.source_id or ""
-            if media_src_id.startswith(SYNCGROUP_PREFIX):
-                sync_group_player = self.mass.players.get(media_src_id)
+            media = curr_ma_stream.media
+            if media.media_type == MediaType.PLUGIN_SOURCE:
+                custom_data = media.custom_data or {}
+                assigned_player = custom_data.get("player_id", "")
+                if assigned_player.startswith(SYNCGROUP_PREFIX):
+                    sync_group_player = self.mass.players.get(assigned_player)
+            else:
+                media_src_id = media.source_id or ""
+                if media_src_id.startswith(SYNCGROUP_PREFIX):
+                    sync_group_player = self.mass.players.get(media_src_id)
 
         if sync_group_player and self.player_id in (player_ids_to_remove or []):
             # players in sync_group_player.group_members will be rejoined
@@ -276,12 +283,8 @@ class SnapCastPlayer(Player):
 
         self._snap_ma_stream = ma_stream
 
-        if self._snap_ma_stream.is_streaming:
-            # e.g. DSP settings require a restart
-            self._snap_ma_stream.request_stop_stream()
-            await self._snap_ma_stream.wait_for_stopped()
-
-        await self._snap_ma_stream.start_stream()
+        # e.g. DSP settings require a restart
+        await self._snap_ma_stream.start_stream(allow_restart=True)
 
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
@@ -290,8 +293,7 @@ class SnapCastPlayer(Player):
             assert player_group is not None  # for type checking
             await player_group.set_stream(ma_stream.stream_id)
 
-        async with self._state_update_lock:
-            await self._process_snapcast_client_state()
+        self.poke_player_update()
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None

@@ -346,19 +346,15 @@ class SnapCastProvider(PlayerProvider):
             if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
-            if player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                ma_player = cast("SnapCastPlayer", player)
-                snap_client.set_callback(ma_player._handle_player_update)
+            if player := self.get_snap_player(client_id=snap_client.identifier):
+                snap_client.set_callback(player._handle_player_update)
         self._update_group_callbacks()
 
     def poke_group_members(self, snap_group: SnapgroupProto) -> None:
         """Process Snapcast group callback."""
         for snap_client_id in snap_group.clients:
-            if not (snap_client := self._snapserver.client(snap_client_id)):
-                continue
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                assert isinstance(ma_player, SnapCastPlayer)  # for type checking
-                ma_player._handle_player_update(snap_client)
+            if ma_player := self.get_snap_player(client_id=snap_client_id):
+                ma_player.poke_player_update()
 
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
@@ -418,7 +414,10 @@ class SnapCastProvider(PlayerProvider):
             The Snapcast group owned by the player, or ``None`` if the player is not
             currently part of any group.
         """
-        player_client = self._snapserver.client(self._get_snapclient_id(ma_player_id))
+        player_client = self.get_snap_client(player_id=ma_player_id)
+        if player_client is None:
+            return None
+
         curr_group = player_client.group
 
         if curr_group is None:
@@ -559,7 +558,6 @@ class SnapCastProvider(PlayerProvider):
 
         stream_name = create_safe_string(stream_name, lowercase=False)
         stream_name = f"{MASS_STREAM_PREFIX}{stream_name}{name_suffix}"
-        self.logger.debug(f"{media.source_id} {queue_id} {self.use_queue_control}")
         async with self._snapcast_ma_streams_lock:
             if not (stream := self._snapcast_ma_streams.get(stream_name)):
                 if existing_only:
@@ -636,14 +634,34 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_ma_streams[stream_id].set_in_use(False)
 
     def get_snap_client(
-        self, client_id: str | None = None, player_id: str | None = None
+        self, *, client_id: str | None = None, player_id: str | None = None
     ) -> SnapclientProto | None:
         """Return the snapclient for either given client_id or player_id."""
         if player_id is not None:
+            if client_id is not None and client_id != self._get_snapclient_id(client_id):
+                raise ValueError("provided client_id and player_id do not match")
             client_id = self._get_snapclient_id(player_id)
 
         if client_id:
             with suppress(KeyError):
                 return self._snapserver.client(client_id)
+
+        return None
+
+    def get_snap_player(
+        self, *, client_id: str | None = None, player_id: str | None = None
+    ) -> SnapCastPlayer | None:
+        """Return the MA SnapCastPlayer for either given client_id or player_id."""
+        if client_id is not None:
+            if player_id is not None and player_id != self._get_ma_id(client_id):
+                raise ValueError("provided client_id and player_id do not match")
+            player_id = self._get_ma_id(client_id)
+
+        if player_id is None:
+            return None
+
+        if ma_player := self.mass.players.get(player_id):
+            assert isinstance(ma_player, SnapCastPlayer)  # for type checking
+            return ma_player
 
         return None

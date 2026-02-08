@@ -14,7 +14,6 @@ import asyncio
 import random
 import urllib.parse
 from contextlib import suppress
-from enum import Enum, auto
 from typing import TYPE_CHECKING, cast
 
 from music_assistant.helpers.audio import get_player_filter_params
@@ -31,14 +30,6 @@ if TYPE_CHECKING:
 
     from .provider import SnapCastProvider
     from .snap_cntrl_proto import SnapstreamProto
-
-
-class StopReason(Enum):
-    """Reason a streamer stop was requested."""
-
-    USER = auto()
-    RESTART = auto()
-    DESTROY = auto()
 
 
 class SnapcastMAStream:
@@ -91,7 +82,6 @@ class SnapcastMAStream:
         self._destroyed = False
         self._setup_done = False
         self._is_streaming = False
-        self._stop_reason: StopReason | None = None
         self._restart_requested: bool = False
         self._stop_requested: bool = False
 
@@ -157,7 +147,7 @@ class SnapcastMAStream:
         await self._remove_snap_source()
         await self._stop_socket_server()
 
-    async def start_stream(self) -> None:
+    async def start_stream(self, allow_restart: bool = False) -> None:
         """Start streaming the configured media to the Snapcast source.
 
         Raises:
@@ -166,7 +156,10 @@ class SnapcastMAStream:
         await self.setup()
         async with self._lifecycle_lock:
             if self._streamer_task and not self._streamer_task.done():
-                raise RuntimeError("streamer already running")
+                if not allow_restart:
+                    raise RuntimeError("streamer already running")
+                self._restart_if_running()
+                return
 
             self._stop_requested = False
             self._restart_requested = False
@@ -369,6 +362,7 @@ class SnapcastMAStream:
         t = self._streamer_task
         if not t or t.done():
             return
+
         if self._stop_requested or self._stop_streamer_evt.is_set():
             return
 
