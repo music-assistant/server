@@ -60,6 +60,7 @@ class ChromecastProvider(PlayerProvider):
             self.mass.aiozc.zeroconf,
             known_hosts=manual_ip_config,
         )
+        self._discovery_running = False
         # set-up pychromecast logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pychromecast").setLevel(logging.DEBUG)
@@ -68,6 +69,9 @@ class ChromecastProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover Cast players on the network."""
+        if self._discovery_running:
+            return
+        self._discovery_running = True
         assert self.browser is not None  # for type checking
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
@@ -86,6 +90,7 @@ class ChromecastProvider(PlayerProvider):
 
             self.browser.host_browser.stop.set()
             self.browser.host_browser.join()
+            self._discovery_running = False
 
         await self.mass.loop.run_in_executor(None, stop_discovery)
 

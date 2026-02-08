@@ -88,10 +88,10 @@ class TidalProvider(MusicProvider):
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update auth config with new auth info."""
-        self.update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
-        self.update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
-        self.update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
-        self.update_config_value(CONF_USER_ID, auth_info["userId"])
+        self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
+        self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
+        self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
+        self._update_config_value(CONF_USER_ID, auth_info["userId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -107,7 +107,7 @@ class TidalProvider(MusicProvider):
             try:
                 dt = datetime.fromisoformat(expires_at)
                 expires_at = dt.timestamp()
-                self.update_config_value(CONF_EXPIRY_TIME, expires_at)
+                self._update_config_value(CONF_EXPIRY_TIME, expires_at)
             except ValueError:
                 expires_at = 0
 

@@ -678,6 +678,9 @@ class SpotifyConnectProvider(PluginProvider):
                 str(EVENTS_SCRIPT),
                 "--emit-sink-events",
             ]
+            bind_ip = self.mass.streams.bind_ip
+            if bind_ip and bind_ip != "0.0.0.0":
+                args.extend(["--zeroconf-interface", bind_ip])
             self._librespot_proc = librespot = AsyncProcess(
                 args, stdout=False, stderr=True, name=f"librespot[{self.name}]", env=env
             )

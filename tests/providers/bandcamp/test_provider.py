@@ -94,7 +94,9 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
         await provider.handle_async_init()
 
         mock_client_class.assert_called_once_with(
-            session=provider.mass.http_session, identity_token="mock_identity_token"
+            session=provider.mass.http_session,
+            identity_token="mock_identity_token",
+            default_retry_after=3,
         )
         assert provider._client == mock_client
         assert provider._converters is not None
@@ -117,7 +119,9 @@ async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock
         await provider.handle_async_init()
 
         mock_client_class.assert_called_once_with(
-            session=provider.mass.http_session, identity_token=None
+            session=provider.mass.http_session,
+            identity_token=None,
+            default_retry_after=3,
         )
 
 

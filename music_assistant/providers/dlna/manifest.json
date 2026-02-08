@@ -2,8 +2,8 @@
   "type": "player",
   "domain": "dlna",
   "stage": "stable",
-  "name": "UPnP/DLNA Player provider",
-  "description": "Stream music to supported DLNA-compatible devices.",
+  "name": "DLNA",
+  "description": "Stream music to supported UPnP/DLNA-compatible devices.",
   "codeowners": ["@music-assistant"],
   "credits": [
     "[Asyncio UPnP Client library by Steven Looman](https://github.com/StevenLooman/async_upnp_client)"
