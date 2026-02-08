@@ -1066,8 +1066,7 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command
         - option_key: The key of the player option that needs to be activated/selected.
-        - option_value: The new value of the player option. If we have a
-            PlayerOptionType.OPTIONS this is the key of PlayerOptionEntry
+        - option_value: The new value of the player option.
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
