@@ -36,10 +36,10 @@ from music_assistant.providers.snapcast.constants import (
     CONTROL_SCRIPT,
     DEFAULT_SNAPSERVER_CONFIG_FILE,
     DEFAULT_SNAPSERVER_PLUGIN_DIR,
-    SHIPPED_SNAPSERVER_CONFIG_FILE,
     DEFAULT_SNAPSERVER_PORT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
+    SHIPPED_SNAPSERVER_CONFIG_FILE,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -78,21 +78,6 @@ class SnapCastProvider(PlayerProvider):
     _controlscript_available: bool
     _snapcast_ma_streams: dict[str, SnapcastMAStream]
     _snapcast_ma_streams_lock: asyncio.Lock
-
-
-    @property
-    def queue_control_available(self) -> bool:
-        """Return whether queue-based control scripts are available.
-
-        Indicates if the Snapcast control script has been successfully initialized
-        and can be used to control playback via a queue-specific control channel.
-        """
-        return (
-            self._use_builtin_server
-            and self._controlscript_available
-            and self._snapserver_started is not None
-            and self._snapserver_started.is_set()
-        )
 
     @property
     def queue_control_available(self) -> bool:
@@ -218,9 +203,11 @@ class SnapCastProvider(PlayerProvider):
             logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
             return None
 
-        # fallback directory for dev environments
-        fallback_dir = Path(self.mass.storage_path) / "snapcast" / "plugins"
-        candidates = (Path(DEFAULT_SNAPSERVER_PLUGIN_DIR), fallback_dir)
+        candidates = (
+            Path(DEFAULT_SNAPSERVER_PLUGIN_DIR),
+            # fallback directory for dev environments
+            Path(self.mass.storage_path) / "snapcast" / "plugins",
+        )
         for plugin_dir in candidates:
             control_dest = plugin_dir / "control.py"
             try:
@@ -613,7 +600,7 @@ class SnapCastProvider(PlayerProvider):
                     stream_name=stream_name,
                     filter_settings_owner=filter_settings_owner,
                     source_id=source_id,
-                    use_cntrl_script=bool(queue_id) and self.use_queue_control,
+                    use_cntrl_script=bool(queue_id) and self.queue_control_available,
                     destroy_on_stop=destroy_on_stop,
                 )
                 self._snapcast_ma_streams[stream_name] = stream
