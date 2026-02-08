@@ -34,12 +34,9 @@ from music_assistant.providers.snapcast.constants import (
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
     CONTROL_SCRIPT,
-    DEFAULT_SNAPSERVER_CONFIG_FILE,
-    DEFAULT_SNAPSERVER_PLUGIN_DIR,
     DEFAULT_SNAPSERVER_PORT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
-    SHIPPED_SNAPSERVER_CONFIG_FILE,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -96,20 +93,6 @@ class SnapCastProvider(PlayerProvider):
         self._stop_called = False
         self._controlscript_available = False
         if self._use_builtin_server:
-            if Path(DEFAULT_SNAPSERVER_CONFIG_FILE).exists():
-                self._snapcast_server_config_file = DEFAULT_SNAPSERVER_CONFIG_FILE
-            else:
-                # Make sure that a config file always exists,
-                # snapserver ignores all passed arguments otherwise
-                self._snapcast_server_config_file = str(SHIPPED_SNAPSERVER_CONFIG_FILE)
-            try:
-                Path(DEFAULT_SNAPSERVER_PLUGIN_DIR).mkdir(parents=True, exist_ok=True)
-                self._snapcast_server_plugin_dir = DEFAULT_SNAPSERVER_PLUGIN_DIR
-            except (PermissionError, OSError):
-                self._snapcast_server_plugin_dir = str(
-                    Path(self.mass.storage_path) / "snapcast" / "plugins"
-                )
-
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = cast(
@@ -202,7 +185,7 @@ class SnapCastProvider(PlayerProvider):
 
         :return: True if successful, False otherwise.
         """
-        plugin_dir = Path(self._snapcast_server_plugin_dir)
+        plugin_dir = Path("/usr/share/snapserver/plug-ins")
         control_dest = plugin_dir / "control.py"
         logger = self.logger.getChild("snapserver")
         try:
@@ -270,19 +253,17 @@ class SnapCastProvider(PlayerProvider):
             "snapserver",
             # config settings taken from
             # https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf
-            f"--config={self._snapcast_server_config_file}",
             f"--server.datadir={self.mass.storage_path}",
             "--http.enabled=true",
             "--http.port=1780",
             f"--http.doc_root={SNAPWEB_DIR}",
-            "--tcp-control.enabled=true",
-            f"--tcp-control.port={self._snapcast_server_control_port}",
+            "--tcp.enabled=true",
+            f"--tcp.port={self._snapcast_server_control_port}",
             "--stream.sampleformat=48000:16:2",
             f"--stream.buffer={self._snapcast_server_buffer_size}",
             f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
-            f"--stream.plugin_dir={self._snapcast_server_plugin_dir}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:

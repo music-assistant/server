@@ -33,11 +33,6 @@ CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(
 DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
-DEFAULT_SNAPSERVER_PLUGIN_DIR = "/usr/share/snapserver/plug-ins"
-DEFAULT_SNAPSERVER_CONFIG_FILE = "/etc/snapserver.conf"
-SHIPPED_SNAPSERVER_CONFIG_FILE = (
-    pathlib.Path(__file__).parent / "snapserver" / "snapserver.conf"
-).resolve()
 
 # Socket path template for control script communication
 # The {queue_id} placeholder will be replaced with the actual queue ID
@@ -47,7 +42,6 @@ MASS_STREAM_PREFIX = "Music Assistant - "
 MASS_ANNOUNCEMENT_POSTFIX = " (announcement)"
 SNAPWEB_DIR = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 CONTROL_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("control.py")
-
 
 DEFAULT_SNAPCAST_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
