@@ -1034,3 +1034,7 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
+
+# Metadata image provider priority - providers listed first are preferred for images.
+# Used to sort images so higher quality sources appear first in the UI.
+METADATA_IMAGE_PROVIDER_PRIORITY: Final[tuple[str, ...]] = ("fanarttv", "theaudiodb")

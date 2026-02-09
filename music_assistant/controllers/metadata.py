@@ -46,6 +46,7 @@ from music_assistant.constants import (
     CONF_LANGUAGE,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
+    METADATA_IMAGE_PROVIDER_PRIORITY,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -241,6 +242,37 @@ class MetaDataController(CoreController):
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
         return cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA))
+
+    # TODO: After radio-artist-artwork PR is merged, update get_track_metadata_by_name()
+    # to sort providers by METADATA_IMAGE_PROVIDER_PRIORITY when querying for images.
+    # This ensures Fanart.tv is queried first for radio stream artwork, falling back
+    # to TheAudioDB only if no images found. Use:
+    #   sorted(self.providers, key=lambda p: (
+    #       METADATA_IMAGE_PROVIDER_PRIORITY.index(p.domain)
+    #       if p.domain in METADATA_IMAGE_PROVIDER_PRIORITY else 999
+    #   ))
+
+    def _sort_images_by_priority(
+        self, images: UniqueList[MediaItemImage] | None
+    ) -> UniqueList[MediaItemImage] | None:
+        """Sort images by provider priority.
+
+        Images from providers listed in METADATA_IMAGE_PROVIDER_PRIORITY appear first.
+        Used after merging metadata from multiple providers to ensure preferred
+        sources are displayed first in the UI.
+
+        :param images: List of images to sort.
+        """
+        if not images:
+            return images
+
+        def get_priority(img: MediaItemImage) -> int:
+            try:
+                return METADATA_IMAGE_PROVIDER_PRIORITY.index(img.provider)
+            except ValueError:
+                return 999
+
+        return UniqueList(sorted(images, key=get_priority))
 
     @property
     def preferred_language(self) -> str:
@@ -664,6 +696,8 @@ class MetaDataController(CoreController):
                         artist.name,
                         provider.name,
                     )
+        # sort images by provider priority so preferred sources appear first
+        artist.metadata.images = self._sort_images_by_priority(artist.metadata.images)
         # update final item in library database
         # set timestamp, used to determine when this function was last called
         artist.metadata.last_refresh = int(time())
@@ -717,6 +751,8 @@ class MetaDataController(CoreController):
                         album.name,
                         provider.name,
                     )
+        # sort images by provider priority so preferred sources appear first
+        album.metadata.images = self._sort_images_by_priority(album.metadata.images)
         # update final item in library database
         # set timestamp, used to determine when this function was last called
         album.metadata.last_refresh = int(time())
@@ -769,6 +805,8 @@ class MetaDataController(CoreController):
                         track.name,
                         provider.name,
                     )
+        # sort images by provider priority so preferred sources appear first
+        track.metadata.images = self._sort_images_by_priority(track.metadata.images)
         # set timestamp, used to determine when this function was last called
         track.metadata.last_refresh = int(time())
         # update final item in library database
