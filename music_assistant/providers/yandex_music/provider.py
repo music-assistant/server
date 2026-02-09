@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
