@@ -99,16 +99,44 @@ class YandexMusicClient:
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
     async def get_liked_albums(self) -> list[YandexAlbum]:
-        """Get user's liked albums.
+        """Get user's liked albums with full details (including cover art).
 
-        :return: List of liked album objects.
+        The users_likes_albums endpoint returns minimal album data without
+        cover_uri, so we fetch full album details in batches afterwards.
+
+        :return: List of liked album objects with full details.
         """
         client = self._ensure_connected()
         try:
             result = await client.users_likes_albums()
             if result is None:
                 return []
-            return [like.album for like in result if like.album is not None]
+            album_ids = [
+                str(like.album.id) for like in result if like.album is not None and like.album.id
+            ]
+            if not album_ids:
+                return []
+            # Fetch full album details in batches to get cover_uri and other metadata
+            batch_size = 50
+            full_albums: list[YandexAlbum] = []
+            for i in range(0, len(album_ids), batch_size):
+                batch = album_ids[i : i + batch_size]
+                try:
+                    batch_result = await client.albums(batch)
+                    if batch_result:
+                        full_albums.extend(batch_result)
+                except (BadRequestError, NetworkError) as batch_err:
+                    LOGGER.warning("Error fetching album details batch: %s", batch_err)
+                    # Fall back to minimal data for this batch
+                    batch_set = set(batch)
+                    for like in result:
+                        if (
+                            like.album is not None
+                            and like.album.id
+                            and str(like.album.id) in batch_set
+                        ):
+                            full_albums.append(like.album)
+            return full_albums
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching liked albums: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
@@ -186,12 +214,22 @@ class YandexMusicClient:
 
         :param track_ids: List of track IDs.
         :return: List of track objects.
+        :raises ResourceTemporarilyUnavailable: On network errors after retry.
         """
         client = self._ensure_connected()
         try:
             result = await client.tracks(track_ids)
             return result or []
-        except (BadRequestError, NetworkError) as err:
+        except NetworkError as err:
+            # Retry once on network errors (timeout, disconnect, etc.)
+            LOGGER.warning("Network error fetching tracks, retrying once: %s", err)
+            try:
+                result = await client.tracks(track_ids)
+                return result or []
+            except NetworkError as retry_err:
+                LOGGER.error("Error fetching tracks (retry failed): %s", retry_err)
+                raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from retry_err
+        except BadRequestError as err:
             LOGGER.error("Error fetching tracks: %s", err)
             return []
 
@@ -292,6 +330,7 @@ class YandexMusicClient:
         :param user_id: User ID (owner of the playlist).
         :param playlist_id: Playlist ID (kind).
         :return: Playlist object or None if not found.
+        :raises ResourceTemporarilyUnavailable: On network errors.
         """
         client = self._ensure_connected()
         try:
@@ -299,7 +338,10 @@ class YandexMusicClient:
             if isinstance(result, list):
                 return result[0] if result else None
             return result
-        except (BadRequestError, NetworkError) as err:
+        except NetworkError as err:
+            LOGGER.warning("Network error fetching playlist %s/%s: %s", user_id, playlist_id, err)
+            raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
+        except BadRequestError as err:
             LOGGER.error("Error fetching playlist %s/%s: %s", user_id, playlist_id, err)
             return None
 

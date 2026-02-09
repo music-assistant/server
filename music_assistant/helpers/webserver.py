@@ -94,7 +94,7 @@ class Webserver:
             self._webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
-        host = None if bind_ip == "0.0.0.0" else bind_ip
+        host = None if bind_ip in ("0.0.0.0", "::") else bind_ip
         try:
             self._tcp_site = web.TCPSite(
                 self._apprunner, host=host, port=bind_port, ssl_context=ssl_context

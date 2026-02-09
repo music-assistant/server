@@ -753,7 +753,12 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images.append(track.image)
             if track.metadata.genres:
                 genres = track.metadata.genres
-            elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+            elif (
+                isinstance(track, Track)
+                and track.album
+                and isinstance(track.album, Album)
+                and track.album.metadata.genres
+            ):
                 genres = track.album.metadata.genres
             else:
                 genres = set()
