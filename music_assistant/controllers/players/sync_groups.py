@@ -103,7 +103,6 @@ class SyncGroupPlayer(GroupPlayer):
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        # Always store configured members - these are restored on power on
         self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
             # Dynamic groups allow runtime member changes via SET_MEMBERS
