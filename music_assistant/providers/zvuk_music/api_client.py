@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar, cast
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -31,6 +33,43 @@ from zvuk_music.exceptions import (
 from .constants import DEFAULT_LIMIT
 
 LOGGER = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_NOT_FOUND_SENTINEL: Any = object()
+
+
+def handle_zvuk_errors(
+    not_found_return: Any = _NOT_FOUND_SENTINEL,
+) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
+    """Decorate async methods to map Zvuk API exceptions to MA errors.
+
+    :param not_found_return: Value to return on NotFoundError (e.g. None or []).
+        If not provided, NotFoundError is not caught.
+    """
+
+    def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            try:
+                return await func(*args, **kwargs)
+            except UnauthorizedError as err:
+                raise LoginFailed("Invalid Zvuk Music token") from err
+            except (NetworkError, TimedOutError) as err:
+                LOGGER.error("Zvuk API error: %s", err)
+                raise ResourceTemporarilyUnavailable("Zvuk Music request failed") from err
+            except (BadRequestError, GraphQLError) as err:
+                LOGGER.error("Zvuk API error: %s", err)
+                raise ResourceTemporarilyUnavailable("Zvuk Music request failed") from err
+            except BotDetectedError as err:
+                raise ProviderUnavailableError("Bot detected by Zvuk") from err
+            except NotFoundError:
+                if not_found_return is _NOT_FOUND_SENTINEL:
+                    raise
+                return cast("_R", not_found_return)
+
+        return wrapper
+
+    return decorator
 
 
 class ZvukMusicClient:
@@ -85,6 +124,7 @@ class ZvukMusicClient:
 
     # Search
 
+    @handle_zvuk_errors(not_found_return=None)
     async def search(
         self,
         query: str,
@@ -106,34 +146,22 @@ class ZvukMusicClient:
         :return: Search results object or None.
         """
         client = self._ensure_connected()
-        try:
-            return await client.search(
-                query,
-                limit=limit,
-                tracks=search_tracks,
-                artists=search_artists,
-                releases=search_releases,
-                playlists=search_playlists,
-                podcasts=False,
-                episodes=False,
-                profiles=False,
-                books=False,
-            )
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Search error: %s", err)
-            raise ResourceTemporarilyUnavailable("Search failed") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Search error: %s", err)
-            raise ResourceTemporarilyUnavailable("Search failed") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return None
+        return await client.search(
+            query,
+            limit=limit,
+            tracks=search_tracks,
+            artists=search_artists,
+            releases=search_releases,
+            playlists=search_playlists,
+            podcasts=False,
+            episodes=False,
+            profiles=False,
+            books=False,
+        )
 
     # Get single items
 
+    @handle_zvuk_errors(not_found_return=None)
     async def get_track(self, track_id: str) -> ZvukTrack | None:
         """Get a single track by ID.
 
@@ -141,21 +169,9 @@ class ZvukMusicClient:
         :return: Track object or None if not found.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_track(track_id)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching track %s: %s", track_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch track") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching track %s: %s", track_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch track") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return None
+        return await client.get_track(track_id)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_tracks(self, track_ids: list[str]) -> list[ZvukTrack]:
         """Get multiple tracks by IDs.
 
@@ -163,22 +179,10 @@ class ZvukMusicClient:
         :return: List of track objects.
         """
         client = self._ensure_connected()
-        try:
-            ids: list[str | int] = list(track_ids)
-            return await client.get_tracks(ids)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching tracks: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching tracks: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        ids: list[str | int] = list(track_ids)
+        return await client.get_tracks(ids)
 
+    @handle_zvuk_errors(not_found_return=None)
     async def get_release(self, release_id: str) -> ZvukRelease | None:
         """Get a single release (album) by ID.
 
@@ -186,21 +190,9 @@ class ZvukMusicClient:
         :return: Release object or None if not found.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_release(release_id)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching release %s: %s", release_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch release") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching release %s: %s", release_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch release") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return None
+        return await client.get_release(release_id)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_releases(self, release_ids: list[str]) -> list[ZvukRelease]:
         """Get multiple releases by IDs.
 
@@ -208,22 +200,10 @@ class ZvukMusicClient:
         :return: List of release objects.
         """
         client = self._ensure_connected()
-        try:
-            ids: list[str | int] = list(release_ids)
-            return await client.get_releases(ids)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching releases: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch releases") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching releases: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch releases") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        ids: list[str | int] = list(release_ids)
+        return await client.get_releases(ids)
 
+    @handle_zvuk_errors(not_found_return=None)
     async def get_artist(self, artist_id: str) -> ZvukArtist | None:
         """Get a single artist by ID.
 
@@ -231,21 +211,9 @@ class ZvukMusicClient:
         :return: Artist object or None if not found.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_artist(artist_id, with_description=True)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching artist %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching artist %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return None
+        return await client.get_artist(artist_id, with_description=True)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_artists(self, artist_ids: list[str]) -> list[ZvukArtist]:
         """Get multiple artists by IDs.
 
@@ -253,22 +221,10 @@ class ZvukMusicClient:
         :return: List of artist objects.
         """
         client = self._ensure_connected()
-        try:
-            ids: list[str | int] = list(artist_ids)
-            return await client.get_artists(ids)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching artists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artists") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching artists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artists") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        ids: list[str | int] = list(artist_ids)
+        return await client.get_artists(ids)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_artist_releases(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[ZvukArtist]:
@@ -279,21 +235,9 @@ class ZvukMusicClient:
         :return: List of artist objects with populated releases.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_artists([artist_id], with_releases=True, releases_limit=limit)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching artist releases %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist releases") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching artist releases %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist releases") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        return await client.get_artists([artist_id], with_releases=True, releases_limit=limit)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_artist_top_tracks(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[ZvukArtist]:
@@ -304,25 +248,11 @@ class ZvukMusicClient:
         :return: List of artist objects with populated popular_tracks.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_artists(
-                [artist_id], with_popular_tracks=True, tracks_limit=limit
-            )
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching artist top tracks %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist top tracks") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching artist top tracks %s: %s", artist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch artist top tracks") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        return await client.get_artists([artist_id], with_popular_tracks=True, tracks_limit=limit)
 
     # Playlists
 
+    @handle_zvuk_errors(not_found_return=None)
     async def get_playlist(self, playlist_id: str) -> ZvukPlaylist | None:
         """Get a playlist by ID.
 
@@ -330,21 +260,9 @@ class ZvukMusicClient:
         :return: Playlist object or None if not found.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_playlist(playlist_id)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching playlist %s: %s", playlist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching playlist %s: %s", playlist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return None
+        return await client.get_playlist(playlist_id)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_playlists(self, playlist_ids: list[str]) -> list[ZvukPlaylist]:
         """Get multiple playlists by IDs.
 
@@ -352,22 +270,10 @@ class ZvukMusicClient:
         :return: List of playlist objects.
         """
         client = self._ensure_connected()
-        try:
-            ids: list[str | int] = list(playlist_ids)
-            return await client.get_playlists(ids)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching playlists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching playlists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        ids: list[str | int] = list(playlist_ids)
+        return await client.get_playlists(ids)
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_playlist_tracks(
         self, playlist_id: str, limit: int = 50, offset: int = 0
     ) -> list[ZvukSimpleTrack]:
@@ -379,23 +285,11 @@ class ZvukMusicClient:
         :return: List of SimpleTrack objects.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching playlist tracks %s: %s", playlist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlist tracks") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching playlist tracks %s: %s", playlist_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch playlist tracks") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        return await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
 
     # Streaming
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_stream_urls(self, track_id: str) -> list[ZvukStream]:
         """Get stream URLs for a track.
 
@@ -403,79 +297,36 @@ class ZvukMusicClient:
         :return: List of Stream objects.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_stream_urls(track_id)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching stream URLs for track %s: %s", track_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch stream URLs") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching stream URLs for track %s: %s", track_id, err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch stream URLs") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
-        except NotFoundError:
-            return []
+        return await client.get_stream_urls(track_id)
 
     # Collection (Library)
 
+    @handle_zvuk_errors()
     async def get_collection(self) -> Collection | None:
         """Get user's collection (liked items).
 
         :return: Collection object or None.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_collection()
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching collection: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch collection") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching collection: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch collection") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
+        return await client.get_collection()
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_liked_tracks(self) -> list[ZvukTrack]:
         """Get user's liked tracks.
 
         :return: List of full Track objects.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_liked_tracks()
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching liked tracks: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching liked tracks: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
+        return await client.get_liked_tracks()
 
+    @handle_zvuk_errors(not_found_return=[])
     async def get_user_playlists(self) -> list[ZvukCollectionItem]:
         """Get user's playlists.
 
         :return: List of CollectionItem objects with playlist IDs.
         """
         client = self._ensure_connected()
-        try:
-            return await client.get_user_playlists()
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error fetching user playlists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch user playlists") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error fetching user playlists: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch user playlists") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
+        return await client.get_user_playlists()
 
     # Library modifications
 
@@ -585,6 +436,7 @@ class ZvukMusicClient:
 
     # Playlist management
 
+    @handle_zvuk_errors()
     async def create_playlist(self, name: str, track_ids: list[str] | None = None) -> str:
         """Create a new playlist.
 
@@ -593,18 +445,7 @@ class ZvukMusicClient:
         :return: New playlist ID.
         """
         client = self._ensure_connected()
-        try:
-            return await client.create_playlist(name, track_ids=track_ids)
-        except UnauthorizedError as err:
-            raise LoginFailed("Invalid Zvuk Music token") from err
-        except (NetworkError, TimedOutError) as err:
-            LOGGER.error("Error creating playlist: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to create playlist") from err
-        except (BadRequestError, GraphQLError) as err:
-            LOGGER.error("Error creating playlist: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to create playlist") from err
-        except BotDetectedError as err:
-            raise ProviderUnavailableError("Bot detected by Zvuk") from err
+        return await client.create_playlist(name, track_ids=track_ids)
 
     async def delete_playlist(self, playlist_id: str) -> bool:
         """Delete a playlist.

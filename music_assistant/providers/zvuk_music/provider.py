@@ -443,7 +443,7 @@ class ZvukMusicProvider(MusicProvider):
 
     # Streaming
 
-    async def get_stream_details(
+    async def get_stream_details(  # noqa: PLR0915
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
         """Get stream details for a track.
@@ -514,6 +514,11 @@ class ZvukMusicProvider(MusicProvider):
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
 
+        track = await self.client.get_track(item_id)
+        duration: int | None = None
+        if track is not None and getattr(track, "duration", None) is not None:
+            duration = int(track.duration)
+
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -523,5 +528,7 @@ class ZvukMusicProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             path=url,
+            duration=duration,
+            allow_seek=True,
             can_seek=True,
         )
