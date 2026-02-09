@@ -143,6 +143,25 @@ class SnapCastPlayer(Player):
 
         return PlaybackState.PLAYING
 
+    @property
+    def elapsed_time(self) -> float | None:
+        """Return the elapsed time in (fractional) seconds of the current track (if any)."""
+        # using flow-mode, elapsed time will be estimated upstream from 'elapsed_time_last_updated'
+        return 0 if self.active_snap_ma_stream else None
+
+    @property
+    def elapsed_time_last_updated(self) -> float | None:
+        """
+        Return when the elapsed time was last updated.
+
+        return: The (UTC) timestamp when the elapsed time was last updated,
+        or None if it was never updated (or unknown).
+        """
+        # we only update on playback starts
+        if snap_ma_stream := self.active_snap_ma_stream:
+            return snap_ma_stream.playback_started_at
+        return None
+
     def setup(self) -> None:
         """Set up player."""
         self._attr_name = self.snap_client.friendly_name
