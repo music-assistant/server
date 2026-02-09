@@ -105,7 +105,6 @@ class SyncGroupPlayer(GroupPlayer):
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
-            # Dynamic groups allow runtime member changes via SET_MEMBERS
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
