@@ -74,7 +74,7 @@ class Provider:
         self.config = config
 
         # update log level if changed
-        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
             self._set_log_level_from_config(config)
 
         # reload if any non-log-level value keys changed
@@ -189,7 +189,13 @@ class Provider:
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
-        self.logger = mass_logger.getChild(self.domain)
+        # self.name is only available after async_init. Otherwise we run into a race condition.
+        # see https://github.com/music-assistant/support/issues/4801
+        logging_name = self.domain
+        if getattr(self, "available", False):
+            # async_init completed
+            logging_name = self.name
+        self.logger = mass_logger.getChild(logging_name)
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)

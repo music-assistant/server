@@ -13,6 +13,106 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
+# OSI-approved and common compatible licenses
+COMPATIBLE_LICENSES = {
+    "MIT",
+    "Apache-2.0",
+    "Apache Software License",
+    "BSD",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Python Software Foundation License",
+    "PSF",
+    "LGPL",
+    "MPL-2.0",
+    "Unlicense",
+    "CC0",
+}
+
+# Common packages to check for typosquatting (popular Python packages)
+POPULAR_PACKAGES = {
+    "requests",
+    "urllib3",
+    "setuptools",
+    "certifi",
+    "pip",
+    "numpy",
+    "pandas",
+    "boto3",
+    "botocore",
+    "awscli",
+    "django",
+    "flask",
+    "sqlalchemy",
+    "pytest",
+    "pydantic",
+    "aiohttp",
+    "fastapi",
+}
+
+
+def check_typosquatting(package_name: str) -> str | None:
+    """Check if package name might be typosquatting a popular package.
+
+    :param package_name: The package name to check.
+    """
+    package_lower = package_name.lower().replace("-", "").replace("_", "")
+
+    for popular in POPULAR_PACKAGES:
+        popular_normalized = popular.lower().replace("-", "").replace("_", "")
+
+        # Check for common typosquatting techniques
+        if package_lower == popular_normalized:
+            continue  # Exact match is fine
+
+        # Check edit distance (1-2 character changes)
+        if len(package_lower) == len(popular_normalized):
+            differences = sum(
+                c1 != c2 for c1, c2 in zip(package_lower, popular_normalized, strict=True)
+            )
+            if differences == 1:
+                return f"Suspicious: Very similar to popular package '{popular}'"
+
+        # Check for common substitutions
+        substitutions = [
+            ("0", "o"),
+            ("1", "l"),
+            ("1", "i"),
+        ]
+        for old, new in substitutions:
+            if old in package_lower:
+                test_name = package_lower.replace(old, new)
+                if test_name == popular_normalized:
+                    return f"Suspicious: Character substitution of popular package '{popular}'"
+
+    return None
+
+
+def check_license_compatibility(license_str: str) -> tuple[bool, str]:
+    """Check if license is compatible with the project.
+
+    :param license_str: The license string from PyPI.
+    """
+    if not license_str or license_str == "Unknown":
+        return False, "No license information"
+
+    license_upper = license_str.upper()
+
+    # Check against compatible licenses
+    for compatible in COMPATIBLE_LICENSES:
+        if compatible.upper() in license_upper:
+            return True, f"Compatible ({license_str})"
+
+    # Check for problematic licenses
+    problematic = ["GPL", "AGPL", "SSPL"]
+    for problem in problematic:
+        if problem in license_upper and "LGPL" not in license_upper:
+            return False, f"Incompatible copyleft license ({license_str})"
+
+    # Unknown license
+    return False, f"Unknown/unverified license ({license_str})"
+
 
 def parse_requirement(line: str) -> str | None:
     """Extract package name from a requirement line.
@@ -94,6 +194,10 @@ def check_package(package_name: str) -> dict[str, Any]:
     homepage = info.get("home_page") or project_urls.get("Homepage")
     source = project_urls.get("Source") or project_urls.get("Repository")
 
+    # Run automated security checks
+    typosquat_check = check_typosquatting(package_name)
+    license_compatible, license_status = check_license_compatibility(info.get("license", "Unknown"))
+
     checks = {
         "name": package_name,
         "version": info.get("version", "unknown"),
@@ -107,10 +211,29 @@ def check_package(package_name: str) -> dict[str, Any]:
         "warnings": [],
         "info_items": [],
         "risk_level": "low",
+        "automated_checks": {
+            "trusted_source": bool(source),
+            "typosquatting": typosquat_check is None,
+            "license_compatible": license_compatible,
+        },
+        "check_details": {
+            "typosquatting": typosquat_check or "✓ No typosquatting detected",
+            "license": license_status,
+        },
     }
 
     # Check for suspicious indicators
     risk_score = 0
+
+    # Typosquatting check
+    if typosquat_check:
+        checks["warnings"].append(typosquat_check)
+        risk_score += 5  # High risk
+
+    # License check
+    if not license_compatible:
+        checks["warnings"].append(f"License issue: {license_status}")
+        risk_score += 2
 
     if age_days < 30:
         checks["warnings"].append(f"Very new package (only {age_days} days old)")
@@ -220,6 +343,35 @@ def main() -> int:
         print(format_check_result(result))
 
     print("\n" + "=" * 80)
+
+    # Automated checks summary
+    all_trusted = all(r.get("automated_checks", {}).get("trusted_source", False) for r in results)
+    all_no_typosquat = all(
+        r.get("automated_checks", {}).get("typosquatting", False) for r in results
+    )
+    all_license_ok = all(
+        r.get("automated_checks", {}).get("license_compatible", False) for r in results
+    )
+
+    print("\n🤖 Automated Security Checks:")
+    trusted_msg = (
+        "All packages have source repositories"
+        if all_trusted
+        else "Some packages missing source info"
+    )
+    print(f"  {'✅' if all_trusted else '❌'} Trusted Sources: {trusted_msg}")
+
+    typosquat_msg = (
+        "No suspicious package names detected"
+        if all_no_typosquat
+        else "Possible typosquatting detected!"
+    )
+    print(f"  {'✅' if all_no_typosquat else '❌'} Typosquatting: {typosquat_msg}")
+
+    license_msg = (
+        "All licenses are compatible" if all_license_ok else "Some license issues detected"
+    )
+    print(f"  {'✅' if all_license_ok else '⚠️ '} License Compatibility: {license_msg}")
 
     # Summary
     high_risk = sum(1 for r in results if r["risk_level"] == "high")
