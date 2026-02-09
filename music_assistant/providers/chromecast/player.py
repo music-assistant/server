@@ -20,7 +20,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderType,
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
