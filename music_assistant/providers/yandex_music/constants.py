@@ -30,3 +30,6 @@ IMAGE_SIZE_LARGE = "1000x1000"
 
 # ID separators
 PLAYLIST_ID_SPLITTER: Final[str] = ":"
+
+# Rotor (radio) station identifiers
+ROTOR_STATION_MY_WAVE: Final[str] = "user:onyourwave"

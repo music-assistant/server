@@ -21,7 +21,7 @@ from yandex_music.utils.sign_request import get_sign_request
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-from .constants import DEFAULT_LIMIT
+from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
@@ -82,6 +82,41 @@ class YandexMusicClient:
         return self._client
 
     # Library methods
+
+    async def get_my_wave_tracks(
+        self, queue: str | int | None = None
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Get tracks from the My Wave (Моя волна) radio station.
+
+        :param queue: Optional track ID for pagination (get next batch after this track).
+        :return: Tuple of (list of track objects, batch_id for optional pagination).
+        """
+        client = self._ensure_connected()
+        try:
+            result = await client.rotor_station_tracks(
+                ROTOR_STATION_MY_WAVE, settings2=True, queue=queue
+            )
+            if not result or not result.sequence:
+                return ([], result.batch_id if result else None)
+            track_ids = []
+            for seq in result.sequence:
+                if seq.track is None:
+                    continue
+                tid = getattr(seq.track, "id", None) or getattr(seq.track, "track_id", None)
+                if tid is not None:
+                    track_ids.append(str(tid))
+            if not track_ids:
+                return ([], result.batch_id if result else None)
+            full_tracks = await self.get_tracks(track_ids)
+            order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
+            ordered = [order_map[tid] for tid in track_ids if tid in order_map]
+            return (ordered, result.batch_id if result else None)
+        except (BadRequestError, NetworkError) as err:
+            LOGGER.warning("Error fetching My Wave tracks: %s", err)
+            return ([], None)
+        except Exception as err:
+            LOGGER.warning("Unexpected error fetching My Wave tracks: %s", err)
+            return ([], None)
 
     async def get_liked_tracks(self) -> list[TrackShort]:
         """Get user's liked tracks.
