@@ -83,7 +83,7 @@ class YandexMusicClient:
         return self._client
 
     def _is_connection_error(self, err: Exception) -> bool:
-        """Return True if the exception looks like a connection/server drop (retry after reconnect)."""
+        """Return True if the exception indicates a connection or server drop."""
         if isinstance(err, NetworkError):
             return True
         msg = str(err).lower()
@@ -110,32 +110,24 @@ class YandexMusicClient:
         for attempt in range(2):
             client = self._ensure_connected()
             try:
-                result = await client.rotor_station_tracks(
-                    station_id, settings2=True, queue=queue
-                )
+                result = await client.rotor_station_tracks(station_id, settings2=True, queue=queue)
                 if not result or not result.sequence:
                     return ([], result.batch_id if result else None)
                 track_ids = []
                 for seq in result.sequence:
                     if seq.track is None:
                         continue
-                    tid = getattr(seq.track, "id", None) or getattr(
-                        seq.track, "track_id", None
-                    )
+                    tid = getattr(seq.track, "id", None) or getattr(seq.track, "track_id", None)
                     if tid is not None:
                         track_ids.append(str(tid))
                 if not track_ids:
                     return ([], result.batch_id if result else None)
                 full_tracks = await self.get_tracks(track_ids)
-                order_map = {
-                    str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id
-                }
+                order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
                 ordered = [order_map[tid] for tid in track_ids if tid in order_map]
                 return (ordered, result.batch_id if result else None)
             except BadRequestError as err:
-                LOGGER.warning(
-                    "Error fetching rotor station %s tracks: %s", station_id, err
-                )
+                LOGGER.warning("Error fetching rotor station %s tracks: %s", station_id, err)
                 return ([], None)
             except (NetworkError, Exception) as err:
                 if attempt == 0 and self._is_connection_error(err):
@@ -149,9 +141,7 @@ class YandexMusicClient:
                         LOGGER.warning("Reconnect failed: %s", recon_err)
                         return ([], None)
                 else:
-                    LOGGER.warning(
-                        "Error fetching rotor station tracks: %s", err
-                    )
+                    LOGGER.warning("Error fetching rotor station tracks: %s", err)
                     return ([], None)
         return ([], None)
 
@@ -223,48 +213,11 @@ class YandexMusicClient:
                         LOGGER.debug("Reconnect failed: %s", recon_err)
                         return False
                 else:
-                    LOGGER.debug(
-                        "Rotor feedback %s failed: %s", feedback_type, err
-                    )
+                    LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
                     return False
         return False
 
     # Library methods
-
-    async def get_my_wave_tracks(
-        self, queue: str | int | None = None
-    ) -> tuple[list[YandexTrack], str | None]:
-        """Get tracks from the My Wave (Моя волна) radio station.
-
-        :param queue: Optional track ID for pagination (get next batch after this track).
-        :return: Tuple of (list of track objects, batch_id for optional pagination).
-        """
-        client = self._ensure_connected()
-        try:
-            result = await client.rotor_station_tracks(
-                ROTOR_STATION_MY_WAVE, settings2=True, queue=queue
-            )
-            if not result or not result.sequence:
-                return ([], result.batch_id if result else None)
-            track_ids = []
-            for seq in result.sequence:
-                if seq.track is None:
-                    continue
-                tid = getattr(seq.track, "id", None) or getattr(seq.track, "track_id", None)
-                if tid is not None:
-                    track_ids.append(str(tid))
-            if not track_ids:
-                return ([], result.batch_id if result else None)
-            full_tracks = await self.get_tracks(track_ids)
-            order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
-            ordered = [order_map[tid] for tid in track_ids if tid in order_map]
-            return (ordered, result.batch_id if result else None)
-        except (BadRequestError, NetworkError) as err:
-            LOGGER.warning("Error fetching My Wave tracks: %s", err)
-            return ([], None)
-        except Exception as err:
-            LOGGER.warning("Unexpected error fetching My Wave tracks: %s", err)
-            return ([], None)
 
     async def get_liked_tracks(self) -> list[TrackShort]:
         """Get user's liked tracks.

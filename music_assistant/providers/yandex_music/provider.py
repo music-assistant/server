@@ -158,7 +158,7 @@ class YandexMusicProvider(MusicProvider):
             elif sub_subpath:
                 queue = sub_subpath
 
-            all_tracks: list[Track] = []
+            all_tracks: list[Track | BrowseFolder] = []
             last_batch_id: str | None = None
             first_track_id_this_batch: str | None = None
 
@@ -739,95 +739,6 @@ class YandexMusicProvider(MusicProvider):
                 yield parse_playlist(self, playlist)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library playlist: %s", err)
-
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
-
-        Root level shows My Wave, artists, albums, liked tracks, playlists. Names
-        are in Russian when MA locale is ru_*, otherwise in English.
-        Subpaths delegate to the base implementation.
-
-        :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
-        """
-        if ProviderFeature.BROWSE not in self.supported_features:
-            raise NotImplementedError
-
-        path_parts = path.split("://")[1].split("/") if "://" in path else []
-        subpath = path_parts[0] if len(path_parts) > 0 else None
-
-        if subpath == "my_wave":
-            yandex_tracks, _ = await self.client.get_my_wave_tracks()
-            tracks = []
-            for yt in yandex_tracks:
-                try:
-                    tracks.append(parse_track(self, yt))
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing My Wave track: %s", err)
-            return tracks
-
-        if subpath:
-            return await super().browse(path)
-
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-        except Exception:
-            use_russian = False
-        names = BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
-
-        folders: list[BrowseFolder] = []
-        folders.append(
-            BrowseFolder(
-                item_id="my_wave",
-                provider=self.instance_id,
-                path=path + "my_wave",
-                name=names["my_wave"],
-                is_playable=True,
-            )
-        )
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="artists",
-                    provider=self.instance_id,
-                    path=path + "artists",
-                    name=names["artists"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="albums",
-                    provider=self.instance_id,
-                    path=path + "albums",
-                    name=names["albums"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="tracks",
-                    provider=self.instance_id,
-                    path=path + "tracks",
-                    name=names["tracks"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="playlists",
-                    provider=self.instance_id,
-                    path=path + "playlists",
-                    name=names["playlists"],
-                    is_playable=True,
-                )
-            )
-        if len(folders) == 1:
-            return await self.browse(folders[0].path)
-        return folders
 
     # Library edit methods
 
