@@ -514,6 +514,8 @@ class ZvukMusicProvider(MusicProvider):
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
 
+        # zvuk-music Stream model (get_stream_urls) has no duration; only expire and URLs.
+        # Fetch track for duration so StreamDetails can expose it (e.g. for progress/seeking).
         track = await self.client.get_track(item_id)
         duration: int | None = None
         if track is not None and getattr(track, "duration", None) is not None:
