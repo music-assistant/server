@@ -21,11 +21,14 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
-    AudioFormat,
     Playlist,
     SearchResults,
     Track,
@@ -39,12 +42,15 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.emby.const import (
     ALBUM_FIELDS,
     ARTIST_FIELDS,
+    AUTH_ACCESS_TOKEN,
+    AUTH_USER,
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
     ITEM_KEY_MEDIA_STREAMS,
+    ITEM_LIMIT,
+    ITEMS,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
-    USER_APP_NAME,
 )
 from music_assistant.providers.emby.parsers import (
     parse_album,
@@ -56,10 +62,12 @@ from music_assistant.providers.emby.parsers import (
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
-CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_VERIFY_SSL = "verify_ssl"
+from music_assistant.constants import (
+    APPLICATION_NAME,
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -91,7 +99,7 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_URL,
+            key=CONF_IP_ADDRESS,
             type=ConfigEntryType.STRING,
             label="Server",
             required=True,
@@ -111,15 +119,6 @@ async def get_config_entries(
             required=False,
             description="The password to authenticate to the remote server.",
         ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
-            required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
-            advanced=True,
-            default_value=True,
-        ),
     )
 
 
@@ -130,9 +129,8 @@ class EmbyProvider(MusicProvider):
         """Initialize provider(instance) with given configuration."""
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD) or "")
-        self._base_url = str(self.config.get_value(CONF_URL)).rstrip("/") + "/"
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
-        self._session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+        self._base_url = str(self.config.get_value(CONF_IP_ADDRESS)).rstrip("/") + "/"
+        self._session = self.mass.http_session
 
         # stable device id
         device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
@@ -145,7 +143,7 @@ class EmbyProvider(MusicProvider):
         headers = {
             "Accept": "application/json",
             "X-Emby-Authorization": (
-                f'MediaBrowser Client="{USER_APP_NAME}", '
+                f'MediaBrowser Client="{APPLICATION_NAME}", '
                 f'Device="{self._device_name}", '
                 f'DeviceId="{device_id}", '
                 f'Version="{self.mass.version}"'
@@ -155,21 +153,27 @@ class EmbyProvider(MusicProvider):
             async with self._session.post(auth_url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
-        except Exception as err:
-            raise LoginFailed(f"Authentication failed: {err}") from err
+        except ClientResponseError as err:
+            if err.status == 401:
+                raise LoginFailed("Unauthorized: invalid credentials") from err
+            if err.status == 403:
+                raise ProviderPermissionDenied("Forbidden: insufficient permissions") from err
+            if err.status == 404:
+                raise MediaNotFoundError("Authentication endpoint not found") from err
+            raise
 
         # store token and user id
-        token = data.get("AccessToken") or data.get("Session", {}).get("AccessToken")
-        user = data.get("User") or data.get("Session", {}).get("User")
+        token = data.get(AUTH_ACCESS_TOKEN)
+        user = data.get(AUTH_USER)
         if not token or not user:
             raise LoginFailed("Authentication failed: missing token/user in response")
         self._token = token
-        self._user_id = user.get("Id")
+        self._user_id = user.get(ITEM_KEY_ID)
         self._headers = {
             "Accept": "application/json",
             "X-Emby-Token": self._token,
             "X-Emby-Authorization": (
-                f'MediaBrowser Client="{USER_APP_NAME}", '
+                f'MediaBrowser Client="{APPLICATION_NAME}", '
                 f'Device="{self._device_name}", '
                 f'DeviceId="{device_id}", '
                 f'Version="{self.mass.version}", '
@@ -189,6 +193,10 @@ class EmbyProvider(MusicProvider):
                 resp.raise_for_status()
                 return await resp.json()  # type: ignore[no-any-return]
         except ClientResponseError as err:
+            if err.status == 401:
+                raise LoginFailed("Unauthorized: invalid credentials") from err
+            if err.status == 403:
+                raise ProviderPermissionDenied("Forbidden: insufficient permissions") from err
             if err.status == 404:
                 raise MediaNotFoundError(f"Item {path} not found") from err
             raise
@@ -205,20 +213,20 @@ class EmbyProvider(MusicProvider):
             "Recursive": "true",
         }
         resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-        return resp.get("Items", [])  # type: ignore[no-any-return]
+        return resp.get(ITEMS, [])  # type: ignore[no-any-return]
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
         items = await self._search_items(search_query, "Audio", TRACK_FIELDS, limit)
-        return [parse_track(self.logger, self.instance_id, self, item) for item in items]
+        return [parse_track(self.instance_id, self, item) for item in items]
 
     async def _search_album(self, search_query: str, limit: int) -> list[Album]:
         albumname = search_query.split(" - ", 1)[1] if " - " in search_query else search_query
         items = await self._search_items(albumname, "MusicAlbum", ALBUM_FIELDS, limit)
-        return [parse_album(self.logger, self.instance_id, self, item) for item in items]
+        return [parse_album(self.instance_id, self, item) for item in items]
 
     async def _search_artist(self, search_query: str, limit: int) -> list[Artist]:
         items = await self._search_items(search_query, "MusicArtist", ARTIST_FIELDS, limit)
-        return [parse_artist(self.logger, self.instance_id, self, item) for item in items]
+        return [parse_artist(self.instance_id, self, item) for item in items]
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
         items = await self._search_items(search_query, "Playlist", [], limit)
@@ -271,14 +279,14 @@ class EmbyProvider(MusicProvider):
             }
             page = 0
             while True:
-                params["StartIndex"] = str(page * 100)
-                params["Limit"] = "100"
+                params["StartIndex"] = str(page * ITEM_LIMIT)
+                params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get("Items", [])
+                items = resp.get(ITEMS, [])
                 if not items:
                     break
                 for artist in items:
-                    yield parse_artist(self.logger, self.instance_id, self, artist)
+                    yield parse_artist(self.instance_id, self, artist)
                 page += 1
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
@@ -294,14 +302,14 @@ class EmbyProvider(MusicProvider):
             }
             page = 0
             while True:
-                params["StartIndex"] = str(page * 100)
-                params["Limit"] = "100"
+                params["StartIndex"] = str(page * ITEM_LIMIT)
+                params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get("Items", [])
+                items = resp.get(ITEMS, [])
                 if not items:
                     break
                 for album in items:
-                    yield parse_album(self.logger, self.instance_id, self, album)
+                    yield parse_album(self.instance_id, self, album)
                 page += 1
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -317,16 +325,16 @@ class EmbyProvider(MusicProvider):
             }
             page = 0
             while True:
-                params["StartIndex"] = str(page * 100)
-                params["Limit"] = "100"
+                params["StartIndex"] = str(page * ITEM_LIMIT)
+                params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get("Items", [])
+                items = resp.get(ITEMS, [])
                 if not items:
                     break
                 for track in items:
                     if not len(track.get(ITEM_KEY_MEDIA_STREAMS, [])):
                         continue
-                    yield parse_track(self.logger, self.instance_id, self, track)
+                    yield parse_track(self.instance_id, self, track)
                 page += 1
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -337,14 +345,14 @@ class EmbyProvider(MusicProvider):
                 "ParentId": lib[ITEM_KEY_ID],
                 "IncludeItemTypes": "Playlist",
                 "EnableUserData": "true",
-                "recursive": "true",
+                "Recursive": "true",
             }
             page = 0
             while True:
-                params["StartIndex"] = str(page * 100)
-                params["Limit"] = "100"
+                params["StartIndex"] = str(page * ITEM_LIMIT)
+                params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get("Items", [])
+                items = resp.get(ITEMS, [])
                 if not items:
                     break
                 for playlist in items:
@@ -359,10 +367,10 @@ class EmbyProvider(MusicProvider):
             params={
                 "EnableUserData": "true",
                 "Fields": ",".join(ALBUM_FIELDS),
-                "recursive": "true",
+                "Recursive": "true",
             },
         )
-        return parse_album(self.logger, self.instance_id, self, album)
+        return parse_album(self.instance_id, self, album)
 
     @use_cache(3600)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -372,13 +380,11 @@ class EmbyProvider(MusicProvider):
             "IncludeItemTypes": "Audio",
             "EnableUserData": "true",
             "Fields": ",".join(TRACK_FIELDS),
-            "Limit": "100",
-            "recursive": "true",
+            "Limit": ITEM_LIMIT,
+            "Recursive": "true",
         }
         resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-        return [
-            parse_track(self.logger, self.instance_id, self, item) for item in resp.get("Items", [])
-        ]
+        return [parse_track(self.instance_id, self, item) for item in resp.get(ITEMS, [])]
 
     @use_cache(60 * 15)
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -388,7 +394,7 @@ class EmbyProvider(MusicProvider):
             params={"EnableUserData": "true", "Fields": ",".join(ARTIST_FIELDS)},
         )
 
-        return parse_artist(self.logger, self.instance_id, self, artist_data)
+        return parse_artist(self.instance_id, self, artist_data)
 
     @use_cache(3600)
     async def get_artist_toptracks(self, prov_artist_id: str, limit: int = 25) -> list[Track]:
@@ -404,9 +410,7 @@ class EmbyProvider(MusicProvider):
             "SortOrder": "Descending",
         }
         resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-        return [
-            parse_track(self.logger, self.instance_id, self, item) for item in resp.get("Items", [])
-        ]
+        return [parse_track(self.instance_id, self, item) for item in resp.get(ITEMS, [])]
 
     @use_cache(60 * 15)
     async def get_track(self, prov_track_id: str) -> Track:
@@ -416,7 +420,7 @@ class EmbyProvider(MusicProvider):
             params={"EnableUserData": "true", "Fields": ",".join(TRACK_FIELDS)},
         )
 
-        return parse_track(self.logger, self.instance_id, self, track)
+        return parse_track(self.instance_id, self, track)
 
     @use_cache(60 * 15)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -437,13 +441,13 @@ class EmbyProvider(MusicProvider):
             "IncludeItemTypes": "Audio",
             "EnableUserData": "true",
             "Fields": ",".join(TRACK_FIELDS),
-            "Limit": "100",
-            "StartIndex": str(page * 100),
+            "Limit": ITEM_LIMIT,
+            "StartIndex": str(page * ITEM_LIMIT),
         }
         resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-        for index, item in enumerate(resp.get("Items", []), 1):
-            pos = (page * 100) + index
-            if track := parse_track(self.logger, self.instance_id, self, item):
+        for index, item in enumerate(resp.get(ITEMS, []), 1):
+            pos = (page * ITEM_LIMIT) + index
+            if track := parse_track(self.instance_id, self, item):
                 track.position = pos
                 result.append(track)
 
@@ -460,10 +464,7 @@ class EmbyProvider(MusicProvider):
             "Recursive": "true",
         }
         resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-        return [
-            parse_album(self.logger, self.instance_id, self, album)
-            for album in resp.get("Items", [])
-        ]
+        return [parse_album(self.instance_id, self, album) for album in resp.get(ITEMS, [])]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for given item id and media type."""
@@ -473,10 +474,11 @@ class EmbyProvider(MusicProvider):
         url = urljoin(self._base_url, f"Audio/{track.item_id}/universal")
         params = {"static": "true", "Container": container, "api_key": self._token}
         query = "&".join([f"{k}={v}" for k, v in params.items()])
+        audio_format = next(iter(track.provider_mappings)).audio_format
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
-            audio_format=AudioFormat(),
+            audio_format=audio_format,
             stream_type=StreamType.HTTP,
             duration=int(track.duration) if getattr(track, "duration", None) else 0,
             path=f"{url}?{query}",
@@ -492,11 +494,11 @@ class EmbyProvider(MusicProvider):
             params={"Limit": str(limit), "Fields": ",".join(TRACK_FIELDS)},
         )
 
-        return [parse_track(self.logger, self.instance_id, self, t) for t in resp.get("Items", [])]
+        return [parse_track(self.instance_id, self, t) for t in resp.get(ITEMS, [])]
 
     async def _get_music_libraries(self) -> list[dict[str, Any]]:
         resp = await self._get("Library/MediaFolders")
-        libs = resp.get("Items", [])
+        libs = resp.get(ITEMS, [])
         result = []
         for library in libs:
             if ITEM_KEY_COLLECTION_TYPE in library:

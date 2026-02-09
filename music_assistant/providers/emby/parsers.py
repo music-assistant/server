@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType
+from music_assistant_models.enums import ContentType, ImageType
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     ItemMapping,
     MediaItemImage,
     Playlist,
@@ -17,27 +17,42 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.providers.emby.const import (
+    AUDIO_STREAM_BIT_DEPTH,
+    AUDIO_STREAM_CHANNELS,
+    AUDIO_STREAM_CODEC,
+    AUDIO_STREAM_SAMPLE_RATE,
+    ITEM_KEY_ALBUM_ID,
+    ITEM_KEY_ALBUM_NAME,
+    ITEM_KEY_ARTIST_ITEMS,
+    ITEM_KEY_CONTAINER,
+    ITEM_KEY_ID,
+    ITEM_KEY_IMAGE_TAGS,
+    ITEM_KEY_MEDIA_STREAMS,
+    ITEM_KEY_NAME,
+    ITEM_KEY_RUNTIME_TICKS,
+    ITEM_KEY_TYPE,
+)
+
 if TYPE_CHECKING:
     from music_assistant.providers.emby import EmbyProvider
 
 
 def parse_track(
-    logger: logging.Logger,
     instance_id: str,
     provider: EmbyProvider,
     item: dict[str, Any],
 ) -> Track:
     """Parse an Emby Audio item into a Track."""
-    # ruff: noqa: ARG001
-    track_id = str(item.get("Id"))
-    name = str(item.get("Name"))
+    track_id = str(item.get(ITEM_KEY_ID))
+    name = str(item.get(ITEM_KEY_NAME))
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
-    if artist_items := item.get("ArtistItems"):
+    if artist_items := item.get(ITEM_KEY_ARTIST_ITEMS):
         for artist_item in artist_items:
-            artist_name = str(artist_item.get("Name"))
-            artist_id = str(artist_item.get("Id"))
+            artist_name = str(artist_item.get(ITEM_KEY_NAME))
+            artist_id = str(artist_item.get(ITEM_KEY_ID))
 
             artists.append(
                 Artist(
@@ -54,8 +69,8 @@ def parse_track(
                 )
             )
 
-    album_id = str(item.get("AlbumId"))
-    album_name = str(item.get("Album"))
+    album_id = str(item.get(ITEM_KEY_ALBUM_ID))
+    album_name = str(item.get(ITEM_KEY_ALBUM_NAME))
 
     album = Album(
         item_id=album_id,
@@ -70,7 +85,9 @@ def parse_track(
         },
     )
 
-    duration = int(item.get("RunTimeTicks", 0) / 10000000)  # Convert ticks to seconds
+    duration = int(item.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000)  # Convert ticks to seconds
+    media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
+    audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
 
     track = Track(
         item_id=track_id,
@@ -84,12 +101,19 @@ def parse_track(
                 item_id=track_id,
                 provider_domain=provider.domain,
                 provider_instance=instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
+                    codec_type=ContentType.try_parse(str(audio_stream.get(AUDIO_STREAM_CODEC))),
+                    sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
+                    bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
+                    channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
+                ),
             )
         },
     )
 
     # Extract images
-    if "Primary" in item.get("ImageTags", {}):
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
         image_url = f"{provider._base_url}Items/{track_id}/Images/Primary"
         if track.metadata.images is None:
             track.metadata.images = UniqueList[MediaItemImage]()
@@ -106,14 +130,13 @@ def parse_track(
 
 
 def parse_artist(
-    logger: logging.Logger,
     instance_id: str,
     provider: EmbyProvider,
     item: dict[str, Any],
 ) -> Artist:
     """Parse an Emby MusicArtist item into an Artist."""
-    artist_id = str(item.get("Id"))
-    name = str(item.get("Name"))
+    artist_id = str(item.get(ITEM_KEY_ID))
+    name = str(item.get(ITEM_KEY_NAME))
 
     artist = Artist(
         item_id=artist_id,
@@ -129,7 +152,7 @@ def parse_artist(
     )
 
     # Extract images
-    if "Primary" in item.get("ImageTags", {}):
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
         image_url = f"{provider._base_url}Items/{artist_id}/Images/Primary"
         if artist.metadata.images is None:
             artist.metadata.images = UniqueList[MediaItemImage]()
@@ -146,21 +169,20 @@ def parse_artist(
 
 
 def parse_album(
-    logger: logging.Logger,
     instance_id: str,
     provider: EmbyProvider,
     item: dict[str, Any],
 ) -> Album:
     """Parse an Emby MusicAlbum item into an Album."""
-    album_id = str(item.get("Id"))
-    name = str(item.get("Name"))
+    album_id = str(item.get(ITEM_KEY_ID))
+    name = str(item.get(ITEM_KEY_NAME))
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
-    if artist_items := item.get("ArtistItems"):
+    if artist_items := item.get(ITEM_KEY_ARTIST_ITEMS):
         for artist_item in artist_items:
-            artist_id = str(artist_item.get("Id"))
-            artist_name = str(artist_item.get("Name"))
+            artist_id = str(artist_item.get(ITEM_KEY_ID))
+            artist_name = str(artist_item.get(ITEM_KEY_NAME))
 
             artists.append(
                 Artist(
@@ -214,8 +236,8 @@ def parse_playlist(
     item: dict[str, Any],
 ) -> Playlist:
     """Parse an Emby Playlist item into a Playlist."""
-    playlist_id = str(item.get("Id"))
-    name = str(item.get("Name"))
+    playlist_id = str(item.get(ITEM_KEY_ID))
+    name = str(item.get(ITEM_KEY_NAME))
 
     playlist = Playlist(
         item_id=playlist_id,
@@ -230,7 +252,7 @@ def parse_playlist(
         },
     )
     # Extract images
-    if "Primary" in item.get("ImageTags", {}):
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
         image_url = f"{provider._base_url}Items/{playlist_id}/Images/Primary"
         if playlist.metadata.images is None:
             playlist.metadata.images = UniqueList[MediaItemImage]()
