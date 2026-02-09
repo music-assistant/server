@@ -1,4 +1,4 @@
-"""Parsers for Yandex Music API responses."""
+"""Parsers for KION Music API responses."""
 
 from __future__ import annotations
 
@@ -32,13 +32,13 @@ if TYPE_CHECKING:
     from yandex_music import Playlist as YandexPlaylist
     from yandex_music import Track as YandexTrack
 
-    from .provider import YandexMusicProvider
+    from .provider import KionMusicProvider
 
 
-def _get_content_type(provider: YandexMusicProvider) -> ContentType:
+def _get_content_type(provider: KionMusicProvider) -> ContentType:
     """Get content type based on provider quality setting.
 
-    :param provider: The Yandex Music provider instance.
+    :param provider: The KION Music provider instance.
     :return: ContentType.UNKNOWN as actual codec is determined at stream time.
     """
     # Actual codec is determined when getting stream details
@@ -48,9 +48,9 @@ def _get_content_type(provider: YandexMusicProvider) -> ContentType:
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert Yandex cover URI to full URL.
+    """Convert cover URI to full URL.
 
-    :param cover_uri: Yandex cover URI template.
+    :param cover_uri: Cover URI template.
     :param size: Image size (e.g., '1000x1000').
     :return: Full image URL or None.
     """
@@ -61,11 +61,11 @@ def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str |
     return f"https://{cover_uri.replace('%%', size)}"
 
 
-def parse_artist(provider: YandexMusicProvider, artist_obj: YandexArtist) -> Artist:
-    """Parse Yandex artist object to MA Artist model.
+def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artist:
+    """Parse KION artist object to MA Artist model.
 
-    :param provider: The Yandex Music provider instance.
-    :param artist_obj: Yandex artist object.
+    :param provider: The KION Music provider instance.
+    :param artist_obj: KION artist object.
     :return: Music Assistant Artist model.
     """
     artist_id = str(artist_obj.id)
@@ -78,7 +78,7 @@ def parse_artist(provider: YandexMusicProvider, artist_obj: YandexArtist) -> Art
                 item_id=artist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/artist/{artist_id}",
+                url=f"https://music.mts.ru/artist/{artist_id}",
             )
         },
     )
@@ -114,11 +114,11 @@ def parse_artist(provider: YandexMusicProvider, artist_obj: YandexArtist) -> Art
     return artist
 
 
-def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
-    """Parse Yandex album object to MA Album model.
+def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
+    """Parse KION album object to MA Album model.
 
-    :param provider: The Yandex Music provider instance.
-    :param album_obj: Yandex album object.
+    :param provider: The KION Music provider instance.
+    :param album_obj: KION album object.
     :return: Music Assistant Album model.
     """
     name, version = parse_title_and_version(
@@ -143,7 +143,7 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
                 audio_format=AudioFormat(
                     content_type=_get_content_type(provider),
                 ),
-                url=f"https://music.yandex.ru/album/{album_id}",
+                url=f"https://music.mts.ru/album/{album_id}",
                 available=available,
             )
         },
@@ -208,11 +208,11 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
     return album
 
 
-def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
-    """Parse Yandex track object to MA Track model.
+def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
+    """Parse KION track object to MA Track model.
 
-    :param provider: The Yandex Music provider instance.
-    :param track_obj: Yandex track object.
+    :param provider: The KION Music provider instance.
+    :param track_obj: KION track object.
     :return: Music Assistant Track model.
     """
     name, version = parse_title_and_version(
@@ -224,7 +224,7 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
     # Determine availability
     available = track_obj.available or False
 
-    # Duration is in milliseconds in Yandex API
+    # Duration is in milliseconds
     duration = (track_obj.duration_ms or 0) // 1000
 
     track = Track(
@@ -241,7 +241,7 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
                 audio_format=AudioFormat(
                     content_type=_get_content_type(provider),
                 ),
-                url=f"https://music.yandex.ru/track/{track_id}",
+                url=f"https://music.mts.ru/track/{track_id}",
                 available=available,
             )
         },
@@ -285,16 +285,16 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
 
 
 def parse_playlist(
-    provider: YandexMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
+    provider: KionMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
 ) -> Playlist:
-    """Parse Yandex playlist object to MA Playlist model.
+    """Parse KION playlist object to MA Playlist model.
 
-    :param provider: The Yandex Music provider instance.
-    :param playlist_obj: Yandex playlist object.
+    :param provider: The KION Music provider instance.
+    :param playlist_obj: KION playlist object.
     :param owner_name: Optional owner name override.
     :return: Music Assistant Playlist model.
     """
-    # Playlist ID in Yandex is a combination of owner uid and playlist kind
+    # Playlist ID is a combination of owner uid and playlist kind
     owner_id = str(playlist_obj.owner.uid) if playlist_obj.owner else str(provider.client.user_id)
     playlist_kind = str(playlist_obj.kind)
     playlist_id = f"{owner_id}:{playlist_kind}"
@@ -309,7 +309,7 @@ def parse_playlist(
         elif is_editable:
             owner_name = "Me"
         else:
-            owner_name = "Yandex Music"
+            owner_name = "KION Music"
 
     playlist = Playlist(
         item_id=playlist_id,
@@ -321,7 +321,7 @@ def parse_playlist(
                 item_id=playlist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/users/{owner_id}/playlists/{playlist_kind}",
+                url=f"https://music.mts.ru/users/{owner_id}/playlists/{playlist_kind}",
                 is_unique=is_editable,
             )
         },

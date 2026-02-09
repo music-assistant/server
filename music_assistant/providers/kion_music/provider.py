@@ -1,12 +1,10 @@
-"""Yandex Music provider implementation."""
+"""KION Music provider implementation."""
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -17,7 +15,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
-    BrowseFolder,
     ItemMapping,
     MediaItemType,
     Playlist,
@@ -28,10 +25,10 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
-from .api_client import YandexMusicClient
+from .api_client import KionMusicClient
 from .constants import CONF_TOKEN, PLAYLIST_ID_SPLITTER
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
-from .streaming import YandexMusicStreamingManager
+from .streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -39,21 +36,21 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 
-class YandexMusicProvider(MusicProvider):
-    """Implementation of a Yandex Music MusicProvider."""
+class KionMusicProvider(MusicProvider):
+    """Implementation of a KION Music MusicProvider."""
 
-    _client: YandexMusicClient | None = None
-    _streaming: YandexMusicStreamingManager | None = None
+    _client: KionMusicClient | None = None
+    _streaming: KionMusicStreamingManager | None = None
 
     @property
-    def client(self) -> YandexMusicClient:
-        """Return the Yandex Music client."""
+    def client(self) -> KionMusicClient:
+        """Return the KION Music client."""
         if self._client is None:
             raise ProviderUnavailableError("Provider not initialized")
         return self._client
 
     @property
-    def streaming(self) -> YandexMusicStreamingManager:
+    def streaming(self) -> KionMusicStreamingManager:
         """Return the streaming manager."""
         if self._streaming is None:
             raise ProviderUnavailableError("Provider not initialized")
@@ -63,14 +60,12 @@ class YandexMusicProvider(MusicProvider):
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
         if not token:
-            raise LoginFailed("No Yandex Music token provided")
+            raise LoginFailed("No KION Music token provided")
 
-        self._client = YandexMusicClient(str(token))
+        self._client = KionMusicClient(str(token))
         await self._client.connect()
-        # Suppress yandex_music library DEBUG dumps (full API request/response JSON)
-        logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
-        self._streaming = YandexMusicStreamingManager(self)
-        self.logger.info("Successfully connected to Yandex Music")
+        self._streaming = KionMusicStreamingManager(self)
+        self.logger.info("Successfully connected to KION Music")
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider.
@@ -106,7 +101,7 @@ class YandexMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on Yandex Music.
+        """Perform search on KION Music.
 
         :param search_query: The search query.
         :param media_types: List of media types to search for.
@@ -116,7 +111,7 @@ class YandexMusicProvider(MusicProvider):
         result = SearchResults()
 
         # Determine search type based on requested media types
-        # Map MediaType to Yandex API search type
+        # Map MediaType to KION API search type
         type_mapping = {
             MediaType.TRACK: "track",
             MediaType.ALBUM: "album",
@@ -260,11 +255,11 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number for pagination.
         :return: List of Track objects.
         """
-        # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
-        # Return empty list for page > 0 so the controller pagination loop terminates.
+        # KION Music API returns all playlist tracks in one call (no server-side pagination)
         if page > 0:
             return []
 
+        self.logger.debug("get_playlist_tracks called: %s", prov_playlist_id)
         # Parse the playlist ID (format: owner_id:kind)
         if PLAYLIST_ID_SPLITTER in prov_playlist_id:
             owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
@@ -272,34 +267,45 @@ class YandexMusicProvider(MusicProvider):
             owner_id = str(self.client.user_id)
             kind = prov_playlist_id
 
+        self.logger.debug("Fetching playlist %s/%s from API...", owner_id, kind)
         playlist = await self.client.get_playlist(owner_id, kind)
         if not playlist:
+            self.logger.debug("Playlist %s/%s not found", owner_id, kind)
             return []
 
         # API sometimes returns playlist without tracks; fetch them explicitly if needed
         tracks_list = playlist.tracks or []
         track_count = getattr(playlist, "track_count", None) or 0
+        self.logger.debug(
+            "Playlist %s/%s: track_count=%s, tracks_in_response=%s",
+            owner_id,
+            kind,
+            track_count,
+            len(tracks_list),
+        )
         if not tracks_list and track_count > 0:
-            self.logger.debug(
-                "Playlist %s/%s: track_count=%s but no tracks in response, "
-                "calling fetch_tracks_async",
-                owner_id,
-                kind,
-                track_count,
-            )
+            self.logger.debug("No tracks in response, calling fetch_tracks_async...")
             try:
                 tracks_list = await playlist.fetch_tracks_async()
+                self.logger.debug("fetch_tracks_async returned %s tracks", len(tracks_list or []))
             except Exception as err:
-                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
+                self.logger.warning("fetch_tracks_async failed: %s", err)
             if not tracks_list:
+                self.logger.warning(
+                    "Playlist %s/%s: expected %s tracks but got none",
+                    owner_id,
+                    kind,
+                    track_count,
+                )
                 raise ResourceTemporarilyUnavailable(
                     "Playlist tracks not available; try again later"
-                )
+                ) from None
 
         if not tracks_list:
+            self.logger.debug("Playlist %s/%s has no tracks", owner_id, kind)
             return []
 
-        # Yandex returns TrackShort objects, we need to fetch full track info
+        # API returns TrackShort objects, we need to fetch full track info
         track_ids = [
             str(track.track_id) if hasattr(track, "track_id") else str(track.id)
             for track in tracks_list
@@ -308,16 +314,22 @@ class YandexMusicProvider(MusicProvider):
         if not track_ids:
             return []
 
+        self.logger.debug("Fetching full details for %s tracks...", len(track_ids))
         # Fetch full track details in batches to avoid timeouts
         batch_size = 50
         full_tracks = []
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i : i + batch_size]
+            self.logger.debug("Fetching batch %s-%s...", i, i + len(batch))
             batch_result = await self.client.get_tracks(batch)
+            self.logger.debug("Batch returned %s tracks", len(batch_result or []))
             full_tracks.extend(batch_result or [])
 
         if track_ids and not full_tracks:
-            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
+            self.logger.warning("Got 0 full tracks for %s IDs", len(track_ids))
+            raise ResourceTemporarilyUnavailable(
+                "Failed to load track details; try again later"
+            ) from None
 
         tracks = []
         for track in full_tracks:
@@ -325,6 +337,7 @@ class YandexMusicProvider(MusicProvider):
                 tracks.append(parse_track(self, track))
             except InvalidDataError as err:
                 self.logger.debug("Error parsing playlist track: %s", err)
+        self.logger.debug("Returning %s parsed tracks", len(tracks))
         return tracks
 
     @use_cache(3600 * 24 * 7)
@@ -362,7 +375,7 @@ class YandexMusicProvider(MusicProvider):
     # Library methods
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from Yandex Music."""
+        """Retrieve library artists from KION Music."""
         artists = await self.client.get_liked_artists()
         for artist in artists:
             try:
@@ -371,7 +384,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library artist: %s", err)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from Yandex Music."""
+        """Retrieve library albums from KION Music."""
         albums = await self.client.get_liked_albums()
         for album in albums:
             try:
@@ -380,7 +393,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library album: %s", err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve library tracks from Yandex Music."""
+        """Retrieve library tracks from KION Music."""
         track_shorts = await self.client.get_liked_tracks()
         if not track_shorts:
             return
@@ -398,94 +411,13 @@ class YandexMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing library track: %s", err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve library playlists from Yandex Music."""
+        """Retrieve library playlists from KION Music."""
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:
                 yield parse_playlist(self, playlist)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library playlist: %s", err)
-
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with Yandex Music-style folder names.
-
-        Root level shows: Мои исполнители, Мои альбомы, Мне нравится, Мои плейлисты.
-        Subpaths delegate to the base implementation.
-
-        :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
-        """
-        if ProviderFeature.BROWSE not in self.supported_features:
-            raise NotImplementedError
-
-        path_parts = path.split("://")[1].split("/") if "://" in path else []
-        subpath = path_parts[0] if len(path_parts) > 0 else None
-
-        if subpath == "my_wave":
-            yandex_tracks, _ = await self.client.get_my_wave_tracks()
-            tracks = []
-            for yt in yandex_tracks:
-                try:
-                    tracks.append(parse_track(self, yt))
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing My Wave track: %s", err)
-            return tracks
-
-        if subpath:
-            return await super().browse(path)
-
-        folders: list[BrowseFolder] = []
-        folders.append(
-            BrowseFolder(
-                item_id="my_wave",
-                provider=self.instance_id,
-                path=path + "my_wave",
-                name="Моя волна",
-                is_playable=True,
-            )
-        )
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="artists",
-                    provider=self.instance_id,
-                    path=path + "artists",
-                    name="Мои исполнители",
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="albums",
-                    provider=self.instance_id,
-                    path=path + "albums",
-                    name="Мои альбомы",
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="tracks",
-                    provider=self.instance_id,
-                    path=path + "tracks",
-                    name="Мне нравится",
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="playlists",
-                    provider=self.instance_id,
-                    path=path + "playlists",
-                    name="Мои плейлисты",
-                    is_playable=True,
-                )
-            )
-        if len(folders) == 1:
-            return await self.browse(folders[0].path)
-        return folders
 
     # Library edit methods
 

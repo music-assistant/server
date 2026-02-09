@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "vk_music",
+  "stage": "alpha",
+  "name": "VK Music",
+  "description": "Stream music from VK Music service.",
+  "codeowners": ["@TrudenBoy"],
+  "documentation": "https://music-assistant.io/music-providers/vk/",
+  "requirements": ["vkpymusic==3.5.1"],
+  "multi_instance": true
+}
