@@ -880,8 +880,7 @@ class MusicController(CoreController):
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
         if isinstance(item, dict):
-            # handle partial dicts from browse results (ItemMapping)
-            # that can't be deserialized into a full MediaItemType
+            # handle partial dicts from browse results
             item = item["uri"]
         # ensure we have a full item
         if isinstance(item, str):
