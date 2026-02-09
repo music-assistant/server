@@ -876,9 +876,13 @@ class MusicController(CoreController):
 
     @api_command("music/library/add_item")
     async def add_item_to_library(
-        self, item: str | MediaItemType, overwrite_existing: bool = False
+        self, item: str | MediaItemType | dict[str, Any], overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, dict):
+            # handle partial dicts from browse results (ItemMapping)
+            # that can't be deserialized into a full MediaItemType
+            item = item["uri"]
         # ensure we have a full item
         if isinstance(item, str):
             full_item = await self.get_item_by_uri(item)
