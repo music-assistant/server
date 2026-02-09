@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
@@ -338,18 +339,60 @@ class PocketCastsProvider(MusicProvider):
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all episodes for a podcast."""
+        """Get all episodes for a podcast with playback status from Pocketcasts."""
         if not self._client:
             return
 
         try:
-            episodes = await self._client.get_podcast_episodes(prov_podcast_id)
-            LOGGER.debug(
-                "Got %d episodes from client for podcast %s", len(episodes), prov_podcast_id
+            # Fetch episode metadata and user status in parallel
+            episodes, in_progress, history = await asyncio.gather(
+                self._client.get_podcast_episodes(prov_podcast_id),
+                self._client.get_in_progress_episodes(),
+                self._client.get_history(),
             )
+
+            LOGGER.debug(
+                "Got %d episodes, %d in-progress, %d history for podcast %s",
+                len(episodes),
+                len(in_progress),
+                len(history),
+                prov_podcast_id,
+            )
+
+            # Create lookup maps for status
+            in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
+            history_set = {ep.get("uuid") for ep in history}
+
             for episode_data in episodes:
                 episode_item = self._convert_episode(episode_data, prov_podcast_id)
                 if episode_item:
+                    episode_uuid = episode_data.get("uuid")
+
+                    # Check in-progress status
+                    if episode_uuid in in_progress_map:
+                        ip_data = in_progress_map[episode_uuid]
+                        played_up_to = ip_data.get("playedUpTo", 0)
+                        duration = ip_data.get("duration", episode_data.get("duration", 0))
+
+                        episode_item.resume_position_ms = played_up_to * 1000
+
+                        # Consider played if > 90% complete
+                        if duration > 0:
+                            episode_item.fully_played = (played_up_to / duration) > 0.9
+
+                        LOGGER.debug(
+                            "Episode %s in-progress: %d/%d seconds (%.1f%%)",
+                            episode_uuid,
+                            played_up_to,
+                            duration,
+                            (played_up_to / duration * 100) if duration > 0 else 0,
+                        )
+
+                    # If in history but not in-progress, likely fully played
+                    elif episode_uuid in history_set:
+                        episode_item.fully_played = True
+                        LOGGER.debug("Episode %s in history, marking as played", episode_uuid)
+
                     yield episode_item
         except Exception as err:
             LOGGER.error("Error getting episodes for podcast %s: %s", prov_podcast_id, err)
@@ -514,15 +557,50 @@ class PocketCastsProvider(MusicProvider):
                 LOGGER.exception("Error browsing special folder %s: %s", item_path, err)
                 return []
         else:
-            # Regular podcast path - show episodes for the podcast
+            # Regular podcast path - show episodes for the podcast with playback status
             LOGGER.debug("Fetching episodes for podcast: %s", item_path)
             try:
-                episodes = await self._client.get_podcast_episodes(item_path)
-                LOGGER.debug("Got %d episodes from API", len(episodes))
+                # Fetch episodes and user status in parallel
+                episodes, in_progress, history = await asyncio.gather(
+                    self._client.get_podcast_episodes(item_path),
+                    self._client.get_in_progress_episodes(),
+                    self._client.get_history(),
+                )
+
+                LOGGER.debug(
+                    "Got %d episodes, %d in-progress, %d history",
+                    len(episodes),
+                    len(in_progress),
+                    len(history),
+                )
+
+                # Create lookup maps for status
+                in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
+                history_set = {ep.get("uuid") for ep in history}
+
                 for episode_data in episodes:
                     episode_item = self._convert_episode(episode_data, item_path)
                     if episode_item:
+                        episode_uuid = episode_data.get("uuid")
+
+                        # Check in-progress status
+                        if episode_uuid in in_progress_map:
+                            ip_data = in_progress_map[episode_uuid]
+                            played_up_to = ip_data.get("playedUpTo", 0)
+                            duration = ip_data.get("duration", episode_data.get("duration", 0))
+
+                            episode_item.resume_position_ms = played_up_to * 1000
+
+                            # Consider played if > 90% complete
+                            if duration > 0:
+                                episode_item.fully_played = (played_up_to / duration) > 0.9
+
+                        # If in history but not in-progress, likely fully played
+                        elif episode_uuid in history_set:
+                            episode_item.fully_played = True
+
                         items.append(episode_item)
+
                 LOGGER.debug("Converted %d episodes successfully", len(items))
                 return items
             except Exception as err:
@@ -546,6 +624,15 @@ class PocketCastsProvider(MusicProvider):
                 url = episode_data.get("url", "")
                 if not url:
                     raise MediaNotFoundError(f"No URL found for episode {item_id}")
+
+                # Add to Up Next (play now position) when starting playback
+                await self._client.play_now(
+                    episode_uuid=episode_uuid,
+                    podcast_uuid=podcast_uuid,
+                    title=episode_data.get("title", ""),
+                    url=url,
+                    published=episode_data.get("published"),
+                )
 
                 return StreamDetails(
                     item_id=item_id,
@@ -590,7 +677,10 @@ class PocketCastsProvider(MusicProvider):
         return results
 
     async def get_podcast_episode(self, prov_item_id: str) -> PodcastEpisode:
-        """Get full podcast episode details by id."""
+        """Get full podcast episode details by id.
+
+        Uses /user/episode endpoint for accurate duration and playback status.
+        """
         if not self._client:
             msg = "Client not available"
             raise MediaNotFoundError(msg)
@@ -600,40 +690,53 @@ class PocketCastsProvider(MusicProvider):
 
         LOGGER.debug("Getting episode %s from podcast %s", episode_uuid, podcast_uuid)
 
-        # Fetch all episodes for the podcast
-        episodes = await self._client.get_podcast_episodes(podcast_uuid)
+        # Use /user/episode for accurate data (correct duration, playback status)
+        episode_data = await self._client.get_episode_details(episode_uuid)
 
-        # Find the specific episode
-        for episode_data in episodes:
-            if episode_data["uuid"] == episode_uuid:
-                episode_item = self._convert_episode(episode_data, podcast_uuid)
-                if not episode_item:
-                    msg = f"Failed to convert episode {episode_uuid}"
-                    raise MediaNotFoundError(msg)
+        if episode_data:
+            # Convert using the accurate data from /user/episode
+            episode_item = self._convert_episode(episode_data, podcast_uuid)
+            if episode_item:
+                # Set playback status from the response
+                played_up_to = episode_data.get("playedUpTo", 0)
+                duration = episode_data.get("duration", 0)
+                playing_status = episode_data.get("playingStatus", 1)
 
-                # Get playback position from in-progress list
-                in_progress = await self._client.get_in_progress_episodes()
-                for ep in in_progress:
-                    if ep.get("uuid") == episode_uuid:
-                        played_up_to = ep.get("playedUpTo", 0)  # seconds
-                        duration = ep.get("duration", 0)  # seconds
+                # Update duration with correct value
+                if duration > 0:
+                    episode_item.duration = duration
 
-                        # Set resume position in milliseconds
-                        episode_item.resume_position_ms = played_up_to * 1000
+                # Set resume position
+                if played_up_to > 0:
+                    episode_item.resume_position_ms = played_up_to * 1000
 
-                        # Consider played if > 90% complete
-                        if duration > 0:
-                            episode_item.fully_played = (played_up_to / duration) > 0.9
+                # Set fully_played based on playingStatus
+                # 1=unplayed, 2=in_progress, 3=played
+                if playing_status == 3:
+                    episode_item.fully_played = True
+                elif playing_status == 2 and duration > 0:
+                    # In progress - check if > 90% complete
+                    episode_item.fully_played = (played_up_to / duration) > 0.9
 
-                        LOGGER.debug(
-                            "Episode %s resume position: %d ms (%.1f%%)",
-                            episode_uuid,
-                            episode_item.resume_position_ms,
-                            (played_up_to / duration * 100) if duration > 0 else 0,
-                        )
-                        break
+                LOGGER.debug(
+                    "Episode %s: duration=%d, status=%d, position=%d ms",
+                    episode_uuid,
+                    duration,
+                    playing_status,
+                    episode_item.resume_position_ms,
+                )
 
                 return episode_item
+
+        # Fallback to static API if /user/episode fails
+        LOGGER.debug("Falling back to static API for episode %s", episode_uuid)
+        episodes = await self._client.get_podcast_episodes(podcast_uuid)
+
+        for ep_data in episodes:
+            if ep_data["uuid"] == episode_uuid:
+                episode_item = self._convert_episode(ep_data, podcast_uuid)
+                if episode_item:
+                    return episode_item
 
         msg = f"Episode {episode_uuid} not found in podcast {podcast_uuid}"
         raise MediaNotFoundError(msg)
@@ -685,3 +788,108 @@ class PocketCastsProvider(MusicProvider):
         except Exception as err:
             LOGGER.error("Error getting resume position: %s", err)
             return (False, 0)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle callback when a podcast episode has been played.
+
+        Called by the Queue controller periodically while playing.
+        We ignore MA's fully_played flag because MA uses the wrong (shorter) duration
+        from the static API. Instead, we fetch the real duration from /user/episode
+        and only mark as played when position >= real_duration - 15.
+
+        :param media_type: The media type.
+        :param prov_item_id: The provider item ID (format: podcast_uuid:episode_uuid).
+        :param fully_played: Ignored - MA's duration may be wrong.
+        :param position: Last known position in seconds.
+        :param media_item: The full media item details.
+        :param is_playing: Ignored.
+        """
+        # Only handle podcast episodes
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+
+        if media_item is None or not isinstance(media_item, PodcastEpisode):
+            return
+
+        if not self._client:
+            LOGGER.warning("Cannot sync progress: client not initialized")
+            return
+
+        # Parse the item ID
+        if ":" not in prov_item_id:
+            LOGGER.warning("Invalid item_id format: %s", prov_item_id)
+            return
+
+        podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
+
+        try:
+            # Case 1: User marked as unplayed (position=0)
+            if position == 0:
+                LOGGER.info("Marking episode %s as unplayed", episode_uuid)
+                await self._client.mark_episode_unplayed(podcast_uuid, episode_uuid)
+                await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
+                return
+
+            # Fetch real duration from Pocketcasts
+            episode_details = await self._client.get_episode_details(episode_uuid)
+            if not episode_details:
+                # Fallback: just sync progress without completion check
+                await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+                return
+
+            real_duration = episode_details.get("duration", 0)
+            playing_status = episode_details.get("playingStatus", 1)
+
+            # Case 2: Near or past the end (within 45 seconds of real duration)
+            # Threshold must exceed MA's 30-second callback interval to guarantee
+            # the last callback before episode end triggers completion.
+            if real_duration > 0 and position >= (real_duration - 45):
+                if playing_status != 3:
+                    # Not yet marked as played - trigger completion sequence
+                    LOGGER.info(
+                        "Episode %s at %ds (end=%ds), marking as played",
+                        episode_uuid,
+                        position,
+                        real_duration,
+                    )
+                    await self._client.update_episode_progress(
+                        podcast_uuid, episode_uuid, real_duration
+                    )
+                    await self._client.mark_episode_played(podcast_uuid, episode_uuid)
+                    await self._client.remove_from_up_next(episode_uuid)
+                    await self._client.archive_episode(podcast_uuid, episode_uuid, archive=True)
+                else:
+                    LOGGER.debug(
+                        "Episode %s already completed, skipping (pos=%ds, end=%ds)",
+                        episode_uuid,
+                        position,
+                        real_duration,
+                    )
+                # Either way, episode is done - no further action needed
+                return
+
+            # Case 3: Regular progress update (only reached when NOT near end)
+            # If episode was previously played, unarchive it (genuine replay from earlier position)
+            if playing_status == 3:
+                LOGGER.info("Episode %s was played, unarchiving for re-play", episode_uuid)
+                await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
+
+            LOGGER.debug(
+                "Syncing progress for episode %s: %d/%d seconds (%.1f%%)",
+                episode_uuid,
+                position,
+                real_duration,
+                (position / real_duration * 100) if real_duration > 0 else 0,
+            )
+            await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+
+        except Exception as err:
+            LOGGER.error("Error syncing playback progress: %s", err)

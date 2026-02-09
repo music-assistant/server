@@ -266,9 +266,14 @@ class PocketCastsClient:
             return []
 
     async def update_episode_progress(
-        self, podcast_uuid: str, episode_uuid: str, position_seconds: int, duration_seconds: int
+        self, podcast_uuid: str, episode_uuid: str, position_seconds: int
     ) -> bool:
-        """Update playback progress for an episode."""
+        """Update playback progress for an episode (status=2, in progress).
+
+        :param podcast_uuid: The podcast UUID.
+        :param episode_uuid: The episode UUID.
+        :param position_seconds: Current playback position in seconds.
+        """
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
@@ -281,13 +286,10 @@ class PocketCastsClient:
                 f"{self.BASE_URL}/sync/update_episode",
                 headers=self._headers(),
                 json={
+                    "uuid": episode_uuid,
                     "podcast": podcast_uuid,
-                    "episode": episode_uuid,
-                    "position": position_seconds,
-                    "duration": duration_seconds,
-                    "status": 2
-                    if position_seconds >= duration_seconds
-                    else 1,  # 2=played, 1=in_progress
+                    "status": 2,  # 2=in_progress
+                    "position": str(position_seconds),
                 },
             ) as response:
                 success = response.status == 200
@@ -300,6 +302,228 @@ class PocketCastsClient:
         except Exception as err:
             LOGGER.error("Error updating progress: %s", err)
             return False
+
+    async def mark_episode_played(self, podcast_uuid: str, episode_uuid: str) -> bool:
+        """Mark an episode as played (status=3).
+
+        :param podcast_uuid: The podcast UUID.
+        :param episode_uuid: The episode UUID.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Marking episode %s as played", episode_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/sync/update_episode",
+                headers=self._headers(),
+                json={
+                    "uuid": episode_uuid,
+                    "podcast": podcast_uuid,
+                    "status": 3,  # 3=played
+                },
+            ) as response:
+                success = response.status == 200
+                if not success:
+                    text = await response.text()
+                    LOGGER.error("Failed to mark as played: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error marking episode as played: %s", err)
+            return False
+
+    async def mark_episode_unplayed(self, podcast_uuid: str, episode_uuid: str) -> bool:
+        """Mark an episode as unplayed (status=1, position=0).
+
+        :param podcast_uuid: The podcast UUID.
+        :param episode_uuid: The episode UUID.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Marking episode %s as unplayed", episode_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/sync/update_episode",
+                headers=self._headers(),
+                json={
+                    "uuid": episode_uuid,
+                    "podcast": podcast_uuid,
+                    "status": 1,  # 1=unplayed
+                    "position": "0",
+                },
+            ) as response:
+                success = response.status == 200
+                if not success:
+                    text = await response.text()
+                    LOGGER.error("Failed to mark as unplayed: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error marking episode as unplayed: %s", err)
+            return False
+
+    async def archive_episode(
+        self, podcast_uuid: str, episode_uuid: str, archive: bool = True
+    ) -> bool:
+        """Archive or unarchive an episode.
+
+        :param podcast_uuid: The podcast UUID.
+        :param episode_uuid: The episode UUID.
+        :param archive: True to archive, False to unarchive.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Setting archive=%s for episode %s", archive, episode_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/sync/update_episodes_archive",
+                headers=self._headers(),
+                json={
+                    "episodes": [{"uuid": episode_uuid, "podcast": podcast_uuid}],
+                    "archive": archive,
+                },
+            ) as response:
+                success = response.status == 200
+                if not success:
+                    text = await response.text()
+                    LOGGER.error("Failed to archive episode: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error archiving episode: %s", err)
+            return False
+
+    async def remove_from_up_next(self, episode_uuid: str) -> bool:
+        """Remove an episode from the Up Next queue.
+
+        :param episode_uuid: The episode UUID to remove.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Removing episode %s from Up Next", episode_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/up_next/remove",
+                headers=self._headers(),
+                json={
+                    "version": 2,
+                    "uuids": [episode_uuid],
+                },
+            ) as response:
+                success = response.status == 200
+                if not success:
+                    text = await response.text()
+                    LOGGER.error("Failed to remove from Up Next: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error removing from Up Next: %s", err)
+            return False
+
+    async def play_now(
+        self,
+        episode_uuid: str,
+        podcast_uuid: str,
+        title: str,
+        url: str,
+        published: str | None = None,
+    ) -> bool:
+        """Add episode to Up Next at "play now" position (top of queue).
+
+        This is called when starting playback of an episode to sync with Pocketcasts.
+
+        :param episode_uuid: The episode UUID.
+        :param podcast_uuid: The podcast UUID.
+        :param title: The episode title.
+        :param url: The episode audio URL.
+        :param published: The episode publish date (ISO format), optional.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Adding episode %s to Up Next (play now)", episode_uuid)
+
+            episode_data: dict[str, Any] = {
+                "uuid": episode_uuid,
+                "podcast": podcast_uuid,
+                "title": title,
+                "url": url,
+            }
+            if published:
+                episode_data["published"] = published
+
+            async with self.session.post(
+                f"{self.BASE_URL}/up_next/play_now",
+                headers=self._headers(),
+                json={
+                    "version": 2,
+                    "episode": episode_data,
+                },
+            ) as response:
+                success = response.status == 200
+                if not success:
+                    text = await response.text()
+                    LOGGER.error("Failed to add to Up Next: %d - %s", response.status, text)
+
+                return success
+
+        except Exception as err:
+            LOGGER.error("Error adding to Up Next: %s", err)
+            return False
+
+    async def get_episode_details(self, episode_uuid: str) -> dict[str, Any] | None:
+        """Get detailed episode info including correct duration and playback status.
+
+        This endpoint returns accurate data including:
+        - duration: Correct episode length in seconds
+        - playingStatus: 1=unplayed, 2=in_progress, 3=played
+        - playedUpTo: Resume position in seconds
+        - starred: Whether episode is starred
+
+        :param episode_uuid: The episode UUID.
+        """
+        if not self.session:
+            raise PocketCastsAPIError("Session not initialized")
+
+        try:
+            LOGGER.debug("Fetching episode details for %s", episode_uuid)
+
+            async with self.session.post(
+                f"{self.BASE_URL}/user/episode",
+                headers=self._headers(),
+                json={"uuid": episode_uuid},
+            ) as response:
+                if response.status == 200:
+                    data: dict[str, Any] = await response.json()
+                    LOGGER.debug(
+                        "Episode %s: duration=%s, status=%s, playedUpTo=%s",
+                        episode_uuid,
+                        data.get("duration"),
+                        data.get("playingStatus"),
+                        data.get("playedUpTo"),
+                    )
+                    return data
+
+                text = await response.text()
+                LOGGER.error("Failed to get episode details: %d - %s", response.status, text)
+                return None
+
+        except Exception as err:
+            LOGGER.error("Error fetching episode details: %s", err)
+            return None
 
     async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
         """Search for podcasts."""

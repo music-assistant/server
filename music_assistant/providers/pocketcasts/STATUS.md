@@ -1,6 +1,6 @@
 # Pocketcasts Provider - Development Status
 
-**Last Updated:** 2026-02-01
+**Last Updated:** 2026-02-09
 **Branch:** `pocketcasts`
 **Stage:** Beta
 **Code Owner:** @ozgav
@@ -32,8 +32,8 @@ Pocketcasts is a podcast streaming service provider for Music Assistant. This pr
 
 ### Core Files
 - ✅ `manifest.json` (300 bytes) - Provider metadata and configuration
-- ✅ `api_client.py` (9.7 KB, 254 lines) - Custom API client for Pocketcasts
-- ✅ `__init__.py` (18.6 KB, 481 lines) - Main provider implementation
+- ✅ `api_client.py` (~500 lines) - Custom API client for Pocketcasts
+- ✅ `__init__.py` (~890 lines) - Main provider implementation
 - 📝 `STATUS.md` - This file
 
 ### Supported Features
@@ -68,7 +68,13 @@ SUPPORTED_FEATURES = {
 - [x] `get_new_releases()` - Fetch new release episodes
 - [x] `get_starred_episodes()` - Fetch starred/favorited episodes
 - [x] `get_history()` - Fetch listening history
-- [x] `update_episode_progress()` - Sync playback position to server
+- [x] `update_episode_progress()` - Sync playback position to server (status=2)
+- [x] `mark_episode_played()` - Mark episode as played (status=3)
+- [x] `mark_episode_unplayed()` - Reset episode to unplayed (status=1, position=0)
+- [x] `archive_episode()` - Archive/unarchive episodes
+- [x] `remove_from_up_next()` - Remove episode from Up Next queue
+- [x] `play_now()` - Add episode to Up Next at "play now" position when starting playback
+- [x] `get_episode_details()` - Fetch accurate duration and playback status from `/user/episode`
 - [x] `search_podcasts()` - Search for podcasts
 - [x] `get_podcast_details()` - Fetch podcast by UUID
 - [x] `subscribe_podcast()` - Subscribe to a podcast
@@ -89,6 +95,7 @@ SUPPORTED_FEATURES = {
 - [x] `search()` - Search for podcasts
 - [x] `get_stream_details()` - Get streaming URLs for episodes
 - [x] `get_resume_position()` - Get playback position for episodes
+- [x] `on_played()` - Sync playback progress, mark played, archive on completion
 
 #### Browse Folders (Live Playlists)
 - [x] **Up Next** - User's queued episodes
@@ -131,14 +138,53 @@ SUPPORTED_FEATURES = {
 
 ---
 
-### ⚠️ Partially Implemented
+### ✅ Implemented
 
 #### Playback Progress Sync
 - [x] `get_resume_position()` - Read position from Pocketcasts
-- [x] `update_episode_progress()` - API method exists
-- [ ] **Hook into playback events** - Not connected to player queue controller
-- [ ] **Auto-sync on pause/stop** - Not implemented
-- [ ] **Mark as played** - Not implemented
+- [x] `update_episode_progress()` - API method (fixed to match web player format)
+- [x] `mark_episode_played()` - Mark episode as played (status=3)
+- [x] `mark_episode_unplayed()` - Mark episode as unplayed (status=1, position=0)
+- [x] `archive_episode()` - Archive/unarchive completed episodes
+- [x] `remove_from_up_next()` - Remove episode from Up Next on completion
+- [x] `get_episode_details()` - Fetch real duration and status from `/user/episode`
+- [x] `on_played()` callback - Hook into MA playback events
+- [x] Episode status on refresh - Fetches in-progress and history data
+
+**Sync Behavior:**
+- Progress syncs every 30 seconds during playback (MA's callback interval)
+- Completion detected using **real duration** from `/user/episode` endpoint, not MA's duration
+- When `position >= real_duration - 45`: sync to end → mark played → remove from up next → archive
+  - 45-second threshold ensures last callback before episode end always triggers completion
+- Starting playback: episode added to Up Next via `/up_next/play_now`
+- Replaying a played episode: unarchives it and resets status to in-progress (status=2)
+- Mark as unplayed: resets position to 0 + unarchives
+- Episode list refresh shows in-progress and played status from Pocketcasts
+- Uses correct web player API format (uuid, status codes 1/2/3, position as string)
+- MA's `fully_played` flag is intentionally ignored (MA uses wrong/shorter duration from static API)
+
+**Duration Discrepancy:**
+- The static API (`podcast-api.pocketcasts.com/podcast/full/{uuid}`) often returns a **shorter** duration than the actual episode length
+- The `/user/episode` endpoint returns the **correct** duration
+- `on_played()` fetches the real duration each sync to determine actual completion
+- The seek bar in MA may show the wrong end time (known limitation, cosmetic only)
+
+**Episode Completion Sequence (matches web player):**
+1. `update_episode` with status=2, position=real_duration (sync to end)
+2. `update_episode` with status=3 (mark played)
+3. `up_next/remove` (remove from Up Next queue)
+4. `update_episodes_archive` with archive=true (archive episode)
+
+**API Status Codes:**
+| Status | Meaning |
+|--------|---------|
+| 1 | Unplayed |
+| 2 | In Progress |
+| 3 | Played |
+
+---
+
+### ⚠️ Partially Implemented
 
 #### Authentication & Token Management
 - [x] **Login** - Successfully authenticates with email/password
@@ -181,34 +227,70 @@ This section maps available Pocketcasts API features to Music Assistant provider
 
 ---
 
-### 2. Live Updating Playlists → `BROWSE` folders
+### 2. Live Updating Playlists → `BROWSE` folders ✅ IMPLEMENTED
 **Pocketcasts Features:**
 - New Releases - Recently published episodes from subscriptions
 - In Progress - Episodes currently being listened to
 - Starred - User's starred/favorited episodes
 - History - Recently played episodes
+- Up Next - User's queued episodes
 
-**MA Feature:** Extend existing `BROWSE` implementation with dynamic folders
-**Implementation:** Add these as BrowseFolder items in `browse()` method
-**API Endpoints:**
-- `/user/new_releases`
-- `/user/in_progress`
-- `/user/starred`
-- `/user/history`
+**Status:** ✅ Fully implemented as browse folders
+- All 5 special folders appear at root level in browse view
+- Implemented in `_create_browse_folders()` and `_get_special_folder_episodes()`
+- API Endpoints used:
+  - `/user/new_releases`
+  - `/user/in_progress`
+  - `/user/starred`
+  - `/user/history`
+  - `/up_next/list`
 
-**Priority:** High - Great UX, leverages existing browse infrastructure
+**Priority:** N/A - Already implemented
 
 ---
 
-### 3. Up Next Queue → `PLAYLIST_TRACKS_EDIT` + `PLAYLIST_CREATE`
+### 3. Up Next Queue → Multiple Implementation Options
 **Pocketcasts Feature:** User-created queue for next episodes to play
+
+#### Option A: Plugin Source (Recommended)
+**Architecture:** Create a separate `pocketcasts_queue_source` plugin provider
+**MA Feature:** `ProviderFeature.AUDIO_SOURCE` (PluginProvider)
+**UI Integration:** Appears in player's "Select source" dropdown alongside "Music Assistant Queue"
+
+**Implementation Approach:**
+- Create new plugin provider that inherits from `PluginProvider`
+- Returns `PluginSource` with name "Pocketcasts Up Next"
+- When selected: Streams episodes from Pocketcasts Up Next queue in order
+- Separate from MA's library queue (key requirement)
+- Can reuse API client from existing Pocketcasts music provider
+
+**Benefits:**
+- Clean separation: Pocketcasts queue completely independent from MA queue
+- Follows MA architecture patterns (similar to Spotify Connect)
+- User explicitly switches between queue sources
+- Queue management syncs directly to Pocketcasts API
+
+**Implementation Requirements:**
+1. Create plugin provider with `AUDIO_SOURCE` feature
+2. Implement `get_source()` returning `PluginSource` object
+3. Implement audio streaming for podcast episodes
+4. Add callbacks for next/previous/play/pause controls
+5. Integrate with Pocketcasts Up Next API endpoints
+6. Handle queue synchronization
+
+**Reference Implementations:**
+- `/music_assistant/providers/spotify_connect/__init__.py` - Complete plugin source example
+- `/music_assistant/providers/_demo_plugin_provider/__init__.py` - Simple template
+
+#### Option B: Playlist Provider
 **MA Features:**
 - `ProviderFeature.PLAYLIST_TRACKS_EDIT` - Modify playlist contents
 - `ProviderFeature.PLAYLIST_CREATE` - Create new playlists
 
 **Implementation:**
-- Map "Up Next" to a special playlist
+- Map "Up Next" to a special playlist in library
 - Implement add/remove/reorder operations
+- Would NOT keep queues separate (mixed with MA library)
 
 **API Endpoints:**
 - Get queue: `POST /up_next/list`
@@ -216,7 +298,7 @@ This section maps available Pocketcasts API features to Music Assistant provider
 - Add to end: `POST /up_next/play_last`
 - Remove: `POST /up_next/remove`
 
-**Priority:** Medium - Nice-to-have for queue management
+**Priority:** Medium - Nice-to-have, but Option A provides better UX and separation
 
 ---
 
@@ -303,13 +385,17 @@ Based on user value and implementation complexity:
 2. ✅ **Live Updating Playlists** - Extend browse with New Releases, In Progress, Starred, History
 
 **Phase 2 - Core Library Management (High Priority):**
-3. **LIBRARY_PODCASTS_EDIT** - Complete subscribe/unsubscribe implementation
+3. ✅ **LIBRARY_PODCASTS_EDIT** - Complete subscribe/unsubscribe implementation
    - Essential for syncing library changes back to Pocketcasts
    - Allows users to manage subscriptions from MA
 
 **Phase 3 - Medium Value, Higher Effort:**
-4. **Up Next Queue** - PLAYLIST features
-5. **Playback Progress Sync** - Auto-sync to Pocketcasts
+4. **Up Next Queue** - Plugin source provider (Option A recommended)
+   - Create separate plugin provider for "Pocketcasts Up Next" queue source
+   - Appears in player "Select source" dropdown
+   - Keeps Pocketcasts queue separate from MA queue
+   - Complex: requires new plugin provider + audio streaming
+5. ✅ **Playback Progress Sync** - Auto-sync to Pocketcasts (completed 2026-02-05)
 
 **Phase 4 - Nice-to-Have:**
 6. **Transcripts (LYRICS)** - Premium users only
@@ -336,7 +422,7 @@ Based on user value and implementation complexity:
 - [ ] **Session cleanup** - Verify session is properly closed on errors
 - [ ] **Token expiration** - No token refresh mechanism implemented
 - [ ] **Rate limiting** - No rate limiting protection
-- [ ] **Position Sync to Pocketcasts** - `update_episode_progress()` exists but may not be called during playback
+- [ ] **Duration display in seek bar** - MA shows wrong (shorter) duration from static API; playback works correctly but seek bar end time is inaccurate
 
 ---
 
@@ -374,8 +460,13 @@ Based on user value and implementation complexity:
   - Syncs removal to Pocketcasts account
   - MA shows generic warning (not customizable per provider)
 
-⚠️ **Partially Working:**
-- [ ] Sync progress back to Pocketcasts - Not tested yet
+- [x] Sync progress back to Pocketcasts - SUCCESS (2026-02-04/05)
+  - Progress syncs every 30 seconds during playback
+  - Episode marked as played when within 15 seconds of real end
+  - Completion sequence: sync to end → mark played → remove from up next → archive
+  - Replaying played episodes correctly unarchives and resets status
+  - Continues playing past the "wrong" (shorter) duration without confusion
+- [x] Episode details from `/user/episode` - Correct duration and status (2026-02-04)
 
 ❌ **Not Tested:**
 - [ ] Search for podcasts
@@ -470,7 +561,17 @@ Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/
 
 #### Episodes (api.pocketcasts.com)
 - `POST /user/in_progress` - Get in-progress episodes with resume positions
-- `POST /sync/update_episode` - Update episode playback progress and status
+- `POST /user/episode` - Get episode details (correct duration, playback status, resume position)
+- `POST /user/history` - Get listening history
+- `POST /user/new_releases` - Recently published episodes from subscriptions
+- `POST /user/starred` - User's starred/favorited episodes
+- `POST /sync/update_episode` - Update episode playback progress and status (status 1/2/3)
+- `POST /sync/update_episodes_archive` - Archive/unarchive episodes
+
+#### Up Next Queue (api.pocketcasts.com)
+- `POST /up_next/list` - Get Up Next queue
+- `POST /up_next/play_now` - Add episode to Up Next at "play now" position (top)
+- `POST /up_next/remove` - Remove episode from Up Next queue
 
 #### Assets (static.pocketcasts.com)
 - `GET /discover/images/280/{uuid}.jpg` - Podcast thumbnails (280x280)
@@ -485,23 +586,12 @@ Reference: [Unofficial Pocketcasts API Documentation](https://github.com/yfhyou/
 - `POST /user/token` - Token refresh (for web player tokens only, not needed for mobile tokens)
 - `GET /subscription/status` - Check premium subscription status
 
-#### Library Management (api.pocketcasts.com)
-- `POST /user/episode` - Episode-level management
-
-#### Up Next Queue (api.pocketcasts.com)
-- `POST /up_next/list` - Get Up Next queue
+#### Up Next Queue Management (api.pocketcasts.com)
 - `POST /up_next/play_next` - Add episode to top of queue
 - `POST /up_next/play_last` - Add episode to end of queue
-- `POST /up_next/remove` - Remove episode from queue
-
-#### Live Playlists (api.pocketcasts.com)
-- `POST /user/new_releases` - Recently published episodes from subscriptions
-- `POST /user/starred` - User's starred/favorited episodes
-- `POST /user/history` - Recently played episodes
 
 #### Favorites/Starred (api.pocketcasts.com)
 - `POST /sync/update_episode_star` - Toggle episode star status (star/unstar)
-- `POST /sync/update_episodes_archive` - Archive/unarchive episodes
 
 #### Bookmarks (api.pocketcasts.com)
 - `POST /user/bookmark/list` - List all user bookmarks
@@ -558,11 +648,21 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
    - ✅ Implement `library_remove()` method for unsubscribing
 
 ### Phase 3: Sync & Polish (Medium Priority)
-10. **Connect progress sync** - Hook into player queue events to auto-sync position to Pocketcasts
+10. ✅ **Connect progress sync** - Hook into player queue events to auto-sync position to Pocketcasts
+   - ✅ Implement `on_played()` callback with 30-second throttled sync
+   - ✅ Add mark_episode_played/unplayed API methods
+   - ✅ Add archive_episode and remove_from_up_next API methods
+   - ✅ Add get_episode_details for real duration detection
+   - ✅ Completion detection uses real duration from `/user/episode`, not MA's duration
+   - ✅ Replaying played episodes unarchives and resets status
 11. **Optimize API calls** - Cache podcast lists, reduce redundant calls
 
 ### Phase 4: Advanced Features (Nice to Have)
-12. **Up Next Queue** - PLAYLIST_TRACKS_EDIT/PLAYLIST_CREATE features
+12. **Up Next Queue Source** - Create plugin provider for separate Pocketcasts queue
+   - Implement as `PluginProvider` with `AUDIO_SOURCE` feature
+   - Appears in player "Select source" dropdown as "Pocketcasts Up Next"
+   - Keeps Pocketcasts queue separate from MA queue (not mixed)
+   - See "Potential Features" section for detailed architecture notes
 13. **Token refresh mechanism** - Low priority (current mobile tokens valid ~5 months)
     - Would allow graceful handling of token expiration
     - Could enable web player token support (requires hourly refresh)
@@ -631,6 +731,70 @@ See "Potential Features from Pocketcasts API" section above for detailed feature
 ---
 
 ## Changelog
+
+### 2026-02-09 - Up Next Integration & Completion Threshold Fix
+
+- **New Feature: Add episode to Up Next when starting playback**
+  - Added `play_now()` API method - calls `/up_next/play_now`
+  - Called in `get_stream_details()` when MA requests stream URL
+  - Matches web player behavior: episode appears in Pocketcasts Up Next queue
+
+- **Bug Fix: Episode completion threshold increased from 15 to 45 seconds**
+  - Problem: 15-second threshold could miss completion if last callback landed 16+ seconds before end
+  - MA calls `on_played` every 30 seconds, so last callback can be up to 29 seconds before end
+  - 45-second threshold guarantees the last callback always triggers completion
+
+- **Removed provider-side throttle**
+  - MA already controls callback cadence (every 30 seconds + on state changes)
+  - Provider throttle was blocking important state-change callbacks (pause, end of track)
+
+### 2026-02-04/05 - Playback Progress Sync (Major Rework)
+
+- **Reworked playback progress sync with real duration detection**
+  - Progress now syncs every 30 seconds (changed from 10s to match web player)
+  - Episode completion uses **real duration** from `/user/episode` endpoint, not MA's duration
+  - MA's `fully_played` flag is intentionally ignored (MA uses wrong/shorter duration from static API)
+  - Completion triggers when `position >= real_duration - 15` seconds
+  - Replaying a played episode unarchives it and resets status from 3 (played) to 2 (in-progress)
+  - Removed incorrect "skip if already played" logic that blocked progress sync
+
+- **New API Client Methods:**
+  - Added `get_episode_details()` - Fetches correct duration, playback status, and resume position from `/user/episode`
+  - Added `remove_from_up_next()` - Removes episode from Up Next queue via `/up_next/remove`
+
+- **Episode Completion Sequence (matches web player behavior):**
+  1. `update_episode` with status=2, position=real_duration (sync position to end)
+  2. `update_episode` with status=3 (mark as played)
+  3. `up_next/remove` (remove from Up Next queue)
+  4. `update_episodes_archive` with archive=true (archive episode)
+
+- **Duration Discrepancy Discovery:**
+  - Static API (`podcast-api.pocketcasts.com`) returns wrong (shorter) duration for many episodes
+  - `/user/episode` endpoint returns the correct duration
+  - MA seek bar shows wrong end time (cosmetic, playback unaffected)
+  - Episode plays to actual end regardless of displayed duration
+
+- **Bugs Fixed:**
+  - Fixed "skip if status=3" logic that prevented progress sync on replayed episodes
+  - Fixed position being overwritten after mark-as-played sequence
+  - Fixed episode marked as played too early (at wrong/shorter duration instead of actual end)
+
+### 2026-02-03 - Playback Progress Sync (Initial)
+
+- **New Feature: Initial playback progress sync to Pocketcasts**
+  - Implemented `on_played()` callback to hook into MA playback events
+  - Fixed `update_episode_progress()` to match web player API format
+  - Added `mark_episode_played()` for completed episodes (status=3)
+  - Added `mark_episode_unplayed()` for resetting episodes (status=1)
+  - Added `archive_episode()` for archiving/unarchiving completed episodes
+  - Completed episodes are automatically marked as played and archived
+  - "Mark as unplayed" resets position and unarchives the episode
+
+- **API Format Corrections:**
+  - Fixed status codes: 1=unplayed, 2=in_progress, 3=played
+  - Changed `episode` field to `uuid` to match web player
+  - Position now sent as string instead of integer
+  - Removed unnecessary `duration` field from progress updates
 
 ### 2026-02-03 - Library Management (Subscribe/Unsubscribe)
 
