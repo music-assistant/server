@@ -34,6 +34,12 @@ PLAYLIST_ID_SPLITTER: Final[str] = ":"
 # Rotor (radio) station identifiers
 ROTOR_STATION_MY_WAVE: Final[str] = "user:onyourwave"
 
+# Virtual playlist ID for My Wave (used in get_playlist / get_playlist_tracks; not owner_id:kind)
+MY_WAVE_PLAYLIST_ID: Final[str] = "my_wave"
+
+# Composite item_id for My Wave tracks: track_id + separator + station_id (for rotor feedback)
+RADIO_TRACK_ID_SEP: Final[str] = "@"
+
 # Browse folder names by locale (item_id -> display name)
 BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "my_wave": "Моя волна",
