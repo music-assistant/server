@@ -1056,7 +1056,7 @@ function InputHandler() {
                 return true;
             } else if (data.template != null && data.items != null && data.items.length >= 0) {
                 if (data.compress !== true && data.template.decompress !== false) {
-                    //Note: Decompress template items to get the expected appearance (this only works from version 0.1.155+)      
+                    //Note: Decompress template items to get the expected appearance (this only works from version 0.1.155+)
                     //Note: If compressed content should be displayed, this should be indicated (e.g. by setting the compress property to true) to avoid different appearances in different versions
                     data.template.decompress = true;
                 }

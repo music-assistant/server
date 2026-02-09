@@ -2,62 +2,177 @@
 
 from __future__ import annotations
 
-from typing import cast
+import asyncio
+import contextlib
+import time
+from typing import Any, cast
 
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
+    CONF_PLAYER_IDLE_TIMEOUT,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
+    DEFAULT_PLAYER_IDLE_TIMEOUT,
+    MSX_PLAYER_ID_PREFIX,
 )
 from .http_server import MSXHTTPServer
 from .player import MSXPlayer
-
-DEFAULT_PLAYER_ID = "msx_default"
-DEFAULT_PLAYER_NAME = "MSX TV"
 
 
 class MSXBridgeProvider(PlayerProvider):
     """Player Provider that bridges Music Assistant to Smart TVs via MSX."""
 
     http_server: MSXHTTPServer | None = None
+    _player_last_activity: dict[str, float]
+    _pending_unregisters: dict[str, asyncio.Event]
+    _timeout_task: asyncio.Task[None] | None = None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the provider."""
+        super().__init__(*args, **kwargs)
+        self._player_last_activity = {}
+        self._pending_unregisters = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""
         port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
         self.http_server = MSXHTTPServer(self, port)
         await self.http_server.start()
-        self.logger.info(
-            "MSX Bridge provider initialized, HTTP server on port %s", port
-        )
+        self.logger.info("MSX Bridge provider initialized, HTTP server on port %s", port)
 
     async def loaded_in_mass(self) -> None:
-        """Register the default MSX player after provider is loaded."""
+        """Start idle timeout task after provider is loaded."""
         await super().loaded_in_mass()
-        output_format = cast(
-            "str", self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
-        )
-        player = MSXPlayer(
-            provider=self,
-            player_id=DEFAULT_PLAYER_ID,
-            name=DEFAULT_PLAYER_NAME,
-            output_format=output_format,
-        )
-        await self.mass.players.register(player)
-        self.logger.info("Registered default MSX player: %s", DEFAULT_PLAYER_NAME)
+        self._timeout_task = self.mass.create_task(self._run_idle_timeout_loop())
+        self.logger.info("MSX Bridge provider loaded — players register on demand")
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload — stop HTTP server first, then unregister players."""
+        """Handle unload — stop timeout task, HTTP server, then unregister players."""
+        if self._timeout_task and not self._timeout_task.done():
+            self._timeout_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._timeout_task
+            self._timeout_task = None
         if self.http_server:
             await self.http_server.stop()
-        for player in self.players:
+        for player in list(self.players):
             self.logger.debug("Unloading player %s", player.display_name)
             await self.mass.players.unregister(player.player_id)
+        self._player_last_activity.clear()
         self.logger.info("MSX Bridge provider unloaded")
 
     async def discover_players(self) -> None:
-        """Discover players — MSX players are registered on demand."""
-        # The default player is registered in loaded_in_mass().
-        # Additional players could be registered when TVs connect via HTTP.
+        """Discover players — MSX players are registered on demand when TVs connect."""
+
+    async def get_or_register_player(
+        self,
+        player_id: str,
+        display_name: str | None = None,
+    ) -> MSXPlayer | None:
+        """
+        Get or register an MSX player for the given player_id.
+
+        Returns the player, or None if registration failed.
+        """
+        # Wait for any pending unregister to complete (race condition handling)
+        if pending_event := self._pending_unregisters.get(player_id):
+            self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
+            await pending_event.wait()
+        existing = self.mass.players.get(player_id, raise_unavailable=False)
+        if existing and isinstance(existing, MSXPlayer):
+            self.on_player_activity(player_id)
+            return existing
+        output_format = cast(
+            "str", self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
+        )
+        name = display_name or self._player_display_name_from_id(player_id)
+        player = MSXPlayer(
+            provider=self,
+            player_id=player_id,
+            name=name,
+            output_format=output_format,
+        )
+        await self.mass.players.register(player)
+        self._player_last_activity[player_id] = time.time()
+        self.logger.info("Registered MSX player: %s (%s)", name, player_id)
+        return player
+
+    def _player_display_name_from_id(self, player_id: str) -> str:
+        """Build a unique display name from player_id for the MA UI."""
+        prefix = MSX_PLAYER_ID_PREFIX
+        suffix = player_id.removeprefix(prefix)
+        if not suffix:
+            return "MSX TV"
+        # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
+        if "_" in suffix and all(p.isdigit() for p in suffix.replace("_", " ").split()):
+            return f"MSX TV ({suffix.replace('_', '.')})"
+        return f"MSX TV ({suffix})"
+
+    def on_player_activity(self, player_id: str) -> None:
+        """Record activity for a player (extends idle timeout)."""
+        self._player_last_activity[player_id] = time.time()
+
+    def notify_play_started(
+        self,
+        player_id: str,
+        *,
+        title: str | None = None,
+        artist: str | None = None,
+        image_url: str | None = None,
+        duration: int | None = None,
+    ) -> None:
+        """Notify WebSocket clients that playback started (for MA -> MSX push)."""
+        if self.http_server:
+            self.http_server.broadcast_play(
+                player_id,
+                title=title,
+                artist=artist,
+                image_url=image_url,
+                duration=duration,
+            )
+
+    def notify_play_stopped(self, player_id: str) -> None:
+        """Notify WebSocket clients that playback stopped (MA stop -> MSX)."""
+        if self.http_server:
+            self.http_server.broadcast_stop(player_id)
+
+    async def _handle_player_unregister(self, player_id: str) -> None:
+        """Unregister a player with race-condition handling."""
+        self.logger.debug("Unregistering MSX player %s", player_id)
+        unregister_event = asyncio.Event()
+        self._pending_unregisters[player_id] = unregister_event
+        try:
+            await self.mass.players.unregister(player_id)
+        finally:
+            self._pending_unregisters.pop(player_id, None)
+            self._player_last_activity.pop(player_id, None)
+            unregister_event.set()
+
+    async def _run_idle_timeout_loop(self) -> None:
+        """Background task: unregister players idle longer than configured timeout."""
+        timeout_minutes = cast(
+            "int",
+            self.config.get_value(CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT),
+        )
+        interval_seconds = 60
+        while not self.mass.closing:
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+            now = time.time()
+            cutoff = now - (timeout_minutes * 60)
+            for player in list(self.players):
+                if not isinstance(player, MSXPlayer):
+                    continue
+                last = self._player_last_activity.get(player.player_id, 0)
+                if last > 0 and last < cutoff:
+                    self.logger.info(
+                        "Unregistering idle MSX player %s (no activity for %d min)",
+                        player.player_id,
+                        timeout_minutes,
+                    )
+                    self.mass.create_task(self._handle_player_unregister(player.player_id))
