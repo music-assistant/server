@@ -338,15 +338,19 @@ async def is_port_in_use(port: int) -> bool:
     """Check if port is in use."""
 
     def _is_port_in_use() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
-            # Set SO_REUSEADDR to match asyncio.start_server behavior
-            # This allows binding to ports in TIME_WAIT state
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
+        # A port is considered free if it can be bound on at least one address family.
+        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
             try:
-                _sock.bind(("0.0.0.0", port))
+                with socket.socket(family, socket.SOCK_STREAM) as _sock:
+                    # Set SO_REUSEADDR to match asyncio.start_server behavior
+                    # This allows binding to ports in TIME_WAIT state
+                    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    _sock.bind((addr, port))
+                    return False
             except OSError:
-                return True
-        return False
+                continue
+        return True
 
     return await asyncio.to_thread(_is_port_in_use)
 
@@ -379,6 +383,13 @@ async def get_ip_pton(ip_string: str) -> bytes:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
+
+
+def format_ip_for_url(ip_address: str) -> str:
+    """Wrap IPv6 addresses in brackets for use in URLs (RFC 2732)."""
+    if ":" in ip_address:
+        return f"[{ip_address}]"
+    return ip_address
 
 
 async def get_folder_size(folderpath: str) -> float:
@@ -623,6 +634,12 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
             continue
         if address.startswith("169.254"):
             # filter out APIPA address
+            continue
+        return address
+    # fall back to IPv6 addresses if no usable IPv4 address found
+    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+        if address.startswith(("::1", "fe80")):
+            # filter out loopback and link-local addresses
             continue
         return address
     return None

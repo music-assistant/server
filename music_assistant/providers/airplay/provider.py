@@ -53,9 +53,7 @@ class AirPlayProvider(PlayerProvider):
         # for AirPlay 2 (HAP) pair-verify to work with previously paired devices
         self.dacp_id = dacp_id = self.mass.server_id[:16].upper()
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
-        self._dacp_server = await asyncio.start_server(
-            self._handle_dacp_request, "0.0.0.0", dacp_port
-        )
+        self._dacp_server = await asyncio.start_server(self._handle_dacp_request, port=dacp_port)
         server_id = f"iTunes_Ctrl_{dacp_id}.{DACP_DISCOVERY_TYPE}"
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,

@@ -5,7 +5,7 @@
   "name": "Yandex Music",
   "description": "Stream music from Yandex Music service.",
   "codeowners": ["@TrudenBoy"],
-  "documentation": "https://music-assistant.io/music-providers/yandex/",
+  "documentation": "https://music-assistant.io/music-providers/yandex-music/",
   "requirements": ["yandex-music==2.2.0"],
   "multi_instance": true
 }

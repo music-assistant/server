@@ -9,7 +9,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import QUALITY_LOSSLESS
+from .constants import CONF_QUALITY, QUALITY_LOSSLESS
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -42,20 +42,67 @@ class YandexMusicStreamingManager:
         if not track:
             raise MediaNotFoundError(f"Track {item_id} not found")
 
-        # Get download info
+        quality = self.provider.config.get_value(CONF_QUALITY)
+        quality_str = str(quality) if quality is not None else None
+        preferred_normalized = (quality_str or "").strip().lower()
+        want_lossless = (
+            QUALITY_LOSSLESS in preferred_normalized or preferred_normalized == QUALITY_LOSSLESS
+        )
+
+        # When user wants lossless, try get-file-info first (FLAC; download-info often MP3 only)
+        if want_lossless:
+            self.logger.debug("Requesting lossless via get-file-info for track %s", item_id)
+            file_info = await self.client.get_track_file_info_lossless(item_id)
+            if file_info:
+                url = file_info.get("url")
+                codec = file_info.get("codec") or ""
+                if url and codec.lower() in ("flac", "flac-mp4"):
+                    content_type = self._get_content_type(codec)
+                    self.logger.debug(
+                        "Stream selected for track %s via get-file-info: codec=%s",
+                        item_id,
+                        codec,
+                    )
+                    return StreamDetails(
+                        item_id=item_id,
+                        provider=self.provider.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=content_type,
+                            bit_rate=0,
+                        ),
+                        stream_type=StreamType.HTTP,
+                        duration=track.duration,
+                        path=url,
+                        can_seek=True,
+                        allow_seek=True,
+                    )
+
+        # Default: use /tracks/.../download-info and select best quality
         download_infos = await self.client.get_track_download_info(item_id, get_direct_links=True)
         if not download_infos:
             raise MediaNotFoundError(f"No stream info available for track {item_id}")
 
-        # Select best quality based on config
-        quality = self.provider.config.get_value("quality")
-        quality_str = str(quality) if quality is not None else None
+        codecs_available = [
+            (getattr(i, "codec", None), getattr(i, "bitrate_in_kbps", None)) for i in download_infos
+        ]
+        self.logger.debug(
+            "Stream quality for track %s: config quality=%s, available codecs=%s",
+            item_id,
+            quality_str,
+            codecs_available,
+        )
         selected_info = self._select_best_quality(download_infos, quality_str)
 
         if not selected_info or not selected_info.direct_link:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
 
-        # Determine content type
+        self.logger.debug(
+            "Stream selected for track %s: codec=%s, bitrate=%s",
+            item_id,
+            getattr(selected_info, "codec", None),
+            getattr(selected_info, "bitrate_in_kbps", None),
+        )
+
         content_type = self._get_content_type(selected_info.codec)
         bitrate = selected_info.bitrate_in_kbps or 0
 
@@ -79,11 +126,17 @@ class YandexMusicStreamingManager:
         """Select the best quality download info.
 
         :param download_infos: List of DownloadInfo objects.
-        :param preferred_quality: User's preferred quality setting.
+        :param preferred_quality: User's preferred quality (e.g. "lossless" or "Lossless (FLAC)").
         :return: Best matching DownloadInfo or None.
         """
         if not download_infos:
             return None
+
+        # Normalize so we accept "lossless", "Lossless (FLAC)", etc.
+        preferred_normalized = (preferred_quality or "").strip().lower()
+        want_lossless = (
+            QUALITY_LOSSLESS in preferred_normalized or preferred_normalized == QUALITY_LOSSLESS
+        )
 
         # Sort by bitrate descending
         sorted_infos = sorted(
@@ -92,11 +145,16 @@ class YandexMusicStreamingManager:
             reverse=True,
         )
 
-        # If user wants lossless, try to find FLAC first
-        if preferred_quality == QUALITY_LOSSLESS:
-            for info in sorted_infos:
-                if info.codec and info.codec.lower() == "flac":
-                    return info
+        # If user wants lossless, prefer flac-mp4 then flac (API formats ~2025)
+        if want_lossless:
+            for codec in ("flac-mp4", "flac"):
+                for info in sorted_infos:
+                    if info.codec and info.codec.lower() == codec:
+                        return info
+            self.logger.warning(
+                "Lossless (FLAC) requested but no FLAC in API response for this "
+                "track; using best available"
+            )
 
         # Return highest bitrate
         return sorted_infos[0] if sorted_infos else None
@@ -111,7 +169,7 @@ class YandexMusicStreamingManager:
             return ContentType.UNKNOWN
 
         codec_lower = codec.lower()
-        if codec_lower == "flac":
+        if codec_lower in ("flac", "flac-mp4"):
             return ContentType.FLAC
         if codec_lower in ("mp3", "mpeg"):
             return ContentType.MP3
