@@ -33,3 +33,19 @@ PLAYLIST_ID_SPLITTER: Final[str] = ":"
 
 # Rotor (radio) station identifiers
 ROTOR_STATION_MY_WAVE: Final[str] = "user:onyourwave"
+
+# Browse folder names by locale (item_id -> display name)
+BROWSE_NAMES_RU: Final[dict[str, str]] = {
+    "my_wave": "Моя волна",
+    "artists": "Мои исполнители",
+    "albums": "Мои альбомы",
+    "tracks": "Мне нравится",
+    "playlists": "Мои плейлисты",
+}
+BROWSE_NAMES_EN: Final[dict[str, str]] = {
+    "my_wave": "My Wave",
+    "artists": "My Artists",
+    "albums": "My Albums",
+    "tracks": "My Favorites",
+    "playlists": "My Playlists",
+}

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -28,7 +27,12 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import YandexMusicClient
-from .constants import CONF_TOKEN, PLAYLIST_ID_SPLITTER
+from .constants import (
+    BROWSE_NAMES_EN,
+    BROWSE_NAMES_RU,
+    CONF_TOKEN,
+    PLAYLIST_ID_SPLITTER,
+)
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import YandexMusicStreamingManager
 
@@ -368,9 +372,10 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library playlist: %s", err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with Yandex Music-style folder names.
+        """Browse provider items with locale-based folder names.
 
-        Root level shows: Мои исполнители, Мои альбомы, Мне нравится, Мои плейлисты.
+        Root level shows My Wave, artists, albums, liked tracks, playlists. Names
+        are in Russian when MA locale is ru_*, otherwise in English.
         Subpaths delegate to the base implementation.
 
         :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
@@ -394,13 +399,20 @@ class YandexMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
+        try:
+            locale = (self.mass.metadata.locale or "en_US").lower()
+            use_russian = locale.startswith("ru")
+        except Exception:
+            use_russian = False
+        names = BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+
         folders: list[BrowseFolder] = []
         folders.append(
             BrowseFolder(
                 item_id="my_wave",
                 provider=self.instance_id,
                 path=path + "my_wave",
-                name="Моя волна",
+                name=names["my_wave"],
                 is_playable=True,
             )
         )
@@ -410,7 +422,7 @@ class YandexMusicProvider(MusicProvider):
                     item_id="artists",
                     provider=self.instance_id,
                     path=path + "artists",
-                    name="Мои исполнители",
+                    name=names["artists"],
                     is_playable=True,
                 )
             )
@@ -420,7 +432,7 @@ class YandexMusicProvider(MusicProvider):
                     item_id="albums",
                     provider=self.instance_id,
                     path=path + "albums",
-                    name="Мои альбомы",
+                    name=names["albums"],
                     is_playable=True,
                 )
             )
@@ -430,7 +442,7 @@ class YandexMusicProvider(MusicProvider):
                     item_id="tracks",
                     provider=self.instance_id,
                     path=path + "tracks",
-                    name="Мне нравится",
+                    name=names["tracks"],
                     is_playable=True,
                 )
             )
@@ -440,7 +452,7 @@ class YandexMusicProvider(MusicProvider):
                     item_id="playlists",
                     provider=self.instance_id,
                     path=path + "playlists",
-                    name="Мои плейлисты",
+                    name=names["playlists"],
                     is_playable=True,
                 )
             )
