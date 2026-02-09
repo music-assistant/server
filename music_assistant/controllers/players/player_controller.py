@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -1025,6 +1026,70 @@ class PlayerController(CoreController):
             player.set_active_mass_source(media.source_id)
         await player.play_media(media)
 
+    @api_command("players/cmd/select_sound_mode")
+    @handle_player_command
+    async def select_sound_mode(self, player_id: str, sound_mode: str) -> None:
+        """
+        Handle SELECT SOUND MODE command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - sound_mode: The ID of the sound mode that needs to be activated/selected.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.SELECT_SOUND_MODE not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support sound mode selection"
+            )
+
+        prev_sound_mode = player.active_sound_mode
+        if sound_mode == prev_sound_mode:
+            return
+
+        # basic check if sound mode is valid for player
+        if not any(x for x in player.sound_mode_list if x.id == sound_mode):
+            raise PlayerCommandFailed(
+                f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
+            )
+
+        # forward to player
+        await player.select_sound_mode(sound_mode)
+
+    @api_command("players/cmd/set_option")
+    @handle_player_command
+    async def set_option(
+        self, player_id: str, option_key: str, option_value: PlayerOptionValueType
+    ) -> None:
+        """
+        Handle SET_OPTION command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - option_key: The key of the player option that needs to be activated/selected.
+        - option_value: The new value of the player option.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.OPTIONS not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support set_option"
+            )
+
+        prev_player_option = next((x for x in player.options if x.key == option_key), None)
+        if not prev_player_option:
+            return
+        if prev_player_option.value == option_value:
+            return
+
+        if prev_player_option.read_only:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} option {option_key} is read-only"
+            )
+
+        # forward to player
+        await player.set_option(option_key=option_key, option_value=option_value)
+
     @api_command("players/cmd/select_source")
     @handle_player_command
     async def select_source(self, player_id: str, source: str | None) -> None:
@@ -1624,6 +1689,12 @@ class PlayerController(CoreController):
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
+
+        # signal a separate PlayerOptionsUpdated event
+        if options := changed_values.get("options"):
+            self.mass.signal_event(
+                EventType.PLAYER_OPTIONS_UPDATED, object_id=player_id, data=options
+            )
 
         if skip_forward and not force_update:
             return

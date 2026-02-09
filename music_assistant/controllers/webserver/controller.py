@@ -226,10 +226,10 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces. \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"

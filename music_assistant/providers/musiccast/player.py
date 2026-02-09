@@ -3,15 +3,32 @@
 import asyncio
 import time
 from collections.abc import Callable, Coroutine
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
+from aiomusiccast.capabilities import BinarySensor as MCBinarySensor
+from aiomusiccast.capabilities import BinarySetter as MCBinarySetter
+from aiomusiccast.capabilities import NumberSensor as MCNumberSensor
+from aiomusiccast.capabilities import NumberSetter as MCNumberSetter
+from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
+from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
-from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
+from music_assistant_models.player import (
+    DeviceInfo,
+    PlayerMedia,
+    PlayerOption,
+    PlayerOptionEntry,
+    PlayerOptionType,
+    PlayerOptionValueType,
+    PlayerSoundMode,
+    PlayerSource,
+)
+from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
@@ -28,10 +45,12 @@ from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
+    MC_CAPABILITIES,
     MC_CONTROL_SOURCE_IDS,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
+    MC_SOUND_MODE_FRIENDLY_NAMES,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
@@ -98,6 +117,8 @@ class MusicCastPlayer(Player):
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.SELECT_SOUND_MODE,
+            PlayerFeature.OPTIONS,
         }
 
         self._attr_device_info = DeviceInfo(
@@ -132,6 +153,15 @@ class MusicCastPlayer(Player):
                     can_seek=False,
                     can_next_previous=control,
                 )
+            )
+
+        # SOUND MODES
+        for source_id in self.zone_device.sound_mode_list:
+            friendly_name = MC_SOUND_MODE_FRIENDLY_NAMES.get(source_id) or " ".join(
+                [x.capitalize() for x in source_id.split("_")]
+            )
+            self._attr_sound_mode_list.append(
+                PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
             )
 
     async def set_dynamic_attributes(self) -> None:
@@ -270,6 +300,9 @@ class MusicCastPlayer(Player):
                     else None
                 )
 
+        # SOUND MODE
+        self._attr_active_sound_mode = self.zone_device.sound_mode_id
+
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
         # Additionally, a zone can only be synced, if main is currently not using any netusb
@@ -292,6 +325,91 @@ class MusicCastPlayer(Player):
             self._attr_group_members = [
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
+
+        # PLAYER OPTIONS
+        # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
+        # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
+        # BinarySensor, TextSensor
+        # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
+        self._attr_options = []
+        for capability in cast(
+            "list[MC_CAPABILITIES]",
+            zone_data.capabilities,
+        ):
+            if isinstance(capability, MCBinarySensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.BOOLEAN,
+                        read_only=True,
+                        value=capability.current,
+                    )
+                )
+            elif isinstance(capability, MCBinarySetter):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.BOOLEAN,
+                        value=capability.current,
+                        read_only=False,
+                    )
+                )
+            elif isinstance(capability, MCNumberSensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.INTEGER,
+                        value=capability.current,
+                        read_only=True,
+                    )
+                )
+            elif isinstance(capability, MCNumberSetter):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.INTEGER,
+                        value=capability.current,
+                        read_only=False,
+                        min_value=capability.value_range.minimum,
+                        max_value=capability.value_range.maximum,
+                        step=capability.value_range.step,
+                    )
+                )
+            elif isinstance(capability, MCTextSensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.STRING,
+                        value=capability.current,
+                        read_only=True,
+                    )
+                )
+            elif isinstance(capability, MCOptionSetter):
+                options = []
+                for option_key, option_name in capability.options.items():
+                    options.append(
+                        PlayerOptionEntry(
+                            key=str(option_key),  # aiomusiccast allows str and int.
+                            name=option_name,
+                            value=str(option_key),
+                            type=PlayerOptionType.STRING,
+                        )
+                    )
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        name=capability.name,
+                        type=PlayerOptionType.STRING,
+                        value=str(capability.current),
+                        read_only=False,
+                        options=UniqueList(options),
+                    )
+                )
 
         self.update_state()
 
@@ -527,6 +645,46 @@ class MusicCastPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Select source command."""
         await self._cmd_run(self.zone_device.select_source, source)
+
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """Select sound Mode Command."""
+        await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
+
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """Set player option."""
+        if self.zone_device.zone_data is None:
+            return
+        for capability in cast(
+            "list[MC_CAPABILITIES]",
+            self.zone_device.zone_data.capabilities,
+        ):
+            if str(capability.id) != option_key:
+                continue
+            if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
+                self.logger.error(f"Option {capability.name} is read only!")
+                return
+            if isinstance(capability, MCBinarySetter):
+                await capability.set(bool(option_value))
+            elif isinstance(capability, MCNumberSetter):
+                min_value = capability.value_range.minimum
+                max_value = capability.value_range.maximum
+                if not min_value <= int(option_value) <= max_value:
+                    self.logger.error(
+                        f"Option {capability.name} has numeric range of"
+                        f"{min_value} <= value <= {max_value}"
+                    )
+                    return
+                await capability.set(int(option_value))
+            elif isinstance(capability, MCOptionSetter):
+                assert isinstance(option_value, str | int)  # for type checking
+                _option_value = option_value  # we may have an int in aiomusiccast as key
+                with suppress(ValueError):
+                    _option_value = int(_option_value)
+                if _option_value not in capability.options:
+                    self.logger.error(f"Option {_option_value} is not allowed for {option_key}")
+                    return
+                await capability.set(_option_value)
+            break
 
     async def ungroup(self) -> None:
         """Ungroup command."""
