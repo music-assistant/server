@@ -95,6 +95,30 @@ manage_community,delete_library,listening_history"
 DEEZER_APP_ID = app_var(6)
 DEEZER_APP_SECRET = app_var(7)
 
+# Virtual playlist IDs for dynamic Deezer content
+FLOW_PLAYLIST_ID = "flow"
+RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
+TOP_CHARTS_PLAYLIST_ID = "top_charts"
+RADIO_PLAYLIST_PREFIX = "radio_"
+
+# Curated Deezer radio station IDs
+CURATED_RADIO_IDS = [
+    37151,  # Hits
+    38305,  # The '80s
+    38295,  # The '70s
+    31061,  # Pop
+    37765,  # Rock classics
+    30901,  # Metal
+    30991,  # Hip Hop
+    30771,  # Indie
+    30621,  # Electronic
+    31031,  # Jazz
+    30661,  # Classical
+    36791,  # Latin Music
+    38225,  # Focus
+    39041,  # Happy Hour
+]
+
 
 async def get_access_token(
     app_id: str, app_secret: str, code: str, http_session: ClientSession
@@ -306,28 +330,30 @@ class DeezerProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         # Handle virtual playlists (Flow, Recommended tracks, Top Charts, Radios)
-        if prov_playlist_id == "flow":
+        if prov_playlist_id == FLOW_PLAYLIST_ID:
             flow_tracks = await self._get_flow_tracks()
             flow_cover = None
             if flow_tracks and hasattr(flow_tracks[0], "album"):
                 flow_cover = getattr(flow_tracks[0].album, "cover_medium", None)
-            return self._create_virtual_playlist("flow", "Flow", image_url=flow_cover)
-        if prov_playlist_id == "recommended_tracks":
+            return self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover)
+        if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             rec_tracks = await self._get_recommended_tracks()
             rec_cover = None
             if rec_tracks and hasattr(rec_tracks[0], "album"):
                 rec_cover = getattr(rec_tracks[0].album, "cover_medium", None)
             return self._create_virtual_playlist(
-                "recommended_tracks", "Recommended tracks", image_url=rec_cover
+                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended tracks", image_url=rec_cover
             )
-        if prov_playlist_id == "top_charts":
+        if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             chart_tracks = await self._get_chart_tracks()
             chart_cover = None
             if chart_tracks and hasattr(chart_tracks[0], "album"):
                 chart_cover = getattr(chart_tracks[0].album, "cover_medium", None)
-            return self._create_virtual_playlist("top_charts", "Top Charts", image_url=chart_cover)
-        if prov_playlist_id.startswith("radio_"):
-            radio_id = int(prov_playlist_id.replace("radio_", ""))
+            return self._create_virtual_playlist(
+                TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=chart_cover
+            )
+        if prov_playlist_id.startswith(RADIO_PLAYLIST_PREFIX):
+            radio_id = int(prov_playlist_id.replace(RADIO_PLAYLIST_PREFIX, ""))
             try:
                 radio = await self.client.get_radio(radio_id)
                 return self._create_virtual_playlist(
@@ -379,17 +405,17 @@ class DeezerProvider(MusicProvider):
             return []
 
         # Virtual playlists use their own cached wrappers (not double-cached)
-        if prov_playlist_id == "flow":
+        if prov_playlist_id == FLOW_PLAYLIST_ID:
             return self._parse_tracks_list(await self._get_flow_tracks())
 
-        if prov_playlist_id == "recommended_tracks":
+        if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             return self._parse_tracks_list(await self._get_recommended_tracks())
 
-        if prov_playlist_id == "top_charts":
+        if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return self._parse_tracks_list(await self._get_chart_tracks())
 
-        if prov_playlist_id.startswith("radio_"):
-            radio_id = int(prov_playlist_id.replace("radio_", ""))
+        if prov_playlist_id.startswith(RADIO_PLAYLIST_PREFIX):
+            radio_id = int(prov_playlist_id.replace(RADIO_PLAYLIST_PREFIX, ""))
             try:
                 radio = await self.client.get_radio(radio_id)
                 return self._parse_tracks_list(list(await radio.get_tracks()))
@@ -519,13 +545,15 @@ class DeezerProvider(MusicProvider):
 
         made_for_you_items: list[Playlist] = [
             # Flow - personalized endless radio
-            self._create_virtual_playlist("flow", "Flow", image_url=flow_cover),
+            self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover),
             # Recommended tracks
             self._create_virtual_playlist(
-                "recommended_tracks", "Recommended tracks", image_url=recommended_cover
+                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended tracks", image_url=recommended_cover
             ),
             # Top Charts - global top tracks
-            self._create_virtual_playlist("top_charts", "Top Charts", image_url=chart_cover),
+            self._create_virtual_playlist(
+                TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=chart_cover
+            ),
         ]
         # Add recommended playlists from Deezer
         for playlist in await self.client.get_user_recommended_playlists():
@@ -570,28 +598,12 @@ class DeezerProvider(MusicProvider):
 
         # Deezer Radios - curated selection (as virtual playlists in one folder)
         radio_playlists: list[Playlist] = []
-        curated_radio_ids = [
-            37151,  # Hits
-            38305,  # The '80s
-            38295,  # The '70s
-            31061,  # Pop
-            37765,  # Rock classics
-            30901,  # Metal
-            30991,  # Hip Hop
-            30771,  # Indie
-            30621,  # Electronic
-            31031,  # Jazz
-            30661,  # Classical
-            36791,  # Latin Music
-            38225,  # Focus
-            39041,  # Happy Hour
-        ]
-        for radio_id in curated_radio_ids:
+        for radio_id in CURATED_RADIO_IDS:
             try:
                 radio = await self.client.get_radio(radio_id)
                 radio_playlists.append(
                     self._create_virtual_playlist(
-                        item_id=f"radio_{radio_id}",
+                        item_id=f"{RADIO_PLAYLIST_PREFIX}{radio_id}",
                         name=f"Radio: {radio.title}",
                         image_url=getattr(radio, "picture_medium", None),
                     )
