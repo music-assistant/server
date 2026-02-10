@@ -23,6 +23,14 @@ DEFAULT_LIMIT: Final[int] = 50
 QUALITY_HIGH = "high"
 QUALITY_LOSSLESS = "lossless"
 
+# Configuration keys for My Wave behavior
+CONF_MY_WAVE_MAX_TRACKS: Final[str] = "my_wave_max_tracks"
+CONF_MY_WAVE_BATCH_SIZE: Final[str] = "my_wave_batch_size"
+CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
+CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
+CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
+CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
+
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
