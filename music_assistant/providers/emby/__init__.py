@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     Playlist,
     SearchResults,
     Track,
@@ -472,13 +473,12 @@ class EmbyProvider(MusicProvider):
         # build universal audio URL (include token as query param for convenience)
         container = ",".join(SUPPORTED_CONTAINER_FORMATS)
         url = urljoin(self._base_url, f"Audio/{track.item_id}/universal")
-        params = {"static": "true", "Container": container, "api_key": self._token}
+        params = {"Container": container, "api_key": self._token}
         query = "&".join([f"{k}={v}" for k, v in params.items()])
-        audio_format = next(iter(track.provider_mappings)).audio_format
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
-            audio_format=audio_format,
+            audio_format=AudioFormat(),
             stream_type=StreamType.HTTP,
             duration=int(track.duration) if getattr(track, "duration", None) else 0,
             path=f"{url}?{query}",
