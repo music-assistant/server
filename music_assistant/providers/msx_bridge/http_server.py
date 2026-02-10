@@ -212,7 +212,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
     async def _handle_msx_plugin_html(self, request: web.Request) -> web.Response:
         """Serve plugin.html with no-cache so MSX always gets latest menu order."""
         path = STATIC_DIR / "plugin.html"
-        response = cast(web.Response, web.FileResponse(path))
+        response = cast("web.Response", web.FileResponse(path))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
