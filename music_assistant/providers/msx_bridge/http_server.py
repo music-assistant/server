@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
 from aiohttp import web
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -212,7 +212,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
     async def _handle_msx_plugin_html(self, request: web.Request) -> web.Response:
         """Serve plugin.html with no-cache so MSX always gets latest menu order."""
         path = STATIC_DIR / "plugin.html"
-        response = cast("web.Response", web.FileResponse(path))
+        response = cast(web.Response, web.FileResponse(path))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -723,25 +723,28 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             channels=2,
         )
 
-        # Calculate Content-Length from duration and bitrate for CBR formats
-        # MP3: 320 kbps = 40,000 bytes/sec, AAC: 256 kbps = 32,000 bytes/sec
+        # For flow_mode (queue with multiple tracks), do NOT set Content-Length —
+        # the stream is continuous across tracks. If we set it to the first track's
+        # size, the MSX player closes after that many bytes and the next track never starts.
+        # For single-track streams, Content-Length helps the player show progress.
         bitrate_map = {
             "mp3": 40_000,
             "aac": 32_000,
         }
         bytes_per_sec = bitrate_map.get(output_format_str, 0)
+        is_flow_stream = media.media_type == MediaType.FLOW_STREAM
 
         headers: dict[str, str] = {"Content-Type": mime_type}
-        if duration and bytes_per_sec:
+        if not is_flow_stream and duration and bytes_per_sec:
             headers["Content-Length"] = str(int(duration * bytes_per_sec))
         headers["Accept-Ranges"] = "none"
 
         logger.debug(
-            "MSX audio %s: format=%s, track_duration=%s, media_duration=%s, Content-Length=%s",
+            "MSX audio %s: format=%s, flow=%s, track_duration=%s, Content-Length=%s",
             player_id,
             output_format_str,
+            is_flow_stream,
             track_duration,
-            media.duration,
             headers.get("Content-Length", "NOT SET"),
         )
 
