@@ -30,7 +30,6 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
@@ -95,8 +94,8 @@ class PocketCastsProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        email = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
+        email = self.config.get_value(CONF_USERNAME)
+        password = self.config.get_value(CONF_PASSWORD)
 
         if not email or not password:
             msg = "Email and password are required for Pocket Casts"
@@ -105,7 +104,8 @@ class PocketCastsProvider(MusicProvider):
         try:
             LOGGER.info("Initializing Pocket Casts provider")
             self._client = PocketCastsClient()
-            await self._client.login(email, password)
+            self._duration_cache: dict[str, int] = {}
+            await self._client.login(str(email), str(password))
 
             # Test basic functionality
             podcasts = await self._client.get_subscribed_podcasts()
@@ -130,7 +130,7 @@ class PocketCastsProvider(MusicProvider):
 
         return Podcast(
             item_id=podcast_info["uuid"],
-            provider=self.domain,
+            provider=self.instance_id,
             name=podcast_info.get("title", ""),
             provider_mappings={
                 ProviderMapping(
@@ -334,7 +334,7 @@ class PocketCastsProvider(MusicProvider):
             LOGGER.error("Error fetching podcast %s: %s", prov_podcast_id, err)
             raise MediaNotFoundError(
                 f"podcast://{prov_podcast_id} not found on provider {self.domain}"
-            )
+            ) from err
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -642,6 +642,7 @@ class PocketCastsProvider(MusicProvider):
                             episode_data.get("file_type", "audio/mpeg")
                         ),
                     ),
+                    media_type=MediaType.PODCAST_EPISODE,
                     stream_type=StreamType.HTTP,
                     path=url,
                     can_seek=True,
@@ -838,22 +839,27 @@ class PocketCastsProvider(MusicProvider):
                 await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
                 return
 
-            # Fetch real duration from Pocketcasts
-            episode_details = await self._client.get_episode_details(episode_uuid)
-            if not episode_details:
-                # Fallback: just sync progress without completion check
-                await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
-                return
+            # Use cached duration to avoid repeated API calls (~every 30s)
+            real_duration = self._duration_cache.get(episode_uuid, 0)
 
-            real_duration = episode_details.get("duration", 0)
-            playing_status = episode_details.get("playingStatus", 1)
+            if not real_duration:
+                # First call for this episode - fetch and cache duration
+                episode_details = await self._client.get_episode_details(episode_uuid)
+                if not episode_details:
+                    await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+                    return
+                real_duration = episode_details.get("duration", 0)
+                if real_duration > 0:
+                    self._duration_cache[episode_uuid] = real_duration
 
             # Case 2: Near or past the end (within 45 seconds of real duration)
             # Threshold must exceed MA's 30-second callback interval to guarantee
             # the last callback before episode end triggers completion.
             if real_duration > 0 and position >= (real_duration - 45):
+                # Need fresh playing_status for completion logic
+                episode_details = await self._client.get_episode_details(episode_uuid)
+                playing_status = episode_details.get("playingStatus", 1) if episode_details else 1
                 if playing_status != 3:
-                    # Not yet marked as played - trigger completion sequence
                     LOGGER.info(
                         "Episode %s at %ds (end=%ds), marking as played",
                         episode_uuid,
@@ -866,6 +872,8 @@ class PocketCastsProvider(MusicProvider):
                     await self._client.mark_episode_played(podcast_uuid, episode_uuid)
                     await self._client.remove_from_up_next(episode_uuid)
                     await self._client.archive_episode(podcast_uuid, episode_uuid, archive=True)
+                    # Clean up cache for completed episode
+                    self._duration_cache.pop(episode_uuid, None)
                 else:
                     LOGGER.debug(
                         "Episode %s already completed, skipping (pos=%ds, end=%ds)",
@@ -873,15 +881,9 @@ class PocketCastsProvider(MusicProvider):
                         position,
                         real_duration,
                     )
-                # Either way, episode is done - no further action needed
                 return
 
-            # Case 3: Regular progress update (only reached when NOT near end)
-            # If episode was previously played, unarchive it (genuine replay from earlier position)
-            if playing_status == 3:
-                LOGGER.info("Episode %s was played, unarchiving for re-play", episode_uuid)
-                await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
-
+            # Case 3: Regular progress update (not near end, no API call needed)
             LOGGER.debug(
                 "Syncing progress for episode %s: %d/%d seconds (%.1f%%)",
                 episode_uuid,

@@ -23,7 +23,6 @@ class PocketCastsClient:
     """Direct API client for Pocket Casts - no external library needed."""
 
     BASE_URL = "https://api.pocketcasts.com"
-    PLAY_URL = "https://play.pocketcasts.com"
 
     def __init__(self) -> None:
         """Initialize the client."""
@@ -539,7 +538,6 @@ class PocketCastsClient:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    LOGGER.debug("Search response: %s", data)
                     podcasts: list[dict[str, Any]] = data.get("podcasts", [])
                     LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
                     return podcasts
