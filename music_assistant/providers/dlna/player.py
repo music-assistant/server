@@ -86,6 +86,10 @@ class DLNAPlayer(Player):
         self.last_seen = time.time()
         self.last_command = time.time()
 
+    def set_available(self, available: bool) -> None:
+        """Set the availability of the player."""
+        self._attr_available = available
+
     async def _device_connect(self) -> None:
         """Connect DLNA/DMR Device."""
         self.logger.debug("Connecting to device at %s", self.description_url)
