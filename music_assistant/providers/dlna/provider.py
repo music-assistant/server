@@ -125,7 +125,7 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.device.on_event = None
             old_device = dlna_player.device
             dlna_player.device = None
-            dlna_player._attr_available = False
+            dlna_player.set_available(False)
             await old_device.async_unsubscribe_services()
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
