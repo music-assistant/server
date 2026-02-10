@@ -1005,7 +1005,7 @@ for more details.
 
         """
 
-        async def _update_by_session(session_helper: SessionHelper, duration: int) -> None:
+        async def _update_by_session(session_helper: SessionHelper, duration: int) -> bool:
             now = time.time()
             try:
                 await self._client.sync_open_session(
@@ -1018,8 +1018,10 @@ for more details.
                 )
                 session_helper.last_sync_time = now
                 self.logger.debug("Synced playback session, position %s s.", position)
+                return True
             except AbsSessionNotFoundError:
                 self.logger.error("Was unable to sync session.")
+            return False
 
         if media_type == MediaType.PODCAST_EPISODE:
             abs_podcast_id, abs_episode_id = prov_item_id.split(" ")
@@ -1034,6 +1036,12 @@ for more details.
             if media_item is None or not isinstance(media_item, PodcastEpisode):
                 return
 
+            if fully_played and position < media_item.duration - 30:
+                # faulty position update
+                # occurs sometimes, if a player disconnects unexpectedly, or reports
+                # a false position - seen this for MC players, but not for sendspin
+                return
+
             if position == 0 and not fully_played:
                 # marked unplayed
                 mp = await self._client.get_my_media_progress(
@@ -1045,9 +1053,10 @@ for more details.
                     return
 
             duration = media_item.duration
+            updated = False
             if session_helper := self.sessions.get(prov_item_id):
-                await _update_by_session(session_helper=session_helper, duration=duration)
-            else:
+                updated = await _update_by_session(session_helper=session_helper, duration=duration)
+            if not updated:
                 self.logger.debug(
                     f"Updating media progress of {media_type.value}, title {media_item.name}."
                 )
@@ -1068,6 +1077,10 @@ for more details.
             if media_item is None or not isinstance(media_item, Audiobook):
                 return
 
+            if fully_played and position < media_item.duration - 30:
+                # faulty position update, see above
+                return
+
             if position == 0 and not fully_played:
                 # marked unplayed
                 mp = await self._client.get_my_media_progress(item_id=prov_item_id)
@@ -1077,9 +1090,10 @@ for more details.
                 return
 
             duration = media_item.duration
+            updated = False
             if session_helper := self.sessions.get(prov_item_id):
-                await _update_by_session(session_helper=session_helper, duration=duration)
-            else:
+                updated = await _update_by_session(session_helper=session_helper, duration=duration)
+            if not updated:
                 self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
                 await self._client.update_my_media_progress(
                     item_id=prov_item_id,
