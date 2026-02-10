@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -80,6 +79,7 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     divide_chunks,
+    format_ip_for_url,
     get_ip_addresses,
     get_total_system_memory,
     select_free_port,
@@ -185,7 +185,7 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
@@ -281,10 +281,10 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="generic",
@@ -302,7 +302,6 @@ class StreamsController(CoreController):
                 category="generic",
                 advanced=True,
             ),
-            CONF_ENTRY_ZEROCONF_INTERFACES,
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -334,7 +333,7 @@ class StreamsController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{self.publish_ip}:{self.publish_port}",
+            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
@@ -449,9 +448,11 @@ class StreamsController(CoreController):
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
+        # see https://github.com/music-assistant/support/issues/4913
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name,
+            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -514,10 +515,14 @@ class StreamsController(CoreController):
             )
         else:
             # no crossfade, just a regular single item stream
-            audio_input = self.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=queue_item.streamdetails.seek_position,
+            audio_input = buffered(
+                self.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=queue_item.streamdetails.seek_position,
+                ),
+                buffer_size=10,
+                min_buffer_before_yield=2,
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into

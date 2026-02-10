@@ -859,9 +859,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_join_parts: list[str] | None = None,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
-        query_params = extra_query_params or {}
-        query_parts: list[str] = extra_query_parts or []
-        join_parts: list[str] = extra_join_parts or []
+        query_params = dict(extra_query_params) if extra_query_params else {}
+        query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
+        join_parts: list[str] = list(extra_join_parts) if extra_join_parts else []
         search = self._preprocess_search(search, query_params)
         # create special performant random query
         if order_by and order_by.startswith("random"):

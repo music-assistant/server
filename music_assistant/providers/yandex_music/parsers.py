@@ -253,17 +253,13 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
         for artist in track_obj.artists:
             track.artists.append(parse_artist(provider, artist))
 
-    # Parse album (minimal data)
+    # Parse album (full data so album gets cover art in the library)
     if track_obj.albums and len(track_obj.albums) > 0:
-        album = track_obj.albums[0]
-        track.album = provider.get_item_mapping(
-            media_type="album",
-            key=str(album.id),
-            name=album.title or "Unknown Album",
-        )
-        # Get image from album if available
-        if album.cover_uri:
-            image_url = _get_image_url(album.cover_uri)
+        album_obj = track_obj.albums[0]
+        track.album = parse_album(provider, album_obj)
+        # Also set track image from album cover if available
+        if album_obj.cover_uri:
+            image_url = _get_image_url(album_obj.cover_uri)
             if image_url:
                 track.metadata.images = UniqueList(
                     [

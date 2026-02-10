@@ -53,6 +53,7 @@ SUPPORT_DYNAMIC_LEADER = {
     # and the music keeps playing uninterrupted.
     "airplay",
     "squeezelite",
+    "snapcast",
     # TODO: Get this working with Sonos as well (need to handle range requests)
 }
 
@@ -102,11 +103,10 @@ class SyncGroupPlayer(GroupPlayer):
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
-            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
-            self._attr_static_group_members = static_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         if not self.powered:
             self._attr_group_members = static_members.copy()

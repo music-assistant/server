@@ -365,6 +365,7 @@
       'translation_key': None,
       'uri': 'tidal_instance://album/67890',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
