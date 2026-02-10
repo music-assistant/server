@@ -49,7 +49,6 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_LIMIT,
     ITEMS,
-    SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
 )
 from music_assistant.providers.emby.parsers import (
@@ -469,12 +468,17 @@ class EmbyProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for given item id and media type."""
         track = await self.get_track(item_id)
-        # build universal audio URL (include token as query param for convenience)
-        container = ",".join(SUPPORTED_CONTAINER_FORMATS)
-        url = urljoin(self._base_url, f"Audio/{track.item_id}/universal")
-        params = {"static": "true", "Container": container, "api_key": self._token}
-        query = "&".join([f"{k}={v}" for k, v in params.items()])
         audio_format = next(iter(track.provider_mappings)).audio_format
+        url = urljoin(self._base_url, f"Audio/{track.item_id}/universal")
+        params = {
+            "Container": audio_format.content_type,
+            "AudioCodec": audio_format.codec_type,
+            "MaxAudioSampleRate": audio_format.sample_rate,
+            "MaxAudioBitDepth": audio_format.bit_depth,
+            "api_key": self._token,
+        }
+        query = "&".join([f"{k}={v}" for k, v in params.items()])
+
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,

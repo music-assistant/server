@@ -58,6 +58,3 @@ ARTIST_FIELDS = [
     "ImageTags",
     "DateCreated",
 ]
-
-# Supported audio containers for streaming
-SUPPORTED_CONTAINER_FORMATS = ["mp3", "flac", "aac", "opus", "wav", "m4a"]
