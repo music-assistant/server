@@ -556,6 +556,37 @@ async def test_msx_audio_not_msx_player(provider: MSXBridgeProvider, mass_mock: 
         await client.close()
 
 
+async def test_websocket_play_update_broadcast(
+    msx_provider: MSXBridgeProvider,
+    msx_player: MSXPlayer,
+) -> None:
+    """broadcast_play_update should send play_update messages to connected WS clients."""
+    # Use a dummy WS object and assert that create_task is scheduled for _ws_send.
+    server = MSXHTTPServer(msx_provider, 0)
+    msx_provider.http_server = server
+
+    dummy_ws = Mock()
+    dummy_ws.closed = False
+    server._ws_clients[msx_player.player_id] = {dummy_ws}
+
+    with patch.object(
+        msx_provider.mass, "create_task", wraps=msx_provider.mass.create_task
+    ) as mock_create:
+        # Call helper via getattr on a narrowed Any reference so mypy
+        # does not try to resolve notify_track_updated on the protocol type.
+        dyn_provider: Any = msx_provider
+        dyn_provider.notify_track_updated(
+            msx_player.player_id,
+            title="Updated Track",
+            artist="Updated Artist",
+            image_url="http://example/image.jpg",
+            duration=321,
+        )
+
+        # _ws_send coroutine should be scheduled exactly once.
+        mock_create.assert_called_once()
+
+
 # --- Duration in track formatting ---
 
 

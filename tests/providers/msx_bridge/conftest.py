@@ -79,6 +79,9 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)
 
+    # Task scheduling
+    mass.create_task = Mock()
+
     return mass
 
 
@@ -136,3 +139,29 @@ async def http_client(
     await client.start_server()
     yield client
     await client.close()
+
+
+@pytest.fixture
+async def msx_provider(
+    mass_mock: Mock,
+    manifest_mock: Mock,
+    config_mock: Mock,
+) -> AsyncGenerator[MSXBridgeProvider, Any]:
+    """Return an MSXBridgeProvider with a real HTTP server for WS tests."""
+    prov = MSXBridgeProvider(mass_mock, manifest_mock, config_mock, set())
+    server = MSXHTTPServer(prov, 0)
+    prov.http_server = server
+    client: TestClient[Request, Application] = TestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        yield prov
+    finally:
+        await client.close()
+
+
+@pytest.fixture
+def msx_player(msx_provider: MSXBridgeProvider) -> MSXPlayer:
+    """Return an MSXPlayer bound to the msx_provider."""
+    p = MSXPlayer(msx_provider, "msx_test", name="Test TV", output_format="mp3")
+    object.__setattr__(p, "update_state", Mock())
+    return p

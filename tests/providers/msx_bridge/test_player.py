@@ -184,6 +184,64 @@ async def test_poll_noop_when_idle(player: MSXPlayer) -> None:
     cast("Mock", player.update_state).assert_not_called()
 
 
+async def test_poll_sends_track_update_on_flow_change(
+    player: MSXPlayer, provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """poll() should send track metadata update when flow-mode current item changes."""
+    # Prepare a fake flow-mode queue with two items.
+    queue = Mock()
+    queue.flow_mode = True
+    first_item = Mock()
+    first_item.queue_item_id = "qid1"
+    first_item.media_item = Mock()
+    first_item.media_item.name = "Track 1"
+    first_item.media_item.artist_str = "Artist 1"
+    first_item.media_item.duration = 123
+    first_item.name = "Track 1"
+    first_item.duration = 123
+    first_item.image = None
+    second_item = Mock()
+    second_item.queue_item_id = "qid2"
+    second_item.media_item = Mock()
+    second_item.media_item.name = "Track 2"
+    second_item.media_item.artist_str = "Artist 2"
+    second_item.media_item.duration = 234
+    second_item.name = "Track 2"
+    second_item.duration = 234
+    second_item.image = None
+
+    queue.current_item = first_item
+    mass_mock.player_queues.get.return_value = queue
+
+    # First poll: transition to first_item should trigger a metadata update.
+    player._attr_playback_state = PlaybackState.PLAYING
+    with patch.object(provider, "notify_track_updated") as mock_notify:
+        await player.poll()
+        mock_notify.assert_called_once_with(
+            player.player_id,
+            title="Track 1",
+            artist="Artist 1",
+            image_url=None,
+            duration=123,
+        )
+        mock_notify.reset_mock()
+
+        # Second poll with same item should not trigger another update.
+        await player.poll()
+        mock_notify.assert_not_called()
+
+        # Switch to second item: should trigger another update.
+        queue.current_item = second_item
+        await player.poll()
+        mock_notify.assert_called_once_with(
+            player.player_id,
+            title="Track 2",
+            artist="Artist 2",
+            image_url=None,
+            duration=234,
+        )
+
+
 # --- Grouping ---
 
 
