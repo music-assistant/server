@@ -1,4 +1,4 @@
-"""Yandex Music provider support for Music Assistant."""
+"""KION Music provider support for Music Assistant."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .constants import (
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
-from .provider import YandexMusicProvider
+from .provider import KionMusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -36,8 +36,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.BROWSE,
-    ProviderFeature.SIMILAR_TRACKS,
-    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -45,7 +43,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return YandexMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    return KionMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -69,8 +67,8 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Yandex Music Token",
-            description="Enter your Yandex Music OAuth token. "
+            label="KION Music Token",
+            description="Enter your KION Music OAuth token. "
             "See the documentation for how to obtain it.",
             required=True,
             hidden=is_authenticated,

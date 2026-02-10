@@ -1,5 +1,6 @@
 """Helpers for Audiobookshelf provider."""
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -24,6 +25,15 @@ class LibrariesHelper(DataClassDictMixin):
 
     audiobooks: dict[str, LibraryHelper] = field(default_factory=dict)
     podcasts: dict[str, LibraryHelper] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class SessionHelper:
+    """Helper class to store some session information."""
+
+    abs_session_id: str
+    last_sync_time: float
+    hls_stream_open: asyncio.Event  # only used for hls_streams, otherwise ignored
 
 
 @dataclass(kw_only=True)
