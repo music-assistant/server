@@ -371,7 +371,7 @@ jobs:
 
       # Step 6: Post comment to PR
       - name: Post security report to PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
@@ -412,7 +412,7 @@ jobs:
         if: |
           (steps.deps_check.outputs.has_changes == 'true' ||
            steps.manifest_check.outputs.has_changes == 'true')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const labels = context.payload.pull_request.labels.map(l => l.name);
