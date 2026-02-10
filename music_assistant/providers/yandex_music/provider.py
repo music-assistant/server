@@ -89,6 +89,15 @@ class YandexMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
+    def _get_browse_names(self) -> dict[str, str]:
+        """Get locale-based browse folder names."""
+        try:
+            locale = (self.mass.metadata.locale or "en_US").lower()
+            use_russian = locale.startswith("ru")
+        except Exception:
+            use_russian = False
+        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
@@ -148,7 +157,7 @@ class YandexMusicProvider(MusicProvider):
         subpath = path_parts[0] if len(path_parts) > 0 else None
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
-        if subpath == "my_wave":
+        if subpath == MY_WAVE_PLAYLIST_ID:
             # Root my_wave: fetch up to 3 batches so Play adds more tracks.
             # "Load more" uses single next batch.
             max_batches = 3 if sub_subpath != "next" else 1
@@ -201,12 +210,8 @@ class YandexMusicProvider(MusicProvider):
                 queue = first_track_id_this_batch
 
             if last_batch_id:
-                try:
-                    locale = (self.mass.metadata.locale or "en_US").lower()
-                    use_russian = locale.startswith("ru")
-                except Exception:
-                    use_russian = False
-                next_name = "Ещё" if use_russian else "Load more"
+                names = self._get_browse_names()
+                next_name = "Ещё" if names is BROWSE_NAMES_RU else "Load more"
                 all_tracks.append(
                     BrowseFolder(
                         item_id="next",
@@ -221,21 +226,16 @@ class YandexMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-        except Exception:
-            use_russian = False
-        names = BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+        names = self._get_browse_names()
 
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
         folders.append(
             BrowseFolder(
-                item_id="my_wave",
+                item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                path=f"{base}my_wave",
-                name=names["my_wave"],
+                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
+                name=names[MY_WAVE_PLAYLIST_ID],
                 is_playable=True,
             )
         )
@@ -406,16 +406,11 @@ class YandexMusicProvider(MusicProvider):
         :raises MediaNotFoundError: If playlist not found.
         """
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            try:
-                locale = (self.mass.metadata.locale or "en_US").lower()
-                use_russian = locale.startswith("ru")
-            except Exception:
-                use_russian = False
-            name = "Моя волна" if use_russian else "My Wave"
+            names = self._get_browse_names()
             return Playlist(
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=name,
+                name=names[MY_WAVE_PLAYLIST_ID],
                 owner="Yandex Music",
                 provider_mappings={
                     ProviderMapping(
@@ -536,12 +531,7 @@ class YandexMusicProvider(MusicProvider):
 
         :return: List of recommendation folders (My Wave with first batch of tracks).
         """
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-        except Exception:
-            use_russian = False
-        name = "Моя волна" if use_russian else "My Wave"
+        names = self._get_browse_names()
         yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=None)
         items: list[Track] = []
         for yt in yandex_tracks:
@@ -561,9 +551,9 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing My Wave track for recommendations: %s", err)
         return [
             RecommendationFolder(
-                item_id="my_wave",
+                item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=name,
+                name=names[MY_WAVE_PLAYLIST_ID],
                 items=UniqueList(items),
                 icon="mdi-waveform",
             )
