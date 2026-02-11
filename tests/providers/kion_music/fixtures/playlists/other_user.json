@@ -1,0 +1,10 @@
+{
+  "owner": {
+    "uid": 99999,
+    "name": "Other User",
+    "login": "other_user"
+  },
+  "kind": 1,
+  "title": "Shared Playlist",
+  "description": "A shared playlist"
+}

@@ -21,7 +21,8 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
-from .constants import RADIO_PARADISE_CHANNELS
+from .constants import NOWPLAYING_API_URL, PLAY_API_URL, RADIO_PARADISE_CHANNELS
+from .helpers import find_current_song, get_current_block_position, get_next_song
 
 
 class RadioParadiseProvider(MusicProvider):
@@ -83,7 +84,7 @@ class RadioParadiseProvider(MusicProvider):
         metadata = await self._get_channel_metadata(item_id)
         if metadata and metadata.get("current"):
             current_song = metadata["current"]
-            stream_details.stream_metadata = parsers.build_stream_metadata(current_song)
+            stream_details.stream_metadata = parsers.build_stream_metadata(current_song, metadata)
 
         return stream_details
 
@@ -96,37 +97,92 @@ class RadioParadiseProvider(MusicProvider):
         return parsers.parse_radio(channel_id, self.instance_id, self.domain)
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current track metadata from Radio Paradise's now_playing API.
+        """Get current track and upcoming tracks from Radio Paradise's API.
+
+        Tries the enriched play API first, falls back to simple now_playing API if it fails.
 
         :param channel_id: Radio Paradise channel ID (0-5).
         """
         if channel_id not in RADIO_PARADISE_CHANNELS:
             return None
 
+        # Try enriched play API first
+        result = await self._get_play_api_metadata(channel_id)
+        if result:
+            return result
+
+        # Fallback to simple now_playing API
+        self.logger.debug(f"Falling back to now_playing API for channel {channel_id}")
+        return await self._get_nowplaying_api_metadata(channel_id)
+
+    async def _get_play_api_metadata(self, channel_id: str) -> dict[str, Any] | None:
+        """Get metadata from the enriched play API with upcoming track info.
+
+        :param channel_id: Radio Paradise channel ID (0-5).
+        """
         try:
-            # Use now_playing API
-            channel_info = RADIO_PARADISE_CHANNELS[channel_id]
-            api_url = channel_info["api_url"]
+            api_url = f"{PLAY_API_URL}{channel_id}"
             timeout = aiohttp.ClientTimeout(total=10)
 
             async with self.mass.http_session.get(api_url, timeout=timeout) as response:
                 if response.status != 200:
-                    self.logger.debug(f"Now playing API call failed with status {response.status}")
+                    self.logger.debug(f"Play API call failed with status {response.status}")
+                    return None
+
+                data = await response.json()
+
+                if not data or "song" not in data:
+                    self.logger.debug(f"No song data in play API response for channel {channel_id}")
+                    return None
+
+                # Find currently playing song based on elapsed time
+                current_time_ms = get_current_block_position(data)
+                current_song = find_current_song(data.get("song", {}), current_time_ms)
+
+                if not current_song:
+                    self.logger.debug(f"No current song found for channel {channel_id}")
+                    return None
+
+                # Get next song
+                next_song = get_next_song(data.get("song", {}), current_song)
+
+                return {"current": current_song, "next": next_song, "block_data": data}
+
+        except aiohttp.ClientError as exc:
+            self.logger.debug(f"Play API request failed for channel {channel_id}: {exc}")
+            return None
+        except (KeyError, ValueError, TypeError) as exc:
+            self.logger.debug(f"Error parsing play API response for channel {channel_id}: {exc}")
+            return None
+
+    async def _get_nowplaying_api_metadata(self, channel_id: str) -> dict[str, Any] | None:
+        """Get metadata from the simple now_playing API (fallback).
+
+        :param channel_id: Radio Paradise channel ID (0-5).
+        """
+        try:
+            api_url = f"{NOWPLAYING_API_URL}{channel_id}"
+            timeout = aiohttp.ClientTimeout(total=10)
+
+            async with self.mass.http_session.get(api_url, timeout=timeout) as response:
+                if response.status != 200:
+                    self.logger.debug(f"Now playing API failed with status {response.status}")
                     return None
 
                 data = await response.json()
 
                 if not data:
-                    self.logger.debug(f"No metadata returned for channel {channel_id}")
+                    self.logger.debug(f"No data from now_playing API for channel {channel_id}")
                     return None
 
+                # now_playing API returns flat song data, no next song or block data
                 return {"current": data, "next": None, "block_data": None}
 
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Failed to get metadata for channel {channel_id}: {exc}")
+            self.logger.debug(f"Now playing API request failed for channel {channel_id}: {exc}")
             return None
-        except Exception as exc:
-            self.logger.debug(f"Unexpected error getting metadata for channel {channel_id}: {exc}")
+        except (KeyError, ValueError, TypeError) as exc:
+            self.logger.debug(f"Error parsing now_playing response for channel {channel_id}: {exc}")
             return None
 
     async def _update_stream_metadata(
@@ -135,7 +191,8 @@ class RadioParadiseProvider(MusicProvider):
         """Update stream metadata callback called by player queue controller.
 
         Fetches current track info from Radio Paradise's API and updates
-        StreamDetails with track metadata.
+        StreamDetails with track metadata. Alternates between showing the artist
+        and upcoming track info every 10 seconds.
 
         :param stream_details: StreamDetails object to update with metadata.
         :param elapsed_time: Elapsed playback time in seconds (unused for Radio Paradise).
@@ -150,26 +207,29 @@ class RadioParadiseProvider(MusicProvider):
             metadata = await self._get_channel_metadata(item_id)
             if metadata and metadata.get("current"):
                 current_song = metadata["current"]
-                artist = current_song.get("artist", "")
-                title = current_song.get("title", "")
-                current_track_id = f"{artist}:{title}"
+                current_event = current_song.get("event", "")
 
-                # Only update if track changed
-                if (
-                    not stream_details.stream_metadata
-                    or stream_details.data.get("last_track_id") != current_track_id
-                ):
-                    # Create StreamMetadata object with full track info
-                    stream_metadata = parsers.build_stream_metadata(current_song)
+                # Track changed - reset to show artist first
+                if stream_details.data.get("last_event") != current_event:
+                    stream_details.data["last_event"] = current_event
+                    stream_details.data["show_upcoming"] = False
 
-                    self.logger.debug(
-                        f"Updating stream metadata for {item_id}: "
-                        f"{stream_metadata.artist} - {stream_metadata.title}"
-                    )
-                    stream_details.stream_metadata = stream_metadata
-                    stream_details.data["last_track_id"] = current_track_id
+                # Toggle between artist and upcoming info
+                show_upcoming = stream_details.data.get("show_upcoming", False)
+
+                # Create StreamMetadata object with full track info
+                stream_metadata = parsers.build_stream_metadata(
+                    current_song, metadata, show_upcoming=show_upcoming
+                )
+
+                self.logger.debug(
+                    f"Updating stream metadata for {item_id}: "
+                    f"{stream_metadata.artist} - {stream_metadata.title}"
+                )
+                stream_details.stream_metadata = stream_metadata
+
+                # Toggle for next update
+                stream_details.data["show_upcoming"] = not show_upcoming
 
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Network error while updating metadata for {item_id}: {exc}")
-        except Exception as exc:
-            self.logger.warning(f"Unexpected error updating metadata for {item_id}: {exc}")
+            self.logger.debug(f"Network error updating metadata for {item_id}: {exc}")
