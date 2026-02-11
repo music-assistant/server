@@ -366,8 +366,13 @@ class AlexaPlayer(Player):
         password = self.provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
 
         auth = None
-        if username is not None and password is not None:
-            auth = BasicAuth(str(username), str(password))
+        # Only enable BasicAuth when both username and password are non-empty
+        if username:
+            username = str(username).strip()
+        if password:
+            password = str(password).strip()
+        if username and password:
+            auth = BasicAuth(username, password)
 
         if self.current_media is not None:
             title = self.current_media.title or media.title
