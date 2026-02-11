@@ -238,6 +238,9 @@ class AriaCastBridge(PluginProvider):
                     self.logger.debug(
                         "WebSocket connection to AriaCast metadata stream failed: %s", exc
                     )
+                    # Re-check stop flag before sleeping to avoid delaying shutdown.
+                    if self._stop_called:
+                        break
                     await asyncio.sleep(5)
 
     def _update_metadata(self, data: dict[str, Any]) -> None:
