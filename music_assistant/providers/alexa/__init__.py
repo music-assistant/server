@@ -315,10 +315,8 @@ class AlexaPlayer(Player):
                 aiohttp.ClientSession() as session,
                 session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(total=5),
-                    auth=auth,
-                ) as resp,
-            ):
+            session = self.provider.mass.http_session
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status < 200 or resp.status >= 300:
                     return defaults.get(intent_name, "")
                 payload = await resp.json()
