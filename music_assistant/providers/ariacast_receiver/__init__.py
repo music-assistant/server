@@ -256,8 +256,13 @@ class AriaCastBridge(PluginProvider):
         meta.artist = data.get("artist", "Unknown")
         meta.album = data.get("album", "Unknown")
 
-        if data.get("artwork_url"):
-            self.mass.create_task(self._download_artwork())
+        artwork_url = data.get("artwork_url")
+        if artwork_url:
+            last_artwork_identifier = getattr(self, "_last_artwork_identifier", None)
+            if artwork_url != last_artwork_identifier:
+                # Track last artwork to avoid scheduling redundant downloads
+                self._last_artwork_identifier = artwork_url
+                self.mass.create_task(self._download_artwork())
 
         # Duration & Progress
         if duration_ms := data.get("duration_ms"):
