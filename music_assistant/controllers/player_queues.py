@@ -828,7 +828,7 @@ class PlayerQueuesController(CoreController):
             # the frontend should guard so this is just in case
             self.logger.warning("delete requested for item already loaded in buffer")
             return
-        queue_items = self._queue_items[queue_id]
+        queue_items = self._queue_items[queue_id].copy()
         queue_items.pop(item_index)
         self.update_items(queue_id, queue_items)
 
