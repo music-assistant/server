@@ -173,9 +173,13 @@ class AriaCastBridge(PluginProvider):
 
         if self._metadata_task:
             self._metadata_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._metadata_task
 
         if self._pipe_reader_task:
             self._pipe_reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._pipe_reader_task
 
         if self._binary_process:
             self.logger.info("Stopping AriaCast binary...")
