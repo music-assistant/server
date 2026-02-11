@@ -15,7 +15,7 @@ from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
-async def _empty_async_gen() -> AsyncGenerator[None]:
+async def _empty_async_gen() -> AsyncGenerator[Any, None]:
     """Empty async generator for mocking AsyncGenerator return types."""
     return
     yield  # type: ignore[unreachable]  # pragma: no cover — makes it a generator
@@ -104,6 +104,7 @@ def config_mock() -> Mock:
             "http_port": 8099,
             "output_format": "mp3",
             "log_level": "GLOBAL",
+            "enable_player_grouping": True,
         }.get(key, default)
     )
     return config
@@ -121,15 +122,15 @@ def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> MSXBrid
 def player(provider: MSXBridgeProvider) -> MSXPlayer:
     """Return an MSXPlayer with update_state mocked."""
     p = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
-    p.update_state = Mock()  # type: ignore[method-assign,misc]  # prevent full state machinery
+    p.update_state = Mock()  # type: ignore[misc,method-assign]
     return p
 
 
 @pytest.fixture
-async def http_client(provider: MSXBridgeProvider) -> AsyncGenerator[TestClient[Any, Any]]:
+async def http_client(provider: MSXBridgeProvider) -> AsyncGenerator[TestClient[Any, Any], None]:
     """Return an aiohttp TestClient for the MSX HTTP server."""
     server = MSXHTTPServer(provider, 0)
-    client: TestClient[Any, Any] = TestClient(TestServer(server.app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
     yield client
     await client.close()

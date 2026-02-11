@@ -15,11 +15,13 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ABORT_STREAM_FIRST,
+    CONF_ENABLE_GROUPING,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_ABORT_STREAM_FIRST,
+    DEFAULT_ENABLE_GROUPING,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
@@ -34,14 +36,14 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.SYNC_PLAYERS}
-
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return MSXBridgeProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    grouping_enabled = bool(config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING))
+    features: set[ProviderFeature] = {ProviderFeature.SYNC_PLAYERS} if grouping_enabled else set()
+    return MSXBridgeProvider(mass, manifest, config, features)
 
 
 async def get_config_entries(
@@ -93,6 +95,17 @@ async def get_config_entries(
             description=(
                 "When stopping: abort stream first, then send WebSocket stop. "
                 "May stop playback faster on some TVs."
+            ),
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_GROUPING,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable player grouping",
+            required=False,
+            default_value=DEFAULT_ENABLE_GROUPING,
+            description=(
+                "Allow grouping multiple MSX TVs to play the same track simultaneously. "
+                "Disable if you experience issues with multi-TV setups."
             ),
         ),
     )
