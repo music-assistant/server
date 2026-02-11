@@ -46,6 +46,7 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    CONF_PROVIDERS,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -74,7 +75,7 @@ from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS, MusicProvider
 from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
 
 from .media.albums import AlbumsController
@@ -98,7 +99,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 26
+DB_SCHEMA_VERSION: Final[int] = 27
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -1803,6 +1804,49 @@ class MusicController(CoreController):
             )
             return []
 
+    async def _process_sync_deletions(
+        self,
+        provider_instance_id: str,
+        media_type: MediaType,
+        prev_library_items: list[int],
+    ) -> None:
+        """Hard-delete library items that are no longer in any provider's library.
+
+        This method checks if the item should be hard-deleted
+        from the DB (when no other provider has it in their library).
+
+        :param provider_instance_id: The provider instance that just synced.
+        :param media_type: The media type that was synced.
+        :param prev_library_items: DB IDs from previous sync cycle.
+        """
+        cur_db_ids_list: list[int] | None = await self.mass.cache.get(
+            key=media_type.value,
+            provider=provider_instance_id,
+            category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+        )
+        cur_db_ids = set(cur_db_ids_list) if cur_db_ids_list else set()
+        controller = self.get_controller(media_type)
+        for db_id in prev_library_items:
+            if db_id in cur_db_ids:
+                continue
+            try:
+                library_item = await controller.get_library_item(db_id)
+            except MediaNotFoundError:
+                continue
+
+            # check if any other provider mappings have this item in library
+            remaining_providers_in_library = {
+                x.provider_instance
+                for x in library_item.provider_mappings
+                if x.provider_instance != provider_instance_id and x.in_library
+            }
+
+            # if not, hard-delete from DB
+            if not remaining_providers_in_library:
+                await controller.remove_item_from_library(db_id)
+
+            await asyncio.sleep(0)
+
     def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
@@ -1823,7 +1867,16 @@ class MusicController(CoreController):
             # Wrap the provider sync into a lock to prevent
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
+                prev_library_items: list[int] | None = await self.mass.cache.get(
+                    key=media_type.value,
+                    provider=provider.instance_id,
+                    category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+                )
                 await provider.sync_library(media_type)
+                if prev_library_items:
+                    await self._process_sync_deletions(
+                        provider.instance_id, media_type, prev_library_items
+                    )
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())
@@ -2221,6 +2274,89 @@ class MusicController(CoreController):
                 f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
                 "WHERE media_type = 'playlist' AND in_library = 0;"
             )
+
+        if prev_version <= 27:
+            # Hard-delete items that were previously soft-deleted (all provider_mappings
+            # have in_library=0) and are exclusively from sync-back-enabled providers.
+            # Items from sync-back-disabled providers are kept (could be manually added).
+            sync_back_disabled: set[str] = set()
+            raw_providers = self.mass.config.get(CONF_PROVIDERS, {})
+            for instance_id in raw_providers:
+                if not self.mass.config.get_raw_provider_config_value(
+                    instance_id, "library_sync_back", True
+                ):
+                    sync_back_disabled.add(instance_id)
+
+            for table, media_type_str in (
+                (DB_TABLE_TRACKS, "track"),
+                (DB_TABLE_ALBUMS, "album"),
+                (DB_TABLE_ARTISTS, "artist"),
+                (DB_TABLE_PLAYLISTS, "playlist"),
+                (DB_TABLE_RADIOS, "radio"),
+                (DB_TABLE_AUDIOBOOKS, "audiobook"),
+                (DB_TABLE_PODCASTS, "podcast"),
+            ):
+                # find items with no in_library=1 mapping
+                items_query = (
+                    f"SELECT item_id FROM {table} WHERE item_id NOT IN ("
+                    f"  SELECT DISTINCT item_id FROM provider_mappings"
+                    f"  WHERE media_type = '{media_type_str}' AND in_library = 1"
+                    f")"
+                )
+                # exclude items that have a mapping from a sync-back-disabled provider
+                if sync_back_disabled:
+                    placeholders = ",".join(f"'{p}'" for p in sync_back_disabled)
+                    items_query += (
+                        f" AND item_id NOT IN ("
+                        f"  SELECT DISTINCT item_id FROM provider_mappings"
+                        f"  WHERE media_type = '{media_type_str}'"
+                        f"  AND provider_instance IN ({placeholders})"
+                        f")"
+                    )
+
+                rows = await self._database.get_rows_from_query(items_query)
+                if not rows:
+                    continue
+                ids_to_delete = ",".join(str(row["item_id"]) for row in rows)
+
+                # clean up join tables
+                if table == DB_TABLE_TRACKS:
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_TRACK_ARTISTS} WHERE track_id IN ({ids_to_delete})"
+                    )
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id IN ({ids_to_delete})"
+                    )
+                elif table == DB_TABLE_ALBUMS:
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_ALBUM_TRACKS} WHERE album_id IN ({ids_to_delete})"
+                    )
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_ALBUM_ARTISTS} WHERE album_id IN ({ids_to_delete})"
+                    )
+                elif table == DB_TABLE_ARTISTS:
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id IN ({ids_to_delete})"
+                    )
+                    await self._database.execute(
+                        f"DELETE FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id IN ({ids_to_delete})"
+                    )
+
+                # delete provider_mappings and playlog entries
+                await self._database.execute(
+                    f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS}"
+                    f" WHERE media_type = '{media_type_str}'"
+                    f" AND item_id IN ({ids_to_delete})"
+                )
+                await self._database.execute(
+                    f"DELETE FROM {DB_TABLE_PLAYLOG}"
+                    f" WHERE media_type = '{media_type_str}'"
+                    f" AND item_id IN ({ids_to_delete})"
+                )
+                # delete the items themselves
+                await self._database.execute(
+                    f"DELETE FROM {table} WHERE item_id IN ({ids_to_delete})"
+                )
 
         # save changes
         await self._database.commit()
