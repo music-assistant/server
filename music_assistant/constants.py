@@ -9,10 +9,27 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    PodcastEpisode,
+    Radio,
+    Track,
+)
 
 APPLICATION_NAME: Final = "Music Assistant"
+
+# Type alias for items that can be added to playlists
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+
+# Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
+PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
 
 
 API_SCHEMA_VERSION: Final[int] = 28

@@ -16,7 +16,6 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "Eclectic mix of music - hand-picked by real humans",
         "stream_url": "https://stream.radioparadise.com/flac",
         "content_type": ContentType.FLAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing",
         "station_icon": "radioparadise-logo-main.png",
     },
     "1": {
@@ -24,7 +23,6 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "A mellower selection from the RP music library",
         "stream_url": "https://stream.radioparadise.com/mellow-flac",
         "content_type": ContentType.FLAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing?chan=1",
         "station_icon": "radioparadise-logo-mellow.png",
     },
     "2": {
@@ -32,7 +30,6 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "Heavier selections from the RP music library",
         "stream_url": "https://stream.radioparadise.com/rock-flac",
         "content_type": ContentType.FLAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing?chan=2",
         "station_icon": "radioparadise-logo-rock.png",
     },
     "3": {
@@ -40,7 +37,6 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "Global music and experimental selections",
         "stream_url": "https://stream.radioparadise.com/global-flac",
         "content_type": ContentType.FLAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing?chan=3",
         "station_icon": "radioparadise-logo-global.png",
     },
     "4": {
@@ -48,7 +44,6 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "Exploring the frontiers of improvisational music",
         "stream_url": "https://stream.radioparadise.com/beyond-flac",
         "content_type": ContentType.FLAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing?chan=4",
         "station_icon": "radioparadise-logo-beyond.png",
     },
     "5": {
@@ -56,7 +51,11 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "description": "Don't panic, and don't forget your towel",
         "stream_url": "https://stream.radioparadise.com/serenity",
         "content_type": ContentType.AAC,
-        "api_url": "https://api.radioparadise.com/api/now_playing?chan=5",
         "station_icon": "radioparadise-logo-serenity.png",
     },
 }
+
+# API base URLs
+API_BASE_URL = "https://api.radioparadise.com/api"
+PLAY_API_URL = f"{API_BASE_URL}/play?bitrate=4&info=true&chan="
+NOWPLAYING_API_URL = f"{API_BASE_URL}/now_playing?chan="
