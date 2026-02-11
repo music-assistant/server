@@ -223,10 +223,7 @@ class AriaCastBridge(PluginProvider):
 
         while not self._stop_called:
             try:
-                async with (
-                    aiohttp.ClientSession() as session,
-                    session.ws_connect(url) as ws,
-                ):
+                async with self.mass.http_session.ws_connect(url, heartbeat=30) as ws:
                     self.logger.info("Connected to AriaCast metadata stream")
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -235,8 +232,11 @@ class AriaCastBridge(PluginProvider):
                                 self._update_metadata(payload.get("data", {}))
                         elif msg.type == aiohttp.WSMsgType.ERROR:
                             break
-            except Exception:
+            except Exception as exc:
                 if not self._stop_called:
+                    self.logger.debug(
+                        "WebSocket connection to AriaCast metadata stream failed: %s", exc
+                    )
                     await asyncio.sleep(5)
 
     def _update_metadata(self, data: dict[str, Any]) -> None:
