@@ -366,7 +366,7 @@ class MusicAssistant:
                 return None
             provider_instance_or_domain = prov.domain
         # fallback to match on domain
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if prov.domain != provider_instance_or_domain:
                 continue
             if return_unavailable or prov.available:
@@ -409,7 +409,7 @@ class MusicAssistant:
             LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
-        for cb_func, event_filter, id_filter in self._subscribers:
+        for cb_func, event_filter, id_filter in list(self._subscribers):
             if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
@@ -1037,7 +1037,7 @@ class MusicAssistant:
             service_type,
             state_change,
         )
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if not prov.manifest.mdns_discovery:
                 continue
             if not prov.available:
