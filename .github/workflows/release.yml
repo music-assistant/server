@@ -364,7 +364,7 @@ jobs:
           echo "Docker tags: $TAGS"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6.18.0
+        uses: docker/build-push-action@v6.19.1
         with:
           context: .
           platforms: linux/amd64,linux/arm64
