@@ -377,3 +377,90 @@ async def test_propagation_recursion_guard(provider: Any, mass_mock: Mock) -> No
 
     # Leader played successfully (no exception from recursion)
     assert leader._attr_playback_state == PlaybackState.PLAYING
+
+
+# --- Queue-backed playlist playback ---
+
+
+async def test_play_media_queue_sends_playlist(player: MSXPlayer, mass_mock: Mock) -> None:
+    """play_media with queue context should send playlist via WS instead of stream."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = "Track 1"
+    media.artist = "Artist 1"
+    media.image_url = None
+    media.duration = 180
+    media.source_id = "msx_test"
+    media.queue_item_id = "qi1"
+
+    queue = Mock()
+    queue.current_index = 2
+    mass_mock.player_queues.get.return_value = queue
+    mass_mock.player_queues.get_item.return_value = None
+
+    with (
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_playlist.assert_called_once_with("msx_test", 2)
+    mock_play.assert_not_called()
+    assert player._playing_from_queue is True
+
+
+async def test_play_media_skips_ws_when_playing_from_queue(
+    player: MSXPlayer, mass_mock: Mock
+) -> None:
+    """play_media should skip WS notification when _playing_from_queue is True."""
+    player._playing_from_queue = True
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = "msx_test"
+    media.queue_item_id = "qi2"
+
+    mass_mock.player_queues.get_item.return_value = None
+
+    with (
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_playlist.assert_not_called()
+    mock_play.assert_not_called()
+
+
+async def test_play_media_non_queue_sends_broadcast_play(
+    player: MSXPlayer,
+) -> None:
+    """play_media without queue context should use broadcast_play as before."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = "Track 1"
+    media.artist = "Artist 1"
+    media.image_url = None
+    media.duration = 180
+    media.source_id = None
+    media.queue_item_id = None
+
+    with (
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_playlist.assert_not_called()
+    mock_play.assert_called_once()
+
+
+async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
+    """stop() should reset _playing_from_queue flag."""
+    player._playing_from_queue = True
+    await player.stop()
+    assert player._playing_from_queue is False

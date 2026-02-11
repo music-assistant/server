@@ -166,6 +166,16 @@ class MSXBridgeProvider(PlayerProvider):
                 prev_action=prev_action,
             )
 
+    def notify_play_playlist(
+        self,
+        player_id: str,
+        start_index: int = 0,
+    ) -> None:
+        """Notify WebSocket clients to play an MSX native playlist from the MA queue."""
+        if self.http_server:
+            url = f"/msx/queue-playlist/{player_id}.json?start={start_index}"
+            self.http_server.broadcast_playlist(player_id, url)
+
     def notify_play_stopped(self, player_id: str) -> None:
         """Notify WebSocket clients that playback stopped (MA stop -> MSX).
 

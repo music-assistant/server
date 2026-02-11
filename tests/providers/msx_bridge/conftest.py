@@ -56,7 +56,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.music.artists.library_items = AsyncMock(return_value=[])
     mass.music.artists.albums = AsyncMock(return_value=[])
     mass.music.playlists.library_items = AsyncMock(return_value=[])
-    mass.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _empty_async_gen())
+    mass.music.playlists.tracks = Mock(side_effect=lambda *_args, **_kwargs: _empty_async_gen())
     mass.music.tracks.library_items = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=Mock(artists=[], albums=[], tracks=[], playlists=[]))
 
@@ -66,6 +66,8 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     # Playback control
     mass.player_queues.play_media = AsyncMock()
     mass.player_queues.resume = AsyncMock()
+    mass.player_queues.items = Mock(return_value=[])
+    mass.player_queues.get = Mock(return_value=None)
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_next_track = AsyncMock()

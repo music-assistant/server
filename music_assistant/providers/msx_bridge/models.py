@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class MsxTemplateType(str, Enum):
@@ -17,8 +17,6 @@ class MsxTemplateType(str, Enum):
 class MsxTemplate(BaseModel):
     """MSX Template model."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
     type: MsxTemplateType | str = MsxTemplateType.SEPARATE
     layout: str | None = None
     icon: str | None = None
@@ -28,8 +26,6 @@ class MsxTemplate(BaseModel):
 
 class MsxItem(BaseModel):
     """MSX Content Item model."""
-
-    model_config = ConfigDict(populate_by_name=True)
 
     title: str | None = None
     label: str | None = None
@@ -49,8 +45,6 @@ class MsxItem(BaseModel):
 
 class MsxContent(BaseModel):
     """MSX Content Page model."""
-
-    model_config = ConfigDict(populate_by_name=True)
 
     type: str = "list"
     headline: str | None = None

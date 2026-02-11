@@ -1,1 +1,1 @@
-"""Tests for MSX Bridge provider."""
+"""Tests for the MSX Bridge Provider."""

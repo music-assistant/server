@@ -21,6 +21,7 @@ class MSXPlayer(Player):
     output_format: str = "mp3"
     _skip_ws_notify: bool = False
     _propagating: bool = False
+    _playing_from_queue: bool = False
 
     def __init__(
         self,
@@ -95,20 +96,27 @@ class MSXPlayer(Player):
 
         provider = cast("MSXBridgeProvider", self.provider)
 
-        if not self._skip_ws_notify:
-            # Build Next/Prev actions for the player
-            next_action = f"request:interaction:/api/next/{self.player_id}"
-            prev_action = f"request:interaction:/api/previous/{self.player_id}"
+        if not self._skip_ws_notify and not self._playing_from_queue:
+            if media.source_id and media.queue_item_id:
+                # Queue-backed media from MA → send MSX native playlist
+                queue = self.mass.player_queues.get(media.source_id)
+                start_index = getattr(queue, "current_index", 0) if queue else 0
+                provider.notify_play_playlist(self.player_id, start_index)
+                self._playing_from_queue = True
+            else:
+                # Direct stream / non-queue → existing broadcast_play behavior
+                next_action = f"request:interaction:/api/next/{self.player_id}"
+                prev_action = f"request:interaction:/api/previous/{self.player_id}"
 
-            provider.notify_play_started(
-                self.player_id,
-                title=title,
-                artist=artist,
-                image_url=image_url,
-                duration=duration,
-                next_action=next_action,
-                prev_action=prev_action,
-            )
+                provider.notify_play_started(
+                    self.player_id,
+                    title=title,
+                    artist=artist,
+                    image_url=image_url,
+                    duration=duration,
+                    next_action=next_action,
+                    prev_action=prev_action,
+                )
 
         await self._propagate_to_group_members("play_media", media=media)
 
@@ -221,6 +229,7 @@ class MSXPlayer(Player):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self.current_stream_url = None
+        self._playing_from_queue = False
         self.update_state()
         provider = cast("MSXBridgeProvider", self.provider)
         provider.notify_play_stopped(self.player_id)

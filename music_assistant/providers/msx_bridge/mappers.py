@@ -37,7 +37,7 @@ async def get_album_image_fallback(album: Any, provider: MSXBridgeProvider) -> s
             if hasattr(track, "image") and track.image:
                 return provider.mass.metadata.get_image_url(track.image)
     except Exception:
-        logger.debug("Could not fetch album image fallback for %s", album.item_id)
+        logger.debug("Failed to fetch album image fallback for %s", album.item_id)
     return None
 
 
@@ -134,14 +134,11 @@ def map_tracks_to_msx_playlist(
         duration = getattr(track, "duration", 0) or 0
         duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
         artist = getattr(track, "artist_str", "")
-        label = (
-            f"{artist} · {duration_str}" if artist and duration_str else (artist or duration_str)
-        )
+        label = f"{artist} · {duration_str}" if artist and duration_str else artist or duration_str
         image_url = get_image_url(track, provider)
 
-        audio_url = (
-            f"{prefix}/msx/audio/{player_id}.mp3?uri={quote(track.uri, safe='')}&from_playlist=1"
-        )
+        encoded_uri = quote(track.uri, safe="")
+        audio_url = f"{prefix}/msx/audio/{player_id}.mp3?uri={encoded_uri}&from_playlist=1"
         audio_url = append_device_param(audio_url, device_param)
 
         msx_items.append(

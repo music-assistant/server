@@ -80,6 +80,9 @@
                     if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
                     tvx.InteractionPlugin.executeAction("audio:" + audioUrl, data);
+                } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
+                    tvx.InteractionPlugin.executeAction("playlist:auto:" + playlistUrl);
                 } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     // Update metadata of the currently playing item without restarting audio.
                     // 'player:set-data' or 'player:update' is not supported on all MSX clients.
