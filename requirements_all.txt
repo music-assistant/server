@@ -27,7 +27,7 @@ bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
-cryptography==46.0.4
+cryptography==46.0.5
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 deno==2.6.3
