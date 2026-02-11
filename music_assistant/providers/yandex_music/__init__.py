@@ -9,8 +9,14 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
+    CONF_BROWSE_INITIAL_TRACKS,
+    CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_RECOMMENDATIONS,
+    CONF_MY_WAVE_BATCH_SIZE,
+    CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRACK_BATCH_SIZE,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
@@ -45,7 +51,11 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return YandexMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    features = SUPPORTED_FEATURES.copy()
+    # Conditionally disable recommendations based on config
+    if not config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
+        features.discard(ProviderFeature.RECOMMENDATIONS)
+    return YandexMusicProvider(mass, manifest, config, features)
 
 
 async def get_config_entries(
@@ -94,5 +104,68 @@ async def get_config_entries(
                 ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
             ],
             default_value=QUALITY_HIGH,
+        ),
+        ConfigEntry(
+            key=CONF_MY_WAVE_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="My Wave maximum tracks",
+            description="Maximum number of tracks to fetch for My Wave playlist. "
+            "Lower values load faster but provide fewer tracks. Default: 150.",
+            default_value=150,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_MY_WAVE_BATCH_SIZE,
+            type=ConfigEntryType.INTEGER,
+            label="My Wave batch count",
+            description="Number of API calls to make when loading My Wave in Browse and Discover. "
+            "Each call returns ~20-30 tracks from Yandex. "
+            "The 'Load more' button always makes 1 call. Default: 3.",
+            default_value=3,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_TRACK_BATCH_SIZE,
+            type=ConfigEntryType.INTEGER,
+            label="Track details batch size",
+            description="Number of tracks to fetch in one API request when loading track details. "
+            "Higher values are faster but may timeout. "
+            "Lower values are more reliable. Default: 50.",
+            default_value=50,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_DISCOVERY_INITIAL_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Discovery initial tracks",
+            description="Number of tracks to show initially in Discover section. "
+            "Affects only the first display, all fetched tracks remain available. Default: 5.",
+            default_value=5,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_BROWSE_INITIAL_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Browse initial tracks",
+            description="Number of tracks to show initially when browsing My Wave. "
+            "Additional tracks can be loaded with 'Load more' button. Default: 15.",
+            default_value=15,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_RECOMMENDATIONS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Discover (Recommendations)",
+            description="Show My Wave recommendations on the home page. "
+            "When enabled, recommendations refresh each time you reload the page "
+            "for fresh discoveries.",
+            default_value=True,
+            required=False,
+            advanced=True,
         ),
     )
