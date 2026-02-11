@@ -155,7 +155,7 @@ class MSXHTTPServer:
         """Start the HTTP server."""
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+        site = web.TCPSite(self._runner, "0.0.0.0", self.port, reuse_address=True)
         await site.start()
         logger.info("MSX Bridge HTTP server started on port %s", self.port)
 
