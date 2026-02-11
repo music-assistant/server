@@ -1,6 +1,6 @@
 """Tests for MSX Pydantic models."""
 
-from provider.msx_bridge.models import MsxContent, MsxItem, MsxTemplate
+from music_assistant.providers.msx_bridge.models import MsxContent, MsxItem, MsxTemplate
 
 
 def test_msx_template_serialization() -> None:
