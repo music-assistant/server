@@ -201,6 +201,9 @@ class AriaCastBridge(PluginProvider):
             arch = "amd64"
         elif machine in ("aarch64", "arm64"):
             arch = "arm64"
+        elif machine.startswith("arm"):
+            # Handle common 32-bit ARM identifiers such as armv7l/armv6l
+            arch = "arm"
         else:
             raise RuntimeError(f"Unsupported architecture: {machine}")
 
