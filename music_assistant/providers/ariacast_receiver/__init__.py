@@ -433,8 +433,9 @@ class AriaCastBridge(PluginProvider):
                     continue
 
                 self.logger.debug("Opening pipe for reading: %s", self._pipe.path)
-                # Open and read from pipe
-                pipe_fd = await loop.run_in_executor(None, open, self._pipe.path, "rb")
+                # Open FIFO in non-blocking mode to avoid indefinite blocking in a thread
+                fd = os.open(self._pipe.path, os.O_RDONLY | os.O_NONBLOCK)
+                pipe_fd = os.fdopen(fd, "rb", buffering=0)
 
                 try:
                     while not self._stop_called:
