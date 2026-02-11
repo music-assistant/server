@@ -238,10 +238,6 @@ class AriaCastBridge(PluginProvider):
                     self.logger.debug(
                         "WebSocket connection to AriaCast metadata stream failed: %s", exc
                     )
-                    # Re-check stop flag before sleeping to avoid delaying shutdown.
-                    if self._stop_called:
-                        break
-                    await asyncio.sleep(5)
 
     def _update_metadata(self, data: dict[str, Any]) -> None:
         """Update Music Assistant metadata from Go binary data."""
@@ -341,7 +337,7 @@ class AriaCastBridge(PluginProvider):
 
     async def _cmd_play(self) -> None:
         """Send play command."""
-        self.logger.info("▶️  PLAY command")
+        self.logger.info("PLAY command")
 
         # If player was released on pause, reclaim it
         if not self._source_details.in_use_by and self._active_player_id:
@@ -357,7 +353,7 @@ class AriaCastBridge(PluginProvider):
 
     async def _cmd_pause(self) -> None:
         """Send pause command."""
-        self.logger.info("⏸️  PAUSE command")
+        self.logger.info("PAUSE command")
 
         # Release the player (like Spotify Connect does) - this makes MA show it as idle
         # Keep track of active_player_id so we can reclaim it on resume
@@ -434,7 +430,7 @@ class AriaCastBridge(PluginProvider):
     async def _read_pipe_to_queue(self) -> None:
         """Background task to read from pipe and populate frame queue."""
         frame_size = 3840  # 20ms of 48kHz stereo 16-bit
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         while not self._stop_called:
             try:
@@ -465,9 +461,7 @@ class AriaCastBridge(PluginProvider):
                 finally:
                     with suppress(Exception):
                         # Ensure the file descriptor is closed even if this task is cancelled
-                        await asyncio.shield(
-                            loop.run_in_executor(None, pipe_fd.close)
-                        )
+                        await asyncio.shield(loop.run_in_executor(None, pipe_fd.close))
 
             except Exception as e:
                 self.logger.debug("Error reading from pipe: %s", e)
