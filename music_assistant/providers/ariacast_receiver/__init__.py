@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
@@ -56,9 +57,9 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    _instance_id: str | None = None,
-    _action: str | None = None,
-    _values: dict[str, ConfigValueType] | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
@@ -440,8 +441,8 @@ class AriaCastBridge(PluginProvider):
                     continue
 
                 self.logger.debug("Opening pipe for reading: %s", self._pipe.path)
-                # Open FIFO in non-blocking mode to avoid indefinite blocking in a thread
-                fd = os.open(self._pipe.path, os.O_RDONLY | os.O_NONBLOCK)
+                # Open FIFO in blocking mode - run_in_executor handles thread safety
+                fd = os.open(self._pipe.path, os.O_RDONLY)
                 pipe_fd = os.fdopen(fd, "rb", buffering=0)
 
                 try:
@@ -521,7 +522,7 @@ class AriaCastBridge(PluginProvider):
 
         if self._default_player_id == PLAYER_ID_AUTO:
             for player in self.mass.players.all(False, False):
-                if player.state.playback_state == "playing":
+                if player.state.playback_state == PlaybackState.PLAYING:
                     return player.player_id
             players = list(self.mass.players.all(False, False))
             return players[0].player_id if players else None
