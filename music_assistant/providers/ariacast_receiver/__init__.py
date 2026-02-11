@@ -463,7 +463,11 @@ class AriaCastBridge(PluginProvider):
                         self.frame_available.set()
 
                 finally:
-                    await loop.run_in_executor(None, pipe_fd.close)
+                    with suppress(Exception):
+                        # Ensure the file descriptor is closed even if this task is cancelled
+                        await asyncio.shield(
+                            loop.run_in_executor(None, pipe_fd.close)
+                        )
 
             except Exception as e:
                 self.logger.debug("Error reading from pipe: %s", e)
