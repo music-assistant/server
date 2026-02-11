@@ -48,7 +48,7 @@ niconico.py-ma==2.1.0.post1
 orjson==3.11.5
 pillow==12.1.1
 pkce==1.0.3
-plexapi==4.17.2
+plexapi==4.18.0
 podcastparser==0.6.11
 propcache>=0.2.1
 py-opensonic==8.1.1
