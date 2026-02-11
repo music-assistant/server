@@ -234,7 +234,7 @@ class YandexMusicClient:
             LOGGER.error("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
-    async def get_liked_albums(self, batch_size: int = 50) -> list[YandexAlbum]:
+    async def get_liked_albums(self) -> list[YandexAlbum]:
         """Get user's liked albums with full details (including cover art).
 
         The users_likes_albums endpoint returns minimal album data without
@@ -253,7 +253,7 @@ class YandexMusicClient:
             if not album_ids:
                 return []
             # Fetch full album details in batches to get cover_uri and other metadata
-            # batch_size is now a parameter with default 50
+            batch_size = 50
             full_albums: list[YandexAlbum] = []
             for i in range(0, len(album_ids), batch_size):
                 batch = album_ids[i : i + batch_size]

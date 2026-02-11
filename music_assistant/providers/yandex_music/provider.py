@@ -35,13 +35,7 @@ from .api_client import YandexMusicClient
 from .constants import (
     BROWSE_NAMES_EN,
     BROWSE_NAMES_RU,
-    CONF_BROWSE_INITIAL_TRACKS,
-    CONF_DISCOVERY_INITIAL_TRACKS,
-    CONF_ENABLE_RECOMMENDATIONS,
-    CONF_MY_WAVE_BATCH_SIZE,
-    CONF_MY_WAVE_MAX_TRACKS,
     CONF_TOKEN,
-    CONF_TRACK_BATCH_SIZE,
     MY_WAVE_PLAYLIST_ID,
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
@@ -80,7 +74,6 @@ class YandexMusicProvider(MusicProvider):
     _my_wave_last_track_id: str | None = None  # last track id for "Load more" (API queue param)
     _my_wave_playlist_next_cursor: str | None = None  # first_track_id for next playlist page
     _my_wave_radio_started_sent: bool = False
-    _my_wave_seen_track_ids: set[str]  # Track IDs seen in current My Wave session
 
     @property
     def client(self) -> YandexMusicClient:
@@ -116,8 +109,6 @@ class YandexMusicProvider(MusicProvider):
         # Suppress yandex_music library DEBUG dumps (full API request/response JSON)
         logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
         self._streaming = YandexMusicStreamingManager(self)
-        # Initialize My Wave duplicate tracking
-        self._my_wave_seen_track_ids = set()
         self.logger.info("Successfully connected to Yandex Music")
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -167,22 +158,9 @@ class YandexMusicProvider(MusicProvider):
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
         if subpath == MY_WAVE_PLAYLIST_ID:
-            # Get config values for max tracks and batch size
-            max_tracks_config = int(
-                self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
-            )
-            batch_size_config = int(
-                self.config.get_value(CONF_MY_WAVE_BATCH_SIZE) or 3  # type: ignore[arg-type]
-            )
-
-            # Root my_wave: fetch up to batch_size_config batches so Play adds more tracks.
-            # "Load more" always uses single next batch.
-            max_batches = batch_size_config if sub_subpath != "next" else 1
-
-            # Reset seen tracks on fresh browse (not "load more")
-            if sub_subpath != "next":
-                self._my_wave_seen_track_ids = set()
-
+            # Root my_wave: fetch up to 3 batches so Play adds more tracks.
+            # "Load more" uses single next batch.
+            max_batches = 3 if sub_subpath != "next" else 1
             queue: str | int | None = None
             if sub_subpath == "next":
                 queue = self._my_wave_last_track_id
@@ -192,13 +170,8 @@ class YandexMusicProvider(MusicProvider):
             all_tracks: list[Track | BrowseFolder] = []
             last_batch_id: str | None = None
             first_track_id_this_batch: str | None = None
-            total_track_count = 0
 
             for _ in range(max_batches):
-                # Check if we've reached the max track limit
-                if total_track_count >= max_tracks_config:
-                    break
-
                 yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
                 if batch_id:
                     self._my_wave_batch_id = batch_id
@@ -212,10 +185,6 @@ class YandexMusicProvider(MusicProvider):
                     )
                 first_track_id_this_batch = None
                 for yt in yandex_tracks:
-                    # Check if we've reached the max track limit
-                    if total_track_count >= max_tracks_config:
-                        break
-
                     try:
                         t = parse_track(self, yt)
                         track_id = (
@@ -224,14 +193,6 @@ class YandexMusicProvider(MusicProvider):
                             else getattr(yt, "track_id", None)
                         )
                         if track_id:
-                            # Check for duplicates
-                            if track_id in self._my_wave_seen_track_ids:
-                                self.logger.debug("Skipping duplicate My Wave track: %s", track_id)
-                                continue
-
-                            # Mark track as seen
-                            self._my_wave_seen_track_ids.add(track_id)
-
                             if first_track_id_this_batch is None:
                                 first_track_id_this_batch = track_id
                             t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
@@ -240,25 +201,15 @@ class YandexMusicProvider(MusicProvider):
                                     pm.item_id = t.item_id
                                     break
                         all_tracks.append(t)
-                        total_track_count += 1
                     except InvalidDataError as err:
                         self.logger.debug("Error parsing My Wave track: %s", err)
                 if first_track_id_this_batch is not None:
                     self._my_wave_last_track_id = first_track_id_this_batch
-                if not batch_id or not yandex_tracks or total_track_count >= max_tracks_config:
+                if not batch_id or not yandex_tracks:
                     break
                 queue = first_track_id_this_batch
 
-            # Apply initial tracks limit if not in "load more" mode
-            if sub_subpath != "next":
-                initial_tracks_limit = int(
-                    self.config.get_value(CONF_BROWSE_INITIAL_TRACKS) or 15  # type: ignore[arg-type]
-                )
-                if len(all_tracks) > initial_tracks_limit:
-                    all_tracks = all_tracks[:initial_tracks_limit]
-
-            # Only show "Load more" if we haven't reached the limit and there's more data
-            if last_batch_id and total_track_count < max_tracks_config:
+            if last_batch_id:
                 names = self._get_browse_names()
                 next_name = "Ещё" if names is BROWSE_NAMES_RU else "Load more"
                 all_tracks.append(
@@ -490,24 +441,11 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number (0 = first batch, 1+ = next batches via queue cursor).
         :return: List of Track objects for this page.
         """
-        max_tracks_config = int(
-            self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
-        )
-
-        # Reset seen tracks on first page
-        if page == 0:
-            self._my_wave_seen_track_ids = set()
-
         queue: str | int | None = None
         if page > 0:
             queue = self._my_wave_playlist_next_cursor
             if not queue:
                 return []
-
-        # Check if we've already reached the limit
-        if len(self._my_wave_seen_track_ids) >= max_tracks_config:
-            return []
-
         yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
         if batch_id:
             self._my_wave_batch_id = batch_id
@@ -521,24 +459,12 @@ class YandexMusicProvider(MusicProvider):
         first_track_id_this_batch = None
         tracks = []
         for yt in yandex_tracks:
-            # Check if we've reached the max track limit
-            if len(self._my_wave_seen_track_ids) >= max_tracks_config:
-                break
-
             try:
                 t = parse_track(self, yt)
                 track_id = (
                     str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
                 )
                 if track_id:
-                    # Check for duplicates
-                    if track_id in self._my_wave_seen_track_ids:
-                        self.logger.debug("Skipping duplicate My Wave track: %s", track_id)
-                        continue
-
-                    # Mark track as seen
-                    self._my_wave_seen_track_ids.add(track_id)
-
                     if first_track_id_this_batch is None:
                         first_track_id_this_batch = track_id
                     t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
@@ -599,81 +525,30 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar track: %s", err)
         return tracks
 
-    @use_cache(60)  # Cache for only 1 minute to allow auto-refresh
+    @use_cache(3600 * 3)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations; includes My Wave (Моя волна) as first folder.
 
-        Fetches fresh tracks on each call for discovery experience.
-
-        :return: List of recommendation folders (My Wave with tracks).
+        :return: List of recommendation folders (My Wave with first batch of tracks).
         """
-        # Check if recommendations are enabled (this check is redundant if we remove
-        # from supported_features, but provides defense in depth)
-        if not self.config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
-            return []
-
-        max_tracks_config = int(
-            self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
-        )
-        batch_size_config = int(
-            self.config.get_value(CONF_MY_WAVE_BATCH_SIZE) or 3  # type: ignore[arg-type]
-        )
-
-        # Reset for fresh recommendations
-        seen_track_ids: set[str] = set()
-        items: list[Track] = []
-        queue: str | int | None = None
-
-        # Fetch multiple batches based on config
-        for _ in range(batch_size_config):
-            if len(seen_track_ids) >= max_tracks_config:
-                break
-
-            yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
-            if not yandex_tracks:
-                break
-
-            first_track_id_this_batch = None
-            for yt in yandex_tracks:
-                if len(seen_track_ids) >= max_tracks_config:
-                    break
-
-                try:
-                    t = parse_track(self, yt)
-                    track_id = (
-                        str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
-                    )
-                    if track_id:
-                        # Check for duplicates
-                        if track_id in seen_track_ids:
-                            continue
-
-                        seen_track_ids.add(track_id)
-
-                        if first_track_id_this_batch is None:
-                            first_track_id_this_batch = track_id
-                        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
-                        for pm in t.provider_mappings:
-                            if pm.provider_instance == self.instance_id:
-                                pm.item_id = t.item_id
-                                break
-                    items.append(t)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing My Wave track for recommendations: %s", err)
-
-            # Set queue for next batch
-            queue = first_track_id_this_batch
-            if not queue:
-                break
-
-        # Apply initial tracks limit for Discovery
-        initial_tracks_limit = int(
-            self.config.get_value(CONF_DISCOVERY_INITIAL_TRACKS) or 5  # type: ignore[arg-type]
-        )
-        if len(items) > initial_tracks_limit:
-            items = items[:initial_tracks_limit]
-
         names = self._get_browse_names()
+        yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=None)
+        items: list[Track] = []
+        for yt in yandex_tracks:
+            try:
+                t = parse_track(self, yt)
+                track_id = (
+                    str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
+                )
+                if track_id:
+                    t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+                    for pm in t.provider_mappings:
+                        if pm.provider_instance == self.instance_id:
+                            pm.item_id = t.item_id
+                            break
+                items.append(t)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing My Wave track for recommendations: %s", err)
         return [
             RecommendationFolder(
                 item_id=MY_WAVE_PLAYLIST_ID,
@@ -744,9 +619,7 @@ class YandexMusicProvider(MusicProvider):
             return []
 
         # Fetch full track details in batches to avoid timeouts
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = 50
         full_tracks = []
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i : i + batch_size]
@@ -819,10 +692,7 @@ class YandexMusicProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from Yandex Music."""
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
-        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        albums = await self.client.get_liked_albums()
         for album in albums:
             try:
                 yield parse_album(self, album)
@@ -837,9 +707,7 @@ class YandexMusicProvider(MusicProvider):
 
         # Fetch full track details in batches
         track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = 50
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
             full_tracks = await self.client.get_tracks(batch_ids)
