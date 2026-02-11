@@ -379,7 +379,14 @@ class AriaCastBridge(PluginProvider):
         url = "http://127.0.0.1:12889/api/command"
         try:
             async with self.mass.http_session.post(url, json={"action": action}) as response:
-                await response.read()
+                body = await response.text()
+                if not 200 <= response.status < 300:
+                    self.logger.warning(
+                        "Command '%s' failed with HTTP %s: %s",
+                        action,
+                        response.status,
+                        body,
+                    )
         except Exception as e:
             self.logger.warning("Failed to send command '%s': %s", action, e)
 
