@@ -181,7 +181,7 @@ async def get_config_entries(
             key=CONF_API_URL,
             type=ConfigEntryType.STRING,
             label="API Url",
-            default_value="http://localhost:3000",
+            default_value="http://localhost:5000",
             required=True,
             value=values.get(CONF_API_URL) if values else None,
         ),
@@ -189,6 +189,7 @@ async def get_config_entries(
             key=CONF_API_BASIC_AUTH_USERNAME,
             type=ConfigEntryType.STRING,
             label="API Basic Auth Username",
+            default_value="admin",
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_USERNAME) if values else None,
         ),
@@ -196,6 +197,7 @@ async def get_config_entries(
             key=CONF_API_BASIC_AUTH_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="API Basic Auth Password",
+            default_value="test",
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
@@ -286,22 +288,61 @@ class AlexaPlayer(Player):
         provider = cast("AlexaProvider", self.provider)
         return AlexaAPI(self.device, provider.login)
 
+    async def _get_intent_first_utterance(self, intent_name: str) -> str:
+        """Fetch the first utterance for a given Alexa intent from the Alexa API.
+
+        Falls back to a sensible default if the request fails or no utterances
+        are available.
+        """
+        api_url = self.provider.config.get_value(CONF_API_URL)
+        defaults = {
+            "AMAZON.PauseIntent": "pause",
+            "AMAZON.ResumeIntent": "resume",
+            "AMAZON.StopIntent": "stop",
+        }
+        if not api_url:
+            return defaults.get(intent_name, "")
+
+        try:
+            url = f"{str(api_url).rstrip('/')}/alexa/intents"
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp,
+            ):
+                if resp.status < 200 or resp.status >= 300:
+                    return defaults.get(intent_name, "")
+                payload = await resp.json()
+                intents = payload.get("intents", []) if isinstance(payload, dict) else []
+                for it in intents:
+                    if it.get("intent") == intent_name:
+                        utts = it.get("utterances") or []
+                        if len(utts) > 0:
+                            return str(utts[0])
+        except Exception:
+            # Any failure -> safe fallback
+            return defaults.get(intent_name, "")
+
+        return defaults.get(intent_name, "")
+
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        await self.api.stop()
+        utterance = await self._get_intent_first_utterance("AMAZON.StopIntent")
+        await self.api.run_custom(utterance)
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        await self.api.play()
+        utterance = await self._get_intent_first_utterance("AMAZON.ResumeIntent")
+        await self.api.run_custom(utterance)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        await self.api.pause()
+        utterance = await self._get_intent_first_utterance("AMAZON.PauseIntent")
+        await self.api.run_custom(utterance)
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -320,16 +361,22 @@ class AlexaPlayer(Player):
         if username is not None and password is not None:
             auth = BasicAuth(str(username), str(password))
 
+        if self.current_media is not None:
+            title = self.current_media.title or media.title
+            artist = self.current_media.artist or media.artist
+            album = self.current_media.album or media.album
+            image_url = self.current_media.image_url or media.image_url
+
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
                     f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
                     json={
                         "streamUrl": media.uri,
-                        "title": media.title,
-                        "artist": media.artist,
-                        "album": media.album,
-                        "imageUrl": media.image_url,
+                        "title": title,
+                        "artist": artist,
+                        "album": album,
+                        "imageUrl": image_url,
                     },
                     timeout=aiohttp.ClientTimeout(total=10),
                     auth=auth,
