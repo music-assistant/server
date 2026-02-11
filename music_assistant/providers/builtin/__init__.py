@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, get_args
 
 import aiofiles
 import shortuuid
@@ -36,7 +36,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import (
+    MASS_LOGO,
+    VARIOUS_ARTISTS_FANART,
+    PlaylistPlayableItem,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
@@ -76,7 +80,6 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
-
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -355,15 +358,22 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
+    async def get_playlist_tracks(  # type: ignore[override]
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[PlaylistPlayableItem]:
+        """Get playlist tracks.
+
+        Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
+        Overrides base class to return extended union type instead of list[Track].
+        """
         if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            return await self._get_builtin_playlist_tracks(prov_playlist_id)
-        # user created universal playlist
-        result: list[Track] = []
+            # System-generated playlists (favorites, random, etc.) only contain tracks
+            return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+        # User-created playlists can contain Track, Radio, PodcastEpisode, and Audiobook items
+        result: list[PlaylistPlayableItem] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
@@ -379,9 +389,14 @@ class BuiltinProvider(MusicProvider):
                     track = await media_controller.get_provider_item(
                         item_id, provider_instance_id_or_domain
                     )
-                assert isinstance(track, Track)
-                track.position = index
-                result.append(track)
+                if isinstance(track, get_args(PlaylistPlayableItem)):
+                    playlist_item = cast("PlaylistPlayableItem", track)
+                    playlist_item.position = index
+                    result.append(playlist_item)
+                else:
+                    self.logger.warning(
+                        "Unsupported media type in playlist %s: %s", prov_playlist_id, type(track)
+                    )
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
                     "Skipping %s in playlist %s: %s", uri, prov_playlist_id, str(err)

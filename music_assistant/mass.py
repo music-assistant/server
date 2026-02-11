@@ -837,6 +837,9 @@ class MusicAssistant:
         )
         provider.available = True
 
+        # adapt logging name if needed
+        provider._set_log_level_from_config(provider.config)
+
         # execute post load actions
         async def _on_provider_loaded() -> None:
             await provider.loaded_in_mass()

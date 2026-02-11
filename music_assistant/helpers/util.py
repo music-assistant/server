@@ -304,7 +304,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             for ip in adapter.ips:
                 if ip.is_IPv6 and not include_ipv6:
                     continue
-                ip_str = str(ip.ip)
+                # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
+                ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
                 if ip_str.startswith(("127", "169.254")):
                     # filter out IPv4 loopback/APIPA address
                     continue

@@ -10,6 +10,7 @@ from unittest import mock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
@@ -17,6 +18,7 @@ from yandex_music import Track as YandexTrack
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.yandex_music.constants import BROWSE_NAMES_EN, BROWSE_NAMES_RU
 from tests.common import wait_for_sync_completion
 
 if TYPE_CHECKING:
@@ -355,8 +357,86 @@ async def test_browse(mass: MusicAssistant) -> None:
     root_items = await prov.browse(path=base_path)
     assert root_items is not None
     assert isinstance(root_items, (list, tuple))
+    all_names = set(BROWSE_NAMES_RU.values()) | set(BROWSE_NAMES_EN.values())
+    if root_items:
+        first_name = getattr(root_items[0], "name", None)
+        assert first_name in all_names, (
+            f"First folder name {first_name!r} should be from locale mapping"
+        )
 
     artists_path = f"{prov.instance_id}://artists"
     artists_items = await prov.browse(path=artists_path)
     assert artists_items is not None
     assert isinstance(artists_items, (list, tuple))
+
+
+# -- Playlist edge-case tests --------------------------------------------------
+
+
+@pytest.mark.usefixtures("yandex_music_provider")
+async def test_get_playlist_tracks_page_gt_zero_returns_empty(mass: MusicAssistant) -> None:
+    """Page > 0 returns empty list (Yandex returns all tracks in one call)."""
+    prov = _get_yandex_provider(mass)
+    assert prov is not None
+    # Use a different playlist ID to avoid cache collision with test_get_playlist_tracks
+    result = await prov.get_playlist_tracks("12345:99", page=1)
+    assert result == []
+
+
+@pytest.mark.usefixtures("yandex_music_provider")
+async def test_get_playlist_tracks_fetch_tracks_async_fallback(mass: MusicAssistant) -> None:
+    """When playlist.tracks is None but track_count > 0, fetch_tracks_async is used."""
+    prov = _get_yandex_provider(mass)
+    assert prov is not None
+
+    _, _, track, _ = _load_yandex_objects()
+
+    # Build a playlist object with tracks=None and track_count=5
+    track_short = type("TrackShort", (), {"track_id": 400, "id": 400})()
+    playlist_no_tracks = type(
+        "Playlist",
+        (),
+        {
+            "owner": type("Owner", (), {"uid": 12345})(),
+            "kind": 77,
+            "title": "Fallback Playlist",
+            "tracks": None,
+            "track_count": 5,
+            "fetch_tracks_async": mock.AsyncMock(return_value=[track_short]),
+        },
+    )()
+
+    prov.client.get_playlist = mock.AsyncMock(return_value=playlist_no_tracks)  # type: ignore[attr-defined]
+    prov.client.get_tracks = mock.AsyncMock(return_value=[track])  # type: ignore[attr-defined]
+
+    result = await prov.get_playlist_tracks("12345:77", page=0)
+    assert isinstance(result, list)
+    assert len(result) >= 1
+    playlist_no_tracks.fetch_tracks_async.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("yandex_music_provider")
+async def test_get_playlist_tracks_empty_batch_raises(mass: MusicAssistant) -> None:
+    """Empty batch result from get_tracks raises ResourceTemporarilyUnavailable."""
+    prov = _get_yandex_provider(mass)
+    assert prov is not None
+
+    # Build a playlist with tracks that have track_ids
+    track_short = type("TrackShort", (), {"track_id": 400, "id": 400})()
+    playlist_with_tracks = type(
+        "Playlist",
+        (),
+        {
+            "owner": type("Owner", (), {"uid": 12345})(),
+            "kind": 88,
+            "title": "Batch Fail Playlist",
+            "tracks": [track_short],
+            "track_count": 1,
+        },
+    )()
+
+    prov.client.get_playlist = mock.AsyncMock(return_value=playlist_with_tracks)  # type: ignore[attr-defined]
+    prov.client.get_tracks = mock.AsyncMock(return_value=[])  # type: ignore[attr-defined]
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await prov.get_playlist_tracks("12345:88", page=0)

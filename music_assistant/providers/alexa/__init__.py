@@ -303,10 +303,18 @@ class AlexaPlayer(Player):
 
         try:
             url = f"{str(api_url).rstrip('/')}/alexa/intents"
+            # Apply optional BasicAuth credentials if configured for the Alexa API.
+            api_username = self.provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
+            api_password = self.provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+            auth: BasicAuth | None = None
+            if api_username and api_password:
+                auth = BasicAuth(str(api_username), str(api_password))
             async with (
                 aiohttp.ClientSession() as session,
-                session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp,
-            ):
+                session.get(
+                    url,
+            session = self.provider.mass.http_session
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status < 200 or resp.status >= 300:
                     return defaults.get(intent_name, "")
                 payload = await resp.json()
