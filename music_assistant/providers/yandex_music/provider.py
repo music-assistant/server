@@ -37,6 +37,9 @@ from .constants import (
     BROWSE_NAMES_RU,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_WAVE_BROWSE,
+    CONF_ENABLE_MY_WAVE_PLAYLIST,
+    CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -203,7 +206,9 @@ class YandexMusicProvider(MusicProvider):
                 if batch_id:
                     self._my_wave_batch_id = batch_id
                     last_batch_id = batch_id
-                if not self._my_wave_radio_started_sent and yandex_tracks:
+                # Send radio feedback if radio mode is enabled
+                enable_radio = self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True)
+                if enable_radio and not self._my_wave_radio_started_sent and yandex_tracks:
                     self._my_wave_radio_started_sent = True
                     await self.client.send_rotor_station_feedback(
                         ROTOR_STATION_MY_WAVE,
@@ -234,11 +239,13 @@ class YandexMusicProvider(MusicProvider):
 
                             if first_track_id_this_batch is None:
                                 first_track_id_this_batch = track_id
-                            t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
-                            for pm in t.provider_mappings:
-                                if pm.provider_instance == self.instance_id:
-                                    pm.item_id = t.item_id
-                                    break
+                            # Use radio track ID format if radio mode is enabled
+                            if enable_radio:
+                                t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+                                for pm in t.provider_mappings:
+                                    if pm.provider_instance == self.instance_id:
+                                        pm.item_id = t.item_id
+                                        break
                         all_tracks.append(t)
                         total_track_count += 1
                     except InvalidDataError as err:
@@ -279,15 +286,17 @@ class YandexMusicProvider(MusicProvider):
 
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        folders.append(
-            BrowseFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
-                is_playable=True,
+        # Add My Wave folder if enabled
+        if self.config.get_value(CONF_ENABLE_MY_WAVE_BROWSE, True):
+            folders.append(
+                BrowseFolder(
+                    item_id=MY_WAVE_PLAYLIST_ID,
+                    provider=self.instance_id,
+                    path=f"{base}{MY_WAVE_PLAYLIST_ID}",
+                    name=names[MY_WAVE_PLAYLIST_ID],
+                    is_playable=True,
+                )
             )
-        )
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
                 BrowseFolder(
@@ -511,7 +520,9 @@ class YandexMusicProvider(MusicProvider):
         yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
         if batch_id:
             self._my_wave_batch_id = batch_id
-        if not self._my_wave_radio_started_sent and yandex_tracks:
+        # Send radio feedback if radio mode is enabled
+        enable_radio = self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True)
+        if enable_radio and not self._my_wave_radio_started_sent and yandex_tracks:
             self._my_wave_radio_started_sent = True
             await self.client.send_rotor_station_feedback(
                 ROTOR_STATION_MY_WAVE,
@@ -541,11 +552,13 @@ class YandexMusicProvider(MusicProvider):
 
                     if first_track_id_this_batch is None:
                         first_track_id_this_batch = track_id
-                    t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
-                    for pm in t.provider_mappings:
-                        if pm.provider_instance == self.instance_id:
-                            pm.item_id = t.item_id
-                            break
+                    # Use radio track ID format if radio mode is enabled
+                    if enable_radio:
+                        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+                        for pm in t.provider_mappings:
+                            if pm.provider_instance == self.instance_id:
+                                pm.item_id = t.item_id
+                                break
                 tracks.append(t)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing My Wave track: %s", err)
@@ -623,6 +636,7 @@ class YandexMusicProvider(MusicProvider):
         seen_track_ids: set[str] = set()
         items: list[Track] = []
         queue: str | int | None = None
+        enable_radio = self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True)
 
         # Fetch multiple batches based on config
         for _ in range(batch_size_config):
@@ -652,11 +666,13 @@ class YandexMusicProvider(MusicProvider):
 
                         if first_track_id_this_batch is None:
                             first_track_id_this_batch = track_id
-                        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
-                        for pm in t.provider_mappings:
-                            if pm.provider_instance == self.instance_id:
-                                pm.item_id = t.item_id
-                                break
+                        # Use radio track ID format if radio mode is enabled
+                        if enable_radio:
+                            t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+                            for pm in t.provider_mappings:
+                                if pm.provider_instance == self.instance_id:
+                                    pm.item_id = t.item_id
+                                    break
                     items.append(t)
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing My Wave track for recommendations: %s", err)
@@ -852,9 +868,11 @@ class YandexMusicProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from Yandex Music.
 
-        Includes the virtual My Wave playlist first, then user playlists.
+        Includes the virtual My Wave playlist first (if enabled), then user playlists.
         """
-        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
+        # Include My Wave playlist if enabled
+        if self.config.get_value(CONF_ENABLE_MY_WAVE_PLAYLIST, True):
+            yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:

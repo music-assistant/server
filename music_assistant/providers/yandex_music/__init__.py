@@ -11,6 +11,9 @@ from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_WAVE_BROWSE,
+    CONF_ENABLE_MY_WAVE_PLAYLIST,
+    CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -166,6 +169,34 @@ async def get_config_entries(
             "for fresh discoveries.",
             default_value=True,
             required=False,
-            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave in Browse",
+            description="Show My Wave folder in Browse section. "
+            "When disabled, My Wave will not appear in the provider's Browse view.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Playlist",
+            description="Show My Wave as a virtual playlist in library. "
+            "When disabled, My Wave will not appear in playlists section.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_RADIO,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Radio Mode",
+            description="Enable radio mode features for My Wave "
+            "(track feedback and radio station format). "
+            "When disabled, My Wave tracks will be treated as regular playlist tracks "
+            "without radio feedback.",
+            default_value=True,
+            required=False,
         ),
     )
