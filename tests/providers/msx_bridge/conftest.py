@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-if TYPE_CHECKING:
-    from aiohttp.web import Application, Request
-
 from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
-async def _empty_async_gen() -> AsyncGenerator[None, None]:
+async def _empty_async_gen() -> AsyncGenerator[None]:
     """Empty async generator for mocking AsyncGenerator return types."""
-    yield
+    return
+    yield  # type: ignore[unreachable]  # pragma: no cover — makes it a generator
 
 
 @pytest.fixture
@@ -58,7 +56,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.music.artists.library_items = AsyncMock(return_value=[])
     mass.music.artists.albums = AsyncMock(return_value=[])
     mass.music.playlists.library_items = AsyncMock(return_value=[])
-    mass.music.playlists.tracks = Mock(side_effect=lambda *_args, **_kwargs: _empty_async_gen())
+    mass.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _empty_async_gen())
     mass.music.tracks.library_items = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=Mock(artists=[], albums=[], tracks=[], playlists=[]))
 
@@ -67,6 +65,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
 
     # Playback control
     mass.player_queues.play_media = AsyncMock()
+    mass.player_queues.resume = AsyncMock()
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_next_track = AsyncMock()
@@ -78,9 +77,6 @@ def mass_mock(player_config_mock: Mock) -> Mock:
 
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)
-
-    # Task scheduling
-    mass.create_task = Mock()
 
     return mass
 
@@ -125,43 +121,15 @@ def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> MSXBrid
 def player(provider: MSXBridgeProvider) -> MSXPlayer:
     """Return an MSXPlayer with update_state mocked."""
     p = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
-    object.__setattr__(p, "update_state", Mock())  # prevent full state machinery
+    p.update_state = Mock()  # type: ignore[method-assign,misc]  # prevent full state machinery
     return p
 
 
 @pytest.fixture
-async def http_client(
-    provider: MSXBridgeProvider,
-) -> AsyncGenerator[TestClient[Request, Application], Any]:
+async def http_client(provider: MSXBridgeProvider) -> AsyncGenerator[TestClient[Any, Any]]:
     """Return an aiohttp TestClient for the MSX HTTP server."""
     server = MSXHTTPServer(provider, 0)
-    client: TestClient[Request, Application] = TestClient(TestServer(server.app))
+    client: TestClient[Any, Any] = TestClient(TestServer(server.app))
     await client.start_server()
     yield client
     await client.close()
-
-
-@pytest.fixture
-async def msx_provider(
-    mass_mock: Mock,
-    manifest_mock: Mock,
-    config_mock: Mock,
-) -> AsyncGenerator[MSXBridgeProvider, Any]:
-    """Return an MSXBridgeProvider with a real HTTP server for WS tests."""
-    prov = MSXBridgeProvider(mass_mock, manifest_mock, config_mock, set())
-    server = MSXHTTPServer(prov, 0)
-    prov.http_server = server
-    client: TestClient[Request, Application] = TestClient(TestServer(server.app))
-    await client.start_server()
-    try:
-        yield prov
-    finally:
-        await client.close()
-
-
-@pytest.fixture
-def msx_player(msx_provider: MSXBridgeProvider) -> MSXPlayer:
-    """Return an MSXPlayer bound to the msx_provider."""
-    p = MSXPlayer(msx_provider, "msx_test", name="Test TV", output_format="mp3")
-    object.__setattr__(p, "update_state", Mock())
-    return p

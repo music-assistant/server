@@ -19,6 +19,7 @@ class MSXPlayer(Player):
 
     current_stream_url: str | None = None
     output_format: str = "mp3"
+    _skip_ws_notify: bool = False
 
     def __init__(
         self,
@@ -88,13 +89,22 @@ class MSXPlayer(Player):
                 if title is None and queue_item.name:
                     title = queue_item.name
 
-        cast("MSXBridgeProvider", self.provider).notify_play_started(
-            self.player_id,
-            title=title,
-            artist=artist,
-            image_url=image_url,
-            duration=duration,
-        )
+        provider = cast("MSXBridgeProvider", self.provider)
+
+        if not self._skip_ws_notify:
+            # Build Next/Prev actions for the player
+            next_action = f"request:interaction:/api/next/{self.player_id}"
+            prev_action = f"request:interaction:/api/previous/{self.player_id}"
+
+            provider.notify_play_started(
+                self.player_id,
+                title=title,
+                artist=artist,
+                image_url=image_url,
+                duration=duration,
+                next_action=next_action,
+                prev_action=prev_action,
+            )
 
         await self._propagate_to_group_members("play_media", media=media)
 
@@ -214,7 +224,6 @@ class MSXPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        # For now, update elapsed time during playback
         if (
             self._attr_playback_state == PlaybackState.PLAYING
             and self._attr_elapsed_time is not None

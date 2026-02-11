@@ -43,6 +43,17 @@
         return m + ":" + (s < 10 ? "0" : "") + s;
     }
 
+    function resolveAction(action) {
+        if (!action) return null;
+        if (action.indexOf("request:interaction:/") === 0) {
+            return action.replace("request:interaction:/", "request:interaction:" + BRIDGE + "/");
+        }
+        if (action.indexOf("/") === 0) {
+            return BRIDGE + action;
+        }
+        return action;
+    }
+
     function connectPushWebSocket(deviceId) {
         if (typeof WebSocket === "undefined") return;
         var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
@@ -51,15 +62,11 @@
             try {
                 var msg = JSON.parse(ev.data);
                 if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    var action;
-                    if (msg.showNotification) {
-                        action = "eject";
-                    } else {
-                        action = "[player:eject|player:hide]";
-                    }
+                    var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";
                     tvx.InteractionPlugin.executeAction(action);
                 } else if (msg.type === "play" && msg.path && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    var audioUrl = BRIDGE + msg.path;
+                    // Force .mp3 extension for better compatibility with TV players
+                    var audioUrl = BRIDGE + msg.path + ".mp3";
                     var playerLabel = msg.title || "Music Assistant";
                     var labelParts = [];
                     if (msg.artist) labelParts.push(msg.artist);
@@ -70,7 +77,31 @@
                     if (label) data.label = label;
                     if (msg.image_url) data.background = msg.image_url;
                     if (msg.duration != null && msg.duration > 0) data.duration = msg.duration;
+                    if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
+                    if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
                     tvx.InteractionPlugin.executeAction("audio:" + audioUrl, data);
+                } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    // Update metadata of the currently playing item without restarting audio.
+                    // 'player:set-data' or 'player:update' is not supported on all MSX clients.
+                    // For now, we just log it. Real metadata updates happen on track change via 'play' event.
+                    /*
+                    var playerLabelUpdate = msg.title || "Music Assistant";
+                    var labelPartsUpdate = [];
+                    if (msg.artist) labelPartsUpdate.push(msg.artist);
+                    var durUpdate = formatDuration(msg.duration);
+                    if (durUpdate) labelPartsUpdate.push(durUpdate);
+                    var labelUpdate = labelPartsUpdate.join(" · ") || "";
+                    var updateData = { playerLabel: playerLabelUpdate };
+                    if (labelUpdate) updateData.label = labelUpdate;
+                    if (msg.image_url) updateData.background = msg.image_url;
+                    if (msg.duration != null && msg.duration > 0) updateData.duration = msg.duration;
+                    if (msg.next_action) updateData.nextAction = resolveAction(msg.next_action);
+                    if (msg.prev_action) updateData.prevAction = resolveAction(msg.prev_action);
+                    tvx.InteractionPlugin.executeAction("player:set-data", updateData);
+                    */
+                    if (typeof console !== "undefined" && console.log) {
+                        console.log("MSX play_update received", msg);
+                    }
                 }
             } catch (e) {
                 if (typeof console !== "undefined" && console.warn) {

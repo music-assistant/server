@@ -144,6 +144,8 @@ class MSXBridgeProvider(PlayerProvider):
         artist: str | None = None,
         image_url: str | None = None,
         duration: int | None = None,
+        next_action: str | None = None,
+        prev_action: str | None = None,
     ) -> None:
         """Notify WebSocket clients that playback started (for MA -> MSX push)."""
         if self.http_server:
@@ -153,6 +155,8 @@ class MSXBridgeProvider(PlayerProvider):
                 artist=artist,
                 image_url=image_url,
                 duration=duration,
+                next_action=next_action,
+                prev_action=prev_action,
             )
 
     def notify_play_stopped(self, player_id: str) -> None:
