@@ -144,7 +144,7 @@ Tests cover:
 - ✅ Library import preservation
 - ✅ Manifest transformations
 
-### Run Integration Tests
+### Run Sync Validation Tests
 
 ```bash
 pytest tests/providers/kion_music/test_sync_integrity.py -v
