@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 from pywiim import WiiMClient, discover_devices
 from pywiim.upnp.client import UpnpClient
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.wiim.player import WiimPlayer
 
@@ -22,6 +23,13 @@ class WiimProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.logger.info("Initializing WiimProvider with config: %s", self.config)
+
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("pywiim").setLevel(logging.DEBUG)
+            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pywiim").setLevel(self.logger.level + 10)
+            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
