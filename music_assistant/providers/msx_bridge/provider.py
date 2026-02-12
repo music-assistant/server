@@ -176,6 +176,11 @@ class MSXBridgeProvider(PlayerProvider):
             url = f"/msx/queue-playlist/{player_id}.json?start={start_index}"
             self.http_server.broadcast_playlist(player_id, url)
 
+    def notify_goto_index(self, player_id: str, index: int) -> None:
+        """Notify WebSocket clients to jump to a specific playlist index."""
+        if self.http_server:
+            self.http_server.broadcast_goto_index(player_id, index)
+
     def notify_play_stopped(self, player_id: str) -> None:
         """Notify WebSocket clients that playback stopped (MA stop -> MSX).
 

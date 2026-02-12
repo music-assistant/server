@@ -99,7 +99,11 @@ def map_track_to_msx(
     image_url = get_image_url(track, provider)
 
     if playlist_url:
-        action = f"playlist:auto:{playlist_url}"
+        # playlist: (not auto:) loads the playlist and executes the content
+        # root's action ("player:play") which starts playback AND shows the
+        # player in foreground.  playlist:auto: plays in background.
+        # Items are rotated so the desired track is at index 0.
+        action = f"playlist:{playlist_url}"
     else:
         audio_url = f"{prefix}/msx/audio/{player_id}.mp3?uri={quote(track.uri, safe='')}"
         action = f"audio:{append_device_param(audio_url, device_param)}"
@@ -153,10 +157,11 @@ def map_tracks_to_msx_playlist(
             )
         )
 
-    # Auto-start playback at the requested track index
-    auto_action = "player:play"
-    if start_index > 0:
-        auto_action = f"player:goto:index:{start_index}"
+    # Rotate items so the desired track is at index 0.
+    # playlist:auto: always starts from index 0, so rotation ensures
+    # the clicked track plays first. Next/prev wrap naturally.
+    if start_index > 0 and start_index < len(msx_items):
+        msx_items = msx_items[start_index:] + msx_items[:start_index]
 
     return MsxContent(
         type="list",
@@ -166,5 +171,5 @@ def map_tracks_to_msx_playlist(
             image_filler="default",
         ),
         items=msx_items,
-        action=auto_action,
+        action="player:play",
     )

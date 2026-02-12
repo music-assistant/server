@@ -100,12 +100,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_GROUPING,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable player grouping",
+            label="Enable player grouping (experimental)",
             required=False,
             default_value=DEFAULT_ENABLE_GROUPING,
             description=(
-                "Allow grouping multiple MSX TVs to play the same track simultaneously. "
-                "Disable if you experience issues with multi-TV setups."
+                "Experimental: allow grouping multiple MSX TVs to play the same track "
+                "simultaneously. Disable if you experience issues with multi-TV setups."
             ),
         ),
     )

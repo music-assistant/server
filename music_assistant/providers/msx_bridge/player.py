@@ -22,6 +22,8 @@ class MSXPlayer(Player):
     _skip_ws_notify: bool = False
     _propagating: bool = False
     _playing_from_queue: bool = False
+    _playlist_offset: int = 0
+    _playlist_size: int = 0
 
     def __init__(
         self,
@@ -72,8 +74,54 @@ class MSXPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
 
-        # In flow_mode, PlayerMedia has title="Music Assistant" and no metadata.
-        # Resolve real metadata from the queue item when available.
+        title, artist, image_url, duration = self._resolve_media_metadata(media)
+        provider = cast("MSXBridgeProvider", self.provider)
+
+        if not self._skip_ws_notify:
+            if self._playing_from_queue and media.source_id:
+                # MA-initiated track change while MSX already has the playlist.
+                # Translate MA queue index → MSX rotated playlist index.
+                queue = self.mass.player_queues.get(media.source_id)
+                ma_index = getattr(queue, "current_index", 0) if queue else 0
+                if self._playlist_size > 0:
+                    msx_index = (ma_index - self._playlist_offset) % self._playlist_size
+                else:
+                    msx_index = ma_index
+                provider.notify_goto_index(self.player_id, msx_index)
+            elif media.source_id and media.queue_item_id:
+                # First queue-backed play → send full MSX native playlist
+                queue = self.mass.player_queues.get(media.source_id)
+                start_index = getattr(queue, "current_index", 0) if queue else 0
+                # Store rotation offset/size for goto_index translation
+                try:
+                    queue_items = self.mass.player_queues.items(media.source_id)
+                    self._playlist_size = len(list(queue_items))
+                except Exception:
+                    self._playlist_size = 0
+                self._playlist_offset = start_index
+                provider.notify_play_playlist(self.player_id, start_index)
+                self._playing_from_queue = True
+            else:
+                # Direct stream / non-queue → existing broadcast_play behavior
+                next_action = f"request:interaction:/api/next/{self.player_id}"
+                prev_action = f"request:interaction:/api/previous/{self.player_id}"
+
+                provider.notify_play_started(
+                    self.player_id,
+                    title=title,
+                    artist=artist,
+                    image_url=image_url,
+                    duration=duration,
+                    next_action=next_action,
+                    prev_action=prev_action,
+                )
+
+        await self._propagate_to_group_members("play_media", media=media)
+
+    def _resolve_media_metadata(
+        self, media: PlayerMedia
+    ) -> tuple[str | None, str | None, str | None, int | None]:
+        """Resolve real metadata from queue item (flow_mode sends generic metadata)."""
         title = media.title
         artist = media.artist
         image_url = media.image_url
@@ -93,32 +141,7 @@ class MSXPlayer(Player):
                     duration = queue_item.duration
                 if title is None and queue_item.name:
                     title = queue_item.name
-
-        provider = cast("MSXBridgeProvider", self.provider)
-
-        if not self._skip_ws_notify and not self._playing_from_queue:
-            if media.source_id and media.queue_item_id:
-                # Queue-backed media from MA → send MSX native playlist
-                queue = self.mass.player_queues.get(media.source_id)
-                start_index = getattr(queue, "current_index", 0) if queue else 0
-                provider.notify_play_playlist(self.player_id, start_index)
-                self._playing_from_queue = True
-            else:
-                # Direct stream / non-queue → existing broadcast_play behavior
-                next_action = f"request:interaction:/api/next/{self.player_id}"
-                prev_action = f"request:interaction:/api/previous/{self.player_id}"
-
-                provider.notify_play_started(
-                    self.player_id,
-                    title=title,
-                    artist=artist,
-                    image_url=image_url,
-                    duration=duration,
-                    next_action=next_action,
-                    prev_action=prev_action,
-                )
-
-        await self._propagate_to_group_members("play_media", media=media)
+        return title, artist, image_url, duration
 
     def _get_group_member_ids(self) -> list[str]:
         """Get IDs of group members (excluding self).
@@ -230,6 +253,8 @@ class MSXPlayer(Player):
         self._attr_elapsed_time_last_updated = None
         self.current_stream_url = None
         self._playing_from_queue = False
+        self._playlist_offset = 0
+        self._playlist_size = 0
         self.update_state()
         provider = cast("MSXBridgeProvider", self.provider)
         provider.notify_play_stopped(self.player_id)
