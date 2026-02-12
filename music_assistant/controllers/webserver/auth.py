@@ -24,11 +24,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import (
-    DB_TABLE_PLAYLOG,
-    HOMEASSISTANT_SYSTEM_USER,
-    MASS_LOGGER_NAME,
-)
+from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -62,7 +58,7 @@ TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renew
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 6
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
-JOIN_CODE_DEFAULT_EXPIRY_HOURS = 24
+JOIN_CODE_DEFAULT_EXPIRY_HOURS = 6
 
 
 class AuthenticationManager:
