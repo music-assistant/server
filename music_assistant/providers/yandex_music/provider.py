@@ -593,17 +593,22 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
         """
+        self.logger.debug(f"_get_liked_tracks_playlist_tracks called with page={page}")
         # Liked tracks API returns all tracks at once, so only return tracks on page 0
         if page > 0:
+            self.logger.debug("Returning empty list for page > 0")
             return []
 
         max_tracks_config = int(
             self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 500  # type: ignore[arg-type]
         )
+        self.logger.debug(f"Max tracks config: {max_tracks_config}")
 
         # Fetch liked tracks (already sorted in reverse chronological order by api_client)
         track_shorts = await self.client.get_liked_tracks()
+        self.logger.debug(f"Got {len(track_shorts)} liked tracks from API")
         if not track_shorts:
+            self.logger.warning("No liked tracks found!")
             return []
 
         # Apply max tracks limit
@@ -774,11 +779,19 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number for pagination.
         :return: List of Track objects.
         """
+        self.logger.info(
+            f"get_playlist_tracks called: prov_playlist_id={prov_playlist_id}, page={page}"
+        )
+
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
+            self.logger.info("Fetching My Wave tracks")
             return await self._get_my_wave_playlist_tracks(page)
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            return await self._get_liked_tracks_playlist_tracks(page)
+            self.logger.info("Fetching Liked Tracks for virtual playlist")
+            result = await self._get_liked_tracks_playlist_tracks(page)
+            self.logger.info(f"Liked Tracks playlist returned {len(result)} tracks")
+            return result
 
         # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
         # Return empty list for page > 0 so the controller pagination loop terminates.
@@ -940,10 +953,15 @@ class YandexMusicProvider(MusicProvider):
         Includes virtual playlists (My Wave and Liked Tracks if enabled), then user playlists.
         """
         # Include My Wave playlist if enabled
-        if self.config.get_value(CONF_ENABLE_MY_WAVE_PLAYLIST, True):
+        my_wave_enabled = self.config.get_value(CONF_ENABLE_MY_WAVE_PLAYLIST, True)
+        self.logger.debug(f"My Wave playlist enabled: {my_wave_enabled}")
+        if my_wave_enabled:
             yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
         # Include Liked Tracks playlist if enabled
-        if self.config.get_value(CONF_ENABLE_LIKED_TRACKS_PLAYLIST, True):
+        liked_tracks_enabled = self.config.get_value(CONF_ENABLE_LIKED_TRACKS_PLAYLIST, True)
+        self.logger.debug(f"Liked Tracks playlist enabled: {liked_tracks_enabled}")
+        if liked_tracks_enabled:
+            self.logger.debug(f"Yielding Liked Tracks playlist with ID: {LIKED_TRACKS_PLAYLIST_ID}")
             yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
