@@ -78,7 +78,7 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
                 item_id=artist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/artist/{artist_id}",
+                url=f"https://music.mts.ru/artist/{artist_id}",
             )
         },
     )
@@ -143,7 +143,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
                 audio_format=AudioFormat(
                     content_type=_get_content_type(provider),
                 ),
-                url=f"https://music.yandex.ru/album/{album_id}",
+                url=f"https://music.mts.ru/album/{album_id}",
                 available=available,
             )
         },
@@ -241,7 +241,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
                 audio_format=AudioFormat(
                     content_type=_get_content_type(provider),
                 ),
-                url=f"https://music.yandex.ru/track/{track_id}",
+                url=f"https://music.mts.ru/track/{track_id}",
                 available=available,
             )
         },
@@ -321,7 +321,7 @@ def parse_playlist(
                 item_id=playlist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/users/{owner_id}/playlists/{playlist_kind}",
+                url=f"https://music.mts.ru/users/{owner_id}/playlists/{playlist_kind}",
                 is_unique=is_editable,
             )
         },

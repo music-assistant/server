@@ -55,6 +55,14 @@ file_transformations:
       replacement: 'base_url=KION_BASE_URL'
     - pattern: 'GET_FILE_INFO_BASE_URL'
       replacement: 'KION_BASE_URL'
+    # Transform web URLs in error messages
+    - pattern: 'music.yandex.ru'
+      replacement: 'music.mts.ru'
+
+  parsers.py:
+    # Transform web URLs for artists, albums, tracks, playlists
+    - pattern: 'https://music.yandex.ru/'
+      replacement: 'https://music.mts.ru/'
 
   constants.py:
     # Rename My Wave constants to My Mix

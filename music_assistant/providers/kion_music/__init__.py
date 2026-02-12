@@ -11,6 +11,9 @@ from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_MIX_BROWSE,
+    CONF_ENABLE_MY_MIX_PLAYLIST,
+    CONF_ENABLE_MY_MIX_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_MIX_BATCH_SIZE,
     CONF_MY_MIX_MAX_TRACKS,
@@ -159,6 +162,33 @@ async def get_config_entries(
             description="Show My Mix recommendations on the home page. "
             "When enabled, recommendations refresh each time you reload the page "
             "for fresh discoveries.",
+            default_value=False,  # Experimental feature - disabled by default
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_MIX_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Mix in Browse",
+            description="Show My Mix folder in the Browse section. "
+            "When disabled, My Mix will not appear in Browse.",
+            default_value=False,  # Experimental feature - disabled by default
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_MIX_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Mix Playlist",
+            description="Show My Mix as a virtual playlist in your library. "
+            "When disabled, My Mix will not appear in your playlists.",
+            default_value=False,  # Experimental feature - disabled by default
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_MIX_RADIO,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Mix Radio Mode",
+            description="Enable radio feedback for My Mix (like/dislike tracks). "
+            "When disabled, radio feedback will not be sent to Yandex.",
             default_value=False,  # Experimental feature - disabled by default
             required=False,
         ),

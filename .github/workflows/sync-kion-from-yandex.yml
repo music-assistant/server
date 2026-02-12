@@ -74,14 +74,20 @@ jobs:
             echo "sync_made_changes=true" >> $GITHUB_OUTPUT
           fi
 
+      - name: Install FFmpeg
+        if: steps.sync.outputs.sync_made_changes == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Run Kion tests
         if: steps.sync.outputs.sync_made_changes == 'true'
         run: |
           pip install uv
           uv pip install --system -e .[test]
-          uv pip install --system yandex-music==2.2.0 hass-client==1.2.0
-          pytest tests/providers/kion_music/ -v --tb=short
-        timeout-minutes: 10
+          uv pip install --system yandex-music==2.2.0 hass-client==1.2.0 pytest-timeout==2.3.1
+          pytest tests/providers/kion_music/ -v --tb=short --timeout=30 -x
+        timeout-minutes: 5
 
       - name: Create PR for Kion Music
         if: steps.sync.outputs.sync_made_changes == 'true'

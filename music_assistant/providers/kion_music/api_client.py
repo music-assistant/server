@@ -549,7 +549,7 @@ class KionMusicClient:
             )
             LOGGER.debug(
                 "If you have KION Music Plus and this track has lossless, "
-                "try a token from the web client (music.yandex.ru)."
+                "try a token from the web client (music.mts.ru)."
             )
             params_raw = {**base_params, "transports": "raw"}
             try:

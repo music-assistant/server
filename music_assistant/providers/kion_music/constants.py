@@ -30,6 +30,9 @@ CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
 CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
 CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
 CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
+CONF_ENABLE_MY_MIX_BROWSE: Final[str] = "enable_my_mix_browse"
+CONF_ENABLE_MY_MIX_PLAYLIST: Final[str] = "enable_my_mix_playlist"
+CONF_ENABLE_MY_MIX_RADIO: Final[str] = "enable_my_mix_radio"
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
