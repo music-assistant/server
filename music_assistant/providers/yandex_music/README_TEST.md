@@ -1,1 +1,1 @@
-# Test trigger for CI - full pipeline test with dependencies fix
+# Test trigger - full pipeline with all fixes
