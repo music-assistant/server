@@ -7,6 +7,7 @@ from typing import Final
 # Configuration Keys
 CONF_TOKEN = "token"
 CONF_QUALITY = "quality"
+CONF_BASE_URL = "base_url"
 
 # Actions
 CONF_ACTION_AUTH = "auth"
@@ -18,6 +19,7 @@ LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
+DEFAULT_BASE_URL: Final[str] = "https://music.mts.ru/ya_proxy_api"
 
 # Quality options
 QUALITY_HIGH = "high"

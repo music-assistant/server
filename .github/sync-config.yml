@@ -53,24 +53,9 @@ transformations:
   - pattern: 'MY_WAVE'
     replacement: 'MY_MIX'
 
-# File-specific transformations (critical for API endpoint)
+# File-specific transformations
 file_transformations:
   api_client.py:
-    # Preserve KION API endpoint
-    - pattern: 'GET_FILE_INFO_BASE_URL = "https://api.music.yandex.net"'
-      replacement: 'KION_BASE_URL = "https://music.mts.ru/ya_api"'
-    - pattern: 'base_url=GET_FILE_INFO_BASE_URL'
-      replacement: 'base_url=KION_BASE_URL'
-    - pattern: 'GET_FILE_INFO_BASE_URL'
-      replacement: 'KION_BASE_URL'
-    # Set base_url on client after creation (more reliable than constructor parameter)
-    - pattern: 'self._client = await ClientAsync(self._token).init()'
-      replacement: |
-        # Create client and set KION base URL
-                    client = ClientAsync(self._token)
-                    # Override base_url for KION Music API
-                    client.base_url = KION_BASE_URL
-                    self._client = await client.init()
     # Transform web URLs in error messages
     - pattern: 'music.yandex.ru'
       replacement: 'music.mts.ru'
@@ -90,6 +75,9 @@ file_transformations:
       replacement: 'ROTOR_STATION_MY_MIX'
     - pattern: 'MY_WAVE_PLAYLIST_ID'
       replacement: 'MY_MIX_PLAYLIST_ID'
+    # Change default base URL to KION endpoint
+    - pattern: 'DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"'
+      replacement: 'DEFAULT_BASE_URL: Final[str] = "https://music.mts.ru/ya_proxy_api"'
 
   __init__.py:
     # Mark experimental features with default=False
@@ -98,6 +86,9 @@ file_transformations:
       replacement: 'default_value=False,  # Experimental feature - disabled by default'
     - pattern: 'default_value=True'
       replacement: 'default_value=False  # Experimental feature - disabled by default'
+    # Fix base_url description for KION
+    - pattern: 'Only change if Yandex Music changes their API endpoint. Default: https://api.music.yandex.net'
+      replacement: 'Only change if KION Music changes their API endpoint. Default: https://music.mts.ru/ya_proxy_api'
 
   manifest.json:
     - pattern: '"domain": "yandex_music"'
@@ -117,8 +108,6 @@ file_transformations:
   test_api_client.py:
     - pattern: 'from music_assistant.providers.yandex_music'
       replacement: 'from music_assistant.providers.kion_music'
-    - pattern: 'GET_FILE_INFO_BASE_URL'
-      replacement: 'KION_BASE_URL'
 
   test_parsers.py:
     - pattern: 'from music_assistant.providers.yandex_music'
@@ -145,5 +134,4 @@ file_transformations:
 exclude_features: []
 
 # Constants to preserve (won't be overwritten by sync)
-preserve_constants:
-  - KION_BASE_URL
+preserve_constants: []

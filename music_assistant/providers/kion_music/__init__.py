@@ -9,6 +9,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
+    CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
     CONF_ENABLE_MY_MIX_BROWSE,
@@ -20,6 +21,7 @@ from .constants import (
     CONF_QUALITY,
     CONF_TOKEN,
     CONF_TRACK_BATCH_SIZE,
+    DEFAULT_BASE_URL,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
@@ -191,5 +193,16 @@ async def get_config_entries(
             "When disabled, radio feedback will not be sent to Yandex.",
             default_value=False,  # Experimental feature - disabled by default
             required=False,
+        ),
+        ConfigEntry(
+            key=CONF_BASE_URL,
+            type=ConfigEntryType.STRING,
+            label="API Base URL",
+            description="API endpoint base URL. "
+            "Only change if KION Music changes their API endpoint. "
+            "Default: https://music.mts.ru/ya_proxy_api",
+            default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
         ),
     )

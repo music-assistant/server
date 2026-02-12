@@ -27,8 +27,6 @@ from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (KION API moved to these formats around 2025)
 GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
-# get-file-info: same host as library (all requests go through one API)
-KION_BASE_URL = "https://music.mts.ru/ya_api"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,12 +34,14 @@ LOGGER = logging.getLogger(__name__)
 class KionMusicClient:
     """Wrapper around yandex-music-api ClientAsync."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, base_url: str | None = None) -> None:
         """Initialize the KION Music client.
 
         :param token: KION Music OAuth token.
+        :param base_url: Optional API base URL (defaults to KION Music API).
         """
         self._token = token
+        self._base_url = base_url
         self._client: ClientAsync | None = None
         self._user_id: int | None = None
 
@@ -59,11 +59,7 @@ class KionMusicClient:
         :raises LoginFailed: If the token is invalid.
         """
         try:
-            # Create client and set KION base URL
-            client = ClientAsync(self._token)
-            # Override base_url for KION Music API
-            client.base_url = KION_BASE_URL
-            self._client = await client.init()
+            self._client = await ClientAsync(self._token, base_url=self._base_url).init()
             if self._client.me is None or self._client.me.account is None:
                 raise LoginFailed("Failed to get account info")
             self._user_id = self._client.me.account.uid
@@ -531,7 +527,7 @@ class KionMusicClient:
                 return None
             return cast("dict[str, Any]", download_info)
 
-        url = f"{KION_BASE_URL}/get-file-info"
+        url = f"{client.base_url}/get-file-info"
         params_encraw = {**base_params, "transports": "encraw"}
         try:
             result = await client._request.get(url, params=params_encraw)

@@ -35,6 +35,7 @@ from .api_client import YandexMusicClient
 from .constants import (
     BROWSE_NAMES_EN,
     BROWSE_NAMES_RU,
+    CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
     CONF_ENABLE_MY_WAVE_BROWSE,
@@ -45,6 +46,7 @@ from .constants import (
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_TOKEN,
     CONF_TRACK_BATCH_SIZE,
+    DEFAULT_BASE_URL,
     MY_WAVE_PLAYLIST_ID,
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
@@ -114,7 +116,8 @@ class YandexMusicProvider(MusicProvider):
         if not token:
             raise LoginFailed("No Yandex Music token provided")
 
-        self._client = YandexMusicClient(str(token))
+        base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
+        self._client = YandexMusicClient(str(token), base_url=str(base_url))
         await self._client.connect()
         # Suppress yandex_music library DEBUG dumps (full API request/response JSON)
         logging.getLogger("yandex_music").setLevel(self.logger.level + 10)

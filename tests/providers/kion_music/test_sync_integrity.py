@@ -118,20 +118,24 @@ def test_experimental_features_disabled() -> None:
 def test_kion_api_endpoint_preserved() -> None:
     """Verify KION uses correct API endpoint."""
     api_client = KION_DIR / "api_client.py"
+    constants = KION_DIR / "constants.py"
 
-    if not api_client.exists():
-        pytest.skip("api_client.py not found")
+    if not api_client.exists() or not constants.exists():
+        pytest.skip("api_client.py or constants.py not found")
 
-    content = api_client.read_text()
+    api_content = api_client.read_text()
+    constants_content = constants.read_text()
 
-    # Check for KION API endpoint
-    assert "music.mts.ru/ya_api" in content, "KION API endpoint missing or incorrect"
+    # Check for KION API endpoint (updated to ya_proxy_api)
+    assert "music.mts.ru/ya_proxy_api" in constants_content, (
+        "KION API endpoint missing or incorrect in constants.py"
+    )
 
-    # Check for KION_BASE_URL constant
-    assert "KION_BASE_URL" in content, "KION_BASE_URL constant not found"
+    # Check for DEFAULT_BASE_URL constant (replaces KION_BASE_URL)
+    assert "DEFAULT_BASE_URL" in constants_content, "DEFAULT_BASE_URL constant not found"
 
-    # Verify Yandex endpoint not present
-    assert "api.music.yandex.net" not in content, "Found Yandex API endpoint (should be KION)"
+    # Verify Yandex endpoint not present in api_client
+    assert "api.music.yandex.net" not in api_content, "Found Yandex API endpoint (should be KION)"
 
 
 def test_kion_manifest_correct() -> None:
