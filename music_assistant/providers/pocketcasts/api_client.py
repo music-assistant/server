@@ -86,78 +86,65 @@ class PocketCastsClient:
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching subscribed podcasts")
+        LOGGER.debug("Fetching subscribed podcasts")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/podcast/list", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get podcasts: %d - %s", response.status, text)
-                    return []
+        async with self.session.post(
+            f"{self.BASE_URL}/user/podcast/list", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get podcasts: {response.status} - {text}")
 
-                data = await response.json()
-                podcasts: list[dict[str, Any]] = data.get("podcasts", [])
-                LOGGER.info("Retrieved %d subscribed podcasts", len(podcasts))
-                return podcasts
-
-        except Exception as err:
-            LOGGER.error("Error fetching podcasts: %s", err)
-            return []
+            data = await response.json()
+            podcasts: list[dict[str, Any]] = data.get("podcasts", [])
+            LOGGER.info("Retrieved %d subscribed podcasts", len(podcasts))
+            return podcasts
 
     async def get_podcast_episodes(self, podcast_uuid: str) -> list[dict[str, Any]]:
         """Get episodes for a specific podcast via API redirect."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching episodes via API redirect for podcast %s", podcast_uuid)
+        LOGGER.debug("Fetching episodes via API redirect for podcast %s", podcast_uuid)
 
-            async with self.session.get(
-                f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
-                allow_redirects=True,
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
+        async with self.session.get(
+            f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
+            allow_redirects=True,
+        ) as response:
+            if response.status != 200:
+                raise PocketCastsAPIError(
+                    f"Failed to get episodes for {podcast_uuid}: {response.status}"
+                )
 
-                    # Episodes are nested inside the podcast object
-                    podcast_obj = data.get("podcast", {})
-                    episodes: list[dict[str, Any]] = podcast_obj.get("episodes", [])
+            data = await response.json()
+            podcast_obj = data.get("podcast", {})
+            episodes: list[dict[str, Any]] = podcast_obj.get("episodes", [])
 
-                    LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
-                    return episodes
-                LOGGER.error("Failed to get episodes: %d", response.status)
-                return []
-
-        except Exception as err:
-            LOGGER.error("Error fetching episodes: %s", err)
-            return []
+            LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
+            return episodes
 
     async def get_in_progress_episodes(self) -> list[dict[str, Any]]:
         """Get episodes currently in progress."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching in-progress episodes")
+        LOGGER.debug("Fetching in-progress episodes")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/in_progress", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get in-progress: %d - %s", response.status, text)
-                    return []
+        async with self.session.post(
+            f"{self.BASE_URL}/user/in_progress", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get in-progress: {response.status} - {text}")
 
-                data = await response.json()
-                episodes: list[dict[str, Any]] = data.get("episodes", [])
-                LOGGER.debug("Retrieved %d in-progress episodes", len(episodes))
-                return episodes
-
-        except Exception as err:
-            LOGGER.error("Error fetching in-progress: %s", err)
-            return []
+            data = await response.json()
+            episodes: list[dict[str, Any]] = data.get("episodes", [])
+            LOGGER.debug("Retrieved %d in-progress episodes", len(episodes))
+            return episodes
 
     async def get_up_next_episodes(self) -> dict[str, dict[str, Any]] | list[dict[str, Any]]:
         """Get Up Next queue episodes.
@@ -167,102 +154,84 @@ class PocketCastsClient:
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching Up Next episodes")
+        LOGGER.debug("Fetching Up Next episodes")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/up_next/list", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get up next: %d - %s", response.status, text)
-                    return {}
+        async with self.session.post(
+            f"{self.BASE_URL}/up_next/list", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get up next: {response.status} - {text}")
 
-                data = await response.json()
-                episodes: dict[str, dict[str, Any]] | list[dict[str, Any]] = data.get(
-                    "episodes", {}
-                )
-                LOGGER.debug("Retrieved %d up next episodes", len(episodes))
-                return episodes
-
-        except Exception as err:
-            LOGGER.error("Error fetching up next: %s", err)
-            return {}
+            data = await response.json()
+            episodes: dict[str, dict[str, Any]] | list[dict[str, Any]] = data.get("episodes", {})
+            LOGGER.debug("Retrieved %d up next episodes", len(episodes))
+            return episodes
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
         """Get new release episodes from subscriptions."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching new releases")
+        LOGGER.debug("Fetching new releases")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/new_releases", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get new releases: %d - %s", response.status, text)
-                    return []
+        async with self.session.post(
+            f"{self.BASE_URL}/user/new_releases", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get new releases: {response.status} - {text}")
 
-                data = await response.json()
-                episodes: list[dict[str, Any]] = data.get("episodes", [])
-                LOGGER.debug("Retrieved %d new release episodes", len(episodes))
-                return episodes
-
-        except Exception as err:
-            LOGGER.error("Error fetching new releases: %s", err)
-            return []
+            data = await response.json()
+            episodes: list[dict[str, Any]] = data.get("episodes", [])
+            LOGGER.debug("Retrieved %d new release episodes", len(episodes))
+            return episodes
 
     async def get_starred_episodes(self) -> list[dict[str, Any]]:
         """Get starred/favorited episodes."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching starred episodes")
+        LOGGER.debug("Fetching starred episodes")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/starred", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get starred: %d - %s", response.status, text)
-                    return []
+        async with self.session.post(
+            f"{self.BASE_URL}/user/starred", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get starred: {response.status} - {text}")
 
-                data = await response.json()
-                episodes: list[dict[str, Any]] = data.get("episodes", [])
-                LOGGER.debug("Retrieved %d starred episodes", len(episodes))
-                return episodes
-
-        except Exception as err:
-            LOGGER.error("Error fetching starred: %s", err)
-            return []
+            data = await response.json()
+            episodes: list[dict[str, Any]] = data.get("episodes", [])
+            LOGGER.debug("Retrieved %d starred episodes", len(episodes))
+            return episodes
 
     async def get_history(self) -> list[dict[str, Any]]:
         """Get listening history episodes."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching history")
+        LOGGER.debug("Fetching history")
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/history", headers=self._headers()
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to get history: %d - %s", response.status, text)
-                    return []
+        async with self.session.post(
+            f"{self.BASE_URL}/user/history", headers=self._headers()
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
+                text = await response.text()
+                raise PocketCastsAPIError(f"Failed to get history: {response.status} - {text}")
 
-                data = await response.json()
-                episodes: list[dict[str, Any]] = data.get("episodes", [])
-                LOGGER.debug("Retrieved %d history episodes", len(episodes))
-                return episodes
-
-        except Exception as err:
-            LOGGER.error("Error fetching history: %s", err)
-            return []
+            data = await response.json()
+            episodes: list[dict[str, Any]] = data.get("episodes", [])
+            LOGGER.debug("Retrieved %d history episodes", len(episodes))
+            return episodes
 
     async def update_episode_progress(
         self, podcast_uuid: str, episode_uuid: str, position_seconds: int
@@ -497,91 +466,81 @@ class PocketCastsClient:
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching episode details for %s", episode_uuid)
+        LOGGER.debug("Fetching episode details for %s", episode_uuid)
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/episode",
-                headers=self._headers(),
-                json={"uuid": episode_uuid},
-            ) as response:
-                if response.status == 200:
-                    data: dict[str, Any] = await response.json()
-                    LOGGER.debug(
-                        "Episode %s: duration=%s, status=%s, playedUpTo=%s",
-                        episode_uuid,
-                        data.get("duration"),
-                        data.get("playingStatus"),
-                        data.get("playedUpTo"),
-                    )
-                    return data
-
+        async with self.session.post(
+            f"{self.BASE_URL}/user/episode",
+            headers=self._headers(),
+            json={"uuid": episode_uuid},
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
                 text = await response.text()
-                LOGGER.error("Failed to get episode details: %d - %s", response.status, text)
-                return None
+                raise PocketCastsAPIError(
+                    f"Failed to get episode details: {response.status} - {text}"
+                )
 
-        except Exception as err:
-            LOGGER.error("Error fetching episode details: %s", err)
-            return None
+            data: dict[str, Any] = await response.json()
+            LOGGER.debug(
+                "Episode %s: duration=%s, status=%s, playedUpTo=%s",
+                episode_uuid,
+                data.get("duration"),
+                data.get("playingStatus"),
+                data.get("playedUpTo"),
+            )
+            return data
 
     async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
         """Search for podcasts."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Searching for podcasts: %s", query)
+        LOGGER.debug("Searching for podcasts: %s", query)
 
-            # Try api domain first
-            async with self.session.post(
-                f"{self.BASE_URL}/discover/search", headers=self._headers(), json={"term": query}
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    podcasts: list[dict[str, Any]] = data.get("podcasts", [])
-                    LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
-                    return podcasts
+        async with self.session.post(
+            f"{self.BASE_URL}/discover/search", headers=self._headers(), json={"term": query}
+        ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
+            if response.status != 200:
                 text = await response.text()
-                LOGGER.error("Search failed: %d - %s", response.status, text)
-                return []
+                raise PocketCastsAPIError(f"Search failed: {response.status} - {text}")
 
-        except Exception as err:
-            LOGGER.error("Error searching: %s", err)
-            return []
+            data = await response.json()
+            podcasts: list[dict[str, Any]] = data.get("podcasts", [])
+            LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
+            return podcasts
 
     async def get_podcast_details(self, podcast_uuid: str) -> dict[str, Any] | None:
         """Get details for any podcast by UUID (not just subscribed)."""
         if not self.session:
             raise PocketCastsAPIError("Session not initialized")
 
-        try:
-            LOGGER.debug("Fetching podcast details for %s", podcast_uuid)
+        LOGGER.debug("Fetching podcast details for %s", podcast_uuid)
 
-            # Try multiple possible endpoints
-            endpoints = [
-                (f"{self.BASE_URL}/discover/podcast", {"uuid": podcast_uuid}),
-                (f"{self.BASE_URL}/podcast/full/{podcast_uuid}", {}),
-            ]
+        endpoints: list[tuple[str, dict[str, str]]] = [
+            (f"{self.BASE_URL}/discover/podcast", {"uuid": podcast_uuid}),
+            (f"{self.BASE_URL}/podcast/full/{podcast_uuid}", {}),
+        ]
 
-            for endpoint, data in endpoints:
-                async with self.session.post(
-                    endpoint, headers=self._headers(), json=data if data else None
-                ) as response:
-                    LOGGER.debug("Trying %s: status %d", endpoint, response.status)
+        for endpoint, data in endpoints:
+            async with self.session.post(
+                endpoint, headers=self._headers(), json=data if data else None
+            ) as response:
+                LOGGER.debug("Trying %s: status %d", endpoint, response.status)
 
-                    if response.status == 200:
-                        result = await response.json()
-                        podcast_data = result.get("podcast")
-                        if podcast_data is not None:
-                            return cast("dict[str, Any]", podcast_data)
-                        return None
+                if response.status in (401, 403):
+                    raise LoginError(f"Authentication failed with status {response.status}")
+                if response.status == 200:
+                    result = await response.json()
+                    podcast_data = result.get("podcast")
+                    if podcast_data is not None:
+                        return cast("dict[str, Any]", podcast_data)
+                    return None
 
-            LOGGER.debug("All podcast detail endpoints returned 404")
-            return None
-
-        except Exception as err:
-            LOGGER.error("Error fetching podcast details: %s", err)
-            return None
+        LOGGER.debug("All podcast detail endpoints returned non-200 for %s", podcast_uuid)
+        return None
 
     async def subscribe_podcast(self, podcast_uuid: str) -> bool:
         """Subscribe to a podcast.

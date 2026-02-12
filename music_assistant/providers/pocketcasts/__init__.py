@@ -407,17 +407,21 @@ class PocketCastsProvider(MusicProvider):
         if not self._client:
             return []
 
-        # Get episodes from the appropriate API endpoint
-        if folder_name == "up_next":
-            episode_list = await self._client.get_up_next_episodes()
-        elif folder_name == "new_releases":
-            episode_list = await self._client.get_new_releases()
-        elif folder_name == "in_progress":
-            episode_list = await self._client.get_in_progress_episodes()
-        elif folder_name == "starred":
-            episode_list = await self._client.get_starred_episodes()
-        else:  # history
-            episode_list = await self._client.get_history()
+        try:
+            # Get episodes from the appropriate API endpoint
+            if folder_name == "up_next":
+                episode_list = await self._client.get_up_next_episodes()
+            elif folder_name == "new_releases":
+                episode_list = await self._client.get_new_releases()
+            elif folder_name == "in_progress":
+                episode_list = await self._client.get_in_progress_episodes()
+            elif folder_name == "starred":
+                episode_list = await self._client.get_starred_episodes()
+            else:  # history
+                episode_list = await self._client.get_history()
+        except Exception as err:
+            LOGGER.error("Error fetching %s folder: %s", folder_name, err)
+            return []
 
         LOGGER.debug("Got %d episodes from %s API", len(episode_list), folder_name)
 
