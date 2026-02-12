@@ -104,8 +104,6 @@ class SyncGroupPlayer(GroupPlayer):
         self._cache.clear()  # clear to prevent loading old is_dynamic
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         if self.is_dynamic:
-            # Dynamic groups have no static (non-removable) members,
-            # so the frontend shows checkboxes for all members.
             self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
@@ -303,13 +301,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
-            # Reset to the configured members list when powered off
-            # (the frontend will hide unavailable members).
-            # We read from config directly instead of _attr_static_group_members
-            # because dynamic groups have an empty static list (all members removable).
             configured_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
             self._attr_group_members = configured_members.copy()
-            # and clear the sync leader
             self.sync_leader = None
         self.update_state()
 
