@@ -54,6 +54,101 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
+BROWSE_FOLDER_ICONS: dict[str, str] = {
+    "up_next": (
+        "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
+        "ZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiPgogICAgPHBhdGggZmls"
+        "bD0iIzhGOTdBNCIgZD0iTTMgMi45NzE1OUMzIDIuNTY0OSAzLjQ1OTY4IDIuMzI4MzQgMy43OTA2Mi"
+        "AyLjU2NDcyTDkuNDMwMzkgNi41OTMxM0M5LjcwOTU2IDYuNzkyNTQgOS43MDk1NiA3LjIwNzQ1IDku"
+        "NDMwMzkgNy40MDY4NkwzLjc5MDYyIDExLjQzNTNDMy40NTk2OSAxMS42NzE2IDMgMTEuNDM1MSAzID"
+        "ExLjAyODRWMi45NzE1OVoiLz4KICAgIDxwYXRoIGZpbGw9IiM4Rjk3QTQiIG9wYWNpdHk9IjAuNS"
+        "IgZD0iTTEyIDdDMTIgNi40NDc3MiAxMi40NDc3IDYgMTMgNkgyMUMyMS41NTIzIDYgMjIgNi40NDc3"
+        "MiAyMiA3QzIyIDcuNTUyMjggMjEuNTUyMyA4IDIxIDhIMTNDMTIuNDQ3NyA4IDEyIDcuNTUyMjggMT"
+        "IgN1pNOSAxMkM5IDExLjQ0NzcgOS40NDc3MiAxMSAxMCAxMUgyMUMyMS41NTIzIDExIDIyIDExLjQ0Nz"
+        "cgMjIgMTJDMjIgMTIuNTUyMyAyMS41NTIzIDEzIDIxIDEzSDEwQzkuNDQ3NzIgMTMgOSAxMi41NTIz"
+        "IDkgMTJaTTEwIDE2QzkuNDQ3NzIgMTYgOSAxNi40NDc3IDkgMTdDOSAxNy41NTIzIDkuNDQ3NzIgMT"
+        "ggMTAgMThIMjFDMjEuNTUyMyAxOCAyMiAxNy41NTIzIDIyIDE3QzIyIDE2LjQ0NzcgMjEuNTUyMyAx"
+        "NiAyMSAxNkgxMFoiLz4KPC9zdmc+Cg=="
+    ),
+    "new_releases": (
+        "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
+        "ZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiPgogICAgPGcgZmlsbD0i"
+        "IzhGOTdBNCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMCwgMSkiPgogICAgICAgIDxwYXRoIGQ9Ik0xNC"
+        "43OTM1IDQuNTU3MzVMMTUuNzc0MSAwLjc4OTIwOUMxNS45Njg4IDAuMDQxMDUwOSAxNy4wMzExIDAu"
+        "MDQxMDcxOSAxNy4yMjU4IDAuNzg5MjM3TDE4LjIwNjIgNC41NTczMkMxOC4yNzcgNC44MjkxNSAxOC"
+        "40OTM3IDUuMDM4NjggMTguNzY3NyA1LjEwMDIzTDIxLjc0MTkgNS43NjgyM0MyMi41MjI4IDUuOTQz"
+        "NjIgMjIuNTIyOCA3LjA1NjM5IDIxLjc0MTkgNy4yMzE3N0wxOC43Njc3IDcuODk5NzdDMTguNDkzNy"
+        "A3Ljk2MTMyIDE4LjI3NyA4LjE3MDg1IDE4LjIwNjIgOC40NDI2OEwxNy4yMjU4IDEyLjIxMDhDMTcu"
+        "MDMxMSAxMi45NTg5IDE1Ljk2ODggMTIuOTU4OSAxNS43NzQxIDEyLjIxMDhMMTQuNzkzNSA4LjQ0Mj"
+        "Y1QzE0LjcyMjcgOC4xNzA4MyAxNC41MDYxIDcuOTYxMzIgMTQuMjMyIDcuODk5NzdMMTEuMjU4IDcu"
+        "MjMxNzdDMTAuNDc3MSA3LjA1NjM5IDEwLjQ3NzEgNS45NDM2MiAxMS4yNTggNS43NjgyNEwxNC4yMz"
+        "IgNS4xMDAyM0MxNC41MDYxIDUuMDM4NjggMTQuNzIyNyA0LjgyOTE3IDE0Ljc5MzUgNC41NTczNVoi"
+        "Lz4KICAgICAgICA8cGF0aCBvcGFjaXR5PSIwLjgiIGQ9Ik01LjI5OTQgOS4yNjgzTDYuMDMwNjYgNy"
+        "4yNzc2M0M2LjE5MTEyIDYuODQwODUgNi44MDg4OCA2Ljg0MDg1IDYuOTY5MzQgNy4yNzc2M0w3Ljcw"
+        "MDYgOS4yNjgzQzcuNzU0MjUgOS40MTQzNSA3Ljg3Mjg0IDkuNTI3MSA4LjAyMTQxIDkuNTczMzJMOS"
+        "40NjU0MSAxMC4wMjI2QzkuOTM0MDMgMTAuMTY4MyA5LjkzNDAzIDEwLjgzMTYgOS40NjU0MSAxMC45"
+        "Nzc0TDguMDIxNCAxMS40MjY3QzcuODcyODMgMTEuNDcyOSA3Ljc1NDI1IDExLjU4NTYgNy43MDA2ID"
+        "ExLjczMTdMNi45NjkzMyAxMy43MjI0QzYuODA4ODggMTQuMTU5MiA2LjE5MTEyIDE0LjE1OTIgNi4w"
+        "MzA2NiAxMy43MjI0TDUuMjk5NCAxMS43MzE3QzUuMjQ1NzUgMTEuNTg1NiA1LjEyNzE3IDExLjQ3Mj"
+        "kgNC45Nzg2IDExLjQyNjdMMy41MzQ1OSAxMC45Nzc0QzMuMDY1OTcgMTAuODMxNiAzLjA2NTk3IDEw"
+        "LjE2ODMgMy41MzQ1OSAxMC4wMjI2TDQuOTc4NTkgOS41NzMzMkM1LjEyNzE2IDkuNTI3MSA1LjI0NT"
+        "c1IDkuNDE0MzUgNS4yOTk0IDkuMjY4M1oiLz4KICAgICAgICA8cGF0aCBvcGFjaXR5PSIwLjYiIGQ9"
+        "Ik0xMC42ODgyIDE2LjAxNEwxMS41MjQ3IDEzLjQ1NDNDMTEuNjc0OSAxMi45OTQ3IDEyLjMyNTEgMT"
+        "IuOTk0NyAxMi40NzUzIDEzLjQ1NDNMMTMuMzExOCAxNi4wMTRDMTMuMzYwNCAxNi4xNjI3IDEzLjQ3"
+        "NTcgMTYuMjggMTMuNjIzNSAxNi4zMzEyTDE1LjYzNSAxNy4wMjc1QzE2LjA4MzYgMTcuMTgyOCAxNi"
+        "4wODM2IDE3LjgxNzIgMTUuNjM1IDE3Ljk3MjVMMTMuNjIzNSAxOC42Njg4QzEzLjQ3NTcgMTguNzIg"
+        "MTMuMzYwNCAxOC44MzczIDEzLjMxMTggMTguOTg2TDEyLjQ3NTMgMjEuNTQ1N0MxMi4zMjUxIDIyLj"
+        "AwNTMgMTEuNjc0OSAyMi4wMDUzIDExLjUyNDcgMjEuNTQ1N0wxMC42ODgyIDE4Ljk4NkMxMC42Mzk2"
+        "IDE4LjgzNzMgMTAuNTI0MyAxOC43MiAxMC4zNzY1IDE4LjY2ODhMOC4zNjQ5OCAxNy45NzI1QzcuOT"
+        "E2MzggMTcuODE3MiA3LjkxNjM5IDE3LjE4MjggOC4zNjQ5OCAxNy4wMjc1TDEwLjM3NjUgMTYuMzMx"
+        "MkMxMC41MjQzIDE2LjI4IDEwLjYzOTYgMTYuMTYyNyAxMC42ODgyIDE2LjAxNFoiLz4KICAgIDwvZz"
+        "4KPC9zdmc+Cg=="
+    ),
+    "in_progress": (
+        "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
+        "ZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiPgogICAgPHBhdGggZmls"
+        "bD0iIzhGOTdBNCIgb3BhY2l0eT0iMC41IiBkPSJNNCAxMkM0IDE2LjQxODMgNy41ODE3MiAyMCAxMi"
+        "AyMEMxNi40MTgzIDIwIDIwIDE2LjQxODMgMjAgMTJDMjAgNy41ODE3MiAxNi40MTgzIDQgMTIgNEM3"
+        "LjU4MTcyIDQgNCA3LjU4MTcyIDQgMTJaTTE4IDEyQzE4IDE1LjMxMzcgMTUuMzEzNyAxOCAxMiAxOE"
+        "M4LjY4NjI5IDE4IDYgMTUuMzEzNyA2IDEyQzYgOC42ODYyOSA4LjY4NjI5IDYgMTIgNkMxNS4zMTM3"
+        "IDYgMTggOC42ODYyOSAxOCAxMloiLz4KICAgIDxwYXRoIGZpbGw9IiM4Rjk3QTQiIGQ9Ik0xNi45Mj"
+        "UzIDE4LjMwNDFDMjAuNDA2OSAxNS41ODM5IDIxLjAyNDMgMTAuNTU2NCAxOC4zMDQxIDcuMDc0NzJD"
+        "MTYuODI2OSA1LjE4Mzk0IDE0LjYxNjcgNC4wODMyNyAxMi4yNjUgNC4wMDQyNEMxMS43MTMxIDMuOT"
+        "g1NjkgMTEuMjUwNiA0LjQxODExIDExLjIzMiA0Ljk3MDA4QzExLjIxMzUgNS41MjIwNiAxMS42NDU5"
+        "IDUuOTg0NTYgMTIuMTk3OSA2LjAwMzExQzEzLjk2MzkgNi4wNjI0NiAxNS42MTkzIDYuODg2ODYgMT"
+        "YuNzI4MSA4LjMwNjA1QzE4Ljc2ODIgMTAuOTE3MyAxOC4zMDUyIDE0LjY4OCAxNS42OTQgMTYuNzI4"
+        "MUMxNS4yNTg4IDE3LjA2ODEgMTUuMTgxNiAxNy42OTY1IDE1LjUyMTYgMTguMTMxOEMxNS44NjE2ID"
+        "E4LjU2NyAxNi40OTAxIDE4LjY0NDEgMTYuOTI1MyAxOC4zMDQxWiIvPgo8L3N2Zz4K"
+    ),
+    "starred": (
+        "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
+        "ZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiPgogICAgPHBhdGggZmls"
+        "bD0iIzhGOTdBNCIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMSwgLTAuNSkiIGQ9Ik0xMS41ODMxIDE3Lj"
+        "Q3NzZMOC4wNzM4NCAxOS4yOTMzQzcuMDk0MTMgMTkuODAwMiA2LjQ0NjgxIDE5LjMxOTcgNi42MjQ2"
+        "NiAxOC4yNDA0TDcuMjY3MDcgMTQuMzQxOEw0LjQ1NTgxIDExLjU2NTRDMy42NzA5NyAxMC43OTAzID"
+        "MuOTI3OTEgMTAuMDI2MiA1LjAwOTM1IDkuODYxNzdMOC45MTU2NSA5LjI2ODAxTDEwLjY4NzUgNS43"
+        "MzYzOEMxMS4xODIxIDQuNzUwNDIgMTEuOTg4MiA0Ljc1ODY3IDEyLjQ3ODggNS43MzYzOEwxNC4yNT"
+        "A2IDkuMjY4MDFMMTguMTU2OSA5Ljg2MTc3QzE5LjI0NzQgMTAuMDI3NSAxOS40ODg3IDEwLjc5Njgg"
+        "MTguNzEwNCAxMS41NjU0TDE1Ljg5OTIgMTQuMzQxOEwxNi41NDE2IDE4LjI0MDRDMTYuNzIwOSAxOS"
+        "4zMjg4IDE2LjA2MzkgMTkuNzk2IDE1LjA5MjQgMTkuMjkzM0wxMS41ODMxIDE3LjQ3NzZaIi8+Cjwv"
+        "c3ZnPgo="
+    ),
+    "history": (
+        "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
+        "ZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiPgogICAgPHBhdGggZmls"
+        "bD0iIzhGOTdBNCIgb3BhY2l0eT0iMC41IiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMC41IDEzQz"
+        "EwLjUgMTMuNTUyMyAxMC45NDc3IDE0IDExLjUgMTRIMTQuNUMxNS4wNTIzIDE0IDE1LjUgMTMuNTUy"
+        "MyAxNS41IDEzQzE1LjUgMTIuNDQ3NyAxNS4wNTIzIDEyIDE0LjUgMTJIMTIuNUwxMi41IDEwQzEyLj"
+        "UgOS40NDc3MiAxMi4wNTIzIDkgMTEuNSA5QzEwLjk0NzcgOSAxMC41IDkuNDQ3NzIgMTAuNSAxMFYx"
+        "M1oiLz4KICAgIDxwYXRoIGZpbGw9IiM4Rjk3QTQiIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1y"
+        "dWxlPSJldmVub2RkIiBkPSJNMTIgMThDMTUuMzEzNyAxOCAxOCAxNS4zMTM3IDE4IDEyQzE4IDguNj"
+        "g2MjkgMTUuMzEzNyA2IDEyIDZDOC42ODYyOSA2IDYgOC42ODYyOSA2IDEyQzYgMTUuMzEzNyA4LjY4"
+        "NjI5IDE4IDEyIDE4Wk0xMiAyMEMxNi40MTgzIDIwIDIwIDE2LjQxODMgMjAgMTJDMjAgNy41ODE3Mi"
+        "AxNi40MTgzIDQgMTIgNEM3LjU4MTcyIDQgNCA3LjU4MTcyIDQgMTJDNCAxNi40MTgzIDcuNTgxNzIg"
+        "MjAgMTIgMjBaIi8+Cjwvc3ZnPgo="
+    ),
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -147,6 +242,7 @@ class PocketCastsProvider(MusicProvider):
                             type=ImageType.THUMB,
                             path=f"https://static.pocketcasts.com/discover/images/280/{podcast_info['uuid']}.jpg",
                             provider=self.instance_id,
+                            remotely_accessible=True,
                         )
                     ]
                 ),
@@ -461,62 +557,27 @@ class PocketCastsProvider(MusicProvider):
 
     def _create_browse_folders(self) -> list[BrowseFolder]:
         """Create special browse folders for root level."""
+        folders = [
+            ("up_next", "Up Next"),
+            ("new_releases", "New Releases"),
+            ("in_progress", "In Progress"),
+            ("starred", "Starred"),
+            ("history", "History"),
+        ]
         return [
             BrowseFolder(
-                item_id="up_next",
+                item_id=folder_id,
                 provider=self.instance_id,
-                path=f"{self.instance_id}://up_next",
-                name="Up Next",
+                path=f"{self.instance_id}://{folder_id}",
+                name=name,
                 image=MediaItemImage(
                     type=ImageType.THUMB,
-                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
+                    path=BROWSE_FOLDER_ICONS[folder_id],
                     provider=self.instance_id,
+                    remotely_accessible=True,
                 ),
-            ),
-            BrowseFolder(
-                item_id="new_releases",
-                provider=self.instance_id,
-                path=f"{self.instance_id}://new_releases",
-                name="New Releases",
-                image=MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
-                    provider=self.instance_id,
-                ),
-            ),
-            BrowseFolder(
-                item_id="in_progress",
-                provider=self.instance_id,
-                path=f"{self.instance_id}://in_progress",
-                name="In Progress",
-                image=MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
-                    provider=self.instance_id,
-                ),
-            ),
-            BrowseFolder(
-                item_id="starred",
-                provider=self.instance_id,
-                path=f"{self.instance_id}://starred",
-                name="Starred",
-                image=MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
-                    provider=self.instance_id,
-                ),
-            ),
-            BrowseFolder(
-                item_id="history",
-                provider=self.instance_id,
-                path=f"{self.instance_id}://history",
-                name="History",
-                image=MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="https://static.pocketcasts.com/discover/images/280/default.jpg",
-                    provider=self.instance_id,
-                ),
-            ),
+            )
+            for folder_id, name in folders
         ]
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
