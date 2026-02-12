@@ -54,10 +54,13 @@
         return action;
     }
 
+    var wsRetryDelay = 1000;
+
     function connectPushWebSocket(deviceId) {
         if (typeof WebSocket === "undefined") return;
         var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
         var ws = new WebSocket(url);
+        ws.onopen = function() { wsRetryDelay = 1000; };
         ws.onmessage = function(ev) {
             try {
                 var msg = JSON.parse(ev.data);
@@ -115,7 +118,8 @@
             }
         };
         ws.onclose = function() {
-            setTimeout(function() { connectPushWebSocket(deviceId); }, 5000);
+            setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay);
+            wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
         };
     }
 

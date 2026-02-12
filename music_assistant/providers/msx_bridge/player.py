@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,6 +25,7 @@ class MSXPlayer(Player):
     _playing_from_queue: bool = False
     _playlist_offset: int = 0
     _playlist_size: int = 0
+    _media_ready: asyncio.Event
 
     def __init__(
         self,
@@ -53,6 +55,7 @@ class MSXPlayer(Player):
         self._attr_powered = True
         self._attr_volume_level = 100
         self.output_format = output_format
+        self._media_ready = asyncio.Event()
 
     @property
     def needs_poll(self) -> bool:
@@ -69,6 +72,7 @@ class MSXPlayer(Player):
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self.current_stream_url = media.uri
         self._attr_current_media = media
+        self._media_ready.set()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -249,6 +253,7 @@ class MSXPlayer(Player):
         self.logger.info("stop on %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
+        self._media_ready.clear()
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self.current_stream_url = None
@@ -276,3 +281,19 @@ class MSXPlayer(Player):
             self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
             self._attr_elapsed_time_last_updated = now
             self.update_state()
+
+    async def wait_for_media(self, timeout: float = 10.0) -> PlayerMedia | None:
+        """Wait for play_media() to set current_media, with timeout.
+
+        Fast path: if play_media() already ran (e.g. during queue.play_media),
+        current_media is set — return immediately without waiting.
+        Slow path: clear the event and wait for play_media() to signal.
+        """
+        if self._attr_current_media is not None and self._media_ready.is_set():
+            return self._attr_current_media
+        self._media_ready.clear()
+        try:
+            await asyncio.wait_for(self._media_ready.wait(), timeout=timeout)
+        except TimeoutError:
+            return None
+        return self._attr_current_media

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient as AiohttpTestClient
@@ -588,14 +588,11 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
             artist=None,
             album=None,
             image_url=None,
-            duration=None,
+            duration=180,
         )
         player.current_media = media
+        player.wait_for_media = AsyncMock(return_value=media)
         mass_mock.players.get.return_value = player
-
-        track = Mock()
-        track.duration = 180
-        mass_mock.music.get_item_by_uri.return_value = track
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -634,14 +631,11 @@ async def test_msx_audio_from_playlist_skips_ws(
             artist=None,
             album=None,
             image_url=None,
-            duration=None,
+            duration=180,
         )
         player.current_media = media
+        player.wait_for_media = AsyncMock(return_value=media)
         mass_mock.players.get.return_value = player
-
-        track = Mock()
-        track.duration = 180
-        mass_mock.music.get_item_by_uri.return_value = track
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))

@@ -21,3 +21,7 @@ MSX_PLAYER_ID_PREFIX = "msx_"
 
 # Sanitize device_id or IP for use in player_id (alphanumeric + underscore only)
 PLAYER_ID_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_]+")
+
+# Pre-buffer size: accumulate this many bytes before sending HTTP headers to prevent
+# MSX stutter/restart when ffmpeg hasn't produced data yet.
+PRE_BUFFER_BYTES = 64 * 1024

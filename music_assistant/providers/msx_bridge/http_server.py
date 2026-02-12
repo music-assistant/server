@@ -22,6 +22,7 @@ from .constants import (
     DEFAULT_SHOW_STOP_NOTIFICATION,
     MSX_PLAYER_ID_PREFIX,
     PLAYER_ID_SANITIZE_RE,
+    PRE_BUFFER_BYTES,
 )
 from .mappers import (
     append_device_param,
@@ -798,14 +799,6 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
 
-        # Resolve track URI to get duration metadata before playback
-        track_duration: int = 0
-        try:
-            media_item = await self.provider.mass.music.get_item_by_uri(uri)
-            track_duration = getattr(media_item, "duration", 0) or 0
-        except Exception:
-            logger.warning("Could not resolve track metadata for URI: %s", uri)
-
         # Suppress WS broadcast when called from MSX playlist to avoid conflicts
         if from_playlist:
             player._skip_ws_notify = True
@@ -816,18 +809,23 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if from_playlist:
             player._skip_ws_notify = False
 
-        # Wait for play_media() to set the PlayerMedia on our player
-        media = None
-        for _ in range(100):  # Poll up to 10 seconds
-            media = player.current_media
-            if media:
-                break
-            await asyncio.sleep(0.1)
+        # Wait for play_media() to signal media is ready (replaces 10s polling loop)
+        media = await player.wait_for_media(timeout=10.0)
 
         if not media:
             return web.Response(status=504, text="Playback setup timeout")
 
-        duration = track_duration or media.duration or 0
+        # Resolve duration from media or queue item (avoids pre-play metadata lookup)
+        duration = media.duration or 0
+        if not duration and media.source_id and media.queue_item_id:
+            queue_item = self.provider.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
+            if queue_item:
+                if queue_item.media_item:
+                    duration = getattr(queue_item.media_item, "duration", None) or duration
+                if not duration and queue_item.duration:
+                    duration = queue_item.duration
 
         return await self._serve_audio_stream(
             request,
@@ -868,7 +866,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             "Accept-Ranges": "none",
         }
         if duration and bytes_per_sec:
-            headers["Content-Length"] = str(int(duration * bytes_per_sec))
+            # Add 2s safety margin for ffmpeg encoding overhead (headers, padding).
+            # If actual stream is shorter, MSX handles early EOF gracefully.
+            headers["Content-Length"] = str(int((duration + 2) * bytes_per_sec))
         return pcm_format, out_format, headers
 
     async def _serve_audio_stream(
@@ -878,7 +878,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         media: Any,
         duration: int = 0,
     ) -> web.StreamResponse:
-        """Unified method to stream audio from MA to MSX via ffmpeg."""
+        """Unified method to stream audio from MA to MSX via ffmpeg.
+
+        Pre-buffers audio data before sending HTTP headers so MSX receives
+        the response and initial audio burst simultaneously, preventing
+        stutter/restart from an empty initial buffer.
+        """
         player_id = player.player_id
         pcm_format, out_format, headers = self._build_audio_params(
             player.output_format,
@@ -899,16 +904,29 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         )
 
         response = web.StreamResponse(status=200, headers=headers)
-        await response.prepare(request)
-
+        stream_task: asyncio.Task[None] = asyncio.create_task(
+            self._stream_with_prebuffer(
+                request, response, player, headers, audio_source, pcm_format, out_format
+            )
+        )
         transport = getattr(request, "transport", None)
-        # Re-check: stop may have been called while we were preparing
-        if not player.current_media:
-            if transport and hasattr(transport, "abort"):
-                transport.abort()
-            return response
+        await self._run_stream_task(player_id, stream_task, transport)
 
-        chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=8)
+        return response
+
+    async def _stream_with_prebuffer(
+        self,
+        request: web.Request,
+        response: web.StreamResponse,
+        player: MSXPlayer,
+        headers: dict[str, str],
+        audio_source: Any,
+        pcm_format: AudioFormat,
+        out_format: AudioFormat,
+    ) -> None:
+        """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
+        player_id = player.player_id
+        chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=32)
 
         async def producer() -> None:
             try:
@@ -922,30 +940,61 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 with contextlib.suppress(asyncio.QueueFull):
                     chunk_queue.put_nowait(None)
 
-        async def stream_loop() -> None:
-            producer_task: asyncio.Task[None] | None = None
-            try:
-                producer_task = asyncio.create_task(producer())
-                while True:
-                    chunk = await chunk_queue.get()
-                    if chunk is None:
-                        break
-                    await response.write(chunk)
-            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-                logger.debug("Client disconnected from stream %s", player_id)
-            except asyncio.CancelledError:
-                logger.debug("Stream cancelled for player %s", player_id)
-                raise
-            finally:
-                if producer_task and not producer_task.done():
-                    producer_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await producer_task
+        producer_task: asyncio.Task[None] | None = None
+        total_bytes = 0
+        try:
+            producer_task = asyncio.create_task(producer())
 
-        stream_task: asyncio.Task[None] = asyncio.create_task(stream_loop())
-        await self._run_stream_task(player_id, stream_task, transport)
+            # Phase 1: Pre-buffer — collect chunks until we have enough data
+            pre_buffer: list[bytes] = []
+            pre_buffer_size = 0
+            while pre_buffer_size < PRE_BUFFER_BYTES:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                pre_buffer.append(chunk)
+                pre_buffer_size += len(chunk)
 
-        return response
+            # Re-check: stop may have been called while buffering
+            if not player.current_media and not pre_buffer:
+                return
+
+            # NOW send HTTP headers + pre-buffer burst
+            await response.prepare(request)
+            for buf_chunk in pre_buffer:
+                await response.write(buf_chunk)
+                total_bytes += len(buf_chunk)
+
+            # If pre-buffer ended with sentinel, we're done
+            if chunk is None:
+                return
+
+            # Phase 2: Stream remaining chunks normally
+            while True:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                await response.write(chunk)
+                total_bytes += len(chunk)
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            logger.debug("Client disconnected from stream %s", player_id)
+        except asyncio.CancelledError:
+            logger.debug("Stream cancelled for player %s", player_id)
+            raise
+        finally:
+            if producer_task and not producer_task.done():
+                producer_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await producer_task
+            content_length = headers.get("Content-Length")
+            if content_length:
+                logger.debug(
+                    "Stream %s: wrote %d bytes, Content-Length=%s, diff=%d",
+                    player_id,
+                    total_bytes,
+                    content_length,
+                    total_bytes - int(content_length),
+                )
 
     async def _run_stream_task(
         self,
