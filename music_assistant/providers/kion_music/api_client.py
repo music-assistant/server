@@ -59,7 +59,11 @@ class KionMusicClient:
         :raises LoginFailed: If the token is invalid.
         """
         try:
-            self._client = await ClientAsync(self._token, base_url=KION_BASE_URL).init()
+            # Create client and set KION base URL
+            client = ClientAsync(self._token)
+            # Override base_url for KION Music API
+            client.base_url = KION_BASE_URL
+            self._client = await client.init()
             if self._client.me is None or self._client.me.account is None:
                 raise LoginFailed("Failed to get account info")
             self._user_id = self._client.me.account.uid

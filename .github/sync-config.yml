@@ -63,9 +63,14 @@ file_transformations:
       replacement: 'base_url=KION_BASE_URL'
     - pattern: 'GET_FILE_INFO_BASE_URL'
       replacement: 'KION_BASE_URL'
-    # Add base_url parameter to ClientAsync constructor
-    - pattern: 'ClientAsync(self._token)'
-      replacement: 'ClientAsync(self._token, base_url=KION_BASE_URL)'
+    # Set base_url on client after creation (more reliable than constructor parameter)
+    - pattern: 'self._client = await ClientAsync(self._token).init()'
+      replacement: |
+        # Create client and set KION base URL
+                    client = ClientAsync(self._token)
+                    # Override base_url for KION Music API
+                    client.base_url = KION_BASE_URL
+                    self._client = await client.init()
     # Transform web URLs in error messages
     - pattern: 'music.yandex.ru'
       replacement: 'music.mts.ru'
