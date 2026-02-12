@@ -44,7 +44,7 @@ from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
-from music_assistant.helpers.util import get_ip_addresses
+from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -108,7 +108,7 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
@@ -123,7 +123,9 @@ class WebserverController(CoreController):
         # Determine if SSL is enabled from values
         ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
         protocol = "https" if ssl_enabled else "http"
-        default_base_url = f"{protocol}://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
+        default_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
+        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -224,10 +226,10 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces. \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"
@@ -303,7 +305,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses()
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site

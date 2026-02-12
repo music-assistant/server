@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -60,6 +61,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
+    ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -67,6 +69,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -90,7 +93,12 @@ from .sync_groups import SyncGroupController, SyncGroupPlayer
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+        PlayerConfig,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -220,6 +228,14 @@ class PlayerController(CoreController):
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
         self._sync_groups: SyncGroupController = SyncGroupController(self)
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return Config Entries for the Player Controller."""
+        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -371,10 +387,36 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
+        Performs case-insensitive matching against the player's state name
+        (the final name visible in clients and API).
+        If multiple players match, logs a warning and returns the first match.
+
         :param name: Name of the player.
         :return: Player object or None.
         """
-        return next((x for x in self._players.values() if x.name == name), None)
+        name_normalized = name.strip().lower()
+        matches: list[Player] = []
+
+        for player in self._players.values():
+            if player.state.name.strip().lower() == name_normalized:
+                matches.append(player)
+
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            player_ids = [p.player_id for p in matches]
+            self.logger.warning(
+                "players/get_by_name: Multiple players found with name '%s': %s - "
+                "returning first match (%s). "
+                "Consider using the players/get API with player_id instead "
+                "for unambiguous lookups.",
+                name,
+                player_ids,
+                matches[0].player_id,
+            )
+
+        return matches[0]
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
@@ -792,6 +834,25 @@ class PlayerController(CoreController):
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
+    @api_command("players/cmd/group_volume_mute")
+    @handle_player_command
+    async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME_MUTE command to all players in a group.
+
+        - player_id: player_id of the group player or sync leader.
+        - muted: bool if group should be muted.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checker
+        if player.type == PlayerType.GROUP or player.group_members:
+            # dedicated group player or sync leader
+            coros = []
+            for child_player in self.iter_group_members(
+                player, only_powered=True, exclude_self=False
+            ):
+                coros.append(self.cmd_volume_mute(child_player.player_id, muted))
+            await asyncio.gather(*coros)
+
     @api_command("players/cmd/volume_mute")
     @handle_player_command
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
@@ -802,6 +863,15 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
         assert player
+
+        # Set/clear mute lock for players in a group
+        # This prevents auto-unmute when group volume changes
+        is_in_group = bool(player.synced_to or player.group_members)
+        if muted and is_in_group:
+            player.extra_data[ATTR_MUTE_LOCK] = True
+        elif not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
         if player.mute_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support muting"
@@ -955,6 +1025,70 @@ class PlayerController(CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
         await player.play_media(media)
+
+    @api_command("players/cmd/select_sound_mode")
+    @handle_player_command
+    async def select_sound_mode(self, player_id: str, sound_mode: str) -> None:
+        """
+        Handle SELECT SOUND MODE command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - sound_mode: The ID of the sound mode that needs to be activated/selected.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.SELECT_SOUND_MODE not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support sound mode selection"
+            )
+
+        prev_sound_mode = player.active_sound_mode
+        if sound_mode == prev_sound_mode:
+            return
+
+        # basic check if sound mode is valid for player
+        if not any(x for x in player.sound_mode_list if x.id == sound_mode):
+            raise PlayerCommandFailed(
+                f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
+            )
+
+        # forward to player
+        await player.select_sound_mode(sound_mode)
+
+    @api_command("players/cmd/set_option")
+    @handle_player_command
+    async def set_option(
+        self, player_id: str, option_key: str, option_value: PlayerOptionValueType
+    ) -> None:
+        """
+        Handle SET_OPTION command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - option_key: The key of the player option that needs to be activated/selected.
+        - option_value: The new value of the player option.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.OPTIONS not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support set_option"
+            )
+
+        prev_player_option = next((x for x in player.options if x.key == option_key), None)
+        if not prev_player_option:
+            return
+        if prev_player_option.value == option_value:
+            return
+
+        if prev_player_option.read_only:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} option {option_key} is read-only"
+            )
+
+        # forward to player
+        await player.set_option(option_key=option_key, option_value=option_value)
 
     @api_command("players/cmd/select_source")
     @handle_player_command
@@ -1556,6 +1690,12 @@ class PlayerController(CoreController):
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
+        # signal a separate PlayerOptionsUpdated event
+        if options := changed_values.get("options"):
+            self.mass.signal_event(
+                EventType.PLAYER_OPTIONS_UPDATED, object_id=player_id, data=options
+            )
+
         if skip_forward and not force_update:
             return
 
@@ -1665,6 +1805,7 @@ class PlayerController(CoreController):
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
             # Use private method to skip permission check - already validated on group
+            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
@@ -2358,11 +2499,15 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support volume control"
             )
 
+        # Check if player has mute lock (set when individually muted in a group)
+        # If locked, don't auto-unmute when volume changes
+        has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
-            player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            not has_mute_lock
+            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.volume_muted
         ):
-            # if player is muted, we unmute it first
+            # if player is muted and not locked, we unmute it first
             # skip this for fake mute since it uses volume to simulate mute
             self.logger.debug(
                 "Unmuting player %s before setting volume",

@@ -71,15 +71,6 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 )
 
 BROKEN_AIRPLAY_MODELS = (
-    # A recent fw update of newer gen Sonos speakers have AirPlay issues,
-    # basically rendering our (both AP2 and RAOP) implementation useless on these devices.
-    # This list contains the models that are known to have this issue.
-    # Hopefully the issue won't spread to other models.
-    ("Sonos", "Era 100"),
-    ("Sonos", "Era 300"),
-    ("Sonos", "Move 2"),
-    ("Sonos", "Roam 2"),
-    ("Sonos", "Arc Ultra"),
     # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
     ("Samsung", "*"),
 )
@@ -88,5 +79,4 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
-    ("Juke Audio", "*"),
 )

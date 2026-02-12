@@ -92,6 +92,8 @@ class SnapcastSocketServer:
             self._unsub_callback = None
 
         if self._client_writer:
+            with suppress(Exception):
+                await self.notify_shutdown()
             self._client_writer.close()
             with suppress(Exception):
                 await self._client_writer.wait_closed()
@@ -105,6 +107,15 @@ class SnapcastSocketServer:
         # Clean up socket file
         Path(self.socket_path).unlink(missing_ok=True)
         self._logger.debug("Stopped Unix socket server")
+
+    async def notify_shutdown(self) -> None:
+        """Tell the control script to exit."""
+        await self._send_message(
+            {
+                "event": "shutdown",
+                "object_id": self.queue_id,
+            }
+        )
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
