@@ -65,6 +65,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
+    PLAYLIST_MEDIA_TYPES,
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
@@ -679,6 +680,29 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
+
+    @api_command("player_queues/save_as_playlist")
+    async def save_as_playlist(self, queue_id: str, name: str) -> Playlist:
+        """Save the current queue items as a new playlist.
+
+        :param queue_id: The queue_id of the queue to save.
+        :param name: The name for the new playlist.
+        """
+        if not self.get(queue_id):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        queue_items = self._queue_items.get(queue_id, [])
+        if not queue_items:
+            raise QueueEmpty("Cannot save an empty queue as a playlist.")
+        # collect URIs from queue items that are playlist-compatible
+        uris: list[str] = []
+        for item in queue_items:
+            if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES:
+                uris.append(item.uri)
+        if not uris:
+            raise InvalidDataError("No valid items in queue to save as playlist.")
+        playlist = await self.mass.music.playlists.create_playlist(name)
+        await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
+        return playlist
 
     @api_command("player_queues/stop")
     async def stop(self, queue_id: str) -> None:
