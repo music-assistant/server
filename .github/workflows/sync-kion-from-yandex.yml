@@ -78,15 +78,16 @@ jobs:
         if: steps.sync.outputs.sync_made_changes == 'true'
         run: |
           pip install uv
-          uv pip install --system . .[test] -r requirements_all.txt
+          uv pip install --system -e .[test]
+          uv pip install --system yandex-music==2.2.0
           pytest tests/providers/kion_music/ -v --tb=short
+        timeout-minutes: 10
 
-      - name: Create PR for Kion Music (Upstream)
+      - name: Create PR for Kion Music
         if: steps.sync.outputs.sync_made_changes == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          push-to-fork: music-assistant/server  # Push to upstream, not fork
           commit-message: |
             feat(kion_music): sync with yandex_music provider updates
 
@@ -103,6 +104,8 @@ jobs:
             ## Automatic Synchronization - Kion Music Provider
 
             This PR syncs **Kion Music** provider with Yandex Music changes.
+
+            **Note:** Review this PR in the fork, then manually create PR to upstream `music-assistant/server` if ready.
 
             ### Changed Files (Source: Yandex Music)
             ```
@@ -147,12 +150,11 @@ jobs:
             experimental-features
             new-provider
 
-      - name: Create PR for Yandex Music (Upstream) - if direct changes
+      - name: Create PR for Yandex Music - if direct changes
         if: github.event_name != 'workflow_dispatch'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          push-to-fork: music-assistant/server  # Push to upstream
           commit-message: |
             feat(yandex_music): provider updates
 
@@ -166,6 +168,8 @@ jobs:
             ## Yandex Music Provider Updates
 
             This PR contains direct changes to **Yandex Music** provider.
+
+            **Note:** Review this PR in the fork, then manually create PR to upstream `music-assistant/server` if ready.
 
             ### Changed Files
             ```
