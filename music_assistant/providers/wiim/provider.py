@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from pywiim import WiiMClient
+from pywiim import WiiMClient, discover_devices
 from pywiim.upnp.client import UpnpClient
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
@@ -27,14 +27,16 @@ class WiimProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         self.logger.info("WiimProvider loaded")
 
-        # asdf = await discover_devices()
-
-        # for d in asdf:
-        #     self.logger.info("Found one %s", d)
+        discovered_devices = await discover_devices()
 
         manual_ip_config: list[str] = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
+
+        # Remove duplicates (by IP)
+        for device in discovered_devices:
+            if device.ip not in manual_ip_config:
+                manual_ip_config.append(device.ip)
 
         for ip_address in manual_ip_config:
             stripped_ip_address = ip_address.strip()
