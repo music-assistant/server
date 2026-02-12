@@ -84,6 +84,7 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_TOKEN))
 
     return (
+        # Authentication & Quality (no category, always visible)
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -113,6 +114,49 @@ async def get_config_entries(
             ],
             default_value=QUALITY_HIGH,
         ),
+        # My Wave category (user-facing toggles)
+        ConfigEntry(
+            key=CONF_ENABLE_RECOMMENDATIONS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Discover (Recommendations)",
+            description="Show My Wave recommendations on the home page. "
+            "When enabled, recommendations refresh each time you reload the page "
+            "for fresh discoveries.",
+            default_value=True,
+            required=False,
+            category="my_wave",
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave in Browse",
+            description="Show My Wave folder in the Browse section. "
+            "When disabled, My Wave will not appear in Browse.",
+            default_value=True,
+            required=False,
+            category="my_wave",
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Playlist",
+            description="Show My Wave as a virtual playlist in your library. "
+            "When disabled, My Wave will not appear in your playlists.",
+            default_value=True,
+            required=False,
+            category="my_wave",
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_RADIO,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Radio Mode",
+            description="Enable radio feedback for My Wave (like/dislike tracks). "
+            "When disabled, radio feedback will not be sent to Yandex.",
+            default_value=True,
+            required=False,
+            category="my_wave",
+        ),
+        # My Wave category (advanced performance tuning)
         ConfigEntry(
             key=CONF_MY_WAVE_MAX_TRACKS,
             type=ConfigEntryType.INTEGER,
@@ -121,6 +165,8 @@ async def get_config_entries(
             "Lower values load faster but provide fewer tracks. Default: 150.",
             default_value=150,
             required=False,
+            category="my_wave",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_MY_WAVE_BATCH_SIZE,
@@ -131,81 +177,10 @@ async def get_config_entries(
             "The 'Load more' button always makes 1 call. Default: 3.",
             default_value=3,
             required=False,
+            category="my_wave",
+            advanced=True,
         ),
-        ConfigEntry(
-            key=CONF_TRACK_BATCH_SIZE,
-            type=ConfigEntryType.INTEGER,
-            label="Track details batch size",
-            description="Number of tracks to fetch in one API request when loading track details. "
-            "Higher values are faster but may timeout. "
-            "Lower values are more reliable. Default: 50.",
-            default_value=50,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_DISCOVERY_INITIAL_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            label="Discovery initial tracks",
-            description="Number of tracks to show initially in Discover section. "
-            "Affects only the first display, all fetched tracks remain available. Default: 5.",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_BROWSE_INITIAL_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            label="Browse initial tracks",
-            description="Number of tracks to show initially when browsing My Wave. "
-            "Additional tracks can be loaded with 'Load more' button. Default: 15.",
-            default_value=15,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_RECOMMENDATIONS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Discover (Recommendations)",
-            description="Show My Wave recommendations on the home page. "
-            "When enabled, recommendations refresh each time you reload the page "
-            "for fresh discoveries.",
-            default_value=True,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_MY_WAVE_BROWSE,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable My Wave in Browse",
-            description="Show My Wave folder in the Browse section. "
-            "When disabled, My Wave will not appear in Browse.",
-            default_value=True,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_MY_WAVE_PLAYLIST,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable My Wave Playlist",
-            description="Show My Wave as a virtual playlist in your library. "
-            "When disabled, My Wave will not appear in your playlists.",
-            default_value=True,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_MY_WAVE_RADIO,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable My Wave Radio Mode",
-            description="Enable radio feedback for My Wave (like/dislike tracks). "
-            "When disabled, radio feedback will not be sent to Yandex.",
-            default_value=True,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_LIKED_TRACKS_MAX_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            label="Liked Tracks maximum tracks",
-            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
-            "Lower values load faster. Default: 500.",
-            default_value=500,
-            required=False,
-        ),
+        # Liked Tracks category (user-facing toggles)
         ConfigEntry(
             key=CONF_ENABLE_LIKED_TRACKS_BROWSE,
             type=ConfigEntryType.BOOLEAN,
@@ -214,6 +189,7 @@ async def get_config_entries(
             "When disabled, Liked Tracks will not appear in Browse.",
             default_value=True,
             required=False,
+            category="liked_tracks",
         ),
         ConfigEntry(
             key=CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
@@ -223,6 +199,51 @@ async def get_config_entries(
             "When disabled, Liked Tracks will not appear in your playlists.",
             default_value=True,
             required=False,
+            category="liked_tracks",
+        ),
+        # Liked Tracks category (advanced performance tuning)
+        ConfigEntry(
+            key=CONF_LIKED_TRACKS_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Liked Tracks maximum tracks",
+            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
+            "Lower values load faster. Default: 500.",
+            default_value=500,
+            required=False,
+            category="liked_tracks",
+            advanced=True,
+        ),
+        # Global advanced settings (no category)
+        ConfigEntry(
+            key=CONF_TRACK_BATCH_SIZE,
+            type=ConfigEntryType.INTEGER,
+            label="Track details batch size",
+            description="Number of tracks to fetch in one API request when loading track details. "
+            "Higher values are faster but may timeout. "
+            "Lower values are more reliable. Default: 50.",
+            default_value=50,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_DISCOVERY_INITIAL_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Discovery initial tracks",
+            description="Number of tracks to show initially in Discover section. "
+            "Affects only the first display, all fetched tracks remain available. Default: 5.",
+            default_value=5,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_BROWSE_INITIAL_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Browse initial tracks",
+            description="Number of tracks to show initially when browsing My Wave. "
+            "Additional tracks can be loaded with 'Load more' button. Default: 15.",
+            default_value=15,
+            required=False,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_BASE_URL,
