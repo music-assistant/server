@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import pywiim
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player import DeviceInfo
 from pywiim.upnp.eventer import UpnpEventer
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -39,8 +40,10 @@ class WiimPlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,
-            PlayerFeature.SELECT_SOURCE,
-            # PlayerFeature.PLAY_ANNOUNCEMENT,
+            PlayerFeature.NEXT_PREVIOUS,
+            PlayerFeature.SEEK,
+            # PlayerFeature.SELECT_SOURCE,
+            PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {provider.instance_id}
         self.wiim_client = client
@@ -64,6 +67,11 @@ class WiimPlayer(Player):
 
         # Start UPnP event subscriptions
         await self.wiim_eventer.start()
+
+        self._attr_device_info = DeviceInfo(
+            model=self.wiim_player.model if self.wiim_player.model else "",
+            software_version=self.wiim_player.firmware if self.wiim_player.firmware else "",
+        )
 
     @property
     def needs_poll(self) -> bool:
@@ -103,6 +111,18 @@ class WiimPlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         await self.wiim_player.set_mute(muted)
 
+    async def next_track(self) -> None:
+        """Next command."""
+        await self.wiim_player.next_track()
+
+    async def previous_track(self) -> None:
+        """Previous command."""
+        await self.wiim_player.previous_track()
+
+    async def seek(self, position: int) -> None:
+        """SEEK command on the player."""
+        await self.wiim_player.seek(position)
+
     async def play(self) -> None:
         """Play command."""
         await self.wiim_player.resume()
@@ -119,6 +139,12 @@ class WiimPlayer(Player):
         """Play media command."""
         await self.wiim_player.play_url(media.uri)
         self.current_uri = media.uri
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """Handle (native) playback of an announcement on the player."""
+        await self.wiim_player.play_notification(announcement.uri)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
