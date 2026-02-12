@@ -44,28 +44,29 @@ def test_map_tracks_to_msx_playlist_basic() -> None:
     )
 
     assert content.type == "list"
-    # Auto-start at index 1
-    assert content.action == "player:goto:index:1"
+    # Always player:play — rotation puts the desired track at index 0
+    assert content.action == "player:play"
     assert content.items is not None
     assert len(content.items) == 2
 
+    # Items rotated by start_index=1: [Track 2, Track 1]
     item0 = content.items[0]
-    assert item0.title == "Track 1"
+    assert item0.title == "Track 2"
     assert item0.action is not None
     assert item0.action.startswith("audio:")
-    assert "library%3A%2F%2Ftrack%2F1" in item0.action
+    assert "library%3A%2F%2Ftrack%2F2" in item0.action
     assert "/msx/audio/msx_1.mp3?" in item0.action
     assert "&from_playlist=1" in item0.action
-    assert item0.player_label == "Track 1"
-    assert item0.duration == 180
+    assert item0.player_label == "Track 2"
+    assert item0.duration == 200
     assert item0.label is not None
-    assert "3:00" in item0.label
-    assert "Artist 1" in item0.label
+    assert "3:20" in item0.label
+    assert "Artist 2" in item0.label
 
     item1 = content.items[1]
-    assert item1.title == "Track 2"
+    assert item1.title == "Track 1"
     assert item1.action is not None
-    assert "library%3A%2F%2Ftrack%2F2" in item1.action
+    assert "library%3A%2F%2Ftrack%2F1" in item1.action
 
 
 def test_map_tracks_to_msx_playlist_start_zero() -> None:

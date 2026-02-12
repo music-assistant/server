@@ -458,7 +458,7 @@ async def test_msx_tracks_have_action(provider: MSXBridgeProvider, mass_mock: Mo
         data = await resp.json()
         item = data["items"][0]
         assert "action" in item
-        assert item["action"].startswith("playlist:auto:")
+        assert item["action"].startswith("playlist:")
         assert "/msx/playlist/tracks.json" in item["action"]
         assert "playerLabel" in item
         assert item["playerLabel"] == "Test Track"
@@ -485,7 +485,7 @@ async def test_msx_album_tracks(provider: MSXBridgeProvider, mass_mock: Mock) ->
         assert len(data["items"]) == 1
         item = data["items"][0]
         assert item["title"] == "Test Track"
-        assert item["action"].startswith("playlist:auto:")
+        assert item["action"].startswith("playlist:")
         assert "/msx/playlist/album/" in item["action"]
     finally:
         await client.close()
@@ -533,7 +533,7 @@ async def test_msx_playlist_tracks(provider: MSXBridgeProvider, mass_mock: Mock)
         assert len(data["items"]) == 1
         item = data["items"][0]
         assert item["title"] == "Test Track"
-        assert item["action"].startswith("playlist:auto:")
+        assert item["action"].startswith("playlist:")
         assert "/msx/playlist/playlist/" in item["action"]
     finally:
         await client.close()
@@ -714,7 +714,7 @@ async def test_msx_playlist_playlist_endpoint(provider: MSXBridgeProvider, mass_
         assert resp.status == 200
         data = await resp.json()
         assert data["type"] == "list"
-        assert data["action"] == "player:goto:index:1"
+        assert data["action"] == "player:play"
         assert len(data["items"]) == 1
     finally:
         await client.close()
@@ -845,7 +845,7 @@ async def test_msx_queue_playlist_with_start_index(
         resp = await client.get("/msx/queue-playlist/msx_test.json?start=1")
         assert resp.status == 200
         data = await resp.json()
-        assert data["action"] == "player:goto:index:1"
+        assert data["action"] == "player:play"
     finally:
         await client.close()
 
