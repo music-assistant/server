@@ -1,0 +1,187 @@
+name: Sync Kion Music from Yandex Music
+
+# Triggers when Yandex Music provider changes are pushed to integration branch
+# This branch collects changes before they go upstream to music-assistant/server
+on:
+  push:
+    branches:
+      - integration/pending-upstream-prs
+    paths:
+      - 'music_assistant/providers/yandex_music/**'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Which provider to sync (yandex_music or kion_music)'
+        required: true
+        type: choice
+        options:
+          - yandex_music
+          - kion_music
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      changed_files: ${{ steps.check.outputs.changed_files }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Check for Yandex Music changes
+        id: check
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep "music_assistant/providers/yandex_music/" || true)
+          if [ -n "$CHANGED" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGED" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  sync-providers:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml
+
+      - name: Run synchronization
+        id: sync
+        run: |
+          python scripts/sync_kion_from_yandex.py --verbose
+          if git diff --quiet music_assistant/providers/kion_music/; then
+            echo "sync_made_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "sync_made_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Kion tests
+        if: steps.sync.outputs.sync_made_changes == 'true'
+        run: |
+          pip install uv
+          uv pip install --system . .[test] -r requirements_all.txt
+          pytest tests/providers/kion_music/ -v --tb=short
+
+      - name: Create PR for Kion Music (Upstream)
+        if: steps.sync.outputs.sync_made_changes == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push-to-fork: music-assistant/server  # Push to upstream, not fork
+          commit-message: |
+            feat(kion_music): sync with yandex_music provider updates
+
+            Synchronized Kion Music provider with latest Yandex Music changes:
+            - My Wave → My Mix branding
+            - Experimental features (disabled by default)
+            - API endpoint preserved: music.mts.ru/ya_api
+
+            Co-Authored-By: GitHub Actions Bot <actions@github.com>
+          branch: auto-sync/kion-music-${{ github.run_number }}
+          delete-branch: true
+          title: "feat(kion_music): Sync with Yandex Music provider updates"
+          body: |
+            ## Automatic Synchronization - Kion Music Provider
+
+            This PR syncs **Kion Music** provider with Yandex Music changes.
+
+            ### Changed Files (Source: Yandex Music)
+            ```
+            ${{ needs.detect-changes.outputs.changed_files }}
+            ```
+
+            ### Transformations Applied
+            - Class names: `YandexMusic*` → `KionMusic*`
+            - Branding: "Yandex Music" → "KION Music"
+            - Feature naming: "My Wave/Моя волна" → "My Mix/Мой Микс"
+            - API endpoint: Preserved `music.mts.ru/ya_api`
+            - Experimental features: Disabled by default (recommendations, My Mix)
+
+            ### Test Results
+            ✅ Kion provider tests passed
+
+            ### Experimental Features
+            The following features are marked as experimental and **disabled by default**:
+            - My Mix (My Wave equivalent) - AI-powered recommendations
+            - Rotor stations
+            - Similar tracks recommendations
+
+            Users must explicitly enable these in settings.
+
+            ### Review Checklist
+            - [ ] Code changes correct for Kion
+            - [ ] API endpoint not accidentally changed (must be music.mts.ru/ya_api)
+            - [ ] My Wave → My Mix rebranding applied
+            - [ ] Experimental features disabled by default
+            - [ ] Tests pass
+            - [ ] No Kion-specific customizations lost
+
+            **Note**: This is **one of two PRs** from this sync:
+            1. **This PR**: Kion Music provider changes
+            2. **Separate PR**: Yandex Music provider changes (if any direct commits)
+
+            Auto-generated by `.github/workflows/sync-kion-from-yandex.yml`
+          labels: |
+            auto-sync
+            kion_music
+            requires-review
+            experimental-features
+            new-provider
+
+      - name: Create PR for Yandex Music (Upstream) - if direct changes
+        if: github.event_name != 'workflow_dispatch'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          push-to-fork: music-assistant/server  # Push to upstream
+          commit-message: |
+            feat(yandex_music): provider updates
+
+            Direct updates to Yandex Music provider.
+
+            Co-Authored-By: GitHub Actions Bot <actions@github.com>
+          branch: upstream-sync/yandex-music-${{ github.run_number }}
+          delete-branch: true
+          title: "feat(yandex_music): Provider updates"
+          body: |
+            ## Yandex Music Provider Updates
+
+            This PR contains direct changes to **Yandex Music** provider.
+
+            ### Changed Files
+            ```
+            ${{ needs.detect-changes.outputs.changed_files }}
+            ```
+
+            ### Review Checklist
+            - [ ] Changes reviewed
+            - [ ] Tests pass
+            - [ ] Documentation updated if needed
+
+            **Note**: This is **one of two PRs**:
+            1. **This PR**: Yandex Music provider direct changes
+            2. **Separate PR**: Kion Music provider sync (auto-generated)
+
+            Auto-generated by sync workflow
+          labels: |
+            yandex_music
+            requires-review

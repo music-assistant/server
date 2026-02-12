@@ -1,0 +1,93 @@
+# Synchronization: Yandex Music → Kion Music
+# This configuration defines how to sync Yandex Music provider to Kion Music provider
+upstream_provider: yandex_music
+downstream_provider: kion_music
+
+# Files to sync (all provider files)
+sync_files:
+  - provider.py
+  - api_client.py
+  - parsers.py
+  - streaming.py
+  - constants.py
+  - __init__.py
+  - manifest.json
+
+# Global string transformations (applied in order)
+# Note: Preserves 'yandex_music' library imports since both providers use the same library
+# IMPORTANT: More specific patterns must come BEFORE general ones
+transformations:
+  # Class names (must come before general string replacements)
+  - pattern: 'YandexMusicProvider'
+    replacement: 'KionMusicProvider'
+  - pattern: 'YandexMusicClient'
+    replacement: 'KionMusicClient'
+  - pattern: 'YandexMusicStreamingManager'
+    replacement: 'KionMusicStreamingManager'
+
+  # Branding in strings and docstrings (specific before general)
+  - pattern: 'Yandex Music service'
+    replacement: 'KION Music (MTS) service'
+  - pattern: 'Yandex Music provider'
+    replacement: 'KION Music provider'
+  - pattern: 'Yandex Music'
+    replacement: 'KION Music'
+  - pattern: 'Yandex API'
+    replacement: 'KION API'
+
+  # Feature branding: My Wave → My Mix
+  - pattern: 'My Wave'
+    replacement: 'My Mix'
+  - pattern: 'Моя волна'
+    replacement: 'Мой Микс'
+  - pattern: 'my_wave'
+    replacement: 'my_mix'
+  - pattern: 'MY_WAVE'
+    replacement: 'MY_MIX'
+
+# File-specific transformations (critical for API endpoint)
+file_transformations:
+  api_client.py:
+    # Preserve KION API endpoint
+    - pattern: 'GET_FILE_INFO_BASE_URL = "https://api.music.yandex.net"'
+      replacement: 'KION_BASE_URL = "https://music.mts.ru/ya_api"'
+    - pattern: 'base_url=GET_FILE_INFO_BASE_URL'
+      replacement: 'base_url=KION_BASE_URL'
+    - pattern: 'GET_FILE_INFO_BASE_URL'
+      replacement: 'KION_BASE_URL'
+
+  constants.py:
+    # Rename My Wave constants to My Mix
+    - pattern: 'CONF_MY_WAVE_MAX_TRACKS'
+      replacement: 'CONF_MY_MIX_MAX_TRACKS'
+    - pattern: 'CONF_MY_WAVE_BATCH_SIZE'
+      replacement: 'CONF_MY_MIX_BATCH_SIZE'
+    - pattern: 'ROTOR_STATION_MY_WAVE'
+      replacement: 'ROTOR_STATION_MY_MIX'
+    - pattern: 'MY_WAVE_PLAYLIST_ID'
+      replacement: 'MY_MIX_PLAYLIST_ID'
+
+  __init__.py:
+    # Mark experimental features with default=False
+    # Handle both with and without trailing comma
+    - pattern: 'default_value=True,'
+      replacement: 'default_value=False,  # Experimental feature - disabled by default'
+    - pattern: 'default_value=True'
+      replacement: 'default_value=False  # Experimental feature - disabled by default'
+
+  manifest.json:
+    - pattern: '"domain": "yandex_music"'
+      replacement: '"domain": "kion_music"'
+    - pattern: '"name": "Yandex Music"'
+      replacement: '"name": "KION Music"'
+    - pattern: 'Stream music from Yandex Music service.'
+      replacement: 'Stream music from KION Music (MTS) service.'
+    - pattern: '"documentation": "https://music-assistant.io/music-providers/yandex-music/"'
+      replacement: '"documentation": "https://music-assistant.io/music-providers/kion-music/"'
+
+# Features to exclude if KION API doesn't support them (empty = sync all)
+exclude_features: []
+
+# Constants to preserve (won't be overwritten by sync)
+preserve_constants:
+  - KION_BASE_URL
