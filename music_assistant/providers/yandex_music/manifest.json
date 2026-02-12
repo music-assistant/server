@@ -3,7 +3,7 @@
   "domain": "yandex_music",
   "stage": "beta",
   "name": "Yandex Music",
-  "description": "Stream music from Yandex Music service.",
+  "description": "Stream music from Yandex Music service",
   "codeowners": ["@TrudenBoy"],
   "documentation": "https://beta.music-assistant.io/music-providers/yandex-music/",
   "requirements": ["yandex-music==2.2.0"],
