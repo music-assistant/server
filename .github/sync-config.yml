@@ -91,10 +91,10 @@ file_transformations:
       replacement: '"domain": "kion_music"'
     - pattern: '"name": "Yandex Music"'
       replacement: '"name": "KION Music"'
-    - pattern: 'Stream music from Yandex Music service.'
-      replacement: 'Stream music from KION Music (MTS) service.'
-    - pattern: '"documentation": "https://music-assistant.io/music-providers/yandex-music/"'
-      replacement: '"documentation": "https://music-assistant.io/music-providers/kion-music/"'
+    - pattern: 'Stream music from Yandex Music service'
+      replacement: 'Stream music from KION Music (MTS) service'
+    - pattern: 'yandex-music/'
+      replacement: 'kion-music/'
 
 # Features to exclude if KION API doesn't support them (empty = sync all)
 exclude_features: []
