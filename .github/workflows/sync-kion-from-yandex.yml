@@ -79,7 +79,7 @@ jobs:
         run: |
           pip install uv
           uv pip install --system -e .[test]
-          uv pip install --system yandex-music==2.2.0
+          uv pip install --system yandex-music==2.2.0 hass-client==1.2.0
           pytest tests/providers/kion_music/ -v --tb=short
         timeout-minutes: 10
 
