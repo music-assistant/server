@@ -24,9 +24,17 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 PROVIDERS_DIR = PROJECT_ROOT / "music_assistant" / "providers"
+TESTS_DIR = PROJECT_ROOT / "tests" / "providers"
 YANDEX_DIR = PROVIDERS_DIR / "yandex_music"
 KION_DIR = PROVIDERS_DIR / "kion_music"
+YANDEX_TESTS_DIR = TESTS_DIR / "yandex_music"
+KION_TESTS_DIR = TESTS_DIR / "kion_music"
 DEFAULT_CONFIG = PROJECT_ROOT / ".github" / "sync-config.yml"
+
+# File rename mapping (source → target)
+FILE_RENAMES = {
+    "test_my_wave.py": "test_my_mix.py",
+}
 
 
 class ProviderSynchronizer:
@@ -86,32 +94,47 @@ class ProviderSynchronizer:
 
         return result
 
-    def sync_file(self, filename: str, *, dry_run: bool = False) -> bool:
-        """Sync a single file from Yandex to Kion.
+    def sync_file(
+        self,
+        filename: str,
+        *,
+        source_dir: Path,
+        dest_dir: Path,
+        dest_filename: str | None = None,
+        dry_run: bool = False,
+    ) -> bool:
+        """Sync a single file from source to destination.
 
-        :param filename: Name of file to sync.
+        :param filename: Name of source file to sync.
+        :param source_dir: Source directory path.
+        :param dest_dir: Destination directory path.
+        :param dest_filename: Optional different name for destination file.
         :param dry_run: If True, don't write changes to disk.
         """
-        yandex_file = YANDEX_DIR / filename
-        kion_file = KION_DIR / filename
+        source_file = source_dir / filename
+        target_filename = dest_filename or filename
+        dest_file = dest_dir / target_filename
 
-        if not yandex_file.exists():
-            logger.warning(f"Source file not found: {yandex_file}")
+        if not source_file.exists():
+            logger.warning(f"Source file not found: {source_file}")
             return False
 
-        logger.info(f"Syncing {filename}...")
+        if dest_filename:
+            logger.info(f"Syncing {filename}... → {target_filename}")
+        else:
+            logger.info(f"Syncing {filename}...")
 
         try:
-            # Read Yandex file
-            content = yandex_file.read_text(encoding="utf-8")
+            # Read source file
+            content = source_file.read_text(encoding="utf-8")
 
             # Apply transformations
             transformed = self._apply_transformations(content, filename)
 
-            # Write to Kion file (if not dry run)
+            # Write to destination file (if not dry run)
             if not dry_run:
-                kion_file.parent.mkdir(parents=True, exist_ok=True)
-                kion_file.write_text(transformed, encoding="utf-8")
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                dest_file.write_text(transformed, encoding="utf-8")
                 logger.info(f"  ✓ Synced {filename}")
             else:
                 logger.info(f"  [DRY RUN] Would sync {filename}")
@@ -134,16 +157,42 @@ class ProviderSynchronizer:
         logger.info(f"Downstream: {self.config['downstream_provider']}")
         logger.info("")
 
+        # Sync provider files
+        logger.info("Syncing provider files...")
         sync_files = self.config.get("sync_files", [])
         for filename in sync_files:
-            self.sync_file(filename, dry_run=dry_run)
+            self.sync_file(
+                filename,
+                source_dir=YANDEX_DIR,
+                dest_dir=KION_DIR,
+                dry_run=dry_run,
+            )
+
+        # Sync test files
+        sync_test_files = self.config.get("sync_test_files", [])
+        if sync_test_files:
+            logger.info("")
+            logger.info("Syncing test files...")
+            for filename in sync_test_files:
+                # Check if file should be renamed
+                dest_filename = FILE_RENAMES.get(filename)
+                self.sync_file(
+                    filename,
+                    source_dir=YANDEX_TESTS_DIR,
+                    dest_dir=KION_TESTS_DIR,
+                    dest_filename=dest_filename,
+                    dry_run=dry_run,
+                )
 
         # Print summary
+        total_files = len(sync_files) + len(sync_test_files)
         logger.info("")
         logger.info("=" * 60)
         logger.info("Synchronization Summary")
         logger.info("=" * 60)
-        logger.info(f"Files synced: {self.stats['files_synced']}/{len(sync_files)}")
+        logger.info(f"Provider files synced: {len(sync_files)}")
+        logger.info(f"Test files synced: {len(sync_test_files)}")
+        logger.info(f"Total files synced: {self.stats['files_synced']}/{total_files}")
         logger.info(f"Transformations: {self.stats['transformations_applied']}")
         logger.info(f"Errors: {self.stats['errors']}")
 

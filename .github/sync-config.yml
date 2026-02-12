@@ -13,6 +13,14 @@ sync_files:
   - __init__.py
   - manifest.json
 
+# Test files to sync (from tests/providers/yandex_music/ to tests/providers/kion_music/)
+sync_test_files:
+  - conftest.py
+  - test_api_client.py
+  - test_parsers.py
+  - test_streaming.py
+  - test_my_wave.py
+
 # Global string transformations (applied in order)
 # Note: Preserves 'yandex_music' library imports since both providers use the same library
 # IMPORTANT: More specific patterns must come BEFORE general ones
@@ -95,6 +103,38 @@ file_transformations:
       replacement: 'Stream music from KION Music (MTS) service'
     - pattern: 'yandex-music/'
       replacement: 'kion-music/'
+
+  # Test file transformations
+  conftest.py:
+    - pattern: 'yandex_music'
+      replacement: 'kion_music'
+
+  test_api_client.py:
+    - pattern: 'from music_assistant.providers.yandex_music'
+      replacement: 'from music_assistant.providers.kion_music'
+    - pattern: 'GET_FILE_INFO_BASE_URL'
+      replacement: 'KION_BASE_URL'
+
+  test_parsers.py:
+    - pattern: 'from music_assistant.providers.yandex_music'
+      replacement: 'from music_assistant.providers.kion_music'
+    - pattern: 'music.yandex.ru'
+      replacement: 'music.mts.ru'
+    - pattern: 'avatars.yandex.net'
+      replacement: 'avatars.yandex.net'
+
+  test_streaming.py:
+    - pattern: 'from music_assistant.providers.yandex_music'
+      replacement: 'from music_assistant.providers.kion_music'
+
+  test_my_wave.py:
+    # This file will be renamed to test_my_mix.py
+    - pattern: 'from music_assistant.providers.yandex_music'
+      replacement: 'from music_assistant.providers.kion_music'
+    - pattern: 'test_my_wave'
+      replacement: 'test_my_mix'
+    - pattern: 'test_parse_radio_item_id'
+      replacement: 'test_parse_radio_item_id'
 
 # Features to exclude if KION API doesn't support them (empty = sync all)
 exclude_features: []

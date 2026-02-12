@@ -23,6 +23,17 @@ DEFAULT_LIMIT: Final[int] = 50
 QUALITY_HIGH = "high"
 QUALITY_LOSSLESS = "lossless"
 
+# Configuration keys for My Mix behavior
+CONF_MY_MIX_MAX_TRACKS: Final[str] = "my_mix_max_tracks"
+CONF_MY_MIX_BATCH_SIZE: Final[str] = "my_mix_batch_size"
+CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
+CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
+CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
+CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
+CONF_ENABLE_MY_MIX_BROWSE: Final[str] = "enable_my_mix_browse"
+CONF_ENABLE_MY_MIX_PLAYLIST: Final[str] = "enable_my_mix_playlist"
+CONF_ENABLE_MY_MIX_RADIO: Final[str] = "enable_my_mix_radio"
+
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
@@ -30,3 +41,28 @@ IMAGE_SIZE_LARGE = "1000x1000"
 
 # ID separators
 PLAYLIST_ID_SPLITTER: Final[str] = ":"
+
+# Rotor (radio) station identifiers
+ROTOR_STATION_MY_MIX: Final[str] = "user:onyourwave"
+
+# Virtual playlist ID for My Mix (used in get_playlist / get_playlist_tracks; not owner_id:kind)
+MY_MIX_PLAYLIST_ID: Final[str] = "my_mix"
+
+# Composite item_id for My Mix tracks: track_id + separator + station_id (for rotor feedback)
+RADIO_TRACK_ID_SEP: Final[str] = "@"
+
+# Browse folder names by locale (item_id -> display name)
+BROWSE_NAMES_RU: Final[dict[str, str]] = {
+    "my_mix": "Мой Микс",
+    "artists": "Мои исполнители",
+    "albums": "Мои альбомы",
+    "tracks": "Мне нравится",
+    "playlists": "Мои плейлисты",
+}
+BROWSE_NAMES_EN: Final[dict[str, str]] = {
+    "my_mix": "My Mix",
+    "artists": "My Artists",
+    "albums": "My Albums",
+    "tracks": "My Favorites",
+    "playlists": "My Playlists",
+}
