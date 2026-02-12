@@ -9,14 +9,19 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
+    CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_WAVE_BROWSE,
+    CONF_ENABLE_MY_WAVE_PLAYLIST,
+    CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
     CONF_TRACK_BATCH_SIZE,
+    DEFAULT_BASE_URL,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
@@ -161,5 +166,43 @@ async def get_config_entries(
             "for fresh discoveries.",
             default_value=True,
             required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave in Browse",
+            description="Show My Wave folder in the Browse section. "
+            "When disabled, My Wave will not appear in Browse.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Playlist",
+            description="Show My Wave as a virtual playlist in your library. "
+            "When disabled, My Wave will not appear in your playlists.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_RADIO,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Radio Mode",
+            description="Enable radio feedback for My Wave (like/dislike tracks). "
+            "When disabled, radio feedback will not be sent to Yandex.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_BASE_URL,
+            type=ConfigEntryType.STRING,
+            label="API Base URL",
+            description="API endpoint base URL. "
+            "Only change if Yandex Music changes their API endpoint. "
+            "Default: https://api.music.yandex.net",
+            default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
         ),
     )

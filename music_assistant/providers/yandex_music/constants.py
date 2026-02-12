@@ -7,6 +7,7 @@ from typing import Final
 # Configuration Keys
 CONF_TOKEN = "token"
 CONF_QUALITY = "quality"
+CONF_BASE_URL = "base_url"
 
 # Actions
 CONF_ACTION_AUTH = "auth"
@@ -18,6 +19,7 @@ LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
+DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
 
 # Quality options
 QUALITY_HIGH = "high"
@@ -30,6 +32,9 @@ CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
 CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
 CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
 CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
+CONF_ENABLE_MY_WAVE_BROWSE: Final[str] = "enable_my_wave_browse"
+CONF_ENABLE_MY_WAVE_PLAYLIST: Final[str] = "enable_my_wave_playlist"
+CONF_ENABLE_MY_WAVE_RADIO: Final[str] = "enable_my_wave_radio"
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
