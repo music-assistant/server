@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import platform
-import stat
-import tempfile
 import time
 from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -29,9 +24,10 @@ from music_assistant_models.media_items import AudioFormat, MediaItemImage
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.plugin import PluginProvider, PluginSource
+
+from .helpers import _get_binary_path
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -101,15 +97,13 @@ class AriaCastBridge(PluginProvider):
         self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID))
         self._allow_player_switch = bool(config.get_value(CONF_ALLOW_PLAYER_SWITCH))
 
-        # Process & Pipe
+        # Process
         self._binary_process: AsyncProcess | None = None
-        pipe_path = Path(tempfile.gettempdir()) / f"ariacast_{self.instance_id}"
-        self._pipe = AsyncNamedPipeWriter(str(pipe_path))
 
         # Internal State
         self._active_player_id: str | None = None
         self._metadata_task: asyncio.Task[None] | None = None
-        self._pipe_reader_task: asyncio.Task[None] | None = None
+        self._stdout_reader_task: asyncio.Task[None] | None = None
         self._stop_called = False
         self._binary_is_playing: bool = False  # Track binary playback state
         self._current_track_title: str | None = None  # Track song changes
@@ -129,7 +123,7 @@ class AriaCastBridge(PluginProvider):
             id=self.instance_id,
             name=self.name,
             passive=not self._allow_player_switch,
-            can_play_pause=True,  # Now works - binary stops pipe writes when paused
+            can_play_pause=True,  # Binary stops stdout writes when paused
             can_seek=False,
             can_next_previous=True,
             audio_format=AudioFormat(
@@ -151,22 +145,20 @@ class AriaCastBridge(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Start the provider."""
-        await self._pipe.create()
-
-        # Launch Binary
-        binary_path = await self._get_binary_path()
-        args = [binary_path, "--pipe", self._pipe.path]
+        # Launch Binary with stdout mode
+        binary_path = await _get_binary_path()
+        args = [binary_path, "--stdout"]
 
         self.logger.info("Starting AriaCast binary: %s", binary_path)
-        self._binary_process = AsyncProcess(args, name="ariacast")
+        self._binary_process = AsyncProcess(args, name="ariacast", stdout=True, stderr=False)
         await self._binary_process.start()
 
         # Start Metadata Monitor
         await asyncio.sleep(1)
         self._metadata_task = self.mass.create_task(self._monitor_metadata())
 
-        # Start Pipe Reader (feeds the frame queue)
-        self._pipe_reader_task = self.mass.create_task(self._read_pipe_to_queue())
+        # Start Stdout Reader (feeds the frame queue)
+        self._stdout_reader_task = self.mass.create_task(self._read_stdout_to_queue())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Cleanup resources."""
@@ -177,46 +169,18 @@ class AriaCastBridge(PluginProvider):
             with suppress(asyncio.CancelledError):
                 await self._metadata_task
 
-        if self._pipe_reader_task:
-            self._pipe_reader_task.cancel()
+        if self._stdout_reader_task:
+            self._stdout_reader_task.cancel()
             with suppress(asyncio.CancelledError):
-                await self._pipe_reader_task
+                await self._stdout_reader_task
 
         if self._binary_process:
             self.logger.info("Stopping AriaCast binary...")
             await self._binary_process.close()
 
-        await self._pipe.remove()
-
     def get_source(self) -> PluginSource:
         """Return the plugin source details."""
         return self._source_details
-
-    async def _get_binary_path(self) -> str:
-        """Locate the correct binary for the current OS/Arch."""
-        base_dir = os.path.join(os.path.dirname(__file__), "bin")
-        system = platform.system().lower()
-        machine = platform.machine().lower()
-
-        if machine in ("x86_64", "amd64"):
-            arch = "amd64"
-        elif machine in ("aarch64", "arm64"):
-            arch = "arm64"
-        elif machine.startswith("arm"):
-            # Handle common 32-bit ARM identifiers such as armv7l/armv6l
-            arch = "arm"
-        else:
-            raise RuntimeError(f"Unsupported architecture: {machine}")
-
-        binary_name = f"ariacast_{system}_{arch}"
-        binary_path = os.path.join(base_dir, binary_name)
-
-        if not os.path.exists(binary_path):
-            raise FileNotFoundError(f"Binary not found at {binary_path}")
-
-        Path(binary_path).chmod(Path(binary_path).stat().st_mode | stat.S_IEXEC)
-
-        return binary_path
 
     async def _monitor_metadata(self) -> None:
         """Connect to local Go binary WebSocket to receive metadata updates."""
@@ -427,45 +391,49 @@ class AriaCastBridge(PluginProvider):
             return self._artwork_bytes
         return b""
 
-    async def _read_pipe_to_queue(self) -> None:
-        """Background task to read from pipe and populate frame queue."""
+    async def _read_stdout_to_queue(self) -> None:
+        """Background task to read from binary stdout and populate frame queue."""
         frame_size = 3840  # 20ms of 48kHz stereo 16-bit
-        loop = asyncio.get_running_loop()
 
-        while not self._stop_called:
-            try:
-                # Check if pipe exists
-                if not os.path.exists(self._pipe.path):
-                    await asyncio.sleep(0.1)
-                    continue
+        if not self._binary_process:
+            self.logger.error("Cannot read stdout: binary process not started")
+            return
 
-                self.logger.debug("Opening pipe for reading: %s", self._pipe.path)
-                # Open FIFO in blocking mode - run_in_executor handles thread safety
-                fd = os.open(self._pipe.path, os.O_RDONLY)
-                pipe_fd = os.fdopen(fd, "rb", buffering=0)
+        self.logger.info("Starting to read audio from binary stdout")
 
+        try:
+            # Read from stdout in chunks
+            while not self._stop_called:
                 try:
-                    while not self._stop_called:
-                        # Read frame from pipe without aggressive backpressure
-                        # Let the deque's maxlen handle overflow naturally
-                        data = await loop.run_in_executor(None, pipe_fd.read, frame_size)
-                        if not data:
-                            # Pipe closed or no data
-                            self.logger.debug("Pipe closed")
-                            break
+                    # Read exactly one frame from stdout
+                    data = await self._binary_process.read(frame_size)
 
-                        # Add to queue
-                        self.frame_queue.append(data)
-                        self.frame_available.set()
+                    if not data:
+                        # Process ended or no more data
+                        self.logger.debug("Stdout closed or no data")
+                        break
 
-                finally:
-                    with suppress(Exception):
-                        # Ensure the file descriptor is closed even if this task is cancelled
-                        await asyncio.shield(loop.run_in_executor(None, pipe_fd.close))
+                    if len(data) < frame_size:
+                        # Incomplete frame, try to read remaining bytes
+                        remaining = frame_size - len(data)
+                        additional = await self._binary_process.read(remaining)
+                        if additional:
+                            data += additional
 
-            except Exception as e:
-                self.logger.debug("Error reading from pipe: %s", e)
-                await asyncio.sleep(0.5)
+                    # Add to queue
+                    self.frame_queue.append(data)
+                    self.frame_available.set()
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    self.logger.debug("Error reading from stdout: %s", e)
+                    await asyncio.sleep(0.1)
+
+        except Exception as e:
+            self.logger.error("Fatal error in stdout reader: %s", e)
+        finally:
+            self.logger.info("Stdout reader task ended")
 
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Return the custom audio stream for this source (like original ariacast_receiver)."""
