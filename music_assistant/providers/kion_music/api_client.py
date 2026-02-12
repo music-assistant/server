@@ -22,7 +22,7 @@ from yandex_music.utils.sign_request import get_sign_request
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
+from .constants import DEFAULT_BASE_URL, DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (KION API moved to these formats around 2025)
@@ -41,7 +41,7 @@ class KionMusicClient:
         :param base_url: Optional API base URL (defaults to KION Music API).
         """
         self._token = token
-        self._base_url = base_url
+        self._base_url = base_url or DEFAULT_BASE_URL
         self._client: ClientAsync | None = None
         self._user_id: int | None = None
 
