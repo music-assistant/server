@@ -11,6 +11,9 @@ from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_WAVE_BROWSE,
+    CONF_ENABLE_MY_WAVE_PLAYLIST,
+    CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -159,6 +162,33 @@ async def get_config_entries(
             description="Show My Wave recommendations on the home page. "
             "When enabled, recommendations refresh each time you reload the page "
             "for fresh discoveries.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave in Browse",
+            description="Show My Wave folder in the Browse section. "
+            "When disabled, My Wave will not appear in Browse.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Playlist",
+            description="Show My Wave as a virtual playlist in your library. "
+            "When disabled, My Wave will not appear in your playlists.",
+            default_value=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_MY_WAVE_RADIO,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable My Wave Radio Mode",
+            description="Enable radio feedback for My Wave (like/dislike tracks). "
+            "When disabled, radio feedback will not be sent to Yandex.",
             default_value=True,
             required=False,
         ),

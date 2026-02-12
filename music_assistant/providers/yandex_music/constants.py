@@ -30,6 +30,9 @@ CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
 CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
 CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
 CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
+CONF_ENABLE_MY_WAVE_BROWSE: Final[str] = "enable_my_wave_browse"
+CONF_ENABLE_MY_WAVE_PLAYLIST: Final[str] = "enable_my_wave_playlist"
+CONF_ENABLE_MY_WAVE_RADIO: Final[str] = "enable_my_wave_radio"
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"

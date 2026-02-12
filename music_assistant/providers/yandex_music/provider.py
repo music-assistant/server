@@ -37,6 +37,9 @@ from .constants import (
     BROWSE_NAMES_RU,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_MY_WAVE_BROWSE,
+    CONF_ENABLE_MY_WAVE_PLAYLIST,
+    CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -279,15 +282,17 @@ class YandexMusicProvider(MusicProvider):
 
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        folders.append(
-            BrowseFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
-                is_playable=True,
+        # Only add My Wave folder if enabled
+        if self.config.get_value(CONF_ENABLE_MY_WAVE_BROWSE, True):
+            folders.append(
+                BrowseFolder(
+                    item_id=MY_WAVE_PLAYLIST_ID,
+                    provider=self.instance_id,
+                    path=f"{base}{MY_WAVE_PLAYLIST_ID}",
+                    name=names[MY_WAVE_PLAYLIST_ID],
+                    is_playable=True,
+                )
             )
-        )
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
                 BrowseFolder(
@@ -852,9 +857,11 @@ class YandexMusicProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from Yandex Music.
 
-        Includes the virtual My Wave playlist first, then user playlists.
+        Includes the virtual My Wave playlist first (if enabled), then user playlists.
         """
-        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
+        # Only include My Wave playlist if enabled
+        if self.config.get_value(CONF_ENABLE_MY_WAVE_PLAYLIST, True):
+            yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:
@@ -933,6 +940,9 @@ class YandexMusicProvider(MusicProvider):
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
         """
+        # Skip radio feedback if disabled
+        if not self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True):
+            return
         if media_type != MediaType.TRACK:
             return
         track_id, station_id = _parse_radio_item_id(prov_item_id)
@@ -952,6 +962,9 @@ class YandexMusicProvider(MusicProvider):
         Sends trackFinished or skip with actual seconds_streamed so Yandex
         can improve recommendations.
         """
+        # Skip radio feedback if disabled
+        if not self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True):
+            return
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
