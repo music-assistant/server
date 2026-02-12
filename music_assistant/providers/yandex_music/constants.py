@@ -36,6 +36,11 @@ CONF_ENABLE_MY_WAVE_BROWSE: Final[str] = "enable_my_wave_browse"
 CONF_ENABLE_MY_WAVE_PLAYLIST: Final[str] = "enable_my_wave_playlist"
 CONF_ENABLE_MY_WAVE_RADIO: Final[str] = "enable_my_wave_radio"
 
+# Configuration keys for Liked Tracks behavior
+CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
+CONF_ENABLE_LIKED_TRACKS_BROWSE: Final[str] = "enable_liked_tracks_browse"
+CONF_ENABLE_LIKED_TRACKS_PLAYLIST: Final[str] = "enable_liked_tracks_playlist"
+
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
@@ -49,6 +54,9 @@ ROTOR_STATION_MY_WAVE: Final[str] = "user:onyourwave"
 
 # Virtual playlist ID for My Wave (used in get_playlist / get_playlist_tracks; not owner_id:kind)
 MY_WAVE_PLAYLIST_ID: Final[str] = "my_wave"
+
+# Virtual playlist ID for Liked Tracks
+LIKED_TRACKS_PLAYLIST_ID: Final[str] = "liked_tracks"
 
 # Composite item_id for My Wave tracks: track_id + separator + station_id (for rotor feedback)
 RADIO_TRACK_ID_SEP: Final[str] = "@"

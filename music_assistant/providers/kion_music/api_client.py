@@ -22,7 +22,7 @@ from yandex_music.utils.sign_request import get_sign_request
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-from .constants import DEFAULT_BASE_URL, DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
+from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (KION API moved to these formats around 2025)
@@ -41,7 +41,7 @@ class KionMusicClient:
         :param base_url: Optional API base URL (defaults to KION Music API).
         """
         self._token = token
-        self._base_url = base_url or DEFAULT_BASE_URL
+        self._base_url = base_url
         self._client: ClientAsync | None = None
         self._user_id: int | None = None
 
@@ -220,16 +220,23 @@ class KionMusicClient:
     # Library methods
 
     async def get_liked_tracks(self) -> list[TrackShort]:
-        """Get user's liked tracks.
+        """Get user's liked tracks sorted by timestamp (most recent first).
 
-        :return: List of liked track objects.
+        :return: List of liked track objects sorted in reverse chronological order.
         """
         client = self._ensure_connected()
         try:
             result = await client.users_likes_tracks()
             if result is None:
                 return []
-            return result.tracks or []
+            tracks = result.tracks or []
+            # Sort by timestamp in descending order (most recently liked first)
+            # TrackShort objects have a timestamp field containing the date the track was liked
+            return sorted(
+                tracks,
+                key=lambda t: getattr(t, "timestamp", datetime.min.replace(tzinfo=UTC)),
+                reverse=True,
+            )
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err

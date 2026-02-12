@@ -220,16 +220,23 @@ class YandexMusicClient:
     # Library methods
 
     async def get_liked_tracks(self) -> list[TrackShort]:
-        """Get user's liked tracks.
+        """Get user's liked tracks sorted by timestamp (most recent first).
 
-        :return: List of liked track objects.
+        :return: List of liked track objects sorted in reverse chronological order.
         """
         client = self._ensure_connected()
         try:
             result = await client.users_likes_tracks()
             if result is None:
                 return []
-            return result.tracks or []
+            tracks = result.tracks or []
+            # Sort by timestamp in descending order (most recently liked first)
+            # TrackShort objects have a timestamp field containing the date the track was liked
+            return sorted(
+                tracks,
+                key=lambda t: getattr(t, "timestamp", datetime.min.replace(tzinfo=UTC)),
+                reverse=True,
+            )
         except (BadRequestError, NetworkError) as err:
             LOGGER.error("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err

@@ -12,10 +12,13 @@ from .constants import (
     CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_LIKED_TRACKS_BROWSE,
+    CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
     CONF_ENABLE_MY_MIX_BROWSE,
     CONF_ENABLE_MY_MIX_PLAYLIST,
     CONF_ENABLE_MY_MIX_RADIO,
     CONF_ENABLE_RECOMMENDATIONS,
+    CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_MIX_BATCH_SIZE,
     CONF_MY_MIX_MAX_TRACKS,
     CONF_QUALITY,
@@ -195,12 +198,39 @@ async def get_config_entries(
             required=False,
         ),
         ConfigEntry(
+            key=CONF_LIKED_TRACKS_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Liked Tracks maximum tracks",
+            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
+            "Lower values load faster. Default: 500.",
+            default_value=500,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_LIKED_TRACKS_BROWSE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Liked Tracks in Browse",
+            description="Show Liked Tracks folder in the Browse section. "
+            "When disabled, Liked Tracks will not appear in Browse.",
+            default_value=False,  # Experimental feature - disabled by default
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Liked Tracks Playlist",
+            description="Show Liked Tracks as a virtual playlist in your library. "
+            "When disabled, Liked Tracks will not appear in your playlists.",
+            default_value=False,  # Experimental feature - disabled by default
+            required=False,
+        ),
+        ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
             label="API Base URL",
             description="API endpoint base URL. "
             "Only change if KION Music changes their API endpoint. "
-            "Default: https://music.mts.ru/ya_proxy_api",
+            "Default: https://api.music.yandex.net",
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,
