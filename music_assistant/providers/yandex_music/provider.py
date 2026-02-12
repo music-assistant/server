@@ -613,20 +613,38 @@ class YandexMusicProvider(MusicProvider):
 
         # Apply max tracks limit
         track_shorts = track_shorts[:max_tracks_config]
+        self.logger.debug(f"After limit, processing {len(track_shorts)} tracks")
 
         # Fetch full track details in batches
         track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
+        self.logger.debug(f"Extracted {len(track_ids)} track IDs. First 3: {track_ids[:3]}")
+
         batch_size = int(
             self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
         )
         full_tracks = []
+        batch_to_ids = {}  # Map batch results back to original compound IDs
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
+            self.logger.debug(f"Fetching batch {i // batch_size + 1}: {len(batch_ids)} tracks")
             batch_result = await self.client.get_tracks(batch_ids)
+            self.logger.debug(f"Batch returned {len(batch_result)} tracks")
+            # Map each returned track back to its original compound ID
+            for j, track in enumerate(batch_result):
+                if j < len(batch_ids):
+                    batch_to_ids[str(track.id) if hasattr(track, "id") else None] = batch_ids[j]
             full_tracks.extend(batch_result)
 
-        # Create track ID to full track mapping
-        track_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
+        self.logger.debug(f"Total full_tracks fetched: {len(full_tracks)}")
+
+        # Create track ID to full track mapping using compound IDs
+        track_map = {}
+        for t in full_tracks:
+            if hasattr(t, "id") and t.id:
+                # Use the compound ID from our mapping
+                compound_id = batch_to_ids.get(str(t.id), str(t.id))
+                track_map[compound_id] = t
+        self.logger.debug(f"Created track_map with {len(track_map)} entries")
 
         # Parse tracks in the original order (reverse chronological)
         tracks = []
@@ -635,8 +653,11 @@ class YandexMusicProvider(MusicProvider):
                 try:
                     tracks.append(parse_track(self, track_map[track_id]))
                 except InvalidDataError as err:
-                    self.logger.debug("Error parsing liked track: %s", err)
+                    self.logger.debug(f"Error parsing liked track {track_id}: {err}")
+            else:
+                self.logger.debug(f"Track ID {track_id} not found in track_map")
 
+        self.logger.debug(f"Successfully parsed {len(tracks)} tracks")
         return tracks
 
     # Get related items
