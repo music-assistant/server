@@ -103,10 +103,11 @@ class SyncGroupPlayer(GroupPlayer):
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
+            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
+            self._attr_static_group_members = static_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         if not self.powered:
             self._attr_group_members = static_members.copy()
@@ -300,10 +301,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
-            # Reset to unfiltered static members list when powered off
-            # (the frontend will hide unavailable members)
-            self._attr_group_members = self._attr_static_group_members.copy()
-            # and clear the sync leader
+            configured_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            self._attr_group_members = configured_members.copy()
             self.sync_leader = None
         self.update_state()
 
