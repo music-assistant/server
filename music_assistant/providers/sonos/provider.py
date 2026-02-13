@@ -38,16 +38,7 @@ class SonosPlayerProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.mass.streams.register_dynamic_route(
-            "/sonos_queue/v2.3/itemWindow", self._handle_sonos_queue_itemwindow
-        )
-        self.mass.streams.register_dynamic_route(
-            "/sonos_queue/v2.3/version", self._handle_sonos_queue_version
-        )
-        self.mass.streams.register_dynamic_route(
-            "/sonos_queue/v2.3/context", self._handle_sonos_queue_context
-        )
-        self.mass.streams.register_dynamic_route(
-            "/sonos_queue/v2.3/timePlayed", self._handle_sonos_queue_time_played
+            "/sonos_queue/*", self._handle_sonos_cloud_queue_request
         )
 
     async def loaded_in_mass(self) -> None:
@@ -71,10 +62,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
-        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/itemWindow")
-        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/version")
-        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/context")
-        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/timePlayed")
+        self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -156,27 +144,50 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.device_info.ip_address = address
         await sonos_player.setup()
 
-    async def _handle_sonos_queue_itemwindow(self, request: web.Request) -> web.Response:
+    async def _handle_sonos_cloud_queue_request(self, request: web.Request) -> web.Response:
+        """
+        Handle the Sonos CloudQueue request.
+
+        https://docs.sonos.com/reference/itemwindow
+        """
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Cloud Queue request\n - path: %s\n - query: %s\n",
+            request.path,
+            request.query,
+        )
+        path_parts = request.path.strip("/").split("/")
+        if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
+            return web.Response(status=404)
+        player_id = path_parts[1]
+        if not (sonos_player := self.mass.players.get_player(player_id)):
+            return web.Response(status=501)
+        if TYPE_CHECKING:
+            assert isinstance(sonos_player, SonosPlayer)
+        endpoint = path_parts[3]
+        if endpoint == "itemWindow":
+            return await self._handle_sonos_queue_itemwindow(sonos_player, request)
+        if endpoint == "version":
+            return await self._handle_sonos_queue_version(sonos_player, request)
+        if endpoint == "context":
+            return await self._handle_sonos_queue_context(sonos_player, request)
+        if endpoint == "timePlayed":
+            return await self._handle_sonos_queue_time_played(sonos_player, request)
+        return web.Response(status=404)
+
+    async def _handle_sonos_queue_itemwindow(
+        self, player: SonosPlayer, request: web.Request
+    ) -> web.Response:
         """
         Handle the Sonos CloudQueue ItemWindow endpoint.
 
         https://docs.sonos.com/reference/itemwindow
         """
-        self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue ItemWindow request: %s", request.query)
-        sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
-        sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
-        if TYPE_CHECKING:
-            assert isinstance(sonos_player, SonosPlayer)
-
         context_version = request.query.get("contextVersion", "1")
-        queue_version = request.query.get(
-            "queueVersion", str(int(sonos_player.sonos_queue.last_updated))
-        )
+        queue_version = request.query.get("queueVersion", str(int(player.sonos_queue.last_updated)))
         # because Sonos does not show our queue in the app anyways,
         # we just return the previous, current and next item in the queue
-        items = list(sonos_player.sonos_queue.items)
+        items = list(player.sonos_queue.items)
         result = {
             "includesBeginningOfQueue": False,
             "includesEndOfQueue": False,
@@ -186,44 +197,32 @@ class SonosPlayerProvider(PlayerProvider):
         }
         return web.json_response(result)
 
-    async def _handle_sonos_queue_version(self, request: web.Request) -> web.Response:
+    async def _handle_sonos_queue_version(
+        self, player: SonosPlayer, request: web.Request
+    ) -> web.Response:
         """
         Handle the Sonos CloudQueue Version endpoint.
 
         https://docs.sonos.com/reference/version
         """
-        self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Version request: %s", request.query)
-        sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
-        sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
-        if TYPE_CHECKING:
-            assert isinstance(sonos_player, SonosPlayer)
-
         context_version = request.query.get("contextVersion") or "1"
         result = {
             "contextVersion": context_version,
-            "queueVersion": str(int(sonos_player.sonos_queue.last_updated)),
+            "queueVersion": str(int(player.sonos_queue.last_updated)),
         }
         return web.json_response(result)
 
-    async def _handle_sonos_queue_context(self, request: web.Request) -> web.Response:
+    async def _handle_sonos_queue_context(
+        self, player: SonosPlayer, request: web.Request
+    ) -> web.Response:
         """
         Handle the Sonos CloudQueue Context endpoint.
 
         https://docs.sonos.com/reference/context
         """
-        self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Context request: %s", request.query)
-        sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
-        sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
-        if TYPE_CHECKING:
-            assert isinstance(sonos_player, SonosPlayer)
-
         result = {
             "contextVersion": "1",
-            "queueVersion": str(int(sonos_player.sonos_queue.last_updated)),
+            "queueVersion": str(int(player.sonos_queue.last_updated)),
             "container": {
                 "type": "trackList",
                 "name": "Music Assistant",
@@ -231,8 +230,8 @@ class SonosPlayerProvider(PlayerProvider):
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "id": {
                     "serviceId": "mass",
-                    "objectId": f"mass:{sonos_player.sonos_queue.items[-1].source_id}"
-                    if sonos_player.sonos_queue.items
+                    "objectId": f"mass:{player.sonos_queue.items[-1].source_id}"
+                    if player.sonos_queue.items
                     else "mass:unknown",
                     "accountId": "",
                 },
@@ -257,30 +256,22 @@ class SonosPlayerProvider(PlayerProvider):
         }
         return web.json_response(result)
 
-    async def _handle_sonos_queue_time_played(self, request: web.Request) -> web.Response:
+    async def _handle_sonos_queue_time_played(
+        self, player: SonosPlayer, request: web.Request
+    ) -> web.Response:
         """
         Handle the Sonos CloudQueue TimePlayed endpoint.
 
         https://docs.sonos.com/reference/timeplayed
         """
-        self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue TimePlayed request: %s", request.query)
         json_body = await request.json()
-        sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
-        sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
-        if TYPE_CHECKING:
-            assert isinstance(sonos_player, SonosPlayer)
         for item in json_body["items"]:
             if item["type"] != "update":
                 continue
             if "positionMillis" not in item:
                 continue
-            if (
-                sonos_player.current_media
-                and sonos_player.current_media.queue_item_id == item["id"]
-            ):
-                sonos_player.update_elapsed_time(item["positionMillis"] / 1000)
+            if player.current_media and player.current_media.queue_item_id == item["id"]:
+                player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)
 
