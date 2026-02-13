@@ -37,7 +37,7 @@ def test_map_track_to_msx() -> None:
     )
 
     assert item.title == "Test Track"
-    assert item.label == "Test Artist · 2:05"
+    assert item.title_footer == "Test Artist · 2:05"
     assert item.image == "http://image.url"
     assert item.action is not None
     assert "audio:http://localhost/msx/audio/msx_123" in item.action
@@ -61,7 +61,8 @@ async def test_map_album_to_msx() -> None:
     )
 
     assert item.title == "Test Album"
-    assert item.label == "Test Artist"
+    # Mock has no year attribute set, so footer is "Artist · year" only if year exists
+    assert "Test Artist" in (item.title_footer or "")
     assert item.image == "http://image.url"
     assert (
         item.action

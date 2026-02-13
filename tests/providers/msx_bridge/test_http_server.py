@@ -274,7 +274,9 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         assert resp.status == 200
         data = await resp.json()
         assert data["status"] == "ok"
-        mass_mock.player_queues.play_media.assert_awaited_once_with("msx_test", "library://track/1")
+        mass_mock.player_queues.play_media.assert_awaited_once_with(
+            "msx_test", "library://track/1", username=None
+        )
     finally:
         await client.close()
 
@@ -374,6 +376,8 @@ def _make_playlist_mock(item_id: int = 1, name: str = "Test Playlist") -> Mock:
     playlist.name = name
     playlist.uri = f"library://playlist/{item_id}"
     playlist.image = None
+    playlist.owner = "test_user"
+    playlist.provider = "library"
     return playlist
 
 
@@ -461,6 +465,7 @@ async def test_msx_tracks_have_action(provider: MSXBridgeProvider, mass_mock: Mo
         assert "action" in item
         assert item["action"].startswith("playlist:")
         assert "/msx/playlist/tracks.json" in item["action"]
+        assert item["title"] == "Test Track"
         assert "playerLabel" in item
         assert item["playerLabel"] == "Test Track"
     finally:
@@ -739,12 +744,11 @@ async def test_msx_tracks_playlist_endpoint(provider: MSXBridgeProvider, mass_mo
 
 
 def test_format_msx_track_includes_duration(provider: MSXBridgeProvider) -> None:
-    """map_track_to_msx should include duration in label."""
+    """map_track_to_msx should include artist and duration in titleFooter."""
     track = _make_track_mock()  # duration=180
     item = map_track_to_msx(track, "http://localhost", "msx_test", provider)
-    assert item.label is not None
-    assert "3:00" in item.label
-    assert "Test Artist" in item.label
+    assert item.title == "Test Track"
+    assert item.title_footer == "Test Artist · 3:00"
     assert item.background == item.image
 
 
@@ -753,7 +757,8 @@ def test_format_msx_track_no_duration(provider: MSXBridgeProvider) -> None:
     track = _make_track_mock()
     track.duration = 0
     item = map_track_to_msx(track, "http://localhost", "msx_test", provider)
-    assert item.label == "Test Artist"
+    assert item.title == "Test Track"
+    assert item.title_footer == "Test Artist"
 
 
 def test_format_msx_track_duration_only(provider: MSXBridgeProvider) -> None:
@@ -761,7 +766,8 @@ def test_format_msx_track_duration_only(provider: MSXBridgeProvider) -> None:
     track = _make_track_mock()
     track.artist_str = ""
     item = map_track_to_msx(track, "http://localhost", "msx_test", provider)
-    assert item.label == "3:00"
+    assert item.title == "Test Track"
+    assert item.title_footer == "3:00"
 
 
 # --- Async iteration helpers for stream mocking ---

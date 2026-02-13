@@ -49,10 +49,16 @@ async def map_album_to_msx(
     if not image:
         image = await get_album_image_fallback(album, provider)
 
+    artist = getattr(album, "artist_str", "")
+    year = getattr(album, "year", None)
+    # Build footer: "Artist · 2024" or just one
+    footer: str | None = (
+        f"{artist} · {year}" if artist and year else (artist or (str(year) if year else None))
+    )
     url = f"{prefix}/msx/albums/{album.item_id}/tracks.json?provider={album.provider}"
     return MsxItem(
         title=album.name,
-        label=getattr(album, "artist_str", ""),
+        title_footer=footer,
         image=image,
         action=f"content:{append_device_param(url, device_param)}",
     )
@@ -74,9 +80,13 @@ def map_playlist_to_msx(
     playlist: Any, prefix: str, provider: MSXBridgeProvider, device_param: str = ""
 ) -> MsxItem:
     """Map a MA Playlist to an MSX Item."""
+    owner = getattr(playlist, "owner", None)
+    prov = getattr(playlist, "provider", None)
+    footer: str | None = f"{owner} · {prov}" if owner and prov else (owner or prov or None)
     url = f"{prefix}/msx/playlists/{playlist.item_id}/tracks.json"
     return MsxItem(
         title=playlist.name,
+        title_footer=footer,
         image=get_image_url(playlist, provider),
         action=f"content:{append_device_param(url, device_param)}",
     )
@@ -93,10 +103,15 @@ def map_track_to_msx(
     """Map a MA Track to an MSX Item."""
     duration = getattr(track, "duration", 0) or 0
     duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
-    label = getattr(track, "artist_str", "")
-    if duration_str:
-        label = f"{label} · {duration_str}" if label else duration_str
+    artist = getattr(track, "artist_str", "")
     image_url = get_image_url(track, provider)
+
+    # Build footer: "Artist · 3:42" or just one of them
+    footer: str | None = (
+        f"{artist} · {duration_str}"
+        if artist and duration_str
+        else (artist or duration_str or None)
+    )
 
     if playlist_url:
         # playlist: (not auto:) loads the playlist and executes the content
@@ -110,7 +125,7 @@ def map_track_to_msx(
 
     return MsxItem(
         title=track.name,
-        label=label,
+        title_footer=footer,
         player_label=track.name,
         duration=duration,
         image=image_url,

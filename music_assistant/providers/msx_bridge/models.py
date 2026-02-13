@@ -22,12 +22,15 @@ class MsxTemplate(BaseModel):
     icon: str | None = None
     action: str | None = None
     image_filler: str | None = Field(default=None, serialization_alias="imageFiller")
+    image_width: float | None = Field(default=None, serialization_alias="imageWidth")
+    color: str | None = None
 
 
 class MsxItem(BaseModel):
     """MSX Content Item model."""
 
     title: str | None = None
+    title_header: str | None = Field(default=None, serialization_alias="titleHeader")
     label: str | None = None
     image: str | None = None
     icon: str | None = None
