@@ -799,18 +799,26 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
 
-        # Suppress WS broadcast when called from MSX playlist to avoid conflicts
-        if from_playlist:
-            player._skip_ws_notify = True
+        # When MA is driving the queue (next/prev from MA UI), current_media is
+        # already set by player.play_media() before the WS goto_index reaches MSX.
+        # Re-enqueuing would recreate the queue from the track URI, destroying it.
+        if from_playlist and player._playing_from_queue:
+            media = player.current_media
+            if not media:
+                media = await player.wait_for_media(timeout=10.0)
+        else:
+            # Suppress WS broadcast when called from MSX playlist to avoid conflicts
+            if from_playlist:
+                player._skip_ws_notify = True
 
-        await self.provider.mass.player_queues.play_media(player_id, uri)
+            await self.provider.mass.player_queues.play_media(player_id, uri)
 
-        # Reset skip flag after play_media
-        if from_playlist:
-            player._skip_ws_notify = False
+            # Reset skip flag after play_media
+            if from_playlist:
+                player._skip_ws_notify = False
 
-        # Wait for play_media() to signal media is ready (replaces 10s polling loop)
-        media = await player.wait_for_media(timeout=10.0)
+            # Wait for play_media() to signal media is ready (replaces 10s polling loop)
+            media = await player.wait_for_media(timeout=10.0)
 
         if not media:
             return web.Response(status=504, text="Playback setup timeout")

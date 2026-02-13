@@ -23,6 +23,7 @@ class MSXPlayer(Player):
     _skip_ws_notify: bool = False
     _propagating: bool = False
     _playing_from_queue: bool = False
+    _queue_source_id: str | None = None
     _playlist_offset: int = 0
     _playlist_size: int = 0
     _media_ready: asyncio.Event
@@ -82,27 +83,43 @@ class MSXPlayer(Player):
         provider = cast("MSXBridgeProvider", self.provider)
 
         if not self._skip_ws_notify:
-            if self._playing_from_queue and media.source_id:
-                # MA-initiated track change while MSX already has the playlist.
-                # Translate MA queue index → MSX rotated playlist index.
-                queue = self.mass.player_queues.get(media.source_id)
+            source_id = media.source_id
+            is_queue_backed = bool(source_id and media.queue_item_id)
+            is_same_queue = self._playing_from_queue and self._queue_source_id == source_id
+
+            if is_queue_backed and is_same_queue and source_id:
+                # Same queue → goto existing MSX playlist index.
+                queue = self.mass.player_queues.get(source_id)
                 ma_index = getattr(queue, "current_index", 0) if queue else 0
-                if self._playlist_size > 0:
-                    msx_index = (ma_index - self._playlist_offset) % self._playlist_size
+                # Refresh size to detect queue content changes (shuffle, add/remove)
+                try:
+                    queue_items = self.mass.player_queues.items(source_id)
+                    current_size = len(list(queue_items))
+                except Exception:
+                    current_size = self._playlist_size
+                if current_size != self._playlist_size:
+                    # Queue contents changed → re-send full playlist
+                    self._playlist_size = current_size
+                    self._playlist_offset = ma_index
+                    provider.notify_play_playlist(self.player_id, ma_index)
                 else:
-                    msx_index = ma_index
-                provider.notify_goto_index(self.player_id, msx_index)
-            elif media.source_id and media.queue_item_id:
-                # First queue-backed play → send full MSX native playlist
-                queue = self.mass.player_queues.get(media.source_id)
+                    if self._playlist_size > 0:
+                        msx_index = (ma_index - self._playlist_offset) % self._playlist_size
+                    else:
+                        msx_index = ma_index
+                    provider.notify_goto_index(self.player_id, msx_index)
+            elif is_queue_backed and source_id:
+                # New queue → send full MSX native playlist
+                queue = self.mass.player_queues.get(source_id)
                 start_index = getattr(queue, "current_index", 0) if queue else 0
                 # Store rotation offset/size for goto_index translation
                 try:
-                    queue_items = self.mass.player_queues.items(media.source_id)
+                    queue_items = self.mass.player_queues.items(source_id)
                     self._playlist_size = len(list(queue_items))
                 except Exception:
                     self._playlist_size = 0
                 self._playlist_offset = start_index
+                self._queue_source_id = source_id
                 provider.notify_play_playlist(self.player_id, start_index)
                 self._playing_from_queue = True
             else:
@@ -258,6 +275,7 @@ class MSXPlayer(Player):
         self._attr_elapsed_time_last_updated = None
         self.current_stream_url = None
         self._playing_from_queue = False
+        self._queue_source_id = None
         self._playlist_offset = 0
         self._playlist_size = 0
         self.update_state()
