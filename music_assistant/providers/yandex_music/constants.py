@@ -24,6 +24,7 @@ DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
 # Quality options (matching reference implementation)
 QUALITY_EFFICIENT = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
 QUALITY_BALANCED = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
+QUALITY_HIGH = "high"  # High quality, lossy (~320kbps MP3)
 QUALITY_SUPERB = "superb"  # Highest quality, lossless (FLAC)
 
 # Configuration keys for My Wave behavior

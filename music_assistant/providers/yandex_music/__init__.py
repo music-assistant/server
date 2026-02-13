@@ -27,6 +27,7 @@ from .constants import (
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_SUPERB,
 )
 from .provider import YandexMusicProvider
@@ -112,6 +113,7 @@ async def get_config_entries(
             options=[
                 ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
                 ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
+                ConfigValueOption("High (MP3 ~320kbps)", QUALITY_HIGH),
                 ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
             ],
             default_value=QUALITY_BALANCED,

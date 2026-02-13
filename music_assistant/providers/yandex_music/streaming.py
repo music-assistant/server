@@ -15,6 +15,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from .constants import (
     CONF_QUALITY,
     QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_SUPERB,
     RADIO_TRACK_ID_SEP,
 )
@@ -214,6 +215,33 @@ class YandexMusicStreamingManager:
                     if info.codec and info.codec.lower() == codec:
                         return info
             return sorted_infos_asc[0]
+
+        # High: Prefer high bitrate MP3 (~320kbps)
+        if preferred_normalized == QUALITY_HIGH:
+            # Look for MP3 with bitrate >= 256kbps
+            high_quality_mp3 = [
+                info
+                for info in sorted_infos
+                if info.codec
+                and info.codec.lower() == "mp3"
+                and info.bitrate_in_kbps
+                and info.bitrate_in_kbps >= 256
+            ]
+            if high_quality_mp3:
+                return high_quality_mp3[0]  # Already sorted by bitrate descending
+
+            # Fallback: any MP3 available (highest bitrate)
+            for info in sorted_infos:
+                if info.codec and info.codec.lower() == "mp3":
+                    return info
+
+            # If no MP3, use highest available (excluding FLAC)
+            for info in sorted_infos:
+                if info.codec and info.codec.lower() not in ("flac", "flac-mp4"):
+                    return info
+
+            # Last resort: highest available
+            return sorted_infos[0]
 
         # Balanced (default): Prefer ~192kbps AAC, or medium quality MP3
         # Look for bitrate around 192kbps (within range 128-256)
