@@ -9,6 +9,15 @@ CONF_TOKEN = "token"
 CONF_QUALITY = "quality"
 CONF_BASE_URL = "base_url"
 
+# Streaming mode config
+CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+STREAMING_MODE_DIRECT = "direct"
+STREAMING_MODE_BUFFERED = "buffered"
+STREAMING_MODE_PRELOAD = "preload"
+
+# Preload buffer limit (MB) before switching to tempfile
+CONF_PRELOAD_BUFFER_MB: Final[str] = "preload_buffer_mb"
+
 # Actions
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"

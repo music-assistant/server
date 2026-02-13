@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import tempfile
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -13,11 +15,16 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from .constants import (
+    CONF_PRELOAD_BUFFER_MB,
     CONF_QUALITY,
+    CONF_STREAMING_MODE,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
     RADIO_TRACK_ID_SEP,
+    STREAMING_MODE_BUFFERED,
+    STREAMING_MODE_DIRECT,
+    STREAMING_MODE_PRELOAD,
 )
 
 if TYPE_CHECKING:
@@ -280,45 +287,60 @@ class YandexMusicStreamingManager:
 
         return ContentType.UNKNOWN
 
+    def _prepare_cipher(self, streamdetails: StreamDetails) -> tuple[Any, str, str]:
+        """Prepare AES-256-CTR cipher and return (cipher, encrypted_url, codec).
+
+        :param streamdetails: Stream details containing encrypted URL and key.
+        :return: Tuple of (cipher, encrypted_url, codec).
+        """
+        encrypted_url: str = streamdetails.data["encrypted_url"]
+        key_hex: str = streamdetails.data["decryption_key"]
+        codec: str = streamdetails.data.get("codec", "flac")
+        key_bytes = bytes.fromhex(key_hex)
+        nonce = bytes(12)
+        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR)
+        return cipher, encrypted_url, codec
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item with on-the-fly decryption.
+        """Return the audio stream for the provider item with decryption.
 
-        This method streams encrypted FLAC data from Yandex Music and decrypts it
-        incrementally using AES-256 CTR mode, yielding decrypted chunks without
-        saving to disk.
+        Dispatches to the configured streaming mode: direct, buffered, or preload.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :param seek_position: Seek position (not supported for encrypted streams).
         :return: Async generator yielding decrypted audio bytes.
         """
-        encrypted_url = streamdetails.data["encrypted_url"]
-        key_hex = streamdetails.data["decryption_key"]
-        codec = streamdetails.data.get("codec", "flac")
+        mode = self.provider.config.get_value(CONF_STREAMING_MODE) or STREAMING_MODE_BUFFERED
+
+        if mode == STREAMING_MODE_DIRECT:
+            gen = self._stream_direct(streamdetails)
+        elif mode == STREAMING_MODE_PRELOAD:
+            gen = self._stream_preload(streamdetails)
+        else:
+            gen = self._stream_buffered(streamdetails)
+
+        async for chunk in gen:
+            yield chunk
+
+    async def _stream_direct(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
+        """Stream and decrypt on-the-fly (original behavior).
+
+        Download and decryption are coupled — each chunk is decrypted as it arrives.
+        Best for fast networks and powerful CPUs.
+
+        :param streamdetails: Stream details containing encrypted URL and key.
+        """
+        cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
 
         self.logger.info(
-            "Starting streaming decryption for track %s (codec=%s)",
+            "Starting direct streaming decryption for track %s (codec=%s)",
             streamdetails.item_id,
             codec,
         )
 
-        # Prepare AES-256 CTR cipher for incremental decryption
-        # Key is HEX-encoded, nonce is 12-byte null vector
-        key_bytes = bytes.fromhex(key_hex)
-        nonce = bytes(12)  # 12-byte null nonce
-
-        # Create AES CTR cipher (PyCrypto supports 12-byte nonce)
-        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR)
-
-        self.logger.debug(
-            "Cipher initialized: key_length=%d bytes, nonce_length=%d bytes",
-            len(key_bytes),
-            len(nonce),
-        )
-
-        # Stream encrypted data in chunks and decrypt on-the-fly
-        chunk_size = 65536  # 64KB chunks for efficient streaming
+        chunk_size = 65536
         total_bytes = 0
         timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
 
@@ -334,24 +356,162 @@ class YandexMusicStreamingManager:
 
                 self.logger.debug("Started streaming from %s", encrypted_url[:100])
 
-                # Stream and decrypt chunks
                 async for encrypted_chunk in response.content.iter_chunked(chunk_size):
-                    # Decrypt chunk using AES CTR
-                    # CTR mode allows incremental decryption as counter auto-increments
                     decrypted_chunk = cipher.decrypt(encrypted_chunk)
                     total_bytes += len(decrypted_chunk)
                     yield decrypted_chunk
 
                 self.logger.info(
-                    "Completed streaming decryption for track %s: %d bytes total",
+                    "Completed direct streaming for track %s: %d bytes total",
                     streamdetails.item_id,
                     total_bytes,
                 )
 
         except Exception as err:
             self.logger.exception(
-                "Error during streaming decryption for track %s: %s",
+                "Error during direct streaming for track %s: %s",
                 streamdetails.item_id,
                 err,
             )
             raise
+
+    async def _stream_buffered(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
+        """Download and decrypt via async queue, decoupling download from consumption.
+
+        A background task downloads and decrypts chunks into a bounded queue.
+        The consumer yields from the queue at its own pace. Backpressure is handled
+        by the queue's maxsize — download blocks when the queue is full.
+
+        :param streamdetails: Stream details containing encrypted URL and key.
+        """
+        cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
+
+        self.logger.info(
+            "Starting buffered streaming for track %s (codec=%s)",
+            streamdetails.item_id,
+            codec,
+        )
+
+        chunk_size = 65536
+        queue_max = 32  # max 32 * 64KB = 2MB buffered ahead
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=queue_max)
+        error_holder: list[BaseException | None] = [None]
+        sentinel = None
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
+
+        async def _download_and_decrypt() -> None:
+            try:
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(encrypted_url, timeout=timeout) as response,
+                ):
+                    if response.status != 200:
+                        msg = f"Failed to stream encrypted track: HTTP {response.status}"
+                        error_holder[0] = MediaNotFoundError(msg)
+                        return
+
+                    async for encrypted_chunk in response.content.iter_chunked(chunk_size):
+                        decrypted = cipher.decrypt(encrypted_chunk)
+                        await queue.put(decrypted)
+            except Exception as exc:
+                error_holder[0] = exc
+            finally:
+                await queue.put(sentinel)
+
+        task = asyncio.create_task(_download_and_decrypt())
+        total_bytes = 0
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                total_bytes += len(item)
+                yield item
+
+            if error_holder[0]:
+                raise error_holder[0]
+
+            self.logger.info(
+                "Completed buffered streaming for track %s: %d bytes total",
+                streamdetails.item_id,
+                total_bytes,
+            )
+        except Exception as err:
+            self.logger.exception(
+                "Error during buffered streaming for track %s: %s",
+                streamdetails.item_id,
+                err,
+            )
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+
+    async def _stream_preload(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
+        """Download the entire encrypted file first, then decrypt and yield.
+
+        Uses SpooledTemporaryFile which keeps data in memory until the configured
+        limit is exceeded, then transparently spills to disk.
+
+        :param streamdetails: Stream details containing encrypted URL and key.
+        """
+        cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
+
+        self.logger.info(
+            "Starting preload streaming for track %s (codec=%s)",
+            streamdetails.item_id,
+            codec,
+        )
+
+        buffer_limit = int(
+            self.provider.config.get_value(CONF_PRELOAD_BUFFER_MB) or 100  # type: ignore[arg-type]
+        )
+        max_bytes = buffer_limit * 1024 * 1024
+        chunk_size = 65536
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
+
+        with tempfile.SpooledTemporaryFile(max_size=max_bytes) as buf:
+            try:
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(encrypted_url, timeout=timeout) as response,
+                ):
+                    if response.status != 200:
+                        msg = f"Failed to stream encrypted track: HTTP {response.status}"
+                        self.logger.error(msg)
+                        raise MediaNotFoundError(msg)
+
+                    self.logger.debug("Preloading encrypted data from %s", encrypted_url[:100])
+                    async for chunk in response.content.iter_chunked(chunk_size):
+                        buf.write(chunk)
+
+                download_size = buf.tell()
+                self.logger.debug(
+                    "Preloaded %d bytes for track %s, decrypting",
+                    download_size,
+                    streamdetails.item_id,
+                )
+
+                buf.seek(0)
+                total_bytes = 0
+                while True:
+                    encrypted_chunk = buf.read(chunk_size)
+                    if not encrypted_chunk:
+                        break
+                    decrypted = cipher.decrypt(encrypted_chunk)
+                    total_bytes += len(decrypted)
+                    yield decrypted
+
+                self.logger.info(
+                    "Completed preload streaming for track %s: %d bytes total",
+                    streamdetails.item_id,
+                    total_bytes,
+                )
+
+            except Exception as err:
+                self.logger.exception(
+                    "Error during preload streaming for track %s: %s",
+                    streamdetails.item_id,
+                    err,
+                )
+                raise

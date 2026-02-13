@@ -21,7 +21,9 @@ from .constants import (
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
+    CONF_PRELOAD_BUFFER_MB,
     CONF_QUALITY,
+    CONF_STREAMING_MODE,
     CONF_TOKEN,
     CONF_TRACK_BATCH_SIZE,
     DEFAULT_BASE_URL,
@@ -29,6 +31,9 @@ from .constants import (
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
+    STREAMING_MODE_BUFFERED,
+    STREAMING_MODE_DIRECT,
+    STREAMING_MODE_PRELOAD,
 )
 from .provider import YandexMusicProvider
 
@@ -117,6 +122,38 @@ async def get_config_entries(
                 ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
             ],
             default_value=QUALITY_BALANCED,
+        ),
+        # Streaming category (FLAC streaming mode)
+        ConfigEntry(
+            key=CONF_STREAMING_MODE,
+            type=ConfigEntryType.STRING,
+            label="FLAC streaming mode",
+            description="How encrypted FLAC streams are handled. "
+            "'Direct' streams and decrypts on-the-fly (fast devices). "
+            "'Buffered' decouples download from decryption via async queue (recommended). "
+            "'Preload' downloads the full file before decryption (slow devices).",
+            options=[
+                ConfigValueOption("Direct (on-the-fly)", STREAMING_MODE_DIRECT),
+                ConfigValueOption("Buffered (async queue, recommended)", STREAMING_MODE_BUFFERED),
+                ConfigValueOption("Preload (full download first)", STREAMING_MODE_PRELOAD),
+            ],
+            default_value=STREAMING_MODE_BUFFERED,
+            category="streaming",
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_PRELOAD_BUFFER_MB,
+            type=ConfigEntryType.INTEGER,
+            label="Preload memory limit (MB)",
+            description="Maximum memory (MB) for preloading encrypted files. "
+            "Files exceeding this limit will use a temporary file on disk. "
+            "Default: 100 MB.",
+            range=(10, 500),
+            default_value=100,
+            category="streaming",
+            advanced=True,
+            depends_on=CONF_STREAMING_MODE,
+            depends_on_value=STREAMING_MODE_PRELOAD,
         ),
         # My Wave category (user-facing toggles)
         ConfigEntry(
