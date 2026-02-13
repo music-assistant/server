@@ -34,6 +34,7 @@ class MSXBridgeProvider(PlayerProvider):
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
     _timeout_task: asyncio.Task[None] | None = None
+    _owner_username: str | None = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
@@ -71,6 +72,18 @@ class MSXBridgeProvider(PlayerProvider):
             await self.mass.players.unregister(player.player_id)
         self._player_last_activity.clear()
         self.logger.info("MSX Bridge provider unloaded")
+
+    async def get_owner_username(self) -> str | None:
+        """Resolve and cache the first non-system user's username for playlog attribution."""
+        if self._owner_username is None:
+            try:
+                users = await self.mass.webserver.auth.list_users()
+                if users:
+                    self._owner_username = users[0].username
+                    self.logger.debug("Resolved owner username: %s", self._owner_username)
+            except Exception as err:
+                self.logger.warning("Could not resolve owner username: %s", err)
+        return self._owner_username
 
     async def discover_players(self) -> None:
         """Discover players — MSX players are registered on demand when TVs connect."""

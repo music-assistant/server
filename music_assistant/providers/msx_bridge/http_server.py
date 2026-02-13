@@ -816,7 +816,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             if from_playlist:
                 player._skip_ws_notify = True
 
-            await self.provider.mass.player_queues.play_media(player_id, uri)
+            await self.provider.mass.player_queues.play_media(
+                player_id, uri, username=await self.provider.get_owner_username()
+            )
 
             # Reset skip flag after play_media
             if from_playlist:
@@ -1530,7 +1532,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if not track_uri or not player_id:
             return web.json_response({"error": "Missing track_uri or player_id"}, status=400)
 
-        await self.provider.mass.player_queues.play_media(player_id, track_uri)
+        await self.provider.mass.player_queues.play_media(
+            player_id, track_uri, username=await self.provider.get_owner_username()
+        )
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
