@@ -113,7 +113,9 @@ class AlbumsController(MediaControllerBase[Album]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        library_items_only: bool = True,
         album_types: list[AlbumType] | None = None,
+        **kwargs: Any,
     ) -> list[Album]:
         """Get in-database albums.
 
@@ -123,6 +125,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param library_items_only: Only return items that are marked as in-library.
         :param album_types: Filter by album types.
         """
         extra_query_params: dict[str, Any] = {}
@@ -168,6 +171,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=library_items_only,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -195,6 +199,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=library_items_only,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:

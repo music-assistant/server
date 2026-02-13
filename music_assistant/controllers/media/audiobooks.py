@@ -69,6 +69,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        library_items_only: bool = True,
+        **kwargs: Any,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -78,6 +80,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param library_items_only: Only return items that are marked as in-library.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -90,6 +93,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=library_items_only,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -105,6 +109,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=library_items_only,
             )
         return result
 
