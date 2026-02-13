@@ -610,7 +610,12 @@ class SpotifyProvider(MusicProvider):
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
+        total = spotify_result.get("total", 0)
         for index, item in enumerate(spotify_result["items"], 1):
+            # Spotify wraps/recycles items for offsets beyond the playlist size,
+            # so we need to break when we've reached the total.
+            if (offset + index) > total:
+                break
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             track = parse_track(item["track"], self)
