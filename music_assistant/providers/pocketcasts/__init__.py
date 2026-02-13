@@ -895,9 +895,13 @@ class PocketCastsProvider(MusicProvider):
 
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
 
+        # Normalize position: treat None as 0
+        if position is None:
+            position = 0
+
         try:
-            # Case 1: User marked as unplayed (position=0)
-            if position == 0:
+            # Case 1: User explicitly marked as unplayed (not during active playback)
+            if position == 0 and not is_playing:
                 LOGGER.info("Marking episode %s as unplayed", episode_uuid)
                 await self._client.mark_episode_unplayed(podcast_uuid, episode_uuid)
                 await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
