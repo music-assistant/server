@@ -14,12 +14,22 @@ from music_assistant.providers.yandex_music.api_client import YandexMusicClient
 def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
     """Create a YandexMusicClient with a mocked underlying ClientAsync.
 
+    Also mocks connect() so that _reconnect() restores the mock client
+    instead of trying to create a real connection.
+
     :return: Tuple of (YandexMusicClient, mock_underlying_client).
     """
     client = YandexMusicClient(token="fake_token")
     mock_underlying = mock.AsyncMock()
     client._client = mock_underlying
     client._user_id = 12345
+
+    async def _fake_connect() -> bool:
+        client._client = mock_underlying
+        client._user_id = 12345
+        return True
+
+    client.connect = _fake_connect  # type: ignore[method-assign]
     return client, mock_underlying
 
 
