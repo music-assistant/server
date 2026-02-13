@@ -143,8 +143,9 @@ class WebserverController(CoreController):
                 label="Base URL",
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
-                "the webserver behind a reverse proxy.",
-                requires_reload=False,
+                "the webserver behind a reverse proxy. \n"
+                "Supports subpath-based URLs (e.g., https://example.com/music).",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,

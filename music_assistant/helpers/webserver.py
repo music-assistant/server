@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Final
 
@@ -41,6 +42,7 @@ class Webserver:
             {} if enable_dynamic_routes else None
         )
         self._bind_port: int | None = None
+        self._base_path: str = ""
         self._ingress_tcp_site: web.TCPSite | None = None
 
     async def setup(
@@ -68,6 +70,12 @@ class Webserver:
         self._base_url = base_url.removesuffix("/")
         self._bind_port = bind_port
         self._static_routes = static_routes
+        # extract subpath prefix from base_url (e.g., "/music" from "https://link.com/music")
+        # this allows the server to work behind a reverse proxy with a subpath
+        parsed_url = urllib.parse.urlparse(base_url)
+        self._base_path = parsed_url.path.rstrip("/")
+        if self._base_path:
+            self.logger.info("Base path detected from base_url: %s", self._base_path)
         self._webapp = web.Application(
             logger=self.logger,
             client_max_size=MAX_CLIENT_SIZE,
@@ -81,16 +89,35 @@ class Webserver:
             for key, value in app_state.items():
                 self._webapp[key] = value
         self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
-        # add static routes
+        # add static routes at root level (works for ingress and direct access)
+        # when base_path is set, also register at the prefixed path (for reverse proxy)
         if self._static_routes:
             for method, path, handler in self._static_routes:
                 self._webapp.router.add_route(method, path, handler)
+                if self._base_path:
+                    self._webapp.router.add_route(method, self._base_path + path, handler)
         if static_content:
             self._webapp.router.add_static(
                 static_content[0], static_content[1], name=static_content[2]
             )
-        # register catch-all route to handle dynamic routes (if enabled)
+            if self._base_path:
+                self._webapp.router.add_static(
+                    self._base_path + static_content[0],
+                    static_content[1],
+                    name=static_content[2] + "_prefixed",
+                )
+        # register catch-all route(s) to handle dynamic routes (if enabled)
         if self._dynamic_routes is not None:
+            if self._base_path:
+                # prefixed catch-all first (more specific, matched before root catch-all)
+                self._webapp.router.add_route(
+                    "*", self._base_path + "/{tail:.*}", self._handle_prefixed_catch_all
+                )
+                # redirect bare base_path to base_path/
+                self._webapp.router.add_route(
+                    "GET", self._base_path, self._handle_root_redirect
+                )
+            # root-level catch-all (handles ingress + direct access + non-subpath setups)
             self._webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
@@ -143,6 +170,11 @@ class Webserver:
         return self._base_url
 
     @property
+    def base_path(self) -> str:
+        """Return the base path prefix extracted from the base URL (e.g., '/music' or '')."""
+        return self._base_path
+
+    @property
     def port(self) -> int | None:
         """Return the port of this webserver."""
         return self._bind_port
@@ -181,6 +213,42 @@ class Webserver:
         """Serve file response."""
         headers = {"Cache-Control": "no-cache"}
         return web.FileResponse(file_path, headers=headers)
+
+    async def _handle_root_redirect(self, request: web.Request) -> web.Response:
+        """Redirect root path to the base path when a subpath is configured."""
+        raise web.HTTPFound(self._base_path + "/")
+
+    async def _handle_prefixed_catch_all(
+        self, request: web.Request
+    ) -> web.Response | web.StreamResponse:
+        """Handle requests to base_path-prefixed URLs by stripping the prefix.
+
+        When a reverse proxy forwards /music/callback/xyz, this handler strips
+        /music to get /callback/xyz and looks up the dynamic route at that clean path.
+        """
+        assert self._dynamic_routes is not None  # for type checking
+        clean_path = request.path[len(self._base_path) :] or "/"
+        # Try exact match first
+        for key in (f"{request.method}.{clean_path}", f"*.{clean_path}"):
+            if handler := self._dynamic_routes.get(key):
+                return await handler(request)
+        # Try prefix match (for routes registered with /*)
+        for route_key, handler in self._dynamic_routes.items():
+            method, path = route_key.split(".", 1)
+            if method in (request.method, "*") and path.endswith("/*"):
+                prefix = path[:-2]
+                if clean_path.startswith(prefix):
+                    return await handler(request)
+        # deny all other requests
+        self.logger.warning(
+            "Received unhandled %s request to %s (clean: %s) from %s\nheaders: %s\n",
+            request.method,
+            request.path,
+            clean_path,
+            request.remote,
+            request.headers,
+        )
+        return web.Response(status=404)
 
     async def _handle_catch_all(self, request: web.Request) -> web.Response | web.StreamResponse:
         """Redirect request to correct destination."""
