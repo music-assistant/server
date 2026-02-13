@@ -153,7 +153,7 @@ class MSXPlayer(Player):
     def _resolve_media_metadata(
         self, media: PlayerMedia
     ) -> tuple[str | None, str | None, str | None, int | None]:
-        """Resolve real metadata from queue item (flow_mode sends generic metadata)."""
+        """Resolve detailed metadata from the queue item when available."""
         title = media.title
         artist = media.artist
         image_url = media.image_url
@@ -252,7 +252,14 @@ class MSXPlayer(Player):
         await self._propagate_to_group_members("play")
 
     async def _resume_from_pause(self) -> None:
-        """Resume playback after pause — tell MSX to unpause its native player."""
+        """Resume playback after pause — tell MSX to unpause its native player.
+
+        Note: the HTTP audio stream stays open during pause. For short pauses
+        the chunk buffer (maxsize=32) absorbs the gap. Long pauses (minutes)
+        may cause stream starvation — ffmpeg backs up, and MSX may get silence
+        or a playback error on resume. A reconnect mechanism would be needed
+        for reliable long-pause support.
+        """
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time_last_updated = time.time()
         self._last_ws_position = None
