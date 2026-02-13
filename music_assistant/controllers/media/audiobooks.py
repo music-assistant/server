@@ -305,12 +305,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "provider": "library",
             },
         )
-        seconds_played = int(media_item.resume_position_ms or 0 / 1000)
+        seconds_played = int((media_item.resume_position_ms or 0) / 1000)
         # abort if nothing changed
         if (
             cur_entry
             and cur_entry["fully_played"] == media_item.fully_played
-            and abs((cur_entry["seconds_played"] or 0) - seconds_played) > 2
+            and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
         ):
             return
         await self.mass.music.database.insert(
