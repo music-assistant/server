@@ -34,9 +34,12 @@ from music_assistant.providers.snapcast.constants import (
     CONF_STREAM_IDLE_THRESHOLD,
     CONF_USE_EXTERNAL_SERVER,
     CONTROL_SCRIPT,
+    DEFAULT_SNAPSERVER_CONFIG_FILE,
+    DEFAULT_SNAPSERVER_PLUGIN_DIR,
     DEFAULT_SNAPSERVER_PORT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
+    SHIPPED_SNAPSERVER_CONFIG_FILE,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -77,13 +80,18 @@ class SnapCastProvider(PlayerProvider):
     _snapcast_ma_streams_lock: asyncio.Lock
 
     @property
-    def use_queue_control(self) -> bool:
+    def queue_control_available(self) -> bool:
         """Return whether queue-based control scripts are available.
 
         Indicates if the Snapcast control script has been successfully initialized
         and can be used to control playback via a queue-specific control channel.
         """
-        return self._controlscript_available
+        return (
+            self._use_builtin_server
+            and self._controlscript_available
+            and self._snapserver_started is not None
+            and self._snapserver_started.is_set()
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -93,6 +101,13 @@ class SnapCastProvider(PlayerProvider):
         self._stop_called = False
         self._controlscript_available = False
         if self._use_builtin_server:
+            if Path(DEFAULT_SNAPSERVER_CONFIG_FILE).exists():
+                self._snapcast_server_config_file = DEFAULT_SNAPSERVER_CONFIG_FILE
+            else:
+                # Fallback for dev environments without a Snapserver config file.
+                # If the file is missing, Snapserver silently ignores all command-line arguments.
+                self._snapcast_server_config_file = str(SHIPPED_SNAPSERVER_CONFIG_FILE)
+
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = cast(
@@ -177,36 +192,39 @@ class SnapCastProvider(PlayerProvider):
         self.logger.info("Stopping, built-in Snapserver")
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-            if self._snapserver_started is not None:
-                self._snapserver_started.clear()
 
-    def _setup_controlscript(self) -> bool:
+    def _setup_controlscript(self) -> str | None:
         """Copy control script to plugin directory (blocking I/O).
 
-        :return: True if successful, False otherwise.
+        :return: plugin dir if successful, None otherwise.
         """
-        plugin_dir = Path("/usr/share/snapserver/plug-ins")
-        control_dest = plugin_dir / "control.py"
         logger = self.logger.getChild("snapserver")
-        try:
-            plugin_dir.mkdir(parents=True, exist_ok=True)
-            # Clean up existing file
-            control_dest.unlink(missing_ok=True)
-            if not CONTROL_SCRIPT.exists():
-                logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
-                return False
-            # Copy the control script to the plugin directory
-            shutil.copy2(CONTROL_SCRIPT, control_dest)
-            # Ensure it's executable
-            control_dest.chmod(0o755)
-            logger.debug("Copied controlscript to: %s", control_dest)
-            return True
-        except (OSError, PermissionError) as err:
-            logger.warning(
-                "Could not copy controlscript (metadata/control disabled): %s",
-                err,
-            )
-            return False
+        if not CONTROL_SCRIPT.exists():
+            logger.warning("Control script does not exist: %s", CONTROL_SCRIPT)
+            return None
+
+        candidates = (
+            Path(DEFAULT_SNAPSERVER_PLUGIN_DIR),
+            # fallback directory for dev environments
+            Path(self.mass.storage_path) / "snapcast" / "plugins",
+        )
+        for plugin_dir in candidates:
+            control_dest = plugin_dir / "control.py"
+            try:
+                plugin_dir.mkdir(parents=True, exist_ok=True)
+                # Clean up existing file
+                control_dest.unlink(missing_ok=True)
+
+                # Copy the control script to the plugin directory
+                shutil.copy2(CONTROL_SCRIPT, control_dest)
+                # Ensure it's executable
+                control_dest.chmod(0o755)
+                logger.debug("Copied controlscript to: %s", control_dest)
+                return str(plugin_dir)
+            except (OSError, PermissionError) as err:
+                logger.debug("Could not copy controlscript to %s : %s", plugin_dir, err)
+        logger.warning("Could not copy controlscript (metadata/control disabled)")
+        return None
 
     async def _builtin_server_runner(self) -> None:
         """Start running the builtin snapserver."""
@@ -253,12 +271,13 @@ class SnapCastProvider(PlayerProvider):
             "snapserver",
             # config settings taken from
             # https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf
+            f"--config={self._snapcast_server_config_file}",
             f"--server.datadir={self.mass.storage_path}",
             "--http.enabled=true",
             "--http.port=1780",
             f"--http.doc_root={SNAPWEB_DIR}",
-            "--tcp.enabled=true",
-            f"--tcp.port={self._snapcast_server_control_port}",
+            "--tcp-control.enabled=true",
+            f"--tcp-control.port={self._snapcast_server_control_port}",
             "--stream.sampleformat=48000:16:2",
             f"--stream.buffer={self._snapcast_server_buffer_size}",
             f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
@@ -266,6 +285,13 @@ class SnapCastProvider(PlayerProvider):
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
+        loop = asyncio.get_running_loop()
+        plugin_dir = await loop.run_in_executor(None, self._setup_controlscript)
+        if plugin_dir is not None:
+            args.append(f"--stream.plugin_dir={plugin_dir}")
+            self._controlscript_available = True
+
+        started_handle: asyncio.Handle | None = None
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             try:
                 # keep reading from stdout until exit
@@ -276,13 +302,11 @@ class SnapCastProvider(PlayerProvider):
                         if "(Snapserver) Version 0." in line:
                             # delay init a small bit to prevent race conditions
                             # where we try to connect too soon
-                            self.mass.loop.call_later(2, self._snapserver_started.set)
-                            # Copy control script after snapserver starts
-                            # (run in executor to avoid blocking)
-                            loop = asyncio.get_running_loop()
-                            self._controlscript_available = await loop.run_in_executor(
-                                None, self._setup_controlscript
-                            )
+                            if started_handle is None:
+                                started_handle = self.mass.loop.call_later(
+                                    2, self._snapserver_started.set
+                                )
+
             except asyncio.CancelledError:
                 # Currently, MA doesn't guarantee a defined shutdown order;
                 # Make sure to close socket servers before
@@ -295,6 +319,13 @@ class SnapCastProvider(PlayerProvider):
                     await self.delete_ma_stream(stream_name)
                 self._snapcast_ma_streams.clear()
                 raise
+
+            finally:
+                if started_handle is not None:
+                    started_handle.cancel()
+                if self._snapserver_started is not None:
+                    self._snapserver_started.clear()
+                self._controlscript_available = False
 
     def _get_ma_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
@@ -569,7 +600,7 @@ class SnapCastProvider(PlayerProvider):
                     stream_name=stream_name,
                     filter_settings_owner=filter_settings_owner,
                     source_id=source_id,
-                    use_cntrl_script=bool(queue_id) and self.use_queue_control,
+                    use_cntrl_script=bool(queue_id) and self.queue_control_available,
                     destroy_on_stop=destroy_on_stop,
                 )
                 self._snapcast_ma_streams[stream_name] = stream

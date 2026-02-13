@@ -307,10 +307,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
-            # Reset to unfiltered static members list when powered off
-            # (the frontend will hide unavailable members)
-            self._attr_group_members = self._attr_static_group_members.copy()
-            # and clear the sync leader
+            configured_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            self._attr_group_members = configured_members.copy()
             self.sync_leader = None
         self.update_state()
 

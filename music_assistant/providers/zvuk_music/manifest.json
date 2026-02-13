@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "zvuk_music",
+  "stage": "beta",
+  "name": "Zvuk Music",
+  "description": "Stream music from Zvuk Music service.",
+  "codeowners": ["@TrudenBoy"],
+  "documentation": "https://music-assistant.io/music-providers/zvuk/",
+  "requirements": ["zvuk-music[async]==0.5.3"],
+  "multi_instance": true
+}

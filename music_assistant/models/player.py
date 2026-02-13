@@ -26,7 +26,15 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedia, PlayerSource
+from music_assistant_models.player import (
+    DeviceInfo,
+    OutputProtocol,
+    PlayerMedia,
+    PlayerOption,
+    PlayerOptionValueType,
+    PlayerSoundMode,
+    PlayerSource,
+)
 from music_assistant_models.player import Player as PlayerState
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
@@ -72,6 +80,8 @@ class Player(ABC):
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
+    _attr_sound_mode_list: list[PlayerSoundMode]
+    _attr_options: list[PlayerOption]
     _attr_available: bool = True
     _attr_name: str | None = None
     _attr_powered: bool | None = None
@@ -81,6 +91,7 @@ class Player(ABC):
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: float | None = None
     _attr_active_source: str | None = None
+    _attr_active_sound_mode: str | None = None
     _attr_current_media: PlayerMedia | None = None
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
@@ -100,6 +111,8 @@ class Player(ABC):
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
         self._attr_source_list = []
+        self._attr_sound_mode_list = []
+        self._attr_options = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self.__attr_linked_protocols: list[OutputProtocol] = []
@@ -321,6 +334,21 @@ class Player(ABC):
         """Return list of available (native) sources for this player."""
         return self._attr_source_list
 
+    @property
+    def active_sound_mode(self) -> str | None:
+        """Return active sound mode of this player."""
+        return self._attr_active_sound_mode
+
+    @cached_property
+    def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
+        """Return available PlayerSoundModes for Player."""
+        return UniqueList(self._attr_sound_mode_list)
+
+    @cached_property
+    def options(self) -> UniqueList[PlayerOption]:
+        """Return all PlayerOptions for Player."""
+        return UniqueList(self._attr_options)
+
     async def power(self, powered: bool) -> None:
         """
         Handle POWER command on the player.
@@ -493,6 +521,31 @@ class Player(ABC):
         """
         raise NotImplementedError(
             "select_source needs to be implemented when PlayerFeature.SELECT_SOURCE is set"
+        )
+
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """
+        Handle SELECT SOUND MODE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOUND_MODE is supported.
+
+        :param source: The sound_mode(id) to select, as defined in the sound_mode_list.
+        """
+        raise NotImplementedError(
+            "select_sound_mode needs to be implemented when PlayerFeature.SELECT_SOUND_MODE is set"
+        )
+
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """
+        Handle SET_OPTION command on the player.
+
+        Will only be called if the PlayerFeature.OPTIONS is supported.
+
+        :param option_key: The option_key of the PlayerOption
+        :param option_value: The new value of the PlayerOption
+        """
+        raise NotImplementedError(
+            "set_option needs to be implemented when PlayerFeature.Option is set"
         )
 
     async def set_members(
@@ -1236,6 +1289,9 @@ class Player(ABC):
             source_list=self.__final_source_list,
             active_group=self.__final_active_group,
             current_media=self.__final_current_media,
+            active_sound_mode=self.active_sound_mode,
+            sound_mode_list=self.sound_mode_list,
+            options=self.options,
             name=self.display_name,
             enabled=self.enabled,
             hide_in_ui=self.hide_in_ui,
