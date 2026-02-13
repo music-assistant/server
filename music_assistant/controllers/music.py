@@ -898,7 +898,7 @@ class MusicController(CoreController):
             )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
-            # we optimistically set in library to True to prevent items 
+            # we optimistically set in library to True to prevent items
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
@@ -2237,12 +2237,19 @@ class MusicController(CoreController):
             )
 
         if prev_version <= 27:
-            # set streaming provider mappings to in_library=True
+            # set streaming provider mappings to in_library=True, but only for items
+            # that do not already have any mapping with in_library=True
+            # (to avoid overwriting explicit values in multi-instance setups)
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain NOT IN "
                 "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
-                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed')"
+                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
+                "AND NOT EXISTS ("
+                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
+                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
+                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
+                "AND pm2.in_library = 1)"
             )
 
         # save changes
