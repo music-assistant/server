@@ -2236,7 +2236,6 @@ class MusicController(CoreController):
 
         if prev_version <= 27:
             # set streaming provider mappings to in_library=True
-            # next sync cycle will properly mark removed items as in_library=False
             await self._database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain NOT IN "
