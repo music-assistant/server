@@ -1016,7 +1016,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command
         - sound_mode: The ID of the sound mode that needs to be activated/selected.
         """
-        player = self.get(player_id, True)
+        player = self.get_player(player_id, True)
         assert player is not None  # for type checking
 
         if PlayerFeature.SELECT_SOUND_MODE not in player.supported_features:
@@ -1049,7 +1049,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - option_key: The key of the player option that needs to be activated/selected.
         - option_value: The new value of the player option.
         """
-        player = self.get(player_id, True)
+        player = self.get_player(player_id, True)
         assert player is not None  # for type checking
 
         if PlayerFeature.OPTIONS not in player.supported_features:
