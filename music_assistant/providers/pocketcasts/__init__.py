@@ -748,6 +748,9 @@ class PocketCastsProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         # prov_item_id format is "podcast_uuid:episode_uuid"
+        if ":" not in prov_item_id:
+            msg = f"Invalid episode id format: {prov_item_id}"
+            raise MediaNotFoundError(msg)
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
 
         LOGGER.debug("Getting episode %s from podcast %s", episode_uuid, podcast_uuid)
