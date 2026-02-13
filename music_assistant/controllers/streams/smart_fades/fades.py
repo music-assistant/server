@@ -76,26 +76,48 @@ class SmartFade(ABC):
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
 
-        try:
-            args = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                # Input 1: fadeout part (as file)
-                "-acodec",
-                pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
-                "-ac",
-                str(pcm_format.channels),
-                "-ar",
-                str(pcm_format.sample_rate),
-                "-channel_layout",
-                "mono" if pcm_format.channels == 1 else "stereo",
-                "-f",
-                pcm_format.content_type.value,
-                "-i",
-                fadeout_filename,
-                # Input 2: fade_in part (stdin)
+        args = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            # Input 1: fadeout part (as file)
+            "-acodec",
+            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
+            "-ac",
+            str(pcm_format.channels),
+            "-ar",
+            str(pcm_format.sample_rate),
+            "-channel_layout",
+            "mono" if pcm_format.channels == 1 else "stereo",
+            "-f",
+            pcm_format.content_type.value,
+            "-i",
+            fadeout_filename,
+            # Input 2: fade_in part (stdin)
+            "-acodec",
+            pcm_format.content_type.name.lower(),
+            "-ac",
+            str(pcm_format.channels),
+            "-ar",
+            str(pcm_format.sample_rate),
+            "-channel_layout",
+            "mono" if pcm_format.channels == 1 else "stereo",
+            "-f",
+            pcm_format.content_type.value,
+            "-i",
+            "-",
+        ]
+        smart_fade_filters = self._get_ffmpeg_filters()
+        self.logger.debug(
+            "Applying smartfade: %s",
+            self,
+        )
+        args.extend(
+            [
+                "-filter_complex",
+                ";".join(smart_fade_filters),
+                # Output format specification - must match input codec format
                 "-acodec",
                 pcm_format.content_type.name.lower(),
                 "-ac",
@@ -106,34 +128,12 @@ class SmartFade(ABC):
                 "mono" if pcm_format.channels == 1 else "stereo",
                 "-f",
                 pcm_format.content_type.value,
-                "-i",
                 "-",
             ]
-            smart_fade_filters = self._get_ffmpeg_filters()
-            self.logger.debug(
-                "Applying smartfade: %s",
-                self,
-            )
-            args.extend(
-                [
-                    "-filter_complex",
-                    ";".join(smart_fade_filters),
-                    # Output format specification - must match input codec format
-                    "-acodec",
-                    pcm_format.content_type.name.lower(),
-                    "-ac",
-                    str(pcm_format.channels),
-                    "-ar",
-                    str(pcm_format.sample_rate),
-                    "-channel_layout",
-                    "mono" if pcm_format.channels == 1 else "stereo",
-                    "-f",
-                    pcm_format.content_type.value,
-                    "-",
-                ]
-            )
-            self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
+        )
+        self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
+        try:
             # Execute the enhanced smart fade with full buffer
             _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
 
