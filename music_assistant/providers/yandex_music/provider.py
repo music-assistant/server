@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -1047,6 +1047,21 @@ class YandexMusicProvider(MusicProvider):
         :return: StreamDetails for the track.
         """
         return await self.streaming.get_stream_details(item_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item.
+
+        This method is called when StreamType.CUSTOM is used, enabling on-the-fly
+        decryption of encrypted FLAC streams without disk I/O.
+
+        :param streamdetails: Stream details containing encrypted URL and decryption key.
+        :param seek_position: Seek position in seconds (not supported for encrypted streams).
+        :return: Async generator yielding decrypted audio chunks.
+        """
+        async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
+            yield chunk
 
     async def on_played(
         self,

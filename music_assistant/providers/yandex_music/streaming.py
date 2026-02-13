@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+from Crypto.Cipher import AES
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
@@ -81,74 +82,49 @@ class YandexMusicStreamingManager:
                     # Handle encrypted URLs from encraw transport
                     if needs_decryption and "key" in file_info:
                         self.logger.info(
-                            "Decrypting lossless FLAC for track %s (codec=%s)",
+                            "Streaming encrypted FLAC for track %s (codec=%s) - "
+                            "will decrypt on-the-fly",
                             track_id,
                             codec,
                         )
-                        try:
-                            # Download and decrypt the encrypted audio data
-                            decrypted_data = await self.client._decrypt_track_url(
-                                url, file_info["key"]
-                            )
-
-                            # Save to temporary file for streaming
-                            # Use .m4a extension for flac-mp4, .flac for flac
-                            ext = ".m4a" if codec.lower() == "flac-mp4" else ".flac"
-                            with tempfile.NamedTemporaryFile(
-                                delete=False, suffix=ext, prefix=f"yandex_track_{track_id}_"
-                            ) as temp_file:
-                                temp_path = Path(temp_file.name)
-                                # Write decrypted data
-                                temp_file.write(decrypted_data)
-
-                            self.logger.info(
-                                "Successfully decrypted track %s to %s (%d bytes)",
-                                track_id,
-                                temp_path,
-                                len(decrypted_data),
-                            )
-
-                            # Return stream details pointing to decrypted temp file
-                            return StreamDetails(
-                                item_id=item_id,
-                                provider=self.provider.instance_id,
-                                audio_format=AudioFormat(
-                                    content_type=content_type,
-                                    bit_rate=0,  # FLAC is variable bitrate
-                                ),
-                                stream_type=StreamType.LOCAL_FILE,
-                                duration=track.duration,
-                                path=str(temp_path),
-                                can_seek=True,
-                                allow_seek=True,
-                            )
-                        except Exception as err:
-                            self.logger.exception(
-                                "Failed to decrypt track %s: %s. Falling back to MP3.",
-                                track_id,
-                                err,
-                            )
-                            # Fall through to regular download-info
-                    else:
-                        # Unencrypted URL, use directly
-                        self.logger.debug(
-                            "Unencrypted stream for track %s: codec=%s",
-                            item_id,
-                            codec,
-                        )
+                        # Return StreamType.CUSTOM for streaming decryption
+                        # Store encrypted URL and decryption key in data for get_audio_stream
                         return StreamDetails(
                             item_id=item_id,
                             provider=self.provider.instance_id,
                             audio_format=AudioFormat(
                                 content_type=content_type,
-                                bit_rate=0,
+                                bit_rate=0,  # FLAC is variable bitrate
                             ),
-                            stream_type=StreamType.HTTP,
+                            stream_type=StreamType.CUSTOM,
                             duration=track.duration,
-                            path=url,
-                            can_seek=True,
-                            allow_seek=True,
+                            data={
+                                "encrypted_url": url,
+                                "decryption_key": file_info["key"],
+                                "codec": codec,
+                            },
+                            can_seek=False,  # Seeking not supported in streaming mode
+                            allow_seek=False,
                         )
+                    # Unencrypted URL, use directly
+                    self.logger.debug(
+                        "Unencrypted stream for track %s: codec=%s",
+                        item_id,
+                        codec,
+                    )
+                    return StreamDetails(
+                        item_id=item_id,
+                        provider=self.provider.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=content_type,
+                            bit_rate=0,
+                        ),
+                        stream_type=StreamType.HTTP,
+                        duration=track.duration,
+                        path=url,
+                        can_seek=True,
+                        allow_seek=True,
+                    )
 
         # Default: use /tracks/.../download-info and select best quality
         download_infos = await self.client.get_track_download_info(track_id, get_direct_links=True)
@@ -275,3 +251,79 @@ class YandexMusicStreamingManager:
             return ContentType.AAC
 
         return ContentType.UNKNOWN
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item with on-the-fly decryption.
+
+        This method streams encrypted FLAC data from Yandex Music and decrypts it
+        incrementally using AES-256 CTR mode, yielding decrypted chunks without
+        saving to disk.
+
+        :param streamdetails: Stream details containing encrypted URL and key.
+        :param seek_position: Seek position (not supported for encrypted streams).
+        :return: Async generator yielding decrypted audio bytes.
+        """
+        encrypted_url = streamdetails.data["encrypted_url"]
+        key_hex = streamdetails.data["decryption_key"]
+        codec = streamdetails.data.get("codec", "flac")
+
+        self.logger.info(
+            "Starting streaming decryption for track %s (codec=%s)",
+            streamdetails.item_id,
+            codec,
+        )
+
+        # Prepare AES-256 CTR cipher for incremental decryption
+        # Key is HEX-encoded, nonce is 12-byte null vector
+        key_bytes = bytes.fromhex(key_hex)
+        nonce = bytes(12)  # 12-byte null nonce
+
+        # Create AES CTR cipher (PyCrypto supports 12-byte nonce)
+        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR)
+
+        self.logger.debug(
+            "Cipher initialized: key_length=%d bytes, nonce_length=%d bytes",
+            len(key_bytes),
+            len(nonce),
+        )
+
+        # Stream encrypted data in chunks and decrypt on-the-fly
+        chunk_size = 65536  # 64KB chunks for efficient streaming
+        total_bytes = 0
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(encrypted_url, timeout=timeout) as response,
+            ):
+                if response.status != 200:
+                    msg = f"Failed to stream encrypted track: HTTP {response.status}"
+                    self.logger.error(msg)
+                    raise MediaNotFoundError(msg)
+
+                self.logger.debug("Started streaming from %s", encrypted_url[:100])
+
+                # Stream and decrypt chunks
+                async for encrypted_chunk in response.content.iter_chunked(chunk_size):
+                    # Decrypt chunk using AES CTR
+                    # CTR mode allows incremental decryption as counter auto-increments
+                    decrypted_chunk = cipher.decrypt(encrypted_chunk)
+                    total_bytes += len(decrypted_chunk)
+                    yield decrypted_chunk
+
+                self.logger.info(
+                    "Completed streaming decryption for track %s: %d bytes total",
+                    streamdetails.item_id,
+                    total_bytes,
+                )
+
+        except Exception as err:
+            self.logger.exception(
+                "Error during streaming decryption for track %s: %s",
+                streamdetails.item_id,
+                err,
+            )
+            raise
