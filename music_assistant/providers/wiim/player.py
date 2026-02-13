@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import pywiim
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import DeviceInfo
+from music_assistant_models.player import DeviceInfo, PlayerSource
 from pywiim.upnp.eventer import UpnpEventer
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -42,7 +42,7 @@ class WiimPlayer(Player):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.SEEK,
-            # PlayerFeature.SELECT_SOURCE,
+            PlayerFeature.SELECT_SOURCE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {provider.instance_id}
@@ -68,10 +68,25 @@ class WiimPlayer(Player):
         # Start UPnP event subscriptions
         await self.wiim_eventer.start()
 
+        await self.wiim_player.refresh()
+
         self._attr_device_info = DeviceInfo(
             model=self.wiim_player.model if self.wiim_player.model else "",
             software_version=self.wiim_player.firmware if self.wiim_player.firmware else "",
         )
+
+        for source in self.wiim_player.source_catalog:
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=source.get("name", ""),
+                    name=source.get("name", ""),
+                    passive=not source.get("selectable", False),
+                    can_play_pause=source.get("supports_pause", False),
+                    can_seek=source.get("supports_seek", False),
+                    can_next_previous=source.get("supports_next_track", False)
+                    and source.get("supports_previous_track", False),
+                )
+            )
 
     @property
     def needs_poll(self) -> bool:
@@ -88,20 +103,8 @@ class WiimPlayer(Player):
         await self.wiim_player.refresh()
 
     async def select_source(self, source: str) -> None:
-        """
-        Handle SELECT SOURCE command on the player.
-
-        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
-
-        :param source: The source(id) to select, as defined in the source_list.
-        """
-        # if source == SOURCE_LINE_IN:
-        #     await self.client.player.group.load_line_in(play_on_completion=True)
-        # elif source == SOURCE_TV:
-        #     await self.client.player.load_home_theater_playback()
-        # else:
-        #     # unsupported source - try to clear the queue/player
-        #     await self.stop()
+        """Handle SELECT SOURCE command on the player."""
+        await self.wiim_player.set_source(source)
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -197,9 +200,6 @@ class WiimPlayer(Player):
             )
         else:
             self._attr_group_members.clear()
-
-        # for source in self.wiim_player.available_sources:
-        #     self._attr_source_list.append(PlayerSource(source.lower(), source))
 
         if not self.wiim_player.is_slave:
             if self.current_uri and self.current_uri == self.wiim_player.media_content_id:
