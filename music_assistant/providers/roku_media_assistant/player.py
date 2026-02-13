@@ -168,6 +168,7 @@ class MediaAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
             device_info = await self.roku.update()
 
@@ -181,7 +182,7 @@ class MediaAssistantPlayer(Player):
                 )
 
             f_media = {
-                "u": media.uri,
+                "u": stream_url,
                 "t": "a",
                 "albumName": media.album or "",
                 "songName": media.title,

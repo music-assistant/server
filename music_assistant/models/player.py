@@ -1424,7 +1424,7 @@ class Player(ABC):
             # they follow the group state of their parent player
             return None
         for group_player in self.mass.players.all_players(
-            return_unavailable=False, return_disabled=False, return_sync_groups=True
+            return_unavailable=False, return_disabled=False
         ):
             if group_player.type != PlayerType.GROUP:
                 continue

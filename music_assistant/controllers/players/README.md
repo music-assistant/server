@@ -95,13 +95,6 @@ Contains standalone helper functions and decorators:
 - `handle_player_command` decorator for command validation
 - `AnnounceData` type definition
 
-### 4. SyncGroupController ([sync_groups.py](sync_groups.py))
-
-Manages synchronized playback across multiple players:
-- Creates virtual sync group players
-- Coordinates playback across group members
-- Handles dynamic group membership
-
 ## Player Types
 
 Players in Music Assistant have different types based on their capabilities:

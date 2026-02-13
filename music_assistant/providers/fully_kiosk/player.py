@@ -93,7 +93,8 @@ class FullyKioskPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        await self.fully_kiosk.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self.fully_kiosk.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()

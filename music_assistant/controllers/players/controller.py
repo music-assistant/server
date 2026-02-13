@@ -72,7 +72,6 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
-    SYNCGROUP_PREFIX,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -89,7 +88,6 @@ from music_assistant.models.plugin import PluginProvider, PluginSource
 
 from .helpers import AnnounceData, handle_player_command
 from .protocol_linking import ProtocolLinkingMixin
-from .sync_groups import SyncGroupController, SyncGroupPlayer
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -128,7 +126,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._poll_task: asyncio.Task[None] | None = None
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
-        self._sync_groups: SyncGroupController = SyncGroupController(self)
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
@@ -157,13 +154,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
-        if ProviderFeature.SYNC_PLAYERS in provider.supported_features:
-            await self._sync_groups.on_provider_loaded(provider)
 
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
-        if ProviderFeature.SYNC_PLAYERS in provider.supported_features:
-            await self._sync_groups.on_provider_unload(provider)
 
     @property
     def providers(self) -> list[PlayerProvider]:
@@ -175,7 +168,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return_unavailable: bool = True,
         return_disabled: bool = False,
         provider_filter: str | None = None,
-        return_sync_groups: bool = True,
         return_protocol_players: bool = False,
     ) -> list[Player]:
         """
@@ -186,7 +178,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
         :param provider_filter [str]: Optional filter by provider lookup key.
-        :param return_sync_groups [bool]: Include sync group players.
         :param return_protocol_players [bool]: Include protocol players (hidden by default).
 
         :return: List of Player objects.
@@ -209,7 +200,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 or player.player_id in user_filter
                 or player.player_id == current_sendspin_player
             )
-            and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
             and (return_protocol_players or player.state.type != PlayerType.PROTOCOL)
         ]
 
@@ -1231,36 +1221,48 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     continue
                 final_player_ids_to_remove.append(child_player_id)
 
-        # Store playback state before changing members to detect protocol changes
-        was_playing = parent_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-        previous_protocol = parent_player.active_output_protocol if was_playing else None
-
-        # Forward command to the appropriate player(protocol) after all (base) sanity checks
+        # Forward command to the appropriate player after all (base) sanity checks
         async with self._player_throttlers[target_player]:
+            # GROUP players (sync_group, universal_group) manage their own members internally
+            # and don't need protocol translation - call their set_members directly
+            if parent_player.type == PlayerType.GROUP:
+                await parent_player.set_members(
+                    player_ids_to_add=final_player_ids_to_add,
+                    player_ids_to_remove=final_player_ids_to_remove,
+                )
+                return
+            # For regular players, handle protocol selection and translation
+            # Store playback state before changing members to detect protocol changes
+            was_playing = parent_player.playback_state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            )
+            previous_protocol = parent_player.active_output_protocol if was_playing else None
+
             await self._handle_set_members_with_protocols(
                 parent_player, final_player_ids_to_add, final_player_ids_to_remove
             )
 
-        # Check if protocol changed due to member change and restart playback if needed
-        if was_playing:
-            # Determine which protocol would be used now with new members
-            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
-            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
-            previous_protocol_id = previous_protocol or "native"
+            # Check if protocol changed due to member change and restart playback if needed
+            if was_playing:
+                # Determine which protocol would be used now with new members
+                _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
+                new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
+                previous_protocol_id = previous_protocol or "native"
 
-            # If protocol changed, restart playback
-            if new_protocol_id != previous_protocol_id:
-                self.logger.info(
-                    "Protocol changed from %s to %s due to member change, restarting playback",
-                    previous_protocol_id,
-                    new_protocol_id,
-                )
-                # Restart playback on the new protocol using resume to account for all sources
-                await self.cmd_resume(
-                    parent_player.player_id,
-                    parent_player.state.active_source,
-                    parent_player.state.current_media,
-                )
+                # If protocol changed, restart playback
+                if new_protocol_id != previous_protocol_id:
+                    self.logger.info(
+                        "Protocol changed from %s to %s due to member change, restarting playback",
+                        previous_protocol_id,
+                        new_protocol_id,
+                    )
+                    # Restart playback on the new protocol using resume
+                    await self.cmd_resume(
+                        parent_player.player_id,
+                        parent_player.state.active_source,
+                        parent_player.state.current_media,
+                    )
 
     @api_command("players/cmd/group")
     @handle_player_command
@@ -1356,17 +1358,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not (provider_instance := self.mass.get_provider(provider)):
             raise ProviderUnavailableError(f"Provider {provider} not found")
         provider_instance = cast("PlayerProvider", provider_instance)
-        if ProviderFeature.CREATE_GROUP_PLAYER in provider_instance.supported_features:
-            return await provider_instance.create_group_player(name, members, dynamic)
-        if ProviderFeature.SYNC_PLAYERS in provider_instance.supported_features:
-            # provider supports syncing but not dedicated group players
-            # create a sync group instead
-            return await self._sync_groups.create_group_player(
-                provider_instance, name, members, dynamic=dynamic
+        if ProviderFeature.CREATE_GROUP_PLAYER not in provider_instance.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Provider {provider} does not support creating group players"
             )
-        raise UnsupportedFeaturedException(
-            f"Provider {provider} does not support creating group players"
-        )
+        return await provider_instance.create_group_player(name, members, dynamic)
 
     @api_command("players/remove_group_player", required_role="admin")
     async def remove_group_player(self, player_id: str) -> None:
@@ -1603,9 +1599,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player is None:
             # we simply permanently delete the player config since it is not registered
             self.delete_player_config(player_id)
-            return
-        if player.state.type == PlayerType.GROUP and player_id.startswith(SYNCGROUP_PREFIX):
-            await self._sync_groups.remove_group_player(player_id)
             return
         if player.state.type == PlayerType.GROUP:
             # Handle group player removal

@@ -17,14 +17,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-    SYNCGROUP_PREFIX,
-)
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import CONF_ENTRY_SAMPLE_RATES_SNAPCAST
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
+from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -241,17 +238,16 @@ class SnapCastPlayer(Player):
         ]
 
         curr_stream_id = player_group.stream
-        sync_group_player = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
             if media.media_type == MediaType.PLUGIN_SOURCE:
                 custom_data = media.custom_data or {}
                 assigned_player = custom_data.get("player_id", "")
-                if assigned_player.startswith(SYNCGROUP_PREFIX):
+                if assigned_player.startswith(SGP_PREFIX):
                     sync_group_player = self.mass.players.get_player(assigned_player)
             else:
                 media_src_id = media.source_id or ""
-                if media_src_id.startswith(SYNCGROUP_PREFIX):
+                if media_src_id.startswith(SGP_PREFIX):
                     sync_group_player = self.mass.players.get_player(media_src_id)
         if sync_group_player and self.player_id in (player_ids_to_remove or []):
             # players in sync_group_player.group_members will be rejoined

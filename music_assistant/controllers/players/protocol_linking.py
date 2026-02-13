@@ -75,7 +75,6 @@ class ProtocolLinkingMixin:
             return_unavailable: bool = True,
             return_disabled: bool = False,
             provider_filter: str | None = None,
-            return_sync_groups: bool = True,
             return_protocol_players: bool = False,
         ) -> list[Player]: ...
 

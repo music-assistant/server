@@ -181,7 +181,8 @@ class BluesoundPlayer(Player):
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         self.logger.debug("Play_media called")
         self.logger.debug(media)
-        play_state = await self.client.play_url(media.uri, timeout=1)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        play_state = await self.client.play_url(url, timeout=1)
 
         # Enable dynamic polling
         if play_state == "stream":

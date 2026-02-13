@@ -98,20 +98,20 @@ from music_assistant.constants import (
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
-    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
-    SYNCGROUP_PREFIX,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
 from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.sync_group.constants import SGP_PREFIX
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -1339,11 +1339,13 @@ class ConfigController:
 
         # some type hints to help with the code below
         instance_id: str
+        player_id: str
         provider_config: dict[str, Any]
         player_config: dict[str, Any]
 
         # Older versions of MA can create corrupt entries with no domain if retrying
         # logic runs after a provider has been removed. Remove those corrupt entries.
+        # TODO: remove after 2.8 release
         for instance_id, provider_config in {**self._data.get(CONF_PROVIDERS, {})}.items():
             if "domain" not in provider_config:
                 self._data[CONF_PROVIDERS].pop(instance_id, None)
@@ -1351,6 +1353,7 @@ class ConfigController:
                 changed = True
 
         # migrate manual_ips to new format
+        # TODO: remove after 2.8 release
         for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
             if not (values := provider_config.get("values")):
                 continue
@@ -1361,6 +1364,7 @@ class ConfigController:
             changed = True
 
         # migrate sample_rates config entry
+        # TODO: remove after 2.8 release
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
                 continue
@@ -1376,59 +1380,8 @@ class ConfigController:
             ]
             changed = True
 
-        # migrate player_group entries
-        ugp_found = False
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            provider = player_config.get("provider")
-            if (
-                not provider
-                or not isinstance(provider, str)
-                or not provider.startswith("player_group")
-            ):
-                continue
-            if not (values := player_config.get("values")):
-                continue
-            if (group_type := values.pop("group_type", None)) is None:
-                continue
-            # this is a legacy player group, migrate the values
-            changed = True
-            if group_type == "universal":
-                player_config["provider"] = "universal_group"
-                ugp_found = True
-            else:
-                player_config["provider"] = group_type
-        for provider_config in list(self._data.get(CONF_PROVIDERS, {}).values()):
-            instance_id = provider_config["instance_id"]
-            if not instance_id.startswith("player_group"):
-                continue
-            # this is the legacy player_group provider, migrate into 'universal_group'
-            changed = True
-            self._data[CONF_PROVIDERS].pop(instance_id, None)
-            if not ugp_found:
-                continue
-            provider_config["domain"] = "universal_group"
-            provider_config["instance_id"] = "universal_group"
-            self._data[CONF_PROVIDERS]["universal_group"] = provider_config
-
-        # Migrate resonate provider to sendspin (renamed in 2.7 beta 19)
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
-            if provider_config.get("domain") == "resonate":
-                self._data[CONF_PROVIDERS].pop(instance_id, None)
-                provider_config["domain"] = "sendspin"
-                provider_config["instance_id"] = "sendspin"
-                self._data[CONF_PROVIDERS]["sendspin"] = provider_config
-                changed = True
-
-        # Migrate smart_fades mode value to smart_crossfade
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if not (values := player_config.get("values")):
-                continue
-            if values.get(CONF_SMART_FADES_MODE) == "smart_fades":
-                # Update old 'smart_fades' value to new 'smart_crossfade' value
-                values[CONF_SMART_FADES_MODE] = "smart_crossfade"
-                changed = True
-
         # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
+        # TODO: remove after 2.8 release
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if player_config.get("provider") != "builtin_player":
                 continue
@@ -1440,34 +1393,37 @@ class ConfigController:
             changed = True
 
         # Remove corrupt player configurations that are missing the required 'provider' key
+        # or have an invalid/removed provider
+        all_provider_ids: set[str] = set(self._data.get(CONF_PROVIDERS, {}).keys())
+        # TODO: remove after 2.8 release
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if "provider" in player_config:
+            player_provider = player_config.get("provider")
+            if not player_provider:
+                LOGGER.warning("Removing corrupt player configuration: %s", player_id)
+            elif player_provider not in all_provider_ids:
+                LOGGER.warning("Removed orphaned player configuration: %s", player_id)
+            else:
                 continue
             self._data[CONF_PLAYERS].pop(player_id, None)
             # Also remove any DSP config for this player
             if CONF_PLAYER_DSP in self._data:
                 self._data[CONF_PLAYER_DSP].pop(player_id, None)
-            LOGGER.warning("Removed corrupt player configuration (missing provider): %s", player_id)
             changed = True
 
-        # migrate player configs: always use instance_id for provider
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if "provider" not in player_config:
+        # migrate sync_group players to use the new sync_group provider
+        # TODO: remove after 2.8 release
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if not player_id.startswith(SGP_PREFIX):
                 continue
             player_provider = player_config["provider"]
-            try:
-                if not (prov := self.mass.get_provider(player_provider)):
-                    continue
-            except KeyError:
-                # removed provider
+            if player_provider == "sync_group":
                 continue
-            if player_config["provider"] == prov.instance_id:
-                continue
-            player_config["provider"] = prov.instance_id
+            player_config["provider"] = "sync_group"
             changed = True
 
         # Migrate AirPlay legacy credentials (ap_credentials) to protocol-specific keys
         # The old key was used for both RAOP and AirPlay, now we have separate keys
+        # TODO: remove after 2.8 release
         for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
             if player_config.get("provider") != "airplay":
                 continue
@@ -1649,7 +1605,7 @@ class ConfigController:
         is_dedicated_group_player = player.state.type in (
             PlayerType.GROUP,
             PlayerType.STEREO_PAIR,
-        ) and not player.player_id.startswith(("universal_", SYNCGROUP_PREFIX))
+        ) and not player.player_id.startswith((UGP_PREFIX, SGP_PREFIX))
         is_http_based_player_protocol = player.provider.domain not in NON_HTTP_PROVIDERS
         if player.state.type == PlayerType.GROUP and not is_dedicated_group_player:
             # no audio related entries for universal group players or sync group players
@@ -1802,10 +1758,11 @@ class ConfigController:
         base_volume_options += [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
         ]
-        base_mute_options += [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
-        ]
+        base_mute_options.append(ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE))
+        if player.supports_feature(PlayerFeature.VOLUME_SET):
+            base_mute_options.append(
+                ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE)
+            )
 
         # return final config entries for all options
         return [
@@ -1823,7 +1780,6 @@ class ConfigController:
                     *(ConfigValueOption(x.name, x.id) for x in power_controls),
                 ],
                 category="player_controls",
-                hidden=player.state.type == PlayerType.GROUP,
             ),
             # Volume control config entry
             ConfigEntry(
@@ -1839,7 +1795,6 @@ class ConfigController:
                     *(ConfigValueOption(x.name, x.id) for x in volume_controls),
                 ],
                 category="player_controls",
-                hidden=player.state.type == PlayerType.GROUP,
             ),
             # Mute control config entry
             ConfigEntry(
@@ -1855,7 +1810,6 @@ class ConfigController:
                     *[ConfigValueOption(x.name, x.id) for x in mute_controls],
                 ],
                 category="player_controls",
-                hidden=player.state.type == PlayerType.GROUP,
             ),
             # auto-play on power on control config entry
             CONF_ENTRY_AUTO_PLAY,

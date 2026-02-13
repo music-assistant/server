@@ -327,13 +327,14 @@ class SonosPlayer(Player):
 
         # play duration-less (long running) radio streams
         # enforce AAC here because Sonos really does not support FLAC streams without duration
-        media.uri = media.uri.replace(".flac", ".aac").replace(".wav", ".aac")
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = stream_url.replace(".flac", ".aac").replace(".wav", ".aac")
         if media.source_id and media.queue_item_id:
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
-            object_id = media.uri
+            object_id = stream_url
         await self.client.player.group.play_stream_url(
-            media.uri,
+            stream_url,
             {
                 "name": media.title,
                 "type": "track",
@@ -752,6 +753,9 @@ class SonosPlayer(Player):
                     media = await self.mass.player_queues.player_media_from_queue_item(
                         queue_item, False
                     )
+                    media.uri = await self.provider.mass.streams.resolve_stream_url(
+                        self.player_id, media
+                    )
                     items.append(media)
 
         # Add the current item
@@ -759,6 +763,9 @@ class SonosPlayer(Player):
             if current_item.available:
                 media = await self.mass.player_queues.player_media_from_queue_item(
                     current_item, False
+                )
+                media.uri = await self.provider.mass.streams.resolve_stream_url(
+                    self.player_id, media
                 )
                 items.append(media)
 
@@ -769,6 +776,7 @@ class SonosPlayer(Player):
             if next_item is None:
                 break
             media = await self.mass.player_queues.player_media_from_queue_item(next_item, False)
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             items.append(media)
             last_index = next_item.queue_item_id
 

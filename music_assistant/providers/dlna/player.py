@@ -425,7 +425,8 @@ class DLNAPlayer(Player):
             await self.stop()
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        await self.device.async_set_transport_uri(media.uri, title, didl_metadata)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self.device.async_set_transport_uri(url, title, didl_metadata)
         # Play it
         await self.device.async_wait_for_can_play(10)
         # optimistically set this timestamp to help in case of a player

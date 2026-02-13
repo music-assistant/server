@@ -449,6 +449,7 @@ class ChromecastPlayer(Player):
             await self._play_media_sendspin(media)
             return
 
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         queuedata = {
             "type": "LOAD",
             "media": self._create_cc_media_item(media),

@@ -267,10 +267,9 @@ class DemoPlayer(Player):
         # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
-            "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
-        )
+        logger.info("Received PLAY_MEDIA command on player %s with url %s", self.display_name, url)
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()

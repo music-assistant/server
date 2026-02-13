@@ -243,8 +243,9 @@ class SonosPlayer(Player):
         is_announcement = media.media_type == MediaType.ANNOUNCEMENT
         force_radio = False if is_announcement else not media.duration
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await asyncio.to_thread(
-            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=force_radio
+            self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
         )
         self.mass.call_later(2, self.poll)
 

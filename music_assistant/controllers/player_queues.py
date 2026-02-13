@@ -1512,15 +1512,18 @@ class PlayerQueuesController(CoreController):
             # handle error or return early
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
-            uri=await self.mass.streams.resolve_stream_url(
-                queue.session_id, queue_item, flow_mode=flow_mode
-            ),
+            uri=queue_item.uri,
             media_type=MediaType.FLOW_STREAM if flow_mode else queue_item.media_type,
             title="Music Assistant" if flow_mode else queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
+            custom_data={
+                "session_id": queue.session_id,
+                "original_uri": queue_item.uri,
+                "flow_mode": flow_mode,
+            },
         )
         if not flow_mode and queue_item.media_item:
             media.title = queue_item.media_item.name

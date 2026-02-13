@@ -243,9 +243,10 @@ class SqueezelitePlayer(Player):
 
         if not self.group_members:
             # Simple, single-player playback
+            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await self._handle_play_url_for_slimplayer(
                 self.client,
-                url=media.uri,
+                url=stream_url,
                 media=media,
                 send_flush=True,
                 auto_play=False,

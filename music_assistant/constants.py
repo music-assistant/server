@@ -163,7 +163,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
-SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
+
 
 ####### REUSABLE CONFIG ENTRIES #######
 

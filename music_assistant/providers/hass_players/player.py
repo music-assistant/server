@@ -267,6 +267,7 @@ class HomeAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         extra_data: dict[str, Any] = {
             # passing metadata to the player
             # so far only supported by google cast, but maybe others can follow
@@ -295,7 +296,7 @@ class HomeAssistantPlayer(Player):
             service="play_media",
             target={"entity_id": self.player_id},
             service_data={
-                "media_content_id": media.uri,
+                "media_content_id": url,
                 "media_content_type": "music",
                 "enqueue": "replace",
                 "extra": extra_data,

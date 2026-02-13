@@ -642,6 +642,7 @@ class MusicCastPlayer(Player):
             # just in case
             if self.zone_device.source_id != "server":
                 await self.select_source("server")
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
             await avt_play(self.mass.http_session, self.physical_device)
 
