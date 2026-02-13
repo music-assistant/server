@@ -66,8 +66,7 @@ class SyncGroupPlayer(GroupPlayer):
         else:
             self._attr_static_group_members = default_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
-        if not self.powered:
-            self._attr_group_members = default_members.copy()
+        self._attr_group_members = default_members.copy()
 
     @cached_property
     def supported_features(self) -> set[PlayerFeature]:
@@ -80,14 +79,10 @@ class SyncGroupPlayer(GroupPlayer):
             base_features.add(PlayerFeature.SET_MEMBERS)
         if not self.is_active:
             return base_features
-        members = self.group_members
-        reference_player: Player | None = self.sync_leader or (
-            self.mass.players.get_player(members[0]) if members else None
-        )
-        if reference_player:
+        if self.sync_leader:
             # add features supported by the sync leader
             for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                if feature in reference_player.supported_features:
+                if feature in self.sync_leader.supported_features:
                     base_features.add(feature)
             return base_features
         return base_features
@@ -101,7 +96,7 @@ class SyncGroupPlayer(GroupPlayer):
     def requires_flow_mode(self) -> bool:
         """Return if the player needs flow mode."""
         if leader := self.sync_leader:
-            return leader.requires_flow_mode
+            return leader.flow_mode
         return False
 
     @property
@@ -136,25 +131,21 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
-        # if we already have members, we can only group with players
-        # that are compatible with the current members
-        if self.group_members:
-            for member_id in self.group_members:
-                member_player = self.mass.players.get_player(member_id)
-                if member_player:
-                    return member_player.state.can_group_with
+        # if we already have a sync leader, we use its can_group_with as reference
+        if self.sync_leader:
+            return self.sync_leader.state.can_group_with
         # If we have no members, but we do have default members in the config,
         # we can group with players that are compatible with those
         default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for member_id in default_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player:
+            if member_player and member_player.state.available:
                 return member_player.state.can_group_with
         if self.is_dynamic:
             # Dynamic groups can potentially group with any compatible players
             # Actual compatibility is validated when adding members
             temp_can_group_with = set()
-            for player in self.mass.players.all_players():
+            for player in self.mass.players.all_players(return_unavailable=False):
                 if not player.available or player.type == PlayerType.GROUP:
                     # let's avoid showing group players as options to group with
                     continue
@@ -227,8 +218,7 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        if not self.is_active:
-            await self._form_syncgroup()
+        await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
@@ -265,33 +255,29 @@ class SyncGroupPlayer(GroupPlayer):
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
         prev_leader = self.sync_leader
+        cur_leader = self._select_sync_leader(new_members=player_ids_to_add)
         # handle additions
         final_players_to_add: list[str] = []
-        can_group_with = self.sync_leader.state.can_group_with.copy() if self.sync_leader else set()
+        can_group_with = cur_leader.state.can_group_with.copy() if cur_leader else set()
         for member_id in player_ids_to_add or []:
             if member_id == self.player_id:
                 continue  # can not add self as member
             member = self.mass.players.get_player(member_id)
             if member is None or not member.available:
                 continue
-            # At this point, member is guaranteed to be not None
-            if not prev_leader:
-                # auto select first member as new leader if we don't have one yet,
-                # or if the current leader is not available anymore
-                self.sync_leader = member
-                can_group_with = member.state.can_group_with.copy()
-                self.logger.debug(
-                    f"Auto-selected {member.display_name} as sync leader for "
-                    f"group {self.display_name} since it has no leader yet"
-                )
-            elif member_id not in can_group_with:
+            if member_id not in self._attr_group_members:
+                self._attr_group_members.append(member_id)
+            if not cur_leader:
+                continue
+            if member_id != cur_leader.player_id and member_id not in can_group_with:
                 self.logger.debug(
                     f"Cannot add {member.display_name} to group {self.display_name} since it's "
                     f"not compatible with the current sync leader"
                 )
                 continue
-            self._attr_group_members.append(member_id)
-            final_players_to_add.append(member_id)
+            if member_id != cur_leader.player_id:
+                final_players_to_add.append(member_id)
+
         # handle removals
         final_players_to_remove: list[str] = []
         for member_id in player_ids_to_remove or []:
@@ -304,61 +290,36 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)
         self.update_state()
-        if not self.powered:
-            # Don't need to do anything else if the group is powered off
-            # The syncing will be done once powered on
+        if self.playback_state != PlaybackState.PLAYING:
+            # Don't need to do anything else if the group is not active
+            # The syncing will be done once playback starts
             return
-
-        if prev_leader and self.sync_leader is None:
+        if prev_leader and cur_leader is None:
             # Edge case: we no longer have any members in the group (and thus no leader)
             await self._handle_leader_transition(None)
-        elif prev_leader and prev_leader != self.sync_leader:
+        elif prev_leader and prev_leader != cur_leader:
             # Edge case: we had changed the leader (or just got one)
-            await self._handle_leader_transition(self.sync_leader)
-        elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
-            # if the group still has the same leader, we need to (re)sync the members
+            await self._handle_leader_transition(cur_leader)
+        elif cur_leader and (player_ids_to_add or player_ids_to_remove):
+            # if the group still has the same leader, we just need to (re)sync the members
             await self.mass.players.cmd_set_members(
-                self.sync_leader.player_id,
+                cur_leader.player_id,
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
-        # make sure that we add the default members from the config
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        for default_member in default_members:
-            if default_member not in self._attr_group_members:
-                self._attr_group_members.append(default_member)
-        # if dynamic mode is disabled, our default members from config are marked as static members
-        if not self.is_dynamic:
-            self._attr_static_group_members = default_members.copy()
-        else:
-            self._attr_static_group_members = []
-
-        # prepare group members for syncing
-        for member_id in self._attr_group_members:
-            member_player = self.mass.players.get_player(member_id)
-            if not member_player or not member_player.state.available:
-                # remove unavailable members from the group
-                self._attr_group_members.remove(member_id)
-                continue
-            # At this point, member_player is guaranteed to be not None
-            if (
-                member_player.state.synced_to
-                and self.sync_leader
-                and member_player.state.synced_to != self.sync_leader.player_id
-            ):
-                # ungroup first if the member is currently synced to another player
-                await member_player.ungroup()
-            if not self.sync_leader:
-                # set the first available member as the sync leader
-                self.sync_leader = member_player
+        if not self.sync_leader:
+            # make sure that we always add the default members from the config
+            default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            for default_member in default_members:
+                if default_member not in self._attr_group_members:
+                    self._attr_group_members.append(default_member)
+            self.sync_leader = self._select_sync_leader()
 
         if not self.sync_leader:
             # we have no members in the group, so we can't form a syncgroup
-            self._attr_group_members = []
-            self.update_state()
             return
 
         # ensure the sync leader is first in the list
@@ -366,22 +327,13 @@ class SyncGroupPlayer(GroupPlayer):
             self.sync_leader.player_id,
             *[x for x in self._attr_group_members if x != self.sync_leader.player_id],
         ]
-        self.update_state()
-        members_to_sync: list[str] = []
-        members_to_remove: list[str] = []
-        for member in self.mass.players.iter_group_members(self, active_only=False):
-            if member.player_id == self.sync_leader.player_id:
-                # skip sync leader
-                continue
-            # Always add to members_to_sync to prevent them from being removed below
-            members_to_sync.append(member.player_id)
-        for former_member in self.sync_leader.group_members:
-            if former_member not in members_to_sync and former_member != self.sync_leader.player_id:
-                members_to_remove.append(former_member)
-        if members_to_sync or members_to_remove:
-            await self.mass.players.cmd_set_members(
-                self.sync_leader.player_id, members_to_sync, members_to_remove
-            )
+        members_to_sync = [
+            x
+            for x in self._attr_group_members
+            if x != self.sync_leader.player_id and x not in self.sync_leader.state.group_members
+        ]
+        if members_to_sync:
+            await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
@@ -393,15 +345,15 @@ class SyncGroupPlayer(GroupPlayer):
             if sync_children:
                 await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
         self._attr_group_members = []
+        self.sync_leader = None
         self.update_state()
 
     async def _handle_leader_transition(self, new_leader: Player | None) -> None:
         """Handle transition from current leader to new leader."""
         prev_leader = self.sync_leader
         was_playing = False
-
         if prev_leader and new_leader and prev_leader != new_leader:
-            # Check if the provider supports dynamic leader selection
+            # Check if the provider(protocol) supports dynamic leader selection
             # For cross-provider sync groups, we need to check the provider domain
             provider_protocol = None
             if prev_leader.active_output_protocol and (
@@ -412,13 +364,10 @@ class SyncGroupPlayer(GroupPlayer):
                 provider_protocol = prev_leader.provider.domain
 
             if provider_protocol and provider_protocol in SUPPORT_DYNAMIC_LEADER:
-                # provider/protocol supports dynamic leader selection, so just remove/add members
-                await prev_leader.ungroup()
-                self.sync_leader = new_leader
-                # allow some time to propagate the changes before resyncing
-                await asyncio.sleep(2)
-                await self._form_syncgroup()
-                return
+                # TODO: figure out how to handle dynamic leader transition without
+                # stoppingplayback, which has become complicated due
+                # to a player can support multiple protocols
+                pass
 
         if prev_leader:
             # Save current media and playback state for potential restart
@@ -441,3 +390,20 @@ class SyncGroupPlayer(GroupPlayer):
         else:
             # We have no leader anymore, send update since we stopped playback
             self.update_state()
+
+    def _select_sync_leader(self, new_members: list[str] | None = None) -> Player | None:
+        """Select a (new) sync leader."""
+        if self.group_members and self.sync_leader and self.sync_leader.state.available:
+            # current leader is still available, no need to select a new one
+            return self.sync_leader
+        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        group_members = self.group_members or default_members or new_members or []
+        for member_id in group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                self.logger.debug(
+                    f"Auto-selected {member_player.display_name} as sync leader for "
+                    f"group {self.display_name}"
+                )
+                return member_player
+        return None
