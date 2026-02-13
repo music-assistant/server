@@ -144,18 +144,6 @@ class AirPlayPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
-    @property
-    def corrected_elapsed_time(self) -> float:
-        """Return the corrected elapsed time accounting for stream session restarts."""
-        if not self.stream or not self.stream.session:
-            return super().corrected_elapsed_time or 0.0
-        session = self.stream.session
-        elapsed = time.time() - session.start_time - session.total_pause_time
-        if session.last_paused is not None:
-            current_pause = time.time() - session.last_paused
-            elapsed -= current_pause
-        return max(0.0, elapsed)
-
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -526,6 +514,8 @@ class AirPlayPlayer(Player):
         provider = cast("AirPlayProvider", self.provider)
         stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
         await stream_session.start(audio_source)
+        self._attr_elapsed_time = time.time() - stream_session.start_time
+        self._attr_elapsed_time_last_updated = time.time()
         self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
@@ -693,18 +683,8 @@ class AirPlayPlayer(Player):
         # Ignore state updates from old/stale streams
         if stream is not None and stream != self.stream:
             return
-
         if state is not None:
-            prev_state = self._attr_playback_state
             self._attr_playback_state = state
-            if self.stream and self.stream.session:
-                if prev_state == PlaybackState.PLAYING and state != PlaybackState.PLAYING:
-                    self.stream.session.last_paused = time.time()
-                elif prev_state != PlaybackState.PLAYING and state == PlaybackState.PLAYING:
-                    if self.stream.session.last_paused is not None:
-                        pause_duration = time.time() - self.stream.session.last_paused
-                        self.stream.session.total_pause_time += pause_duration
-                        self.stream.session.last_paused = None
         if elapsed_time is not None:
             self._attr_elapsed_time = elapsed_time
             self._attr_elapsed_time_last_updated = time.time()

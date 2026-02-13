@@ -160,10 +160,8 @@ class SnapCastPlayer(Player):
             model=os,
             manufacturer=arch,
         )
-        if ip:
-            self._attr_device_info.add_identifier(
-                IdentifierType.IP_ADDRESS, self.snap_client._client.get("host").get("ip")
-            )
+        if ip and (host := self.snap_client._client.get("host")):
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, host.get("ip"))
         if mac:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
         self._attr_supported_features = {

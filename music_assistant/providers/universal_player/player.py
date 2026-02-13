@@ -15,14 +15,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import PlayerMedia
-
     from .provider import UniversalPlayerProvider
 
 
@@ -60,122 +57,9 @@ class UniversalPlayer(Player):
         self._attr_device_info = device_info
         # Start as unavailable - will be updated when protocol players are linked
         self._attr_available = False
-
-    @property
-    def supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features (based on output protocols)."""
-        # a universal player does not have any features on its own, it delegates to protocol players
-        return set()
-
-    async def volume_set(self, volume_level: int) -> None:
-        """
-        Send VOLUME_SET command to the player.
-
-        Delegates to the active protocol player or best available protocol.
-        """
-        if target_player := self._get_control_target(PlayerFeature.VOLUME_SET):
-            await target_player.volume_set(volume_level)
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def volume_mute(self, muted: bool) -> None:
-        """
-        Send VOLUME_MUTE command to the player.
-
-        Delegates to the active protocol player or best available protocol.
-        """
-        if target_player := self._get_control_target(PlayerFeature.VOLUME_MUTE):
-            await target_player.volume_mute(muted)
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def power(self, powered: bool) -> None:
-        """
-        Send POWER command to the player.
-
-        Delegates to the active protocol player or best available protocol.
-        """
-        if target_player := self._get_control_target(PlayerFeature.POWER):
-            await target_player.power(powered)
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def play(self) -> None:
-        """
-        Handle PLAY command.
-
-        Delegates to the active protocol player.
-        """
-        if target_player := self._get_control_target(PlayerFeature.PAUSE, True):
-            await target_player.play()
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def pause(self) -> None:
-        """
-        Handle PAUSE command.
-
-        Delegates to the active protocol player or best available protocol.
-        """
-        if target_player := self._get_control_target(PlayerFeature.PAUSE, True):
-            await target_player.pause()
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def stop(self) -> None:
-        """
-        Handle STOP command.
-
-        Delegates to the active protocol player or best available protocol.
-        """
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
-        ):
-            await protocol_player.stop()
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def next_track(self) -> None:
-        """
-        Handle NEXT_TRACK command.
-
-        Delegates to the active protocol player.
-        """
-        if target_player := self._get_control_target(PlayerFeature.NEXT_PREVIOUS, True):
-            await target_player.next_track()
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def previous_track(self) -> None:
-        """
-        Handle PREVIOUS_TRACK command.
-
-        Delegates to the active protocol player.
-        """
-        if target_player := self._get_control_target(PlayerFeature.NEXT_PREVIOUS, True):
-            await target_player.previous_track()
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def seek(self, position: int) -> None:
-        """
-        Handle SEEK command.
-
-        Delegates to the active protocol player.
-        """
-        if target_player := self._get_control_target(PlayerFeature.SEEK, True):
-            await target_player.seek(position)
-            return
-        raise PlayerCommandFailed("Action not available.")
-
-    async def enqueue_next_media(self, media: PlayerMedia) -> None:
-        """Handle enqueuing of the next (queue) item on the player."""
-        if target_player := self._get_control_target(PlayerFeature.ENQUEUE, True):
-            await target_player.enqueue_next_media(media)
-            return
-        raise PlayerCommandFailed("Action not available.")
+        # a universal player does not have any features on its own,
+        # it delegates to protocol players
+        self._attr_supported_features = set()
 
     def _get_control_target(
         self, required_feature: PlayerFeature, require_active: bool = False

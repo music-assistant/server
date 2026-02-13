@@ -59,8 +59,6 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        self.total_pause_time: float = 0.0
-        self.last_paused: float | None = None
         self._first_chunk_received = asyncio.Event()
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:

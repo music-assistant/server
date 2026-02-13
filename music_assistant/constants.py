@@ -230,7 +230,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
-    range=(-70, -5),
+    range=(-30, -5),
     default_value=-17,
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
@@ -943,7 +943,7 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
 }
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
-    # Player features that may be copied from protocol implementations
+    # Player features that may be copied from (inactive) protocol implementations
     PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PLAY_ANNOUNCEMENT,

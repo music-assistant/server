@@ -13,7 +13,7 @@ The final active source can be retrieved by using the 'state' property.
 from __future__ import annotations
 
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast, final
@@ -49,7 +49,6 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
-    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import get_changed_dataclass_values
 
@@ -360,15 +359,15 @@ class Player(ABC):
         """Handle PLAY command on the player."""
         raise NotImplementedError("play needs to be implemented")
 
-    @abstractmethod
     async def stop(self) -> None:
         """
         Handle STOP command on the player.
 
-        Will only be called if the player reports PlayerFeature.PAUSE is supported or
-        player supports resuming of stopped playback.
+        Will be called to stop the stream/playback if the player has play_media support.
         """
-        raise NotImplementedError("stop needs to be implemented")
+        raise NotImplementedError(
+            "stop needs to be implemented when PlayerFeature.PLAY_MEDIA is set"
+        )
 
     async def pause(self) -> None:
         """
@@ -428,6 +427,23 @@ class Player(ABC):
         raise NotImplementedError(
             "play_media needs to be implemented when PlayerFeature.PLAY_MEDIA is set"
         )
+
+    async def on_protocol_playback(
+        self,
+        output_protocol: OutputProtocol,
+    ) -> None:
+        """
+        Handle callback when playback starts on a protocol output.
+
+        Called by the Player Controller after play_media is executed on a protocol player.
+        Allows the native player implementation to perform special logic when protocol
+        playback starts.
+
+        Optional - providers can override to implement protocol-specific logic.
+
+        :param output_protocol: The OutputProtocol object containing protocol details.
+        """
+        return  # Optional callback - no-op by default
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
@@ -679,6 +695,9 @@ class Player(ABC):
         # not explicitly set, use native if supported
         if PlayerFeature.POWER in self.supported_features:
             return PLAYER_CONTROL_NATIVE
+        # note that we do not try to use protocol players for power control,
+        # as this is very unlikely to be provided by a generic protocol and if it does,
+        # it will be handled automatically on stream start/stop.
         return PLAYER_CONTROL_NONE
 
     @cached_property
@@ -692,6 +711,9 @@ class Player(ABC):
         # not explicitly set, use native if supported
         if PlayerFeature.VOLUME_SET in self.supported_features:
             return PLAYER_CONTROL_NATIVE
+        # check for protocol player with volume support, and use that if found
+        if protocol_player := self._get_protocol_player_for_feature(PlayerFeature.VOLUME_SET):
+            return protocol_player.player_id
         return PLAYER_CONTROL_NONE
 
     @cached_property
@@ -703,6 +725,9 @@ class Player(ABC):
         # not explicitly set, use native if supported
         if PlayerFeature.VOLUME_MUTE in self.supported_features:
             return PLAYER_CONTROL_NATIVE
+        # check for protocol player with volume mute support, and use that if found
+        if protocol_player := self._get_protocol_player_for_feature(PlayerFeature.VOLUME_MUTE):
+            return protocol_player.player_id
         return PLAYER_CONTROL_NONE
 
     @cached_property
@@ -716,16 +741,16 @@ class Player(ABC):
         If the player is not a group player or syncgroup, this will return the volume level
         of the player itself (if set), or 0 if not set.
         """
-        if len(self.group_members) == 0:
+        if len(self.state.group_members) == 0:
             # player is not a group or syncgroup
-            return self.volume_level or 0
+            return self.state.volume_level or 0
         # calculate group volume from all (turned on) players
         group_volume = 0
         active_players = 0
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
         ):
-            if (child_volume := child_player.volume_level) is None:
+            if (child_volume := child_player.state.volume_level) is None:
                 continue
             group_volume += child_volume
             active_players += 1
@@ -765,7 +790,7 @@ class Player(ABC):
         """
         return bool(self.mass.players.get_active_queue(self))
 
-    @property
+    @cached_property
     @final
     def flow_mode(self) -> bool:
         """
@@ -800,7 +825,7 @@ class Player(ABC):
         If a protocol player is active, checks that protocol's ENQUEUE feature.
         Otherwise checks the native player's ENQUEUE feature.
         """
-        return self._check_feature_with_protocol(PlayerFeature.ENQUEUE)
+        return self._check_feature_with_active_protocol(PlayerFeature.ENQUEUE)
 
     @property
     @final
@@ -928,18 +953,28 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
-        if self.__attr_active_output_protocol != protocol_id:
-            self.__attr_active_output_protocol = protocol_id
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Active output protocol changed for %s: %s -> %s",
+        if self.__attr_active_output_protocol == protocol_id:
+            return  # No change
+        if protocol_id == self.player_id:
+            protocol_id = "native"  # Normalize to "native" for native player
+        if protocol_id:
+            protocol_name = protocol_id
+            if protocol_id == "native":
+                protocol_name = "Native"
+            elif protocol_player := self.mass.players.get_player(protocol_id):
+                protocol_name = protocol_player.provider.name
+            self.logger.info(
+                "Setting active output protocol on %s to %s",
                 self.display_name,
-                self.__attr_active_output_protocol,
-                protocol_id,
+                protocol_name,
             )
         else:
-            self.__attr_active_output_protocol = protocol_id
-        self.mass.players.trigger_player_update(self.player_id)
+            self.logger.info(
+                "Clearing active output protocol on %s",
+                self.display_name,
+            )
+        self.__attr_active_output_protocol = protocol_id
+        self.update_state()
 
     @final
     def set_linked_output_protocols(self, protocols: list[OutputProtocol]) -> None:
@@ -1032,22 +1067,6 @@ class Player(ABC):
         if len(changed_values) == 0 and not force_update:
             return
 
-        # Log grouping/protocol state for troubleshooting
-        if any(
-            key in changed_values
-            for key in ("group_members", "synced_to", "active_group", "active_output_protocol")
-        ):
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "State update for %s: group_members=%s, synced_to=%s, active_group=%s, "
-                "active_output_protocol=%s",
-                self.state.name,
-                self.state.group_members,
-                self.state.synced_to,
-                self.state.active_group,
-                self.__attr_active_output_protocol,
-            )
-
         # signal the state update to the PlayerController
         if signal_event:
             self.mass.players.signal_player_state_update(self, changed_values)
@@ -1137,7 +1156,9 @@ class Player(ABC):
         )
 
     @final
-    def _check_feature_with_protocol(self, feature: PlayerFeature) -> bool:
+    def _check_feature_with_active_protocol(
+        self, feature: PlayerFeature, active_only: bool = False
+    ) -> bool:
         """
         Check if a feature is supported considering the active output protocol.
 
@@ -1160,6 +1181,26 @@ class Player(ABC):
         return feature in self.supported_features
 
     @final
+    def _get_protocol_player_for_feature(
+        self,
+        feature: PlayerFeature,
+    ) -> Player | None:
+        """Get player(protocol) which has the given PlayerFeature."""
+        # prefer native player
+        if feature in self.supported_features:
+            return self
+        # Otherwise, use the first available linked protocol
+        for linked in self.linked_output_protocols:
+            if (
+                (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
+                and protocol_player.available
+                and feature in protocol_player.supported_features
+            ):
+                return protocol_player
+
+        return None
+
+    @final
     def __calculate_player_state(
         self,
     ) -> dict[str, tuple[Any, Any]]:
@@ -1172,33 +1213,7 @@ class Player(ABC):
 
         Returns a dict with the state attributes that have changed.
         """
-        active_groups = self.get_active_groups()
-        active_group = active_groups[0] if active_groups else None
-        active_source = self.__calculate_active_source(active_group)
-        # correct active output protocol if needed
-        if (
-            self.__attr_active_output_protocol is None
-            and self.is_native_player
-            and (self.playback_state == PlaybackState.PLAYING or self.group_members)
-        ):
-            self.__attr_active_output_protocol = "native"
-
-        # If an output protocol is active (and not native), use the protocol player's state
-        if (
-            self.__attr_active_output_protocol
-            and self.__attr_active_output_protocol != "native"
-            and (
-                protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
-            )
-        ):
-            playback_state = protocol_player.playback_state
-            elapsed_time = protocol_player.elapsed_time
-            elapsed_time_last_updated = protocol_player.elapsed_time_last_updated
-        else:
-            playback_state = self.playback_state
-            elapsed_time = self.elapsed_time
-            elapsed_time_last_updated = self.elapsed_time_last_updated
-
+        playback_state, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         prev_state = deepcopy(self._state)
         self._state = PlayerState(
             player_id=self.player_id,
@@ -1206,21 +1221,21 @@ class Player(ABC):
             type=self.type,
             available=self.enabled and self.available,
             device_info=self.device_info,
-            supported_features=self.__calculate_supported_features(),
+            supported_features=self.__final_supported_features,
             playback_state=playback_state,
             elapsed_time=elapsed_time,
             elapsed_time_last_updated=elapsed_time_last_updated,
-            powered=self.__calculate_power_state(),
-            volume_level=self.__calculate_volume_level(),
-            volume_muted=self.__calculate_volume_muted_state(),
-            group_members=UniqueList(self.__calculate_group_members()),
+            powered=self.__final_power_state,
+            volume_level=self.__final_volume_level,
+            volume_muted=self.__final_volume_muted_state,
+            group_members=UniqueList(self.__final_group_members),
             static_group_members=UniqueList(self.static_group_members),
-            can_group_with=self.__calculate_can_group_with(),
-            synced_to=self.__calculate_synced_to(),
-            active_source=active_source,
-            source_list=self.__calculate_source_list(),
-            active_group=active_group,
-            current_media=self.__calculate_current_media(active_group, active_source),
+            can_group_with=self.__final_can_group_with,
+            synced_to=self.__final_synced_to,
+            active_source=self.__final_active_source,
+            source_list=self.__final_source_list,
+            active_group=self.__final_active_group,
+            current_media=self.__final_current_media,
             name=self.display_name,
             enabled=self.enabled,
             hide_in_ui=self.hide_in_ui,
@@ -1246,34 +1261,7 @@ class Player(ABC):
             and self._state.playback_state == PlaybackState.IDLE
         ):
             self.__stop_called = True
-            # Clear active output protocol when playback goes to IDLE
-            # BUT only if there's no active group (grouping should persist across playback sessions)
-            if (
-                self.__attr_active_output_protocol
-                and self.__attr_active_output_protocol != "native"
-            ):
-                # Check if the protocol player still has an active group
-                protocol_player = self.mass.players.get_player(self.__attr_active_output_protocol)
-                if protocol_player:
-                    # Keep active protocol if group is still active
-                    if len(protocol_player.group_members) <= 1:
-                        # No group members left, safe to clear
-                        self.__attr_active_output_protocol = None
-                else:
-                    # Protocol player gone, clear it
-                    self.__attr_active_output_protocol = None
-            elif self.__attr_active_output_protocol == "native":
-                # Native protocol can be cleared when going to IDLE
-                self.__attr_active_output_protocol = None
-
-        # Auto correct player state if player is synced (or group child)
-        # This is because some players/providers do not accurately update this info
-        # for the sync child's.
-        synced_to = self.synced_to
-        if synced_to and (sync_leader := self.mass.players.get_player(synced_to)):
-            self._state.playback_state = sync_leader.playback_state
-            self._state.elapsed_time = sync_leader.elapsed_time
-            self._state.elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
+            self.__active_mass_source = None
 
         return get_changed_dataclass_values(
             prev_state,
@@ -1281,9 +1269,41 @@ class Player(ABC):
             recursive=True,
         )
 
+    @cached_property
     @final
-    def __calculate_power_state(self) -> bool | None:
-        """Calculate the final power state based on the playercontrol which may have been set-up."""
+    def __final_playback_state(self) -> tuple[PlaybackState, float | None, float | None]:
+        """
+        Return the FINAL playback state based on the playercontrol which may have been set-up.
+
+        Returns a tuple of (playback_state, elapsed_time, elapsed_time_last_updated).
+        """
+        # If an output protocol is active (and not native), use the protocol player's state
+        if (
+            self.__attr_active_output_protocol
+            and self.__attr_active_output_protocol != "native"
+            and (
+                protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
+            )
+        ):
+            return (
+                protocol_player.state.playback_state,
+                protocol_player.state.elapsed_time,
+                protocol_player.state.elapsed_time_last_updated,
+            )
+        # if we're synced/grouped, use the parent player's state
+        parent_id = self.__final_synced_to or self.__final_active_group
+        if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
+            return (
+                parent_player.state.playback_state,
+                parent_player.state.elapsed_time,
+                parent_player.state.elapsed_time_last_updated,
+            )
+        return (self.playback_state, self.elapsed_time, self.elapsed_time_last_updated)
+
+    @cached_property
+    @final
+    def __final_power_state(self) -> bool | None:
+        """Return the FINAL power state based on the playercontrol which may have been set-up."""
         power_control = self.power_control
         if power_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_POWER, False))
@@ -1291,13 +1311,15 @@ class Player(ABC):
             return self.powered
         if power_control == PLAYER_CONTROL_NONE:
             return None
+        # handle player control for power if set
         if control := self.mass.players.get_player_control(power_control):
             return control.power_state
         return None
 
+    @cached_property
     @final
-    def __calculate_volume_level(self) -> int | None:
-        """Calculate final volume level based on the playercontrol which may have been set-up."""
+    def __final_volume_level(self) -> int | None:
+        """Return the FINAL volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
         if volume_control == PLAYER_CONTROL_FAKE:
             return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
@@ -1305,13 +1327,18 @@ class Player(ABC):
             return self.volume_level
         if volume_control == PLAYER_CONTROL_NONE:
             return None
-        if control := self.mass.players.get_player_control(volume_control):
+        # handle protocol player as volume control
+        if control := self.mass.players.get_player(volume_control):
             return control.volume_level
+        # handle player control for volume if set
+        if player_control := self.mass.players.get_player_control(volume_control):
+            return player_control.volume_level
         return None
 
+    @cached_property
     @final
-    def __calculate_volume_muted_state(self) -> bool | None:
-        """Calculate the final mute state based on any playercontrol which may have been set-up."""
+    def __final_volume_muted_state(self) -> bool | None:
+        """Return the FINAL mute state based on any playercontrol which may have been set-up."""
         mute_control = self.mute_control
         if mute_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_MUTE, False))
@@ -1319,37 +1346,44 @@ class Player(ABC):
             return self.volume_muted
         if mute_control == PLAYER_CONTROL_NONE:
             return None
-        if control := self.mass.players.get_player_control(mute_control):
+        # handle protocol player as mute control
+        if control := self.mass.players.get_player(mute_control):
             return control.volume_muted
+        # handle player control for mute if set
+        if player_control := self.mass.players.get_player_control(mute_control):
+            return player_control.volume_muted
         return None
 
+    @cached_property
     @final
-    def get_active_groups(self) -> list[str]:
+    def __final_active_group(self) -> str | None:
         """
-        Return the player ids of all playergroups that are currently active for this player.
+        Return the player id of any playergroup that is currently active for this player.
 
-        This will return the ids of the groupplayers if any groups are active.
-        If no groups are currently active, this will return an empty list.
+        This will return the id of the groupplayer if any groups are active.
+        If no groups are currently active, this will return None.
         """
-        active_groups = []
-        for player in self.mass.players.all_players(
-            return_unavailable=False, return_disabled=False
+        if self.type == PlayerType.PROTOCOL:
+            # protocol players should not have an active group,
+            # they follow the group state of their parent player
+            return None
+        for group_player in self.mass.players.all_players(
+            return_unavailable=False, return_disabled=False, return_sync_groups=True
         ):
-            if player.type != PlayerType.GROUP:
+            if group_player.type != PlayerType.GROUP:
                 continue
-            if player.player_id == self.player_id:
+            if group_player.player_id == self.player_id:
                 continue
-            if not (player.powered or player.playback_state == PlaybackState.PLAYING):
+            if not (group_player.powered or group_player.playback_state == PlaybackState.PLAYING):
                 continue
-            if self.player_id in player.group_members:
-                active_groups.append(player.player_id)
-        return active_groups
+            if self.player_id in group_player.group_members:
+                return group_player.player_id
+        return None
 
+    @cached_property
     @final
-    def __calculate_current_media(
-        self, active_group: str | None, active_source: str | None
-    ) -> PlayerMedia | None:
-        """Calculate the current media for the player."""
+    def __final_current_media(self) -> PlayerMedia | None:
+        """Return the FINAL current media for the player."""
         if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             # if an announcement is in progress, return announcement details
             return PlayerMedia(
@@ -1359,12 +1393,17 @@ class Player(ABC):
             )
 
         # if the player is grouped/synced, use the current_media of the group/parent player
-        if parent_player_id := (active_group or self.synced_to or self.__attr_protocol_parent_id):
+        if parent_player_id := (self.__final_active_group or self.__final_synced_to):
             if parent_player_id != self.player_id and (
                 parent_player := self.mass.players.get_player(parent_player_id)
             ):
                 return parent_player.state.current_media
+        # if this is a protocol player, use the current_media of the parent player
+        if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
+            if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
+                return parent_player.state.current_media
         # if a pluginsource is currently active, return those details
+        active_source = self.__final_active_source
         if (
             active_source
             and (source := self.mass.players.get_plugin_source(active_source))
@@ -1479,10 +1518,13 @@ class Player(ABC):
             )
         return None
 
+    @cached_property
     @final
-    def __calculate_source_list(self) -> UniqueList[PlayerSource]:
-        """Calculate the source list for the player."""
+    def __final_source_list(self) -> UniqueList[PlayerSource]:
+        """Return the FINAL source list for the player."""
         sources = UniqueList(self.source_list)
+        if self.type == PlayerType.PROTOCOL:
+            return sources
         # always ensure the Music Assistant Queue is in the source list
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
@@ -1505,27 +1547,25 @@ class Player(ABC):
                 sources.append(plugin_source)
         return sources
 
+    @cached_property
     @final
-    def __calculate_group_members(self) -> list[str]:
-        """Calculate the final group members for caching."""
-        if self.synced_to:
+    def __final_group_members(self) -> list[str]:
+        """Return the FINAL group members of this player."""
+        if self.__final_synced_to:
             # If player is synced to another player, it has no group members itself
             return []
 
         members = self.group_members.copy()
         # If there's an active linked protocol, include its group members (translated)
-        if self.__attr_active_output_protocol and self.__attr_active_output_protocol not in (
-            "native",
-            self.player_id,
-        ):
+        if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
             if protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol):
                 # Translate protocol player IDs to visible player IDs
                 protocol_members = self._translate_protocol_ids_to_visible(
                     set(protocol_player.group_members)
                 )
-                for member_id in protocol_members:
-                    if member_id not in members:
-                        members.append(member_id)
+                for member in protocol_members:
+                    if member.player_id not in members:
+                        members.append(member.player_id)
 
         # Ensure the player_id is first in the group_members list
         if len(members) > 0 and members[0] != self.player_id:
@@ -1535,10 +1575,11 @@ class Player(ABC):
             return []
         return members
 
+    @cached_property
     @final
-    def __calculate_synced_to(self) -> str | None:
+    def __final_synced_to(self) -> str | None:
         """
-        Calculate the final synced_to state.
+        Return the FINAL synced_to state.
 
         This checks both native sync state and protocol player sync state,
         translating protocol player IDs to visible player IDs.
@@ -1547,24 +1588,22 @@ class Player(ABC):
         if native_synced_to := self.synced_to:
             return native_synced_to
 
-        # Check if the active output protocol player is synced
-        if self.__attr_active_output_protocol and self.__attr_active_output_protocol not in (
-            "native",
-            self.player_id,
-        ):
-            if protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol):
-                if protocol_player.synced_to:
-                    # Protocol player is synced, translate to visible player
-                    if synced_protocol := self.mass.players.get_player(protocol_player.synced_to):
-                        if synced_protocol.protocol_parent_id:
-                            return synced_protocol.protocol_parent_id
-                        # Fallback: return the protocol player ID if no parent
-                        return protocol_player.synced_to
+        for linked in self.__attr_linked_protocols:
+            if not (protocol_player := self.mass.players.get_player(linked.output_protocol_id)):
+                continue
+            if protocol_player.synced_to:
+                # Protocol player is synced, translate to visible player
+                if proto_sync_parent := self.mass.players.get_player(protocol_player.synced_to):
+                    if proto_sync_parent.protocol_parent_id and (
+                        parent := self.mass.players.get_player(proto_sync_parent.protocol_parent_id)
+                    ):
+                        return parent.player_id
 
         return None
 
+    @cached_property
     @final
-    def __calculate_supported_features(self) -> set[PlayerFeature]:
+    def __final_supported_features(self) -> set[PlayerFeature]:
         """Return the FINAL supported features based supported output protocol(s)."""
         base_features = self.supported_features.copy()
         if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
@@ -1573,8 +1612,7 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in ACTIVE_PROTOCOL_FEATURES:
                         base_features.add(feature)
-            return base_features
-        # No active protocol: add from all linked protocols
+        # Append (allowed features) from all linked protocols
         for linked in self.__attr_linked_protocols:
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
                 for feature in protocol_player.supported_features:
@@ -1582,8 +1620,9 @@ class Player(ABC):
                         base_features.add(feature)
         return base_features
 
+    @cached_property
     @final
-    def __calculate_can_group_with(self) -> set[str]:
+    def __final_can_group_with(self) -> set[str]:
         """
         Return the FINAL set of player id's this player can group with.
 
@@ -1597,33 +1636,54 @@ class Player(ABC):
 
         All protocol player IDs are translated to their visible parent player IDs.
         """
-        if self.synced_to:
+        result: set[str] = set()
+
+        def _should_include_player(player: Player) -> bool:
+            """Check if a player should be included in the can-group-with set."""
+            if not player.available:
+                return False
+            if player.player_id == self.player_id:
+                return False  # Don't include self
+            # Don't include (playing) players that have group members (they are group leaders)
+            if (
+                player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and player.group_members
+                and player.type != PlayerType.PROTOCOL
+            ):
+                return False  # Regular native group leader - exclude
+            # Don't include players that are currently grouped/synced to OTHER players
+            # But DO include players grouped to THIS player (so they can be ungrouped)
+            grouped_to = player.state.synced_to or player.state.active_group
+            return grouped_to is None or grouped_to == self.player_id
+
+        if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
-            return set()
-
-        result = self._expand_can_group_with()
-
-        # Scenario 1: Native playback active -> only native players
-        if self.__attr_active_output_protocol == "native":
             return result
 
-        # Scenario 2: Protocol active -> show that protocol + native players (hybrid)
-        if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
-            if protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol):
-                protocol_options = protocol_player.state.can_group_with.copy()
-                result.update(self._translate_protocol_ids_to_visible(protocol_options))
+        # always start with the native can_group_with options (expanded for provider instance IDs)
+        for player in self._expand_can_group_with():
+            if not _should_include_player(player):
+                continue
+            result.add(player.player_id)
+
+        # Scenario 1: Player is a protocol player - just return the (expanded) result
+        if self.type == PlayerType.PROTOCOL:
             return result
 
-        # Scenario 3: No active output -> show all compatible protocols + native
+        # Translate can_group_with from active linked protocol(s) and add to result
         for linked in self.__attr_linked_protocols:
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                if PlayerFeature.SET_MEMBERS in protocol_player.supported_features:
-                    protocol_options = protocol_player.state.can_group_with.copy()
-                    result.update(self._translate_protocol_ids_to_visible(protocol_options))
+                for player in self._translate_protocol_ids_to_visible(
+                    protocol_player.state.can_group_with
+                ):
+                    if not _should_include_player(player):
+                        continue
+                    result.add(player.player_id)
         return result
 
+    @cached_property
     @final
-    def __calculate_active_source(self, active_group: str | None) -> str | None:
+    def __final_active_source(self) -> str | None:
         """
         Calculate the final active source based on any group memberships, source plugins etc.
 
@@ -1632,38 +1692,38 @@ class Player(ABC):
         handle the actual streaming/playback.
         """
         # if the player is grouped/synced, use the active source of the group/parent player
-        if parent_player_id := (active_group or self.synced_to):
-            if parent_player_id != self.player_id and (
-                parent_player := self.mass.players.get_player(parent_player_id)
-            ):
-                return parent_player.active_source
+        if parent_player_id := (self.__final_synced_to or self.__final_active_group):
+            if parent_player := self.mass.players.get_player(parent_player_id):
+                return parent_player.state.active_source
+        # always prioritize active MA source
+        # (it is set on playback start and cleared on stop)
+        if self.__active_mass_source:
+            return self.__active_mass_source
+        # if a plugin source is active that belongs to this player, return that
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        if (
-            self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-            and self.active_source
-        ):
-            # active source as reported by the player itself
-            # but only if playing/paused, otherwise we always prefer the MA source
+        # active source as reported by the player itself, but only if playing/paused
+        if self.playback_state != PlaybackState.IDLE and self.active_source:
             return self.active_source
         # return the (last) known MA source
-        return self.__active_mass_source
+        return self.__last_active_mass_source
 
     @final
-    def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[str]:
+    def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[Player]:
         """
-        Translate protocol player IDs to their visible parent player IDs.
+        Translate protocol player IDs to their visible parent players.
 
         Protocol players are hidden and users interact with visible players
         (native or universal). This method translates protocol player IDs
-        back to the visible player IDs.
+        back to the visible (parent) players.
 
         :param player_ids: Set of player IDs (protocol player IDs).
-        :return: Set of visible player IDs.
+        :return: Set of visible players.
         """
-        result = set()
-
+        result: set[Player] = set()
+        if not player_ids:
+            return result
         for player_id in player_ids:
             target_player = self.mass.players.get_player(player_id)
             if not target_player or target_player.type != PlayerType.PROTOCOL:
@@ -1671,36 +1731,27 @@ class Player(ABC):
             # This is a protocol player - find its visible parent
             if not target_player.protocol_parent_id:
                 continue
-
             parent_player = self.mass.players.get_player(target_player.protocol_parent_id)
             if not parent_player:
                 continue
-
-            # Check if the parent player should be included
-            if not self._should_include_player(parent_player):
-                continue
-
-            result.add(parent_player.player_id)
-
+            result.add(parent_player)
         return result
 
     @final
-    def _expand_can_group_with(self) -> set[str]:
+    def _expand_can_group_with(self) -> set[Player]:
         """
         Expand the 'can-group-with' to include all players from provider instance IDs.
 
         This method expands any provider instance IDs (e.g., "airplay", "chromecast")
         in the group members to all (available) players of that provider
 
-        :return: Set of available player IDs in the can-group-with.
+        :return: Set of available players in the can-group-with.
         """
         result = set()
+
         for member_id in self.can_group_with:
-            if member_id == self.player_id:
-                continue  # Don't include self
             if player := self.mass.players.get_player(member_id):
-                if self._should_include_player(player):
-                    result.add(player.player_id)
+                result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
@@ -1709,48 +1760,25 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if player.player_id == self.player_id:
-                        continue  # Don't include self
-                    if self._should_include_player(player):
-                        result.add(player.player_id)
+                    result.add(player)
         return result
-
-    @final
-    def _should_include_player(self, player: Player) -> bool:
-        """Check if a player should be included in the can-group-with set."""
-        # Only include available players
-        if not player.available:
-            return False
-        # Skip players that are active with other sources
-        if player.playback_state != PlaybackState.IDLE and player.active_source not in (
-            self.player_id,
-            self.active_source,
-            self.protocol_parent_id,
-        ):
-            return False
-        # don't include players that have group members (they are group leaders)
-        if player.group_members:
-            return False
-
-        # Don't include players that are currently grouped/synced to OTHER players
-        # But DO include players grouped to THIS player (so they can be ungrouped)
-        grouped_to = player.synced_to or player.state.active_group
-        return grouped_to is None or grouped_to == self.player_id
 
     # The id of the (last) active mass source.
     # This is to keep track of the last active MA source for the player,
     # so we can restore it when needed (e.g. after switching to a plugin source).
-    __active_mass_source: str = ""
+    __active_mass_source: str | None = None
+    __last_active_mass_source: str | None = None
 
     @final
     def set_active_mass_source(self, value: str) -> None:
         """
-        Set the id of the (last) active mass source.
+        Set the id of the active mass source.
 
         This is to keep track of the last active MA source for the player,
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
         self.__active_mass_source = value
+        self.__last_active_mass_source = value
         self.update_state()
 
     __stop_called: bool = False
@@ -1759,6 +1787,7 @@ class Player(ABC):
     def mark_stop_called(self) -> None:
         """Mark that the STOP command was called on the player."""
         self.__stop_called = True
+        self.__active_mass_source = None
 
     @property
     @final

@@ -72,5 +72,5 @@ class PlayerProvider(Provider):
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
         return self.mass.players.all_players(
-            provider_filter=self.instance_id, return_sync_groups=False
+            provider_filter=self.instance_id, return_sync_groups=False, return_protocol_players=True
         )

@@ -4,7 +4,11 @@ import logging
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
@@ -1134,7 +1138,7 @@ class TestCanGroupWith:
     """Tests for can_group_with property with three scenarios."""
 
     def test_scenario_1_native_active_only_native_players(self, mock_mass):
-        """Test Scenario 1: Native playback active -> only native players shown."""
+        """Test Scenario 1: Native playback active -> all protocols shown (new behavior)."""
         controller = PlayerController(mock_mass)
 
         sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
@@ -1208,12 +1212,14 @@ class TestCanGroupWith:
         # Get can_group_with while native is active
         groupable = sonos_player.state.can_group_with
 
-        # Should only show native players (sonos_456), not AirPlay options
-        assert "sonos_456" in groupable
-        assert "airplay_other" not in groupable
+        # NEW BEHAVIOR: Should show both native AND protocol players
+        # even when native protocol is active
+        assert "sonos_456" in groupable  # Native Sonos player
+        # Note: airplay_other is not registered in controller._players, so it won't appear
+        # But the logic should still allow showing AirPlay options if they were registered
 
     def test_scenario_2_protocol_active_hybrid_groups(self, mock_mass):
-        """Test Scenario 2: Protocol active -> show that protocol + native players."""
+        """Test Scenario 2: Protocol active -> show all protocols (new behavior)."""
         controller = PlayerController(mock_mass)
 
         sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
@@ -1330,8 +1336,9 @@ class TestCanGroupWith:
         # Get can_group_with while AirPlay is active
         groupable = sonos_player.state.can_group_with
 
-        # Should show native players (sonos_456) + AirPlay players (wiim_789 via airplay_other)
-        assert "sonos_456" in groupable
+        # NEW BEHAVIOR: Should show ALL protocols + native players
+        # regardless of which protocol is active
+        assert "sonos_456" in groupable  # Native Sonos player
         assert "wiim_789" in groupable  # Via airplay_other protocol
 
     def test_scenario_3_no_active_output_all_protocols_shown(self, mock_mass):
@@ -1483,3 +1490,145 @@ class TestCanGroupWith:
         assert "sonos_456" in groupable
         assert "wiim_789" in groupable  # Via AirPlay protocol
         # DLNA players should not be shown since DLNA doesn't support SET_MEMBERS
+
+
+class TestProtocolSwitchingDuringPlayback:
+    """Tests for dynamic protocol switching when group members change during playback."""
+
+    async def test_no_protocol_set_during_grouping_without_playback(self, mock_mass):
+        """Test that no protocol is set when grouping players without active playback."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        # Create Sonos player with AirPlay support
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+
+        # Create another Sonos player
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        sonos_player_b._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+
+        # Create AirPlay protocol player
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        # Group players via protocol (simulate grouping through AirPlay)
+        # This should NOT set active_output_protocol anymore
+        await controller._forward_protocol_set_members(
+            parent_player=sonos_player,
+            parent_protocol_player=sonos_airplay,
+            protocol_members_to_add=["airplay_other"],  # Add a protocol member
+            protocol_members_to_remove=[],
+        )
+
+        # NEW BEHAVIOR: Protocol should NOT be set during grouping without playback
+        # After grouping, protocol should not be activated until playback starts
+        assert sonos_player.active_output_protocol is None
+
+    async def test_protocol_selected_at_playback_time(self, mock_mass):
+        """Test that protocol is selected when playback starts, not during grouping."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        # Create Sonos player with AirPlay support
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+
+        # Create AirPlay protocol player with group members
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+        # Simulate that AirPlay protocol has group members (needs >1 for grouping check)
+        sonos_airplay._attr_group_members = ["airplay_sonos", "airplay_other"]
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_123": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+
+        # Update state to apply group members to state
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+
+        # Protocol should not be set yet
+        assert sonos_player.active_output_protocol is None
+
+        # Select protocol for playback
+        selected_player, protocol_id = controller._select_best_output_protocol(sonos_player)
+
+        # Should select AirPlay protocol because it has group members (Priority 1)
+        assert selected_player == sonos_airplay
+        assert protocol_id == "airplay_sonos"

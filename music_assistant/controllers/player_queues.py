@@ -2111,7 +2111,7 @@ class PlayerQueuesController(CoreController):
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
-                elapsed_time = int(player.corrected_elapsed_time or 0)
+                elapsed_time = int(player.state.corrected_elapsed_time or 0)
                 current_index = self.index_by_id(queue_id, item_id)
             else:
                 # this may happen if the player is still transitioning between tracks
@@ -2321,7 +2321,7 @@ class PlayerQueuesController(CoreController):
         self, queue: PlayerQueue, player: Player
     ) -> tuple[int | None, int]:
         """Calculate current queue index and current track elapsed time when flow mode is active."""
-        elapsed_time_queue_total = player.corrected_elapsed_time or 0
+        elapsed_time_queue_total = player.state.corrected_elapsed_time or 0
         if queue.current_index is None and not queue.flow_mode_stream_log:
             return queue.current_index, int(queue.elapsed_time)
 
@@ -2364,33 +2364,41 @@ class PlayerQueuesController(CoreController):
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
-        if not player.current_media:
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        if not protocol_player.current_media:
             # YES, we use player.current_media on purpose here because we need the raw metadata
             return None
         # prefer queue_id and queue_item_id within the current media
-        if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
-            return player.current_media.queue_item_id
+        if (
+            protocol_player.current_media.source_id == queue_id
+            and protocol_player.current_media.queue_item_id
+        ):
+            return protocol_player.current_media.queue_item_id
         # special case for sonos players
-        if player.current_media.uri and player.current_media.uri.startswith(f"mass:{queue_id}"):
-            if player.current_media.queue_item_id:
-                return player.current_media.queue_item_id
-            return player.current_media.uri.split(":")[-1]
+        if protocol_player.current_media.uri and protocol_player.current_media.uri.startswith(
+            f"mass:{queue_id}"
+        ):
+            if protocol_player.current_media.queue_item_id:
+                return protocol_player.current_media.queue_item_id
+            return protocol_player.current_media.uri.split(":")[-1]
         # try to extract the item id from a mass stream url
         if (
-            player.current_media.uri
-            and queue_id in player.current_media.uri
-            and self.mass.streams.base_url in player.current_media.uri
+            protocol_player.current_media.uri
+            and queue_id in protocol_player.current_media.uri
+            and self.mass.streams.base_url in protocol_player.current_media.uri
         ):
-            current_item_id = player.current_media.uri.rsplit("/")[-1].split(".")[0]
+            current_item_id = protocol_player.current_media.uri.rsplit("/")[-1].split(".")[0]
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
         # try to extract the item id from a queue_id/item_id combi
         if (
-            player.current_media.uri
-            and queue_id in player.current_media.uri
-            and "/" in player.current_media.uri
+            protocol_player.current_media.uri
+            and queue_id in protocol_player.current_media.uri
+            and "/" in protocol_player.current_media.uri
         ):
-            current_item_id = player.current_media.uri.split("/")[1]
+            current_item_id = protocol_player.current_media.uri.split("/")[1]
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
 

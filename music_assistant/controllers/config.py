@@ -1763,33 +1763,50 @@ class ConfigController:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         # work out player supported features
-        supports_power = PlayerFeature.POWER in player.state.supported_features
-        supports_volume = PlayerFeature.VOLUME_SET in player.state.supported_features
-        supports_mute = PlayerFeature.VOLUME_MUTE in player.state.supported_features
-        # create base options per control type (and add defaults like native and fake)
-        base_power_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
-        ]
-        if supports_power:
+        base_power_options: list[ConfigValueOption] = []
+        if player.supports_feature(PlayerFeature.POWER):
             base_power_options.append(
                 ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_volume_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-        ]
-        if supports_volume:
+        base_volume_options: list[ConfigValueOption] = []
+        if player.supports_feature(PlayerFeature.VOLUME_SET):
             base_volume_options.append(
                 ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_mute_options: list[ConfigValueOption] = [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
-        ]
-        if supports_mute:
+        base_mute_options: list[ConfigValueOption] = []
+        if player.supports_feature(PlayerFeature.VOLUME_MUTE):
             base_mute_options.append(
                 ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
             )
+        # append protocol-specific volume and mute controls to the base options
+        for linked_protocol in player.linked_output_protocols:
+            if protocol_player := self.mass.players.get_player(linked_protocol.output_protocol_id):
+                if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
+                    base_volume_options.append(
+                        ConfigValueOption(
+                            title=linked_protocol.name, value=linked_protocol.output_protocol_id
+                        )
+                    )
+                if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
+                    base_mute_options.append(
+                        ConfigValueOption(
+                            title=linked_protocol.name,
+                            value=linked_protocol.output_protocol_id,
+                        )
+                    )
+        # append none+fake options
+        base_power_options += [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+            ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
+        ]
+        base_volume_options += [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+        ]
+        base_mute_options += [
+            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+            ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
+        ]
+
         # return final config entries for all options
         return [
             # Power control config entry
@@ -1797,7 +1814,9 @@ class ConfigController:
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Power Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_power else PLAYER_CONTROL_NONE,
+                default_value=base_power_options[0].value
+                if base_power_options
+                else PLAYER_CONTROL_NONE,
                 required=False,
                 options=[
                     *base_power_options,
@@ -1811,7 +1830,9 @@ class ConfigController:
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Volume Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_volume else PLAYER_CONTROL_NONE,
+                default_value=base_volume_options[0].value
+                if base_volume_options
+                else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
                     *base_volume_options,
@@ -1825,7 +1846,9 @@ class ConfigController:
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Mute Control",
-                default_value=PLAYER_CONTROL_NATIVE if supports_mute else PLAYER_CONTROL_NONE,
+                default_value=base_mute_options[0].value
+                if base_mute_options
+                else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
                     *base_mute_options,

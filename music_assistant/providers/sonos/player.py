@@ -28,14 +28,13 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.upnp import get_xml_soap_set_next_url, get_xml_soap_set_url
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
     PLAYBACK_STATE_MAP,
@@ -471,7 +470,7 @@ class SonosPlayer(Player):
 
         group_parent = None
         if self.client.player.is_coordinator:
-            # player is group coordinator
+            # player is group coordinator - always report native group members
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
                 self._attr_group_members = list(self.client.player.group_members)
@@ -598,6 +597,53 @@ class SonosPlayer(Player):
 
         self._attr_current_media = current_media
 
+    async def on_protocol_playback(
+        self,
+        output_protocol: OutputProtocol,
+    ) -> None:
+        """Handle callback when playback starts on a protocol output."""
+        # Only handle AirPlay protocol
+        if output_protocol.protocol_domain != "airplay":
+            return
+
+        # Only if this player is a coordinator with group members
+        if not self.client.player.is_coordinator:
+            return
+
+        current_members = list(self.client.player.group_members)
+        if len(current_members) <= 1:
+            # No group members to worry about
+            return
+
+        # Workaround for Sonos AirPlay ungrouping bug: when AirPlay playback starts
+        # on a Sonos speaker that has native group members, Sonos dissolves the group.
+        # We capture the group state here and restore it via AirPlay protocol after a delay.
+
+        self.logger.debug(
+            "AirPlay playback starting on %s with native group members %s - "
+            "scheduling restoration to avoid Sonos ungrouping bug",
+            self.name,
+            current_members,
+        )
+        members_to_restore = [m for m in current_members if m != self.player_id]
+
+        async def _restore_airplay_group() -> None:
+            try:
+                # we call set_members on the PlayerController here so it
+                # can try to regroup via the preferred protocol (which may be AirPlay),
+                await self.mass.players.cmd_set_members(
+                    self.player_id, player_ids_to_add=members_to_restore
+                )
+            except Exception as err:
+                self.logger.warning("Failed to restore AirPlay group: %s", err)
+
+        # Schedule restoration after 4 seconds to let AirPlay settle
+        self.mass.call_later(
+            4,
+            _restore_airplay_group,
+            task_id=f"restore_airplay_group_{self.player_id}",
+        )
+
     def update_elapsed_time(self, elapsed_time: float | None = None) -> None:
         """Update the elapsed time of the current media."""
         if elapsed_time is not None:
@@ -685,49 +731,6 @@ class SonosPlayer(Player):
                 if "groupCoordinatorChanged" not in str(err):
                     # this may happen at race conditions
                     raise
-
-    async def _play_media_legacy(
-        self,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle PLAY MEDIA using the legacy upnp api."""
-        xml_data, soap_action = get_xml_soap_set_url(media)
-        player_ip = self.device_info.ip_address
-        async with self.mass.http_session_no_ssl.post(
-            f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
-            headers={
-                "SOAPACTION": soap_action,
-                "Content-Type": "text/xml; charset=utf-8",
-                "Connection": "close",
-            },
-            data=xml_data,
-        ) as resp:
-            if resp.status != 200:
-                raise PlayerCommandFailed(
-                    f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
-                )
-            await self.play()
-
-    async def _enqueue_next_legacy(
-        self,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle enqueuing of the next (queue) item on the player using legacy upnp api."""
-        xml_data, soap_action = get_xml_soap_set_next_url(media)
-        player_ip = self.device_info.ip_address
-        async with self.mass.http_session_no_ssl.post(
-            f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
-            headers={
-                "SOAPACTION": soap_action,
-                "Content-Type": "text/xml; charset=utf-8",
-                "Connection": "close",
-            },
-            data=xml_data,
-        ) as resp:
-            if resp.status != 200:
-                raise PlayerCommandFailed(
-                    f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
-                )
 
     async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
         """Set the SonosQueue items from the given MA PlayerQueue."""

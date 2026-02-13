@@ -259,7 +259,7 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
                 or player.device_info.manufacturer.lower() == "apple"
             )
-            active_queue = self.mass.player_queues.get_active_queue(player_id)
+            active_queue = self.mass.players.get_active_queue(player)
             if not active_queue:
                 self.logger.warning(
                     "DACP request for %s (%s) but no active queue found, ignoring request",
