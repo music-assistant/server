@@ -124,7 +124,7 @@ def map_track_to_msx(
         action = f"audio:{append_device_param(audio_url, device_param)}"
 
     return MsxItem(
-        title=track.name,
+        title_header="{txt:msx-white:" + track.name + "}",
         title_footer=footer,
         player_label=track.name,
         duration=duration,

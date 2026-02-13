@@ -308,9 +308,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         content = MsxContent(
             headline="Albums",
             template=MsxTemplate(
-                type="default",
-                layout="0,0,6,2",
-                image_width=1.5,
+                type="separate",
+                layout="0,0,3,4",
                 color="msx-glass",
             ),
             items=items if items else [MsxItem(title="No albums found")],
@@ -329,9 +328,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         content = MsxContent(
             headline="Artists",
             template=MsxTemplate(
-                type="default",
-                layout="0,0,6,2",
-                image_width=0.83,
+                type="separate",
+                layout="0,0,2,3",
                 color="msx-glass",
             ),
             items=items if items else [MsxItem(title="No artists found")],
@@ -352,9 +350,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         content = MsxContent(
             headline="Playlists",
             template=MsxTemplate(
-                type="default",
-                layout="0,0,6,2",
-                image_width=0.83,
+                type="separate",
+                layout="0,0,3,4",
                 color="msx-glass",
             ),
             items=items if items else [MsxItem(title="No playlists found")],

@@ -51,6 +51,7 @@ class MsxContent(BaseModel):
 
     type: str = "list"
     headline: str | None = None
+    area: str | None = None
     template: MsxTemplate | None = None
     items: list[MsxItem] | None = None
     action: str | None = None
