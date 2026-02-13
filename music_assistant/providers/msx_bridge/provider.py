@@ -181,6 +181,16 @@ class MSXBridgeProvider(PlayerProvider):
         if self.http_server:
             self.http_server.broadcast_goto_index(player_id, index)
 
+    def notify_play_paused(self, player_id: str) -> None:
+        """Notify WebSocket clients that playback is paused (MA pause -> MSX)."""
+        if self.http_server:
+            self.http_server.broadcast_pause(player_id)
+
+    def notify_play_resumed(self, player_id: str) -> None:
+        """Notify WebSocket clients that playback resumed (MA resume -> MSX)."""
+        if self.http_server:
+            self.http_server.broadcast_resume(player_id)
+
     def notify_play_stopped(self, player_id: str) -> None:
         """Notify WebSocket clients that playback stopped (MA stop -> MSX).
 

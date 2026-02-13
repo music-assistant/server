@@ -1058,8 +1058,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         )
 
         try:
-            async for _msg in ws:
-                pass
+            async for msg in ws:
+                if msg.type == msg.type.TEXT:
+                    self._handle_ws_message(player_id, msg.data)
         finally:
             self._ws_clients.get(player_id, set()).discard(ws)
             if not self._ws_clients.get(player_id):
@@ -1195,6 +1196,36 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             del self._active_stream_tasks[player_id]
             del self._active_stream_transports[player_id]
 
+    def broadcast_pause(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to pause playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_pause: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "pause"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg))
+
+    def broadcast_resume(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to resume playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_resume: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "resume"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg))
+
     def broadcast_stop(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to stop playback."""
         clients = self._ws_clients.get(player_id, set())
@@ -1228,6 +1259,59 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             await ws.send_str(text)
         except Exception as exc:
             logger.debug("WebSocket send failed: %s", exc)
+
+    async def _cmd_pause_no_echo(self, player_id: str) -> None:
+        """Pause player without echoing back to MSX."""
+        try:
+            await self.provider.mass.players.cmd_pause(player_id)
+        finally:
+            player = self.provider.mass.players.get(player_id)
+            if player and isinstance(player, MSXPlayer):
+                player._skip_ws_notify = False
+
+    async def _cmd_play_no_echo(self, player_id: str) -> None:
+        """Resume player without echoing back to MSX."""
+        try:
+            await self.provider.mass.players.cmd_play(player_id)
+        finally:
+            player = self.provider.mass.players.get(player_id)
+            if player and isinstance(player, MSXPlayer):
+                player._skip_ws_notify = False
+
+    def _handle_ws_message(self, player_id: str, data: str) -> None:
+        """Process an inbound WebSocket message from MSX."""
+        try:
+            msg = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Invalid WS message from %s: %s", player_id, data)
+            return
+
+        msg_type = msg.get("type")
+        if msg_type == "position":
+            position = msg.get("position")
+            if position is not None:
+                player = self.provider.mass.players.get(player_id)
+                if player and isinstance(player, MSXPlayer):
+                    player.update_position(float(position))
+                    self.provider.on_player_activity(player_id)
+        elif msg_type == "pause":
+            player = self.provider.mass.players.get(player_id)
+            if player and isinstance(player, MSXPlayer):
+                position = msg.get("position")
+                if position is not None:
+                    player.update_position(float(position))
+                # Skip WS notify to avoid echo back to MSX
+                player._skip_ws_notify = True
+                self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
+                self.provider.on_player_activity(player_id)
+        elif msg_type == "resume":
+            player = self.provider.mass.players.get(player_id)
+            if player and isinstance(player, MSXPlayer):
+                player._skip_ws_notify = True
+                self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
+                self.provider.on_player_activity(player_id)
+        else:
+            logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
 
     # --- Stream Proxy ---
 

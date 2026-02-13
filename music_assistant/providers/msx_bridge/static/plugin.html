@@ -55,18 +55,63 @@
     }
 
     var wsRetryDelay = 1000;
+    var wsConnection = null;
+    var positionTimer = null;
+    var positionStartTime = 0;
+    var positionStartValue = 0;
+    var pausedByServer = false;
+    var resumedByServer = false;
+    var pausedAtPosition = 0;
+    var monitoredElement = null;
+    var mediaObserver = null;
+
+    function stopPositionTimer() {
+        if (positionTimer) {
+            clearInterval(positionTimer);
+            positionTimer = null;
+        }
+    }
+
+    function startPositionTimer(startPosition) {
+        stopPositionTimer();
+        positionStartValue = startPosition || 0;
+        positionStartTime = Date.now() / 1000;
+        positionTimer = setInterval(function() {
+            if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                var position;
+                if (monitoredElement && !monitoredElement.paused) {
+                    position = monitoredElement.currentTime;
+                } else {
+                    var elapsed = (Date.now() / 1000) - positionStartTime;
+                    position = positionStartValue + elapsed;
+                }
+                wsConnection.send(JSON.stringify({ type: "position", position: position }));
+            }
+        }, 3000);
+    }
 
     function connectPushWebSocket(deviceId) {
         if (typeof WebSocket === "undefined") return;
         var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
         var ws = new WebSocket(url);
+        wsConnection = ws;
         ws.onopen = function() { wsRetryDelay = 1000; };
         ws.onmessage = function(ev) {
             try {
                 var msg = JSON.parse(ev.data);
                 if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    stopPositionTimer();
                     var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";
                     tvx.InteractionPlugin.executeAction(action);
+                } else if (msg.type === "pause" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    pausedAtPosition = monitoredElement ? monitoredElement.currentTime : getCurrentPosition();
+                    stopPositionTimer();
+                    pausedByServer = true;
+                    tvx.InteractionPlugin.executeAction("player:pause");
+                } else if (msg.type === "resume" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    startPositionTimer(pausedAtPosition);
+                    resumedByServer = true;
+                    tvx.InteractionPlugin.executeAction("player:play");
                 } else if (msg.type === "play" && msg.path && typeof tvx.InteractionPlugin.executeAction === "function") {
                     // Force .mp3 extension for better compatibility with TV players
                     var audioUrl = BRIDGE + msg.path + ".mp3";
@@ -82,11 +127,14 @@
                     if (msg.duration != null && msg.duration > 0) data.duration = msg.duration;
                     if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
+                    startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("audio:" + audioUrl, data);
                 } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
+                    startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
                 } else if (msg.type === "goto_index" && msg.index != null && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("player:goto:index:" + msg.index);
                 } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     // Update metadata of the currently playing item without restarting audio.
@@ -118,12 +166,83 @@
             }
         };
         ws.onclose = function() {
+            stopPositionTimer();
+            wsConnection = null;
             setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay);
             wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
         };
     }
 
     function MAHandler() {}
+
+    function getCurrentPosition() {
+        return positionStartValue + (Date.now() / 1000 - positionStartTime);
+    }
+
+    function sendWsMessage(msg) {
+        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+            wsConnection.send(JSON.stringify(msg));
+        }
+    }
+
+    function onMediaPause() {
+        if (pausedByServer) {
+            pausedByServer = false;
+            return;
+        }
+        // User-initiated pause (TV remote) — notify MA
+        var pos = monitoredElement ? monitoredElement.currentTime : getCurrentPosition();
+        pausedAtPosition = pos;
+        stopPositionTimer();
+        sendWsMessage({ type: "pause", position: pos });
+    }
+
+    function onMediaPlay() {
+        if (resumedByServer) {
+            resumedByServer = false;
+            return;
+        }
+        // User-initiated resume (TV remote) — notify MA
+        startPositionTimer(pausedAtPosition);
+        sendWsMessage({ type: "resume" });
+    }
+
+    function attachMediaListeners(el) {
+        if (monitoredElement === el) return;
+        detachMediaListeners();
+        monitoredElement = el;
+        el.addEventListener("pause", onMediaPause);
+        el.addEventListener("play", onMediaPlay);
+    }
+
+    function detachMediaListeners() {
+        if (monitoredElement) {
+            monitoredElement.removeEventListener("pause", onMediaPause);
+            monitoredElement.removeEventListener("play", onMediaPlay);
+            monitoredElement = null;
+        }
+    }
+
+    function scanForMediaElements() {
+        var elements = document.querySelectorAll("audio, video");
+        for (var i = 0; i < elements.length; i++) {
+            if (elements[i].src || elements[i].currentSrc) {
+                attachMediaListeners(elements[i]);
+                return;
+            }
+        }
+    }
+
+    function startMediaObserver() {
+        if (mediaObserver) return;
+        scanForMediaElements();
+        if (typeof MutationObserver !== "undefined") {
+            mediaObserver = new MutationObserver(function() {
+                scanForMediaElements();
+            });
+            mediaObserver.observe(document.body, { childList: true, subtree: true });
+        }
+    }
 
     MAHandler.prototype.handleRequest = function(dataId, data, callback) {
         if (dataId === "init") {
@@ -136,6 +255,7 @@
                     menu: buildMenu(deviceId || null)
                 });
                 connectPushWebSocket(deviceId || null);
+                startMediaObserver();
             };
             if (typeof tvx.VideoPlugin !== "undefined" && typeof tvx.VideoPlugin.requestDeviceId === "function") {
                 tvx.VideoPlugin.requestDeviceId(function(data) {
