@@ -25,8 +25,9 @@ from .constants import (
     CONF_TOKEN,
     CONF_TRACK_BATCH_SIZE,
     DEFAULT_BASE_URL,
-    QUALITY_HIGH,
-    QUALITY_LOSSLESS,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_SUPERB,
 )
 from .provider import YandexMusicProvider
 
@@ -109,10 +110,11 @@ async def get_config_entries(
             label="Audio quality",
             description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
-                ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
+                ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
+                ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
+                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
             ],
-            default_value=QUALITY_HIGH,
+            default_value=QUALITY_BALANCED,
         ),
         # My Wave category (user-facing toggles)
         ConfigEntry(

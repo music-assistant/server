@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from music_assistant_models.enums import ContentType
 
-from music_assistant.providers.yandex_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
+from music_assistant.providers.yandex_music.constants import (
+    QUALITY_BALANCED,
+    QUALITY_SUPERB,
+)
 from music_assistant.providers.yandex_music.streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
@@ -58,7 +61,7 @@ def test_select_best_quality_lossless_returns_flac(
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, QUALITY_LOSSLESS)
+    result = streaming_manager._select_best_quality(download_infos, QUALITY_SUPERB)
 
     assert result is not None
     assert result.codec == "flac"
@@ -68,12 +71,12 @@ def test_select_best_quality_lossless_returns_flac(
 def test_select_best_quality_high_returns_highest_bitrate(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """When preferred is 'high' and list has MP3 and FLAC, highest bitrate is selected."""
+    """When preferred is 'balanced' and no option in range, fallback to highest bitrate."""
     mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, QUALITY_HIGH)
+    result = streaming_manager._select_best_quality(download_infos, QUALITY_BALANCED)
 
     assert result is not None
     assert result.codec == "mp3"
@@ -101,7 +104,7 @@ def test_select_best_quality_lossless_no_flac_returns_fallback(
     mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
     download_infos = [mp3]
 
-    result = streaming_manager_with_tracking._select_best_quality(download_infos, QUALITY_LOSSLESS)
+    result = streaming_manager_with_tracking._select_best_quality(download_infos, QUALITY_SUPERB)
 
     assert result is not None
     assert result.codec == "mp3"
@@ -112,7 +115,7 @@ def test_select_best_quality_empty_list_returns_none(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
     """Empty download_infos returns None."""
-    result = streaming_manager._select_best_quality([], QUALITY_LOSSLESS)
+    result = streaming_manager._select_best_quality([], QUALITY_SUPERB)
     assert result is None
 
 

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+import aiohttp
+from Crypto.Cipher import AES
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -17,7 +23,7 @@ from yandex_music import ClientAsync, Search, TrackShort
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
-from yandex_music.utils.sign_request import get_sign_request
+from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -507,24 +513,81 @@ class YandexMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
+    async def _decrypt_track_url(self, encrypted_url: str, key_base64: str) -> bytes:
+        """Decrypt encrypted track data using AES-256 CTR mode.
+
+        The Yandex Music API returns encrypted URLs when using transports=encraw.
+        This matches the decryption implementation from yandex-music-downloader-realflac.
+
+        :param encrypted_url: The encrypted download URL.
+        :param key_base64: Base64-encoded AES-256 decryption key.
+        :return: Decrypted audio data bytes.
+        """
+        # Download encrypted data using direct HTTP request
+        LOGGER.debug("Downloading encrypted data from %s", encrypted_url[:100])
+
+        async with aiohttp.ClientSession() as session, session.get(encrypted_url) as response:
+            if response.status != 200:
+                msg = f"Failed to download encrypted track: HTTP {response.status}"
+                raise ProviderUnavailableError(msg)
+
+            encrypted_data = await response.read()
+            LOGGER.debug("Downloaded %d bytes of encrypted data", len(encrypted_data))
+
+        # Decrypt using AES CTR with 12-byte null nonce
+        # Note: key is HEX-encoded in the API response, not base64!
+        key_bytes = bytes.fromhex(key_base64)
+        nonce = bytes(12)  # 12-byte null nonce as per working implementation
+
+        LOGGER.debug(
+            "Decrypting with key length=%d bytes, nonce=%d bytes", len(key_bytes), len(nonce)
+        )
+
+        # Use PyCrypto's AES (supports 12-byte nonce for CTR)
+        aes = AES.new(
+            key=key_bytes,
+            nonce=nonce,
+            mode=AES.MODE_CTR,
+        )
+        decrypted_data = aes.decrypt(encrypted_data)
+
+        LOGGER.debug("Decrypted %d bytes", len(decrypted_data))
+        return decrypted_data
+
     async def get_track_file_info_lossless(self, track_id: str) -> dict[str, Any] | None:
         """Request lossless stream via get-file-info (quality=lossless).
 
         The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
         with quality=lossless and codecs=flac,... returns FLAC when available.
 
+        Uses manual sign calculation matching yandex-music-downloader-realflac.
+
         :param track_id: Track ID.
         :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
         """
         client = self._ensure_connected()
-        sign = get_sign_request(track_id)
+
+        # Build params (timestamp must be current)
+        timestamp = int(time.time())
         base_params = {
-            "ts": sign.timestamp,
+            "ts": timestamp,
             "trackId": track_id,
             "quality": "lossless",
             "codecs": GET_FILE_INFO_CODECS,
-            "sign": sign.value,
+            "transports": "encraw",  # Will be replaced per attempt
         }
+
+        # Calculate sign manually (matching yandex-music-downloader-realflac)
+        # Join all param values, remove commas, then HMAC-SHA256
+        param_string = "".join(str(v) for v in base_params.values()).replace(",", "")
+        hmac_sign = hmac.new(
+            DEFAULT_SIGN_KEY.encode(),
+            param_string.encode(),
+            hashlib.sha256,
+        )
+        # Base64 encode and remove last character (critical!)
+        sign = base64.b64encode(hmac_sign.digest()).decode()[:-1]
+        base_params["sign"] = sign
 
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
@@ -532,13 +595,36 @@ class YandexMusicClient:
             download_info = raw.get("download_info")
             if not download_info or not download_info.get("url"):
                 return None
-            return cast("dict[str, Any]", download_info)
 
+            # Include encryption key if present
+            result = cast("dict[str, Any]", download_info)
+
+            # Check if response has encryption key (encraw transport)
+            if "key" in download_info:
+                result["needs_decryption"] = True
+                LOGGER.debug(
+                    "Encrypted URL received for track %s, will require decryption",
+                    track_id,
+                )
+            else:
+                result["needs_decryption"] = False
+
+            return result
+
+        # Use yandex-music library's client.request.get() like working implementation
         url = f"{client.base_url}/get-file-info"
-        params_encraw = {**base_params, "transports": "encraw"}
+
+        # Try encraw transport (returns encrypted URLs that need decryption)
         try:
-            result = await client._request.get(url, params=params_encraw)
-            return _parse_file_info_result(result)
+            result = await client._request.get(url, params=base_params)
+            parsed = _parse_file_info_result(result)
+            if parsed:
+                LOGGER.debug(
+                    "get-file-info lossless for track %s: Success, codec=%s",
+                    track_id,
+                    parsed.get("codec"),
+                )
+                return parsed
         except (BadRequestError, NetworkError) as err:
             LOGGER.debug(
                 "get-file-info lossless for track %s: %s %s",
@@ -546,30 +632,21 @@ class YandexMusicClient:
                 type(err).__name__,
                 getattr(err, "message", str(err)) or repr(err),
             )
-            return None
         except UnauthorizedError as err:
             LOGGER.debug(
-                "get-file-info lossless for track %s (transports=encraw): %s %s",
+                "get-file-info lossless for track %s: UnauthorizedError %s",
                 track_id,
-                type(err).__name__,
                 getattr(err, "message", str(err)) or repr(err),
             )
-            LOGGER.debug(
-                "If you have Yandex Music Plus and this track has lossless, "
-                "try a token from the web client (music.yandex.ru)."
+        except Exception as err:
+            LOGGER.warning(
+                "get-file-info lossless for track %s: Unexpected error: %s",
+                track_id,
+                err,
+                exc_info=True,
             )
-            params_raw = {**base_params, "transports": "raw"}
-            try:
-                result = await client._request.get(url, params=params_raw)
-                return _parse_file_info_result(result)
-            except (BadRequestError, NetworkError, UnauthorizedError) as retry_err:
-                LOGGER.debug(
-                    "get-file-info lossless for track %s (transports=raw): %s %s",
-                    track_id,
-                    type(retry_err).__name__,
-                    getattr(retry_err, "message", str(retry_err)) or repr(retry_err),
-                )
-                return None
+
+        return None
 
     # Library modifications
 
