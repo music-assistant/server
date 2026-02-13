@@ -815,15 +815,28 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if not media:
             return web.Response(status=504, text="Playback setup timeout")
 
+        # Resolve duration from media or queue item for Content-Length header
+        duration = media.duration or 0
+        if not duration and media.source_id and media.queue_item_id:
+            queue_item = self.provider.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
+            if queue_item:
+                if queue_item.media_item:
+                    duration = getattr(queue_item.media_item, "duration", None) or duration
+                if not duration and queue_item.duration:
+                    duration = queue_item.duration
+
         return await self._serve_audio_stream(
             request,
             player,
             media,
+            duration=duration,
         )
 
     @staticmethod
     def _build_audio_params(
-        output_format_str: str,
+        output_format_str: str, duration: int
     ) -> tuple[AudioFormat, AudioFormat, dict[str, str]]:
         """Build PCM input format, encoded output format, and HTTP headers."""
         pcm_format = AudioFormat(
@@ -844,13 +857,16 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             bit_depth=16,
             channels=2,
         )
+        bitrate_map = {"mp3": 40_000, "aac": 32_000}
+        bytes_per_sec = bitrate_map.get(output_format_str, 0)
         headers: dict[str, str] = {
             "Content-Type": mime_type,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Accept-Ranges": "none",
-            "Transfer-Encoding": "chunked",
         }
+        if duration and bytes_per_sec:
+            headers["Content-Length"] = str(int(duration * bytes_per_sec))
         return pcm_format, out_format, headers
 
     async def _serve_audio_stream(
@@ -858,6 +874,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         request: web.Request,
         player: MSXPlayer,
         media: Any,
+        duration: int = 0,
     ) -> web.StreamResponse:
         """Unified method to stream audio from MA to MSX via ffmpeg.
 
@@ -868,6 +885,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         player_id = player.player_id
         pcm_format, out_format, headers = self._build_audio_params(
             player.output_format,
+            duration,
         )
         audio_source = self.provider.mass.streams.get_stream(
             media,
@@ -876,9 +894,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         )
 
         logger.debug(
-            "Serving audio %s: format=%s",
+            "Serving audio %s: format=%s, duration=%s, Content-Length=%s",
             player_id,
             player.output_format,
+            duration,
+            headers.get("Content-Length", "NOT SET"),
         )
 
         response = web.StreamResponse(status=200, headers=headers)
@@ -964,7 +984,17 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 producer_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await producer_task
-            logger.debug("Stream %s finished: wrote %d bytes", player_id, total_bytes)
+            content_length = headers.get("Content-Length")
+            if content_length:
+                logger.debug(
+                    "Stream %s: wrote %d bytes, Content-Length=%s, diff=%d",
+                    player_id,
+                    total_bytes,
+                    content_length,
+                    total_bytes - int(content_length),
+                )
+            else:
+                logger.debug("Stream %s finished: wrote %d bytes", player_id, total_bytes)
 
     async def _run_stream_task(
         self,
@@ -1204,10 +1234,22 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         if not media:
             return web.Response(status=404, text="No active stream")
 
+        duration = media.duration or 0
+        if media.source_id and media.queue_item_id:
+            queue_item = self.provider.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
+            if queue_item:
+                if queue_item.media_item:
+                    duration = getattr(queue_item.media_item, "duration", None) or duration
+                if not duration and queue_item.duration:
+                    duration = queue_item.duration
+
         return await self._serve_audio_stream(
             request,
             player,
             media,
+            duration=duration,
         )
 
     # --- Library API Routes ---
