@@ -75,7 +75,7 @@ If a native provider is later installed (e.g., Denon integration), the Universal
 
 ### Player ID Format
 
-Universal players use the format: `universal_{device_key}`
+Universal players use the format: `up{device_key}`
 
 Where `device_key` is typically the normalized MAC address.
 
