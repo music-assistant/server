@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import types
 from typing import Any, cast
 
 import aiohttp
@@ -24,32 +23,17 @@ class PocketCastsClient:
 
     BASE_URL = "https://api.pocketcasts.com"
 
-    def __init__(self) -> None:
-        """Initialize the client."""
+    def __init__(self, session: aiohttp.ClientSession) -> None:
+        """Initialize the client.
+
+        :param session: The aiohttp session to use for requests (typically mass.http_session).
+        """
         self.token: str | None = None
         self.user_uuid: str | None = None
-        self.session: aiohttp.ClientSession | None = None
-
-    async def __aenter__(self) -> PocketCastsClient:
-        """Async context manager entry."""
-        self.session = aiohttp.ClientSession()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ) -> None:
-        """Async context manager exit."""
-        if self.session:
-            await self.session.close()
+        self.session = session
 
     async def login(self, email: str, password: str) -> bool:
         """Login and get JWT token."""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
         try:
             LOGGER.info("Attempting login to Pocket Casts API")
 
@@ -83,9 +67,6 @@ class PocketCastsClient:
 
     async def get_subscribed_podcasts(self) -> list[dict[str, Any]]:
         """Get user's subscribed podcasts."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching subscribed podcasts")
 
         async with self.session.post(
@@ -104,9 +85,6 @@ class PocketCastsClient:
 
     async def get_podcast_episodes(self, podcast_uuid: str) -> list[dict[str, Any]]:
         """Get episodes for a specific podcast via API redirect."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching episodes via API redirect for podcast %s", podcast_uuid)
 
         async with self.session.get(
@@ -127,9 +105,6 @@ class PocketCastsClient:
 
     async def get_in_progress_episodes(self) -> list[dict[str, Any]]:
         """Get episodes currently in progress."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching in-progress episodes")
 
         async with self.session.post(
@@ -151,9 +126,6 @@ class PocketCastsClient:
 
         Note: Returns dict with episode UUIDs as keys, unlike other endpoints that return lists.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching Up Next episodes")
 
         async with self.session.post(
@@ -172,9 +144,6 @@ class PocketCastsClient:
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
         """Get new release episodes from subscriptions."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching new releases")
 
         async with self.session.post(
@@ -193,9 +162,6 @@ class PocketCastsClient:
 
     async def get_starred_episodes(self) -> list[dict[str, Any]]:
         """Get starred/favorited episodes."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching starred episodes")
 
         async with self.session.post(
@@ -214,9 +180,6 @@ class PocketCastsClient:
 
     async def get_history(self) -> list[dict[str, Any]]:
         """Get listening history episodes."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching history")
 
         async with self.session.post(
@@ -242,9 +205,6 @@ class PocketCastsClient:
         :param episode_uuid: The episode UUID.
         :param position_seconds: Current playback position in seconds.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug(
                 "Updating progress for episode %s to %d seconds", episode_uuid, position_seconds
@@ -277,9 +237,6 @@ class PocketCastsClient:
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Marking episode %s as played", episode_uuid)
 
@@ -309,9 +266,6 @@ class PocketCastsClient:
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Marking episode %s as unplayed", episode_uuid)
 
@@ -345,9 +299,6 @@ class PocketCastsClient:
         :param episode_uuid: The episode UUID.
         :param archive: True to archive, False to unarchive.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Setting archive=%s for episode %s", archive, episode_uuid)
 
@@ -375,9 +326,6 @@ class PocketCastsClient:
 
         :param episode_uuid: The episode UUID to remove.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Removing episode %s from Up Next", episode_uuid)
 
@@ -418,9 +366,6 @@ class PocketCastsClient:
         :param url: The episode audio URL.
         :param published: The episode publish date (ISO format), optional.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Adding episode %s to Up Next (play now)", episode_uuid)
 
@@ -463,9 +408,6 @@ class PocketCastsClient:
 
         :param episode_uuid: The episode UUID.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching episode details for %s", episode_uuid)
 
         async with self.session.post(
@@ -493,9 +435,6 @@ class PocketCastsClient:
 
     async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
         """Search for podcasts."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Searching for podcasts: %s", query)
 
         async with self.session.post(
@@ -514,9 +453,6 @@ class PocketCastsClient:
 
     async def get_podcast_details(self, podcast_uuid: str) -> dict[str, Any] | None:
         """Get details for any podcast by UUID (not just subscribed)."""
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         LOGGER.debug("Fetching podcast details for %s", podcast_uuid)
 
         endpoints: list[tuple[str, dict[str, str]]] = [
@@ -547,9 +483,6 @@ class PocketCastsClient:
 
         :param podcast_uuid: The UUID of the podcast to subscribe to.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Subscribing to podcast %s", podcast_uuid)
 
@@ -581,9 +514,6 @@ class PocketCastsClient:
 
         :param podcast_uuid: The UUID of the podcast to unsubscribe from.
         """
-        if not self.session:
-            raise PocketCastsAPIError("Session not initialized")
-
         try:
             LOGGER.debug("Unsubscribing from podcast %s", podcast_uuid)
 

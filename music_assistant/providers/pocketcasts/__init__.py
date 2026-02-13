@@ -198,7 +198,7 @@ class PocketCastsProvider(MusicProvider):
 
         try:
             LOGGER.info("Initializing Pocket Casts provider")
-            self._client = PocketCastsClient()
+            self._client = PocketCastsClient(self.mass.http_session)
             self._duration_cache: dict[str, int] = {}
             await self._client.login(str(email), str(password))
 
@@ -215,8 +215,6 @@ class PocketCastsProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        if self._client and self._client.session:
-            await self._client.session.close()
 
     def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
         """Convert API podcast data to Podcast object."""
@@ -410,13 +408,13 @@ class PocketCastsProvider(MusicProvider):
         # Not in library - fetch from podcast-api which redirects to static JSON
         LOGGER.debug("Podcast not in library, fetching from API: %s", prov_podcast_id)
 
-        if not self._client or not self._client.session:
+        if not self._client:
             msg = f"Podcast {prov_podcast_id} not found in library and client not available"
             raise MediaNotFoundError(msg)
 
         try:
             # This endpoint returns a 302 redirect to the static JSON with timestamp
-            async with self._client.session.get(
+            async with self.mass.http_session.get(
                 f"https://podcast-api.pocketcasts.com/podcast/full/{prov_podcast_id}"
             ) as response:
                 if response.status == 200:
@@ -895,9 +893,9 @@ class PocketCastsProvider(MusicProvider):
 
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
 
-        # Normalize position: treat None as 0
+        # Normalize position: MA's mark_item_played allows seconds_played=None
         if position is None:
-            position = 0
+            position = 0  # type: ignore[unreachable]
 
         try:
             # Case 1: User explicitly marked as unplayed (not during active playback)
