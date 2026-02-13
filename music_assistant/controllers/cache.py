@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 7
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
@@ -281,12 +281,11 @@ class CacheController(CoreController):
                 prev_version,
                 DB_SCHEMA_VERSION,
             )
-
-            if prev_version < DB_SCHEMA_VERSION:
-                # for now just keep it simple and just recreate the table(s)
+            try:
+                await self.__migrate_database(prev_version)
+            except Exception as err:
+                LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
-
-                # recreate missing table(s)
                 await self.__create_database_tables()
 
         # store current schema version
@@ -360,6 +359,14 @@ class CacheController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_provider_idx "
             f"ON {DB_TABLE_CACHE}(key,provider);"
         )
+        await self.database.commit()
+
+    async def __migrate_database(self, prev_version: int) -> None:
+        """Perform a database migration."""
+        assert self.database is not None
+        if prev_version <= 6:
+            # clear spotify cache entries to fix bloated cache from playlist pagination bug
+            await self.database.delete(DB_TABLE_CACHE, query="WHERE provider LIKE '%spotify%'")
         await self.database.commit()
 
     def __schedule_cleanup_task(self) -> None:

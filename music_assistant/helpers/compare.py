@@ -556,12 +556,12 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if " & " in str1_lower and " and " in str2_lower:
         str2 = str2_lower.replace(" and ", " & ")
     elif " and " in str1_lower and " & " in str2:
-        str2 = str2.replace(" & ", " and ")
+        str2 = str2_lower.replace(" & ", " and ")
     if create_safe_string(str1) == create_safe_string(str2):
         return True
     # last resort: use difflib to compare strings
     required_accuracy = 0.9 if (len(str1) + len(str2)) > 18 else 0.8
-    return SequenceMatcher(a=str1_lower, b=str2).ratio() > required_accuracy
+    return SequenceMatcher(a=str1_lower, b=str2_lower).ratio() > required_accuracy
 
 
 def compare_version(base_version: str, compare_version: str) -> bool:
