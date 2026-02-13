@@ -55,7 +55,7 @@ py-opensonic==8.1.1
 pyblu==2.0.5
 pycares==4.11.0
 PyChromecast==14.0.9
-pycryptodome==3.21.0
+pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.0.2
