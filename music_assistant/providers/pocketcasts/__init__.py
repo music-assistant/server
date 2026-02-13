@@ -674,7 +674,6 @@ class PocketCastsProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamable URL and details for the given media item."""
-        # Parse composite ID
         if ":" not in item_id:
             raise MediaNotFoundError(f"Invalid episode ID format: {item_id}")
 
@@ -682,39 +681,36 @@ class PocketCastsProvider(MusicProvider):
 
         if not self._client:
             raise MediaNotFoundError("Client not initialized")
-        # Get episode data
-        episodes = await self._client.get_podcast_episodes(podcast_uuid)
-        for episode_data in episodes:
-            if episode_data.get("uuid") == episode_uuid:
-                url = episode_data.get("url", "")
-                if not url:
-                    raise MediaNotFoundError(f"No URL found for episode {item_id}")
 
-                # Add to Up Next (play now position) when starting playback
-                await self._client.play_now(
-                    episode_uuid=episode_uuid,
-                    podcast_uuid=podcast_uuid,
-                    title=episode_data.get("title", ""),
-                    url=url,
-                    published=episode_data.get("published"),
-                )
+        episode_data = await self._client.get_episode_details(episode_uuid)
+        if not episode_data:
+            raise MediaNotFoundError(f"Episode {item_id} not found")
 
-                return StreamDetails(
-                    item_id=item_id,
-                    provider=self.instance_id,
-                    audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(
-                            episode_data.get("file_type", "audio/mpeg")
-                        ),
-                    ),
-                    media_type=MediaType.PODCAST_EPISODE,
-                    stream_type=StreamType.HTTP,
-                    path=url,
-                    can_seek=True,
-                    allow_seek=True,
-                )
+        url = episode_data.get("url", "")
+        if not url:
+            raise MediaNotFoundError(f"No URL found for episode {item_id}")
 
-        raise MediaNotFoundError(f"Episode {item_id} not found")
+        # Add to Up Next (play now position) when starting playback
+        await self._client.play_now(
+            episode_uuid=episode_uuid,
+            podcast_uuid=podcast_uuid,
+            title=episode_data.get("title", ""),
+            url=url,
+            published=episode_data.get("published"),
+        )
+
+        return StreamDetails(
+            item_id=item_id,
+            provider=self.instance_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(episode_data.get("fileType", "audio/mpeg")),
+            ),
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.HTTP,
+            path=url,
+            can_seek=True,
+            allow_seek=True,
+        )
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
