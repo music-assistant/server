@@ -37,16 +37,16 @@ class WiimProvider(PlayerProvider):
 
         discovered_devices = await discover_devices()
 
-        manual_ip_config: list[str] = cast(
+        device_ip_addresses: list[str] = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
 
         # Remove duplicates (by IP)
         for device in discovered_devices:
-            if device.ip not in manual_ip_config:
-                manual_ip_config.append(device.ip)
+            if device.ip not in device_ip_addresses:
+                device_ip_addresses.append(device.ip)
 
-        for ip_address in manual_ip_config:
+        for ip_address in device_ip_addresses:
             stripped_ip_address = ip_address.strip()
 
             client = WiiMClient(stripped_ip_address, session=self.mass.http_session)
