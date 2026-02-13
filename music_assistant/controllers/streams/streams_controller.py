@@ -77,12 +77,7 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered, use_buffer
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import (
-    divide_chunks,
-    get_ip_addresses,
-    get_total_system_memory,
-    select_free_port,
-)
+from music_assistant.helpers.util import divide_chunks, get_ip_addresses, get_total_system_memory
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -111,6 +106,7 @@ CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
+DEFAULT_PORT: Final[int] = 8097
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -184,8 +180,7 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
-        default_port = await select_free_port(8097, 9200)
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
                 key=CONF_ALLOW_BUFFER,
@@ -265,7 +260,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=default_port,
+                default_value=DEFAULT_PORT,
                 label="TCP Port",
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
@@ -305,7 +300,7 @@ class StreamsController(CoreController):
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
-        self.publish_port = config.get_value(CONF_BIND_PORT)
+        self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
