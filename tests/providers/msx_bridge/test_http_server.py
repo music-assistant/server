@@ -669,7 +669,7 @@ async def test_msx_audio_from_playlist_skips_ws(
 async def test_msx_audio_from_playlist_queue_driven_skips_play_media(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
-    """Audio endpoint with from_playlist=1 + _playing_from_queue should NOT call play_media."""
+    """Audio endpoint: _playing_from_queue + matching URI should NOT call play_media."""
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -680,15 +680,23 @@ async def test_msx_audio_from_playlist_queue_driven_skips_play_media(
         player._skip_ws_notify = False
         player._playing_from_queue = True
         media = PlayerMedia(
-            uri="library://track/1",
+            uri="http://ma-stream/123",
             title="Track 1",
             artist="Artist",
             album=None,
             image_url=None,
             duration=180,
+            source_id="msx_test",
+            queue_item_id="qi_1",
         )
         player.current_media = media
         mass_mock.players.get.return_value = player
+
+        # Queue item whose media_item.uri matches the requested track URI
+        queue_item = Mock()
+        queue_item.media_item = Mock()
+        queue_item.media_item.uri = "library://track/1"
+        mass_mock.player_queues.get_item = Mock(return_value=queue_item)
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -703,6 +711,56 @@ async def test_msx_audio_from_playlist_queue_driven_skips_play_media(
 
         # play_media should NOT have been called — MA already set current_media
         mass_mock.player_queues.play_media.assert_not_awaited()
+
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_from_playlist_queue_driven_uri_mismatch_calls_play_media(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Audio endpoint: _playing_from_queue but URI mismatch (auto-advance) calls play_media."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        player = MagicMock(spec=MSXPlayer)
+        player.player_id = "msx_test"
+        player.output_format = "mp3"
+        player._skip_ws_notify = False
+        player._playing_from_queue = True
+        media = PlayerMedia(
+            uri="http://ma-stream/123",
+            title="Track 1",
+            artist="Artist",
+            album=None,
+            image_url=None,
+            duration=180,
+            source_id="msx_test",
+            queue_item_id="qi_1",
+        )
+        player.current_media = media
+        mass_mock.players.get.return_value = player
+
+        # Queue item URI is track/1 but request asks for track/2 (MSX auto-advanced)
+        queue_item = Mock()
+        queue_item.media_item = Mock()
+        queue_item.media_item.uri = "library://track/1"
+        mass_mock.player_queues.get_item = Mock(return_value=queue_item)
+
+        mass_mock.streams = Mock()
+        mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+
+        chunks = [b"encoded-chunk-1"]
+        with patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_async_iter(chunks),
+        ):
+            resp = await client.get("/msx/audio/msx_test?uri=library://track/2&from_playlist=1")
+            assert resp.status == 200
+
+        # play_media SHOULD have been called — URI mismatch, MSX auto-advanced
+        mass_mock.player_queues.play_media.assert_awaited_once_with("msx_test", "library://track/2")
 
     finally:
         await client.close()

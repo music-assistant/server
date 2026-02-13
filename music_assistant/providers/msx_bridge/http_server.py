@@ -802,10 +802,15 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         # When MA is driving the queue (next/prev from MA UI), current_media is
         # already set by player.play_media() before the WS goto_index reaches MSX.
         # Re-enqueuing would recreate the queue from the track URI, destroying it.
-        if from_playlist and player._playing_from_queue:
+        # We verify by checking that current_media's queue item URI matches the
+        # requested track URI — if not, MSX auto-advanced and we must re-enqueue.
+        if (
+            from_playlist
+            and player._playing_from_queue
+            and self._current_media_matches_uri(player, uri)
+        ):
+            logger.debug("Queue-driven: using current_media for %s", uri)
             media = player.current_media
-            if not media:
-                media = await player.wait_for_media(timeout=10.0)
         else:
             # Suppress WS broadcast when called from MSX playlist to avoid conflicts
             if from_playlist:
@@ -1521,6 +1526,16 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         player_id, device_param = self._get_player_id_and_device_param(request)
         player = await self.provider.get_or_register_player(player_id)
         return player_id, device_param, player
+
+    def _current_media_matches_uri(self, player: MSXPlayer, track_uri: str) -> bool:
+        """Check if player's current_media corresponds to the requested track URI."""
+        media = player.current_media
+        if not media or not media.source_id or not media.queue_item_id:
+            return False
+        queue_item = self.provider.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        if queue_item and queue_item.media_item:
+            return getattr(queue_item.media_item, "uri", None) == track_uri
+        return False
 
     def _format_track(self, track: Any) -> dict[str, Any]:
         """Format a track object for the API response."""
