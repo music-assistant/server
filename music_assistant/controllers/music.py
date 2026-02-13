@@ -898,7 +898,9 @@ class MusicController(CoreController):
             )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
-            # we optimistically set in library to True to prevent items from disappearing
+            # we optimistically set in library to True to prevent items 
+            # from disappearing when the provider doesn't support library edit
+            # or 2-way sync is disabled.
             prov_mapping.in_library = True
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider.library_edit_supported(full_item.media_type):
