@@ -2,6 +2,7 @@
   "type": "player",
   "domain": "wiim",
   "name": "WiiM",
+  "stage": "beta",
   "description": "Stream music to WiiM devices.",
   "codeowners": ["@davidanthoff"],
   "requirements": ["pywiim==2.1.80", "async-upnp-client"],
