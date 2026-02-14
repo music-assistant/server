@@ -78,7 +78,7 @@ class WiimPlayer(Player):
         for source in self.wiim_player.source_catalog:
             self._attr_source_list.append(
                 PlayerSource(
-                    id=source.get("name", ""),
+                    id=source.get("id", ""),
                     name=source.get("name", ""),
                     passive=not source.get("selectable", False),
                     can_play_pause=source.get("supports_pause", False),
@@ -203,7 +203,7 @@ class WiimPlayer(Player):
                 self._attr_active_source = self.player_id
             else:
                 self._attr_active_source = (
-                    self.wiim_player.source.lower() if self.wiim_player.source else ""
+                    self.wiim_player.source if self.wiim_player.source else ""
                 )
                 self.set_current_media(
                     uri=self.wiim_player.media_content_id or "",
