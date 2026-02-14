@@ -259,7 +259,7 @@ class AirPlayPlayer(Player):
         return int(flags, 16)
 
     def _requires_pairing(self) -> bool:
-        """Check if this device requires pairing (Apple TV or macOS).
+        """Check if this device requires pairing.
 
         Adapted from pyatv.protocols.airplay.utils.get_pairing_requirement.
         """
