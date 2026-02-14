@@ -15,9 +15,27 @@
     var SEARCH_DELAY = 400;
 
     // --- Device ID ---
+    function generateUUID() {
+        // Fallback for non-secure contexts where crypto.randomUUID is unavailable
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+        // Fallback using crypto.getRandomValues
+        if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+            return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, function(c) {
+                return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);
+            });
+        }
+        // Last resort: Math.random (less secure but works everywhere)
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    }
+
     var deviceId = localStorage.getItem(DEVICE_KEY);
     if (!deviceId) {
-        deviceId = crypto.randomUUID();
+        deviceId = generateUUID();
         localStorage.setItem(DEVICE_KEY, deviceId);
     }
     var deviceParam = 'device_id=' + encodeURIComponent(deviceId) + '&source=web';
