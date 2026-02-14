@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import soxr
 import torch
-import torchaudio
 from beat_this.inference import Postprocessor, Spect2Frames
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
@@ -45,7 +45,6 @@ class SmartFadesData:
     input_audio_format: AudioFormat
     block_samples: int
     features: AdvancedBeatFeatureExtractor
-    resampler: torchaudio.transforms.Resample | None
     pcm_buffer: list[np.ndarray] = field(default_factory=list)
     pcm_samples: int = 0
     total_pcm_samples: int = 0
@@ -89,13 +88,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """
         block_seconds = 10.0
 
-        resampler: torchaudio.transforms.Resample | None = None
-        if audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=audio_format.sample_rate,
-                new_freq=ANALYSIS_SAMPLE_RATE,
-            ).to(self._device)
-
         self._data[session_id] = SmartFadesData(
             item_id=stream_details.item_id,
             provider=stream_details.provider,
@@ -105,7 +97,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 sample_rate=ANALYSIS_SAMPLE_RATE,
                 device=self._device,
             ),
-            resampler=resampler,
         )
         self.logger.debug("Started beat tracking session %s", session_id)
 
@@ -228,13 +219,10 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         return audio.numpy()
 
-    def _resample_block_sync(self, data: SmartFadesData, pcm: np.ndarray) -> np.ndarray:
-        """Resample a full audio block to analysis sample rate. Runs synchronously."""
-        assert data.resampler is not None
-        audio = torch.from_numpy(pcm).to(self._device)
-        with torch.no_grad():
-            resampled: torch.Tensor = data.resampler(audio)
-        return resampled.cpu().numpy()
+    @staticmethod
+    def _resample_block_sync(pcm: np.ndarray, orig_sr: int) -> np.ndarray:
+        """Resample a full audio block to analysis sample rate using soxr. Runs synchronously."""
+        return soxr.resample(pcm, in_rate=orig_sr, out_rate=ANALYSIS_SAMPLE_RATE)
 
     async def _process_block(self, data: SmartFadesData) -> None:
         """Resample accumulated PCM buffer and extract features.
@@ -246,8 +234,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         data.pcm_buffer.clear()
         data.pcm_samples = 0
 
-        if data.resampler is not None:
-            pcm_22k = await asyncio.to_thread(self._resample_block_sync, data, pcm_raw)
+        orig_sr = data.input_audio_format.sample_rate
+        if orig_sr != ANALYSIS_SAMPLE_RATE:
+            pcm_22k = await asyncio.to_thread(self._resample_block_sync, pcm_raw, orig_sr)
         else:
             pcm_22k = pcm_raw
 
