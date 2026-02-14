@@ -664,8 +664,8 @@ class AirPlayPlayer(Player):
             return
         if cur_address != new_address:
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
-            self.address = cur_address
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_address)
+            self.address = new_address
         self.update_state()
 
     def set_state_from_stream(
