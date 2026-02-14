@@ -120,6 +120,7 @@ CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
 
 
 # config default values
@@ -969,4 +970,17 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.PAUSE,
+}
+
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+    # list of providers that are setup by default when the server
+    # is first started (and they can be removed/disabled by the user if they want to)
+    # the boolean value indicates whether it needs to be discovered on mdns
+    ("airplay", False),
+    ("chromecast", False),
+    ("dlna", False),
+    ("sonos", True),
+    ("musiccast", True),
+    ("bluesound", True),
+    ("heos", True),
 }

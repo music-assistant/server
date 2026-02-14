@@ -984,7 +984,7 @@ class ConfigController:
         """
         Create builtin ProviderConfig.
 
-        This is meant as helper to create default configs for builtin providers.
+        This is meant as helper to create default configs for builtin/default providers.
         Called by the server initialization code which load all providers at startup.
         """
         for _ in await self.get_provider_configs(provider_domain=provider_domain):
