@@ -100,7 +100,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             item_id=stream_details.item_id,
             provider=stream_details.provider,
             input_audio_format=audio_format,
-            block_samples=int(block_seconds * ANALYSIS_SAMPLE_RATE),
+            block_samples=int(block_seconds * audio_format.sample_rate),
             features=AdvancedBeatFeatureExtractor(
                 sample_rate=ANALYSIS_SAMPLE_RATE,
                 device=self._device,
@@ -123,13 +123,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if not data:
             return
 
-        pcm_22k = await asyncio.to_thread(self._resample_chunk_sync, data, pcm_chunk)
-        if pcm_22k.size == 0:
+        pcm_mono = await asyncio.to_thread(self._decode_chunk_sync, data, pcm_chunk)
+        if pcm_mono.size == 0:
             return
 
-        data.pcm_buffer.append(pcm_22k)
-        data.pcm_samples += len(pcm_22k)
-        data.total_pcm_samples += len(pcm_22k)
+        data.pcm_buffer.append(pcm_mono)
+        data.pcm_samples += len(pcm_mono)
 
         if data.pcm_samples >= data.block_samples:
             await self._process_block(data)
@@ -205,8 +204,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.feature_blocks.clear()
             data.features.reset()
 
-    def _resample_chunk_sync(self, data: SmartFadesData, pcm_chunk: bytes) -> np.ndarray:
-        """Resample a PCM chunk to analysis format (22050Hz mono). Runs synchronously."""
+    @staticmethod
+    def _decode_chunk_sync(data: SmartFadesData, pcm_chunk: bytes) -> np.ndarray:
+        """Decode a PCM chunk to mono float32 numpy array. Runs synchronously."""
         content_type = data.input_audio_format.content_type
 
         if content_type == ContentType.PCM_F32LE:
@@ -226,22 +226,35 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if data.input_audio_format.channels == 2:
             audio = audio.reshape(-1, 2).mean(dim=1)
 
-        if data.resampler is not None:
-            audio = audio.to(self._device)
-            with torch.no_grad():
-                audio = data.resampler(audio)
-            audio = audio.cpu()
-
         return audio.numpy()
 
+    def _resample_block_sync(self, data: SmartFadesData, pcm: np.ndarray) -> np.ndarray:
+        """Resample a full audio block to analysis sample rate. Runs synchronously."""
+        assert data.resampler is not None
+        audio = torch.from_numpy(pcm).to(self._device)
+        with torch.no_grad():
+            resampled: torch.Tensor = data.resampler(audio)
+        return resampled.cpu().numpy()
+
     async def _process_block(self, data: SmartFadesData) -> None:
-        """Process accumulated PCM buffer into features."""
-        pcm = np.concatenate(data.pcm_buffer)
+        """Resample accumulated PCM buffer and extract features.
+
+        Resamples the full block at once to avoid edge effects from
+        per-chunk resampling with a stateless filter.
+        """
+        pcm_raw = np.concatenate(data.pcm_buffer)
         data.pcm_buffer.clear()
         data.pcm_samples = 0
 
+        if data.resampler is not None:
+            pcm_22k = await asyncio.to_thread(self._resample_block_sync, data, pcm_raw)
+        else:
+            pcm_22k = pcm_raw
+
+        data.total_pcm_samples += len(pcm_22k)
+
         start_time = time.perf_counter()
-        feats = await data.features.process_pcm(pcm)
+        feats = await data.features.process_pcm(pcm_22k)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if feats.size:
