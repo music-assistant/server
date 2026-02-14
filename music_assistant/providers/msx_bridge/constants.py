@@ -8,6 +8,7 @@ CONF_PLAYER_IDLE_TIMEOUT = "player_idle_timeout"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
 CONF_ABORT_STREAM_FIRST = "abort_stream_first"
 CONF_ENABLE_GROUPING = "enable_player_grouping"
+CONF_GROUP_STREAM_MODE = "group_stream_mode"
 
 DEFAULT_HTTP_PORT = 8099
 DEFAULT_OUTPUT_FORMAT = "mp3"
@@ -15,6 +16,12 @@ DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
 DEFAULT_ABORT_STREAM_FIRST = False
 DEFAULT_ENABLE_GROUPING = True
+
+# Group stream modes
+GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream (default)
+GROUP_STREAM_MODE_SHARED = "shared"  # Shared buffer: one ffmpeg, multiple readers
+GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect to MA Streamserver
+DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_INDEPENDENT
 
 # Player ID prefix for dynamically registered players
 MSX_PLAYER_ID_PREFIX = "msx_"

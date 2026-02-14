@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
+from collections import deque
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 from music_assistant.models.player_provider import PlayerProvider
@@ -12,18 +15,214 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     CONF_ABORT_STREAM_FIRST,
     CONF_ENABLE_GROUPING,
+    CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     DEFAULT_ABORT_STREAM_FIRST,
     DEFAULT_ENABLE_GROUPING,
+    DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
+    GROUP_STREAM_MODE_REDIRECT,
+    GROUP_STREAM_MODE_SHARED,
     MSX_PLAYER_ID_PREFIX,
 )
 from .http_server import MSXHTTPServer
 from .player import MSXPlayer
+
+logger = logging.getLogger(__name__)
+
+
+class SharedGroupStream:
+    """Shared audio stream for a player group.
+
+    One ffmpeg process produces audio, multiple TV clients read from a shared buffer.
+    Late joiners receive buffered data first (catch-up), then live chunks.
+    """
+
+    def __init__(self, group_id: str, media_uri: str) -> None:
+        """Initialize shared stream for a group."""
+        self.group_id = group_id
+        self.media_uri = media_uri
+        self.buffer: deque[bytes] = deque(maxlen=512)  # ~15s @ 40KB/s MP3
+        self.subscribers: dict[str, asyncio.Queue[bytes | None]] = {}
+        self.producer_task: asyncio.Task[None] | None = None
+        self.started = asyncio.Event()
+        self.finished = False
+        self._lock = asyncio.Lock()
+        self._total_bytes = 0
+        self._start_time: float = 0
+
+        logger.info(
+            "[SharedStream:%s] Created for media_uri=%s",
+            self.group_id,
+            self.media_uri[:80] if self.media_uri else "N/A",
+        )
+
+    async def start(
+        self,
+        audio_chunks: AsyncIterator[bytes],
+    ) -> None:
+        """Start producing audio from the given chunk iterator."""
+        logger.info(
+            "[SharedStream:%s] Starting producer task",
+            self.group_id,
+        )
+        self._start_time = time.time()
+        self.producer_task = asyncio.create_task(self._produce(audio_chunks))
+
+    async def _produce(self, audio_chunks: AsyncIterator[bytes]) -> None:
+        """Read from ffmpeg and distribute to all subscribers."""
+        try:
+            chunk_count = 0
+            async for chunk in audio_chunks:
+                chunk_count += 1
+                self._total_bytes += len(chunk)
+                self.buffer.append(chunk)
+
+                if not self.started.is_set():
+                    # Signal that stream has started (first chunk received)
+                    self.started.set()
+                    logger.debug(
+                        "[SharedStream:%s] First chunk received, signaling started",
+                        self.group_id,
+                    )
+
+                # Distribute to all active subscribers
+                async with self._lock:
+                    for player_id, q in list(self.subscribers.items()):
+                        try:
+                            q.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            logger.warning(
+                                "[SharedStream:%s] Queue full for subscriber %s, dropping chunk %d",
+                                self.group_id,
+                                player_id,
+                                chunk_count,
+                            )
+
+            logger.info(
+                "[SharedStream:%s] Producer finished: %d chunks, %d bytes, %.1fs",
+                self.group_id,
+                chunk_count,
+                self._total_bytes,
+                time.time() - self._start_time,
+            )
+        except asyncio.CancelledError:
+            logger.debug("[SharedStream:%s] Producer cancelled", self.group_id)
+            raise
+        except Exception:
+            logger.exception("[SharedStream:%s] Producer error", self.group_id)
+        finally:
+            self.finished = True
+            # Signal EOF to all subscribers
+            async with self._lock:
+                for player_id, q in list(self.subscribers.items()):
+                    with contextlib.suppress(asyncio.QueueFull):
+                        q.put_nowait(None)
+                    logger.debug(
+                        "[SharedStream:%s] Sent EOF to subscriber %s",
+                        self.group_id,
+                        player_id,
+                    )
+
+    async def subscribe(self, player_id: str) -> AsyncIterator[bytes]:
+        """Subscribe to stream, get buffered + live chunks.
+
+        Yields:
+            Audio chunks (bytes). First yields catch-up buffer, then live chunks.
+        """
+        # Large queue to handle slow readers (TV with weak WiFi)
+        q: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
+
+        async with self._lock:
+            self.subscribers[player_id] = q
+            subscriber_count = len(self.subscribers)
+
+        logger.info(
+            "[SharedStream:%s] Subscriber %s joined (total: %d)",
+            self.group_id,
+            player_id,
+            subscriber_count,
+        )
+
+        bytes_sent = 0
+        chunks_sent = 0
+
+        try:
+            # Wait for stream to start (with timeout)
+            try:
+                await asyncio.wait_for(self.started.wait(), timeout=15.0)
+            except TimeoutError:
+                logger.error(
+                    "[SharedStream:%s] Timeout waiting for stream start for %s",
+                    self.group_id,
+                    player_id,
+                )
+                return
+
+            # Phase 1: Catch-up from buffer (for late joiners)
+            buffer_snapshot = list(self.buffer)
+            buffer_bytes = sum(len(c) for c in buffer_snapshot)
+            logger.debug(
+                "[SharedStream:%s] Sending %d catch-up chunks (%d bytes) to %s",
+                self.group_id,
+                len(buffer_snapshot),
+                buffer_bytes,
+                player_id,
+            )
+            for chunk in buffer_snapshot:
+                yield chunk
+                bytes_sent += len(chunk)
+                chunks_sent += 1
+
+            # Phase 2: Live stream
+            while True:
+                live_chunk: bytes | None = await q.get()
+                if live_chunk is None:
+                    logger.debug(
+                        "[SharedStream:%s] EOF received for subscriber %s",
+                        self.group_id,
+                        player_id,
+                    )
+                    break
+                yield live_chunk
+                bytes_sent += len(live_chunk)
+                chunks_sent += 1
+
+        finally:
+            async with self._lock:
+                self.subscribers.pop(player_id, None)
+                remaining = len(self.subscribers)
+
+            logger.info(
+                "[SharedStream:%s] Subscriber %s left after %d chunks, %d bytes (remaining: %d)",
+                self.group_id,
+                player_id,
+                chunks_sent,
+                bytes_sent,
+                remaining,
+            )
+
+    async def stop(self) -> None:
+        """Stop the stream and clean up."""
+        logger.info(
+            "[SharedStream:%s] Stopping (total: %d bytes)",
+            self.group_id,
+            self._total_bytes,
+        )
+        if self.producer_task and not self.producer_task.done():
+            self.producer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.producer_task
+        self.finished = True
+
+    @property
+    def subscriber_count(self) -> int:
+        """Return current subscriber count."""
+        return len(self.subscribers)
 
 
 class MSXBridgeProvider(PlayerProvider):
@@ -31,16 +230,19 @@ class MSXBridgeProvider(PlayerProvider):
 
     http_server: MSXHTTPServer | None = None
     grouping_enabled: bool = True
+    group_stream_mode: str = DEFAULT_GROUP_STREAM_MODE
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
+    _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
         self._player_last_activity = {}
         self._pending_unregisters = {}
+        self._shared_streams = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""
@@ -48,9 +250,17 @@ class MSXBridgeProvider(PlayerProvider):
         self.grouping_enabled = bool(
             self.config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING)
         )
+        self.group_stream_mode = cast(
+            "str",
+            self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE),
+        )
         self.http_server = MSXHTTPServer(self, port)
         await self.http_server.start()
-        self.logger.info("MSX Bridge provider initialized, HTTP server on port %s", port)
+        self.logger.info(
+            "MSX Bridge provider initialized, HTTP server on port %s, group_stream_mode=%s",
+            port,
+            self.group_stream_mode,
+        )
 
     async def loaded_in_mass(self) -> None:
         """Start idle timeout task after provider is loaded."""
@@ -65,6 +275,10 @@ class MSXBridgeProvider(PlayerProvider):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._timeout_task
             self._timeout_task = None
+
+        # Cleanup shared streams
+        await self.cleanup_shared_streams()
+
         if self.http_server:
             await self.http_server.stop()
         for player in list(self.players):
@@ -125,7 +339,9 @@ class MSXBridgeProvider(PlayerProvider):
         self.logger.info("Registered MSX player: %s (%s)", name, player_id)
         return player
 
-    def _player_display_name_from_id(self, player_id: str, prefix_label: str = "MSX TV") -> str:
+    def _player_display_name_from_id(
+        self, player_id: str, prefix_label: str = "MSX TV", remote_ip: str | None = None
+    ) -> str:
         """Build a unique display name from player_id for the MA UI."""
         prefix = MSX_PLAYER_ID_PREFIX
         suffix = player_id.removeprefix(prefix)
@@ -134,6 +350,20 @@ class MSXBridgeProvider(PlayerProvider):
         # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
         if "_" in suffix and all(p.isdigit() for p in suffix.replace("_", " ").split()):
             return f"{prefix_label} ({suffix.replace('_', '.')})"
+        # UUID-based: msx_msx_bc93ce1d_491d_4d95_9430_2fbeabb5ce1b → "MSX TV (bc93)"
+        # Show only first 4 chars of UUID for readability, plus IP if available
+        if suffix.startswith("msx_") and len(suffix) > 12:
+            uuid_part = suffix[4:8]  # First 4 chars after "msx_"
+            if remote_ip:
+                return f"{prefix_label} ({uuid_part}) [{remote_ip}]"
+            return f"{prefix_label} ({uuid_part})"
+        # Fallback: truncate long suffixes
+        if len(suffix) > 12:
+            if remote_ip:
+                return f"{prefix_label} ({suffix[:8]}...) [{remote_ip}]"
+            return f"{prefix_label} ({suffix[:8]}...)"
+        if remote_ip:
+            return f"{prefix_label} ({suffix}) [{remote_ip}]"
         return f"{prefix_label} ({suffix})"
 
     def on_player_activity(self, player_id: str) -> None:
@@ -158,6 +388,18 @@ class MSXBridgeProvider(PlayerProvider):
     def on_player_enabled(self, player_id: str) -> None:
         """Handle player enabled: no-op, player already registered."""
         # Player was never unregistered (see on_player_disabled), so nothing to do.
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove (delete) a player from this provider.
+
+        Called when user chooses to remove the player from MA.
+        This fully unregisters the player. It will reappear if the TV reconnects.
+        """
+        if self.http_server:
+            self.http_server.broadcast_stop(player_id)
+            self.http_server.cancel_streams_for_player(player_id)
+        await self._handle_player_unregister(player_id)
+        self.logger.info("Player %s removed by user", player_id)
 
     def notify_play_started(
         self,
@@ -271,3 +513,159 @@ class MSXBridgeProvider(PlayerProvider):
                         timeout_minutes,
                     )
                     self.mass.create_task(self._handle_player_unregister(player.player_id))
+
+    # --- Group Stream Management ---
+
+    def is_shared_stream_mode(self) -> bool:
+        """Check if shared buffer stream mode is enabled."""
+        return self.group_stream_mode == GROUP_STREAM_MODE_SHARED
+
+    def is_redirect_stream_mode(self) -> bool:
+        """Check if MA redirect stream mode is enabled."""
+        return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
+
+    def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
+        """Get group ID if player is in a group (as leader or member).
+
+        Returns:
+            group_id if player is grouped, None if solo player.
+        """
+        # If player is synced to another (member), use leader's ID as group
+        if player.synced_to:
+            logger.debug(
+                "[GroupStream] Player %s is member of group %s",
+                player.player_id,
+                player.synced_to,
+            )
+            return player.synced_to
+
+        # If player has group members (is leader), use own ID as group
+        if player.group_members and len(player.group_members) > 1:
+            logger.debug(
+                "[GroupStream] Player %s is leader of group with %d members",
+                player.player_id,
+                len(player.group_members),
+            )
+            return player.player_id
+
+        # Solo player
+        return None
+
+    async def get_or_create_shared_stream(
+        self,
+        group_id: str,
+        media_uri: str,
+        audio_chunks: AsyncIterator[bytes],
+    ) -> SharedGroupStream:
+        """Get existing shared stream or create new one for the group.
+
+        Args:
+            group_id: ID of the group (leader's player_id)
+            media_uri: URI of the media being streamed
+            audio_chunks: Async iterator yielding encoded audio chunks
+
+        Returns:
+            SharedGroupStream instance
+        """
+        existing = self._shared_streams.get(group_id)
+
+        # Reuse existing if same media and not finished
+        if existing and not existing.finished and existing.media_uri == media_uri:
+            logger.info(
+                "[GroupStream] Reusing existing shared stream for group %s (subscribers: %d)",
+                group_id,
+                existing.subscriber_count,
+            )
+            return existing
+
+        # Clean up old stream if exists
+        if existing:
+            logger.info(
+                "[GroupStream] Replacing old shared stream for group %s (old_uri=%s, new_uri=%s)",
+                group_id,
+                existing.media_uri[:50] if existing.media_uri else "N/A",
+                media_uri[:50] if media_uri else "N/A",
+            )
+            await existing.stop()
+
+        # Create new shared stream
+        logger.info(
+            "[GroupStream] Creating new shared stream for group %s, uri=%s",
+            group_id,
+            media_uri[:80] if media_uri else "N/A",
+        )
+        stream = SharedGroupStream(group_id, media_uri)
+        await stream.start(audio_chunks)
+        self._shared_streams[group_id] = stream
+
+        return stream
+
+    def remove_shared_stream(self, group_id: str) -> None:
+        """Remove and cleanup shared stream for a group."""
+        if stream := self._shared_streams.pop(group_id, None):
+            logger.info("[GroupStream] Removed shared stream for group %s", group_id)
+            self.mass.create_task(stream.stop())
+
+    async def get_ma_stream_url(
+        self,
+        media: Any,
+        output_format: str = "mp3",
+    ) -> str | None:
+        """Get direct stream URL from MA Streamserver for redirect mode.
+
+        Args:
+            media: PlayerMedia with queue_item_id and source_id
+            output_format: Audio format (mp3, aac, flac)
+
+        Returns:
+            Direct URL to MA Streamserver, or None if unavailable
+        """
+        if not media:
+            logger.debug("[MARedirect] No media provided")
+            return None
+
+        queue_item_id = getattr(media, "queue_item_id", None)
+        source_id = getattr(media, "source_id", None)
+
+        if not queue_item_id or not source_id:
+            logger.debug(
+                "[MARedirect] Media missing queue_item_id=%s or source_id=%s",
+                queue_item_id,
+                source_id,
+            )
+            return None
+
+        try:
+            # Get queue to find session_id
+            queue = self.mass.player_queues.get(source_id)
+            if not queue:
+                logger.warning("[MARedirect] Queue not found for source_id=%s", source_id)
+                return None
+
+            # Build MA Streamserver URL
+            # Format: /api/streams/single/{queue_id}/queue/{queue_item_id}.{format}
+            base_url = getattr(self.mass.streams, "base_url", None)
+            if not base_url:
+                # Fallback: use webserver base_url
+                base_url = getattr(self.mass.webserver, "base_url", None)
+
+            stream_url = (
+                f"{base_url}/api/streams/single/{source_id}/queue/{queue_item_id}.{output_format}"
+            )
+
+            logger.info(
+                "[MARedirect] Generated MA stream URL: %s",
+                stream_url,
+            )
+            return stream_url
+
+        except Exception as err:
+            logger.warning("[MARedirect] Failed to get MA stream URL: %s", err, exc_info=True)
+            return None
+
+    async def cleanup_shared_streams(self) -> None:
+        """Cleanup all shared streams (called on unload)."""
+        for group_id, stream in list(self._shared_streams.items()):
+            logger.debug("[GroupStream] Cleaning up stream for group %s", group_id)
+            await stream.stop()
+        self._shared_streams.clear()

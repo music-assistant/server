@@ -141,7 +141,8 @@ class MSXHTTPServer:
         )
         self.app.router.add_get("/msx/playlist/tracks.json", self._handle_msx_tracks_playlist)
         self.app.router.add_get(
-            "/msx/playlist/recently-played.json", self._handle_msx_recently_played_playlist
+            "/msx/playlist/recently-played.json",
+            self._handle_msx_recently_played_playlist,
         )
         self.app.router.add_get("/msx/playlist/search.json", self._handle_msx_search_playlist)
 
@@ -203,7 +204,14 @@ class MSXHTTPServer:
         """Start the HTTP server."""
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self.port, reuse_address=True)
+        # reuse_address + reuse_port allow fast restart after reload
+        site = web.TCPSite(
+            self._runner,
+            "0.0.0.0",
+            self.port,
+            reuse_address=True,
+            reuse_port=True,
+        )
         await site.start()
         logger.info("MSX Bridge HTTP server started on port %s", self.port)
 
@@ -272,8 +280,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         # Version in URL forces MSX to refetch plugin after menu changes (avoids cache)
         start_config = {
             "name": "Music Assistant",
-            "version": "1.0.1",
-            "parameter": f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=3",
+            "version": "1.0.5",
+            "parameter": f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=7",
         }
         return web.json_response(start_config)
 
@@ -937,27 +945,197 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
     ) -> web.StreamResponse:
         """Unified method to stream audio from MA to MSX via ffmpeg.
 
+        Supports three modes based on provider configuration:
+        1. Independent (default): Each player gets its own ffmpeg stream
+        2. Shared Buffer: Group members share one ffmpeg process via SharedGroupStream
+        3. MA Redirect: 302 redirect to MA Streamserver (requires MA 2.6+)
+
         Pre-buffers audio data before sending HTTP headers so MSX receives
         the response and initial audio burst simultaneously, preventing
         stutter/restart from an empty initial buffer.
         """
         player_id = player.player_id
+
+        # --- Mode 1: MA Redirect ---
+        if self.provider.is_redirect_stream_mode():
+            redirect_url = await self.provider.get_ma_stream_url(media, player.output_format)
+            if redirect_url:
+                logger.info(
+                    "[StreamMode:redirect] Player %s -> MA Streamserver: %s",
+                    player_id,
+                    redirect_url,
+                )
+                raise web.HTTPFound(location=redirect_url)
+            # Fallback to independent mode if redirect fails
+            logger.warning(
+                "[StreamMode:redirect] Failed to get MA URL for %s, "
+                "falling back to independent mode",
+                player_id,
+            )
+
         pcm_format, out_format, headers = self._build_audio_params(
             player.output_format,
             duration,
         )
+
+        # --- Mode 2: Shared Buffer (for groups) ---
+        group_id = self.provider.get_group_id_for_player(player)
+        if group_id and self.provider.is_shared_stream_mode():
+            logger.info(
+                "[StreamMode:shared] Player %s in group %s, using shared stream",
+                player_id,
+                group_id,
+            )
+            return await self._serve_shared_stream(
+                request, player, media, group_id, pcm_format, out_format, headers
+            )
+
+        # --- Mode 3: Independent (default) ---
+        logger.debug(
+            "[StreamMode:independent] Serving audio %s: format=%s, duration=%s",
+            player_id,
+            player.output_format,
+            duration,
+        )
+
         audio_source = self.provider.mass.streams.get_stream(
             media,
             pcm_format,
             force_flow_mode=False,
         )
 
-        logger.debug(
-            "Serving audio %s: format=%s, duration=%s, Content-Length=%s",
+        response = web.StreamResponse(status=200, headers=headers)
+        stream_task: asyncio.Task[None] = asyncio.create_task(
+            self._stream_with_prebuffer(
+                request, response, player, headers, audio_source, pcm_format, out_format
+            )
+        )
+        transport = getattr(request, "transport", None)
+        await self._run_stream_task(player_id, stream_task, transport)
+
+        return response
+
+    async def _serve_shared_stream(
+        self,
+        request: web.Request,
+        player: MSXPlayer,
+        media: Any,
+        group_id: str,
+        pcm_format: AudioFormat,
+        out_format: AudioFormat,
+        headers: dict[str, str],
+    ) -> web.StreamResponse:
+        """Serve audio from a shared group stream.
+
+        Multiple players in a group read from the same SharedGroupStream,
+        which has a single ffmpeg producer.
+        """
+        player_id = player.player_id
+        media_uri = getattr(media, "uri", "") or str(media)
+
+        # Check if we need to create a new shared stream (leader creates it)
+        existing_stream = self.provider._shared_streams.get(group_id)
+        is_leader = player_id == group_id
+
+        if existing_stream and not existing_stream.finished:
+            # Reuse existing stream
+            logger.debug(
+                "[SharedStream] Player %s subscribing to existing stream for group %s",
+                player_id,
+                group_id,
+            )
+            shared_stream = existing_stream
+        elif is_leader:
+            # Leader creates the shared stream
+            logger.info(
+                "[SharedStream] Leader %s creating shared stream for group %s",
+                player_id,
+                group_id,
+            )
+            audio_source = self.provider.mass.streams.get_stream(
+                media,
+                pcm_format,
+                force_flow_mode=False,
+            )
+            # Create ffmpeg chunk generator
+            audio_chunks = get_ffmpeg_stream(
+                audio_input=audio_source,
+                input_format=pcm_format,
+                output_format=out_format,
+            )
+            shared_stream = await self.provider.get_or_create_shared_stream(
+                group_id, media_uri, audio_chunks
+            )
+        else:
+            # Member but no existing stream - wait briefly for leader
+            logger.info(
+                "[SharedStream] Member %s waiting for leader to create stream for group %s",
+                player_id,
+                group_id,
+            )
+            for _ in range(30):  # Wait up to 3 seconds
+                await asyncio.sleep(0.1)
+                existing_stream = self.provider._shared_streams.get(group_id)
+                if existing_stream and not existing_stream.finished:
+                    shared_stream = existing_stream
+                    break
+            else:
+                # Timeout - fallback to independent stream
+                logger.warning(
+                    "[SharedStream] Timeout waiting for leader stream, "
+                    "falling back to independent for %s",
+                    player_id,
+                )
+                return await self._serve_independent_stream(
+                    request, player, media, pcm_format, out_format, headers
+                )
+
+        # Subscribe to shared stream
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+
+        total_bytes = 0
+        try:
+            async for chunk in shared_stream.subscribe(player_id):
+                await response.write(chunk)
+                total_bytes += len(chunk)
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            logger.debug(
+                "[SharedStream] Client %s disconnected after %d bytes",
+                player_id,
+                total_bytes,
+            )
+        except asyncio.CancelledError:
+            logger.debug("[SharedStream] Stream cancelled for %s", player_id)
+            raise
+
+        logger.info(
+            "[SharedStream] Player %s finished, wrote %d bytes",
             player_id,
-            player.output_format,
-            duration,
-            headers.get("Content-Length", "NOT SET"),
+            total_bytes,
+        )
+        return response
+
+    async def _serve_independent_stream(
+        self,
+        request: web.Request,
+        player: MSXPlayer,
+        media: Any,
+        pcm_format: AudioFormat,
+        out_format: AudioFormat,
+        headers: dict[str, str],
+    ) -> web.StreamResponse:
+        """Serve audio via independent ffmpeg stream (fallback)."""
+        player_id = player.player_id
+        logger.debug(
+            "[StreamMode:independent] Fallback stream for %s",
+            player_id,
+        )
+
+        audio_source = self.provider.mass.streams.get_stream(
+            media,
+            pcm_format,
+            force_flow_mode=False,
         )
 
         response = web.StreamResponse(status=200, headers=headers)
@@ -1631,16 +1809,34 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         or "" if using IP fallback.
         """
         device_id = request.query.get("device_id")
+        # Try to get real IP from proxy headers first, then fall back to remote
+        remote_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or request.remote
+            or "unknown"
+        )
+
         if device_id:
             sanitized = PLAYER_ID_SANITIZE_RE.sub("_", device_id).strip("_") or "device"
             player_id = f"{MSX_PLAYER_ID_PREFIX}{sanitized}"
             param = f"device_id={quote(device_id, safe='')}"
+            logger.info(
+                "[PlayerID] device_id=%s, remote_ip=%s -> player_id=%s",
+                device_id,
+                remote_ip,
+                player_id,
+            )
         else:
-            remote = request.remote
-            ip = remote if remote else "0_0_0_0"
+            ip = remote_ip if remote_ip != "unknown" else "0_0_0_0"
             sanitized = PLAYER_ID_SANITIZE_RE.sub("_", ip.replace(".", "_")).strip("_") or "ip"
             player_id = f"{MSX_PLAYER_ID_PREFIX}{sanitized}"
             param = ""
+            logger.info(
+                "[PlayerID] no device_id, remote_ip=%s -> player_id=%s",
+                remote_ip,
+                player_id,
+            )
         return player_id, param
 
     def _append_device_param(self, url: str, device_param: str) -> str:
@@ -1657,12 +1853,19 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
+        # Get remote IP for display name
+        remote_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or request.remote
+            or None
+        )
         # Web kiosk clients pass source=web to distinguish from MSX TV players
         display_name: str | None = None
-        if request.query.get("source") == "web":
-            display_name = self.provider._player_display_name_from_id(
-                player_id, prefix_label="WEB TV"
-            )
+        prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"
+        display_name = self.provider._player_display_name_from_id(
+            player_id, prefix_label=prefix_label, remote_ip=remote_ip
+        )
         player = await self.provider.get_or_register_player(player_id, display_name=display_name)
         return player_id, device_param, player
 
