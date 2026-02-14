@@ -121,8 +121,7 @@ class MSXPlayer(Player):
         queue = self.mass.player_queues.get(source_id)
         ma_index = getattr(queue, "current_index", 0) if queue else 0
         try:
-            queue_items = self.mass.player_queues.items(source_id)
-            current_size = len(list(queue_items))
+            current_size = len(list(self.mass.player_queues.items(source_id)))
         except Exception:
             current_size = self._playlist_size
         if current_size != self._playlist_size:
@@ -141,8 +140,7 @@ class MSXPlayer(Player):
         queue = self.mass.player_queues.get(source_id)
         start_index = getattr(queue, "current_index", 0) if queue else 0
         try:
-            queue_items = self.mass.player_queues.items(source_id)
-            self._playlist_size = len(list(queue_items))
+            self._playlist_size = len(list(self.mass.player_queues.items(source_id)))
         except Exception:
             self._playlist_size = 0
         self._playlist_offset = start_index

@@ -85,7 +85,13 @@
                     var elapsed = (Date.now() / 1000) - positionStartTime;
                     position = positionStartValue + elapsed;
                 }
-                wsConnection.send(JSON.stringify({ type: "position", position: position }));
+                try {
+                    wsConnection.send(JSON.stringify({ type: "position", position: position }));
+                } catch (e) {
+                    if (typeof console !== "undefined" && console.warn) {
+                        console.warn("WebSocket position send failed", e);
+                    }
+                }
             }
         }, 3000);
     }
@@ -94,6 +100,7 @@
         if (typeof WebSocket === "undefined") return;
         var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
         var ws = new WebSocket(url);
+        var thisConnection = ws;
         wsConnection = ws;
         ws.onopen = function() { wsRetryDelay = 1000; };
         ws.onmessage = function(ev) {
@@ -165,11 +172,14 @@
                 }
             }
         };
-        ws.onclose = function() {
+        ws.onclose = function(event) {
+            if (wsConnection !== thisConnection) return; // stale connection
             stopPositionTimer();
             wsConnection = null;
-            setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay);
-            wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
+            if (event.code !== 1000 && event.code !== 1001) {
+                setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay);
+                wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
+            }
         };
     }
 
@@ -181,7 +191,13 @@
 
     function sendWsMessage(msg) {
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-            wsConnection.send(JSON.stringify(msg));
+            try {
+                wsConnection.send(JSON.stringify(msg));
+            } catch (e) {
+                if (typeof console !== "undefined" && console.warn) {
+                    console.warn("WebSocket send failed", e);
+                }
+            }
         }
     }
 
@@ -258,9 +274,20 @@
                 startMediaObserver();
             };
             if (typeof tvx.VideoPlugin !== "undefined" && typeof tvx.VideoPlugin.requestDeviceId === "function") {
+                var responded = false;
+                var deviceIdTimeout = setTimeout(function() {
+                    if (!responded) {
+                        responded = true;
+                        respond(null);
+                    }
+                }, 5000);
                 tvx.VideoPlugin.requestDeviceId(function(data) {
-                    var id = (data && data.deviceId) ? data.deviceId : null;
-                    respond(id);
+                    if (!responded) {
+                        responded = true;
+                        clearTimeout(deviceIdTimeout);
+                        var id = (data && data.deviceId) ? data.deviceId : null;
+                        respond(id);
+                    }
                 });
             } else {
                 respond(null);

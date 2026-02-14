@@ -68,8 +68,11 @@ class MSXBridgeProvider(PlayerProvider):
         if self.http_server:
             await self.http_server.stop()
         for player in list(self.players):
-            self.logger.debug("Unloading player %s", player.display_name)
-            await self.mass.players.unregister(player.player_id)
+            try:
+                self.logger.debug("Unloading player %s", player.display_name)
+                await self.mass.players.unregister(player.player_id)
+            except Exception:
+                self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
         self.logger.info("MSX Bridge provider unloaded")
 

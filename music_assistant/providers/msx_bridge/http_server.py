@@ -37,11 +37,31 @@ from .models import MsxContent, MsxItem, MsxTemplate
 from .player import MSXPlayer
 
 if TYPE_CHECKING:
+    from multidict import MultiMapping
+
     from .provider import MSXBridgeProvider
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+_KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
+
+
+def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int = 10000) -> int:
+    """Parse an integer query parameter safely, clamping to [0, max_val]."""
+    try:
+        return max(0, min(int(query.get(name, str(default))), max_val))
+    except (ValueError, TypeError):
+        return default
+
+
+def _strip_known_extension(value: str) -> str:
+    """Strip only known audio/data extensions from a value."""
+    for ext in _KNOWN_EXTENSIONS:
+        if value.endswith(ext):
+            return value[: -len(ext)]
+    return value
 
 
 def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
@@ -315,8 +335,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return albums as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         albums = await self.provider.mass.music.albums.library_items(limit=limit, offset=offset)
 
         items = await asyncio.gather(
@@ -337,8 +357,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return artists as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         artists = await self.provider.mass.music.artists.library_items(limit=limit, offset=offset)
 
         items = [map_artist_to_msx(a, prefix, self.provider, device_param) for a in artists]
@@ -357,8 +377,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return playlists as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         playlists = await self.provider.mass.music.playlists.library_items(
             limit=limit, offset=offset
         )
@@ -379,8 +399,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return tracks as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
 
         playlist_base = f"{prefix}/msx/playlist/tracks.json?limit={limit}&offset={offset}"
@@ -489,33 +509,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             )
             return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
-        limit = int(request.query.get("limit", "20"))
-        results = await self.provider.mass.music.search(query, limit=limit)
-        items = []
-        for artist in results.artists:
-            item = map_artist_to_msx(artist, prefix, self.provider, device_param)
-            item.label = "Artist"
-            item.icon = "msx-white-soft:person"
-            items.append(item)
-        for album in results.albums:
-            item = await map_album_to_msx(album, prefix, self.provider, device_param)
-            item.label = f"Album — {getattr(album, 'artist_str', '')}"
-            item.icon = "msx-white-soft:album"
-            items.append(item)
-        playlist_base = f"{prefix}/msx/playlist/search.json?q={quote(query, safe='')}"
-        playlist_base = append_device_param(playlist_base, device_param)
-        for idx, track in enumerate(results.tracks):
-            item = map_track_to_msx(
-                track,
-                prefix,
-                player_id,
-                self.provider,
-                device_param,
-                playlist_url=f"{playlist_base}&start={idx}",
-            )
-            item.label = f"Track — {getattr(track, 'artist_str', '')}"
-            item.icon = "msx-white-soft:audiotrack"
-            items.append(item)
+        limit = _int_param(request.query, "limit", 20)
+        items = await self._build_search_items(query, limit, player_id, device_param, prefix)
 
         content = MsxContent(
             headline=f'{{ico:search}} "{query}"',
@@ -542,9 +537,31 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 ).model_dump(by_alias=True, exclude_none=True)
             )
 
-        limit = int(request.query.get("limit", "20"))
+        limit = _int_param(request.query, "limit", 20)
+        items = await self._build_search_items(query, limit, player_id, device_param, prefix)
+
+        content = MsxContent(
+            headline=f"Search: {query}",
+            template=MsxTemplate(
+                type="separate",
+                layout="0,0,2,4",
+                image_filler="default",
+            ),
+            items=items if items else [MsxItem(title="No results found")],
+        )
+        return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
+
+    async def _build_search_items(
+        self,
+        query: str,
+        limit: int,
+        player_id: str,
+        device_param: str,
+        prefix: str,
+    ) -> list[MsxItem]:
+        """Build MSX items from search results (shared by search handlers)."""
         results = await self.provider.mass.music.search(query, limit=limit)
-        items = []
+        items: list[MsxItem] = []
         for artist in results.artists:
             item = map_artist_to_msx(artist, prefix, self.provider, device_param)
             item.label = "Artist"
@@ -569,17 +586,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             item.label = f"Track — {getattr(track, 'artist_str', '')}"
             item.icon = "msx-white-soft:audiotrack"
             items.append(item)
-
-        content = MsxContent(
-            headline=f"Search: {query}",
-            template=MsxTemplate(
-                type="separate",
-                layout="0,0,2,4",
-                image_filler="default",
-            ),
-            items=items if items else [MsxItem(title="No results found")],
-        )
-        return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
+        return items
 
     # --- MSX Detail Pages ---
 
@@ -594,7 +601,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 await self.provider.mass.music.albums.tracks(item_id, provider)
             )
         except Exception:
-            logger.warning("Failed to fetch tracks for album %s", item_id)
+            logger.exception("Failed to fetch tracks for album %s", item_id)
             tracks = []
         playlist_base = f"{prefix}/msx/playlist/album/{item_id}.json?provider={provider}"
         playlist_base = append_device_param(playlist_base, device_param)
@@ -629,7 +636,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         try:
             albums = await self.provider.mass.music.artists.albums(item_id, "library")
         except Exception:
-            logger.warning("Failed to fetch albums for artist %s", item_id)
+            logger.exception("Failed to fetch albums for artist %s", item_id)
             albums = []
 
         items = await asyncio.gather(
@@ -657,7 +664,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
             ]
         except Exception:
-            logger.warning("Failed to fetch tracks for playlist %s", item_id)
+            logger.exception("Failed to fetch tracks for playlist %s", item_id)
             tracks = []
         playlist_base = f"{prefix}/msx/playlist/playlist/{item_id}.json"
         playlist_base = append_device_param(playlist_base, device_param)
@@ -692,13 +699,13 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         prefix = f"http://{request.host}"
         item_id = request.match_info["item_id"]
         provider_name = request.query.get("provider", "library")
-        start = int(request.query.get("start", "0"))
+        start = _int_param(request.query, "start", 0)
         try:
             tracks = _sort_album_tracks(
                 await self.provider.mass.music.albums.tracks(item_id, provider_name)
             )
         except Exception:
-            logger.warning("Failed to fetch tracks for album playlist %s", item_id)
+            logger.exception("Failed to fetch tracks for album playlist %s", item_id)
             tracks = []
         playlist = map_tracks_to_msx_playlist(
             tracks, start, prefix, player_id, self.provider, device_param
@@ -710,13 +717,13 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         player_id, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
         item_id = request.match_info["item_id"]
-        start = int(request.query.get("start", "0"))
+        start = _int_param(request.query, "start", 0)
         try:
             tracks = [
                 t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
             ]
         except Exception:
-            logger.warning("Failed to fetch tracks for playlist playlist %s", item_id)
+            logger.exception("Failed to fetch tracks for playlist playlist %s", item_id)
             tracks = []
         playlist = map_tracks_to_msx_playlist(
             tracks, start, prefix, player_id, self.provider, device_param
@@ -727,9 +734,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return library tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
-        start = int(request.query.get("start", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
+        start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
         playlist = map_tracks_to_msx_playlist(
             list(tracks), start, prefix, player_id, self.provider, device_param
@@ -740,7 +747,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Return recently played tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
-        start = int(request.query.get("start", "0"))
+        start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(
             limit=50, order_by="last_played"
         )
@@ -754,12 +761,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         player_id, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
         query = request.query.get("q", "")
-        start = int(request.query.get("start", "0"))
+        start = _int_param(request.query, "start", 0)
         if not query:
             return web.json_response(
                 MsxContent(items=[]).model_dump(by_alias=True, exclude_none=True)
             )
-        limit = int(request.query.get("limit", "20"))
+        limit = _int_param(request.query, "limit", 20)
         results = await self.provider.mass.music.search(query, limit=limit)
         playlist = map_tracks_to_msx_playlist(
             list(results.tracks), start, prefix, player_id, self.provider, device_param
@@ -774,12 +781,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         prefix = f"http://{request.host}"
         player_id = request.match_info["player_id"]
         queue_id = request.query.get("queue_id", player_id)
-        start = int(request.query.get("start", "0"))
+        start = _int_param(request.query, "start", 0)
 
         try:
             queue_items = self.provider.mass.player_queues.items(queue_id)
         except Exception:
-            logger.warning("Failed to fetch queue items for %s", player_id)
+            logger.exception("Failed to fetch queue items for %s", player_id)
             queue_items = []
 
         # Convert QueueItems to track-like objects for map_tracks_to_msx_playlist
@@ -805,14 +812,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_msx_audio(self, request: web.Request) -> web.StreamResponse:
         """Trigger playback via MA queue and stream audio to MSX."""
-        player_id = request.match_info["player_id"]
-        # Strip any extensions MSX might have appended (.mp3, .json, etc)
-        if "." in player_id:
-            player_id = player_id.rsplit(".", 1)[0]
+        player_id = _strip_known_extension(request.match_info["player_id"])
 
         uri = request.query.get("uri")
-        if not uri:
-            return web.Response(status=400, text="Missing uri parameter")
+        if not uri or "://" not in uri:
+            return web.Response(status=400, text="Invalid uri parameter")
 
         from_playlist = request.query.get("from_playlist") == "1"
 
@@ -1341,10 +1345,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream audio from MA to the TV using internal API."""
-        player_id = request.match_info["player_id"]
-        # Strip any extensions MSX might have appended (.mp3, .json, etc)
-        if "." in player_id:
-            player_id = player_id.rsplit(".", 1)[0]
+        player_id = _strip_known_extension(request.match_info["player_id"])
 
         self.provider.on_player_activity(player_id)
         player = self.provider.mass.players.get(player_id)
@@ -1377,8 +1378,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_albums(self, request: web.Request) -> web.Response:
         """List albums."""
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         albums = await self.provider.mass.music.albums.library_items(limit=limit, offset=offset)
         return web.json_response(
             {
@@ -1408,8 +1409,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_artists(self, request: web.Request) -> web.Response:
         """List artists."""
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         artists = await self.provider.mass.music.artists.library_items(limit=limit, offset=offset)
         return web.json_response(
             {
@@ -1447,8 +1448,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_playlists(self, request: web.Request) -> web.Response:
         """List playlists."""
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         playlists = await self.provider.mass.music.playlists.library_items(
             limit=limit, offset=offset
         )
@@ -1479,8 +1480,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_tracks(self, request: web.Request) -> web.Response:
         """List tracks."""
-        limit = int(request.query.get("limit", "50"))
-        offset = int(request.query.get("offset", "0"))
+        limit = _int_param(request.query, "limit", 50)
+        offset = _int_param(request.query, "offset", 0)
         tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
         return web.json_response(
             {
@@ -1494,7 +1495,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         query = request.query.get("q", "")
         if not query:
             return web.json_response({"error": "Missing query parameter 'q'"}, status=400)
-        limit = int(request.query.get("limit", "20"))
+        limit = _int_param(request.query, "limit", 20)
         results = await self.provider.mass.music.search(query, limit=limit)
         return web.json_response(
             {
@@ -1532,7 +1533,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 
     async def _handle_recently_played(self, request: web.Request) -> web.Response:
         """Return recently played items."""
-        limit = int(request.query.get("limit", "20"))
+        limit = _int_param(request.query, "limit", 20)
         tracks = await self.provider.mass.music.tracks.library_items(
             limit=limit, order_by="last_played"
         )
