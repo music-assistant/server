@@ -128,7 +128,7 @@ class MSXPlayer(Player):
         if current_size != self._playlist_size:
             self._playlist_size = current_size
             self._playlist_offset = ma_index
-            provider.notify_play_playlist(self.player_id, ma_index)
+            provider.notify_play_playlist(self.player_id, ma_index, queue_id=source_id)
         else:
             if self._playlist_size > 0:
                 msx_index = (ma_index - self._playlist_offset) % self._playlist_size
@@ -147,7 +147,7 @@ class MSXPlayer(Player):
             self._playlist_size = 0
         self._playlist_offset = start_index
         self._queue_source_id = source_id
-        provider.notify_play_playlist(self.player_id, start_index)
+        provider.notify_play_playlist(self.player_id, start_index, queue_id=source_id)
         self._playing_from_queue = True
 
     def _resolve_media_metadata(
@@ -187,7 +187,7 @@ class MSXPlayer(Player):
         return [x for x in self.group_members if x != self.player_id]
 
     async def _propagate_to_group_members(self, command: str, **kwargs: Any) -> None:
-        """Propagate command to group members when we are the leader."""
+        """Propagate command to group members in parallel when we are the leader."""
         # Skip if grouping is disabled at provider level
         provider = cast("MSXBridgeProvider", self.provider)
         if not provider.grouping_enabled:
@@ -197,32 +197,39 @@ class MSXPlayer(Player):
             return
         self._propagating = True
         try:
+            tasks: list[asyncio.Task[None]] = []
             for member_id in self._get_group_member_ids():
                 member = self.mass.players.get(member_id)
                 if not member or not isinstance(member, MSXPlayer) or not member.available:
                     continue
-                try:
-                    if command == "play_media":
-                        media = kwargs.get("media")
-                        if media:
-                            # Call member.play_media directly — mass.players.play_media
-                            # would redirect synced/grouped players back to the leader
-                            await member.play_media(media)
-                    elif command == "stop":
-                        await member.stop()
-                    elif command == "pause":
-                        await member.pause()
-                    elif command == "play":
-                        await member.play()
-                except Exception:
-                    self.logger.warning(
-                        "Failed to propagate %s to member %s",
-                        command,
-                        member_id,
-                        exc_info=True,
-                    )
+                tasks.append(asyncio.create_task(self._propagate_single(member, command, **kwargs)))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self._propagating = False
+
+    async def _propagate_single(self, member: MSXPlayer, command: str, **kwargs: Any) -> None:
+        """Propagate a single command to one group member."""
+        try:
+            if command == "play_media":
+                media = kwargs.get("media")
+                if media:
+                    # Call member.play_media directly — mass.players.play_media
+                    # would redirect synced/grouped players back to the leader
+                    await member.play_media(media)
+            elif command == "stop":
+                await member.stop()
+            elif command == "pause":
+                await member.pause()
+            elif command == "play":
+                await member.play()
+        except Exception:
+            self.logger.warning(
+                "Failed to propagate %s to member %s",
+                command,
+                member.player_id,
+                exc_info=True,
+            )
 
     async def set_members(
         self,

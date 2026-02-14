@@ -752,10 +752,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         _, device_param, _ = await self._ensure_player_for_request(request)
         prefix = f"http://{request.host}"
         player_id = request.match_info["player_id"]
+        queue_id = request.query.get("queue_id", player_id)
         start = int(request.query.get("start", "0"))
 
         try:
-            queue_items = self.provider.mass.player_queues.items(player_id)
+            queue_items = self.provider.mass.player_queues.items(queue_id)
         except Exception:
             logger.warning("Failed to fetch queue items for %s", player_id)
             queue_items = []

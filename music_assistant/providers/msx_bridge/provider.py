@@ -183,10 +183,12 @@ class MSXBridgeProvider(PlayerProvider):
         self,
         player_id: str,
         start_index: int = 0,
+        queue_id: str | None = None,
     ) -> None:
         """Notify WebSocket clients to play an MSX native playlist from the MA queue."""
         if self.http_server:
-            url = f"/msx/queue-playlist/{player_id}.json?start={start_index}"
+            qid = queue_id or player_id
+            url = f"/msx/queue-playlist/{player_id}.json?start={start_index}&queue_id={qid}"
             self.http_server.broadcast_playlist(player_id, url)
 
     def notify_goto_index(self, player_id: str, index: int) -> None:
