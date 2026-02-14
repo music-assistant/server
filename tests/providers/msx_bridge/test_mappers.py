@@ -36,7 +36,7 @@ def test_map_track_to_msx() -> None:
         device_param="device_id=abc",
     )
 
-    assert item.title == "Test Track"
+    assert item.title_header == "{txt:msx-white:Test Track}"
     assert item.title_footer == "Test Artist · 2:05"
     assert item.image == "http://image.url"
     assert item.action is not None
