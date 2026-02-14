@@ -72,7 +72,7 @@ class MockPlayer(Player):
         # because the parent __init__ accesses config
         provider.mass.config.get_base_player_config.return_value = create_mock_config(name)
 
-        super().__init__(provider, player_id)
+        super().__init__(provider, player_id)  # type: ignore[arg-type]
         self._attr_name = name
         # Set type as instance attribute (overrides class attribute)
         self._attr_type = player_type
@@ -466,7 +466,7 @@ class TestCachedProtocolParentRestore:
         controller = PlayerController(mock_mass)
 
         # Mock config to return cached parent_id when queried
-        def mock_config_get(key, default=None):
+        def mock_config_get(key: str, default: str | None = None) -> str | None:
             if "protocol_parent_id" in str(key):
                 return "native_player_id"
             return default
@@ -514,7 +514,7 @@ class TestCachedProtocolParentRestore:
         controller = PlayerController(mock_mass)
 
         # Mock config to return cached parent_id (parent not yet registered)
-        def mock_config_get(key, default=None):
+        def mock_config_get(key: str, default: str | None = None) -> str | None:
             if "protocol_parent_id" in str(key):
                 return "native_player_id"
             return default

@@ -40,7 +40,7 @@ def mock_mass() -> MagicMock:
 
 
 @pytest.fixture
-def controller(mock_mass):
+def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
 
@@ -172,19 +172,22 @@ class TestGroupUngroup:
         set_members_called = False
         original_set_members = leader.set_members
 
-        async def mock_set_members(player_ids_to_add=None, player_ids_to_remove=None):
+        async def mock_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
             nonlocal set_members_called
             set_members_called = True
             # Call the original to update group_members
             await original_set_members(player_ids_to_add, player_ids_to_remove)
 
-        leader.set_members = mock_set_members
+        leader.set_members = mock_set_members  # type: ignore[method-assign]
 
         # Mock power handling to skip power control (focus is on grouping logic)
         async def mock_handle_cmd_power(player_id: str, powered: bool) -> None:
             pass
 
-        controller._handle_cmd_power = mock_handle_cmd_power
+        controller._handle_cmd_power = mock_handle_cmd_power  # type: ignore[method-assign]
 
         # Execute group command
         await controller.cmd_group("member", "leader")

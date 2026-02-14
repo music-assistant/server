@@ -95,7 +95,7 @@ class MockPlayer(Player):
         # because the parent __init__ accesses config
         provider.mass.config.get_base_player_config.return_value = create_mock_config(name)
 
-        super().__init__(provider, player_id)
+        super().__init__(provider, player_id)  # type: ignore[arg-type]
         self._attr_name = name
         # Set type as instance attribute (overrides class attribute)
         self._attr_type = player_type

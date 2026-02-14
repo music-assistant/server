@@ -973,14 +973,13 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
-    # list of providers that are setup by default when the server
-    # is first started (and they can be removed/disabled by the user if they want to)
+    # list of providers that are setup by default once
+    # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
     ("airplay", False),
     ("chromecast", False),
     ("dlna", False),
     ("sonos", True),
-    ("musiccast", True),
     ("bluesound", True),
     ("heos", True),
 }
