@@ -4,7 +4,7 @@ repos:
       # gen_requirements_all modifies files so it has to be first
       - id: gen_requirements_all
         name: gen_requirements_all
-        entry: uv run --frozen -m scripts.gen_requirements_all
+        entry: uv run -m scripts.gen_requirements_all
         pass_filenames: false
         language: system
         types: [text]
@@ -14,7 +14,7 @@ repos:
         name: 🐶 Ruff Linter
         language: system
         types: [python]
-        entry: uv run --frozen ruff check --fix
+        entry: uv run ruff check --fix
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 
@@ -22,7 +22,7 @@ repos:
         name: 🐶 Ruff Formatter
         language: system
         types: [python]
-        entry: uv run --frozen ruff format
+        entry: uv run ruff format
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 
@@ -30,74 +30,74 @@ repos:
         name: 🐍 Check Python AST
         language: system
         types: [python]
-        entry: uv run --frozen check-ast
+        entry: uv run check-ast
 
       - id: check-case-conflict
         name: 🔠 Check for case conflicts
         language: system
-        entry: uv run --frozen check-case-conflict
+        entry: uv run check-case-conflict
 
       - id: check-docstring-first
         name: ℹ️  Check docstring is first
         language: system
         types: [python]
-        entry: uv run --frozen check-docstring-first
+        entry: uv run check-docstring-first
 
       - id: check-executables-have-shebangs
         name: 🧐 Check that executables have shebangs
         language: system
         types: [text, executable]
-        entry: uv run --frozen check-executables-have-shebangs
+        entry: uv run check-executables-have-shebangs
         stages: [pre-commit, pre-push, manual]
 
       - id: check-json
         name: ｛ Check JSON files
         language: system
         types: [json]
-        entry: uv run --frozen check-json
+        entry: uv run check-json
         files: ^(music_assistant/.+/manifest\.json)|(tests/providers/.+/fixtures/.+\.json)$
 
       - id: check-merge-conflict
         name: 💥 Check for merge conflicts
         language: system
         types: [text]
-        entry: uv run --frozen check-merge-conflict
+        entry: uv run check-merge-conflict
 
       - id: check-symlinks
         name: 🔗 Check for broken symlinks
         language: system
         types: [symlink]
-        entry: uv run --frozen check-symlinks
+        entry: uv run check-symlinks
 
       - id: check-toml
         name: ✅ Check TOML files
         language: system
         types: [toml]
-        entry: uv run --frozen check-toml
+        entry: uv run check-toml
 
       - id: codespell
         name: ✅ Check code for common misspellings
         language: system
         types: [text]
-        entry: uv run --frozen codespell
+        entry: uv run codespell
 
       - id: detect-private-key
         name: 🕵️ Detect Private Keys
         language: system
         types: [text]
-        entry: uv run --frozen detect-private-key
+        entry: uv run detect-private-key
 
       - id: end-of-file-fixer
         name: ⮐ Fix End of Files
         language: system
         types: [text]
-        entry: uv run --frozen end-of-file-fixer
+        entry: uv run end-of-file-fixer
         stages: [pre-commit, pre-push, manual]
 
       - id: no-commit-to-branch
         name: 🛑 Don't commit to stable branch
         language: system
-        entry: uv run --frozen no-commit-to-branch
+        entry: uv run no-commit-to-branch
         pass_filenames: false
         always_run: true
         args:
@@ -107,12 +107,12 @@ repos:
         name: ✄ Trim Trailing Whitespace
         language: system
         types: [text]
-        entry: uv run --frozen trailing-whitespace-fixer
+        entry: uv run trailing-whitespace-fixer
         stages: [pre-commit, pre-push, manual]
 
       - id: mypy
         name: mypy
-        entry: uv run --frozen mypy
+        entry: uv run mypy
         language: system
         types: [python]
         require_serial: true
