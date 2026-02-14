@@ -645,7 +645,7 @@ class AirPlayPlayer(Player):
             return
         if cur_address != new_address:
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
-            self.address = cur_address
+            self.address = new_address
             self._attr_device_info.ip_address = new_address
         self.update_state()
 
