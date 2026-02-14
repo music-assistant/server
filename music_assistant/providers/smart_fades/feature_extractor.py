@@ -76,7 +76,8 @@ class AdvancedBeatFeatureExtractor:
             center=True,
         ).to(device)
 
-        self._log_multiplier = 1000.0
+        # Track the last global frame index output by process_pcm
+        self._last_output_frame = -1
 
     async def process_pcm(self, pcm: np.ndarray) -> np.ndarray:
         """Process a PCM chunk and return log-mel features.
@@ -100,9 +101,11 @@ class AdvancedBeatFeatureExtractor:
             # Last frame whose center is within this chunk
             last_frame = (chunk_end - 1) // self.hop_length
 
-            # Determine the audio range needed to compute these frames
-            # Frame first_frame needs samples from (first_frame * hop_length - n_fft/2)
-            audio_start = max(0, first_frame * self.hop_length - self.n_fft // 2)
+            # Determine the audio range needed to compute these frames.
+            # Align audio_start to a hop_length boundary so segment frames
+            # correspond exactly to global frame positions.
+            needed_start = max(0, first_frame * self.hop_length - self.n_fft // 2)
+            audio_start = (needed_start // self.hop_length) * self.hop_length
 
             # Build the audio segment to process
             if self._prev_samples is not None and audio_start < chunk_start:
@@ -114,9 +117,10 @@ class AdvancedBeatFeatureExtractor:
                 audio_segment = pcm
                 audio_start = chunk_start
 
-            # Store end samples for next chunk
-            # Need up to n_fft/2 samples before the next chunk boundary
-            keep_samples = self.n_fft // 2 + self.hop_length
+            # Store end samples for next chunk.
+            # The hop-aligned start may need up to n_fft//2 + hop - 1 = 952 samples
+            # before chunk_start; use n_fft (1024) for a clean margin.
+            keep_samples = self.n_fft
             self._prev_samples = pcm[-keep_samples:].copy()
 
             # Update total samples
@@ -126,19 +130,20 @@ class AdvancedBeatFeatureExtractor:
             tensor = torch.from_numpy(audio_segment).to(self._device)
             with torch.no_grad():
                 mel = self._mel_spec(tensor)
-                log_mel = torch.log1p(self._log_multiplier * mel)
+                log_mel = torch.log1p(1000.0 * mel)
             features = log_mel.T.cpu().numpy().astype(np.float32)
 
-            # Extract the frames for this chunk
-            # Segment frame j corresponds to global sample audio_start + j * hop_length
-            # Global frame k is centered at sample k * hop_length
-            segment_first_global_frame = audio_start / self.hop_length
+            # Extract frames for this chunk using integer arithmetic.
+            # Since audio_start is hop-aligned, segment frames map exactly to global frames.
+            segment_first_global_frame = audio_start // self.hop_length
 
-            start_in_segment = int(round(first_frame - segment_first_global_frame))
-            end_in_segment = int(round(last_frame - segment_first_global_frame + 1))
+            start_in_segment = first_frame - segment_first_global_frame
+            end_in_segment = last_frame - segment_first_global_frame + 1
 
             start_in_segment = max(0, start_in_segment)
             end_in_segment = min(len(features), end_in_segment)
+
+            self._last_output_frame = last_frame
 
             return features[start_in_segment:end_in_segment]
 
@@ -154,28 +159,21 @@ class AdvancedBeatFeatureExtractor:
             if self._prev_samples is None or len(self._prev_samples) == 0:
                 return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
-            # Compute the last frame(s) that might not have been included
-            # The last frame should be at (total_samples - 1) // hop_length
-            # But due to center=True, we might need one more
+            # MelSpectrogram(center=True) produces 1 + total_samples // hop frames.
+            # process_pcm outputs up to frame (total_samples - 1) // hop.
+            # When total_samples is exactly divisible by hop, one frame is missed.
+            total_frames = 1 + self._total_samples // self.hop_length
+            extra_count = total_frames - self._last_output_frame - 1
+            if extra_count <= 0:
+                return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
-            # Process the final buffer
             tensor = torch.from_numpy(self._prev_samples).to(self._device)
             with torch.no_grad():
                 mel = self._mel_spec(tensor)
-                log_mel = torch.log1p(self._log_multiplier * mel)
+                log_mel = torch.log1p(1000.0 * mel)
             features = log_mel.T.cpu().numpy().astype(np.float32)
 
-            # We want the last frame(s) that weren't already output
-            # Since we output frames up to (chunk_end - 1) // hop_length,
-            # we need frames from total_samples // hop_length onwards
-
-            total_frames = (self._total_samples + self.hop_length - 1) // self.hop_length
-            last_output_frame = (self._total_samples - 1) // self.hop_length
-
-            if total_frames > last_output_frame + 1:
-                # There's an extra frame to output
-                return features[-1:]
-            return np.array([], dtype=np.float32).reshape(0, self._n_mels)
+            return features[-extra_count:]
 
         return await asyncio.to_thread(_finalize_sync)
 
@@ -183,3 +181,4 @@ class AdvancedBeatFeatureExtractor:
         """Reset state for processing a new audio stream."""
         self._total_samples = 0
         self._prev_samples = None
+        self._last_output_frame = -1
