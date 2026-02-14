@@ -1055,11 +1055,9 @@ class StreamsController(CoreController):
             )
 
             # Start audio analysis for extended smart fades analysis
-            analysis_session_key: str | None = None
-            if smart_fades_mode != SmartFadesMode.DISABLED:
-                analysis_session_key = await self._audio_analysis.start_analysis(
-                    queue_track, queue.queue_id, pcm_format
-                )
+            analysis_session_key = await self._audio_analysis.start_analysis(
+                queue_track.streamdetails, pcm_format
+            )
 
             # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
             pcm_capture_key = self._start_pcm_capture(queue_track, pcm_format)
@@ -1118,7 +1116,6 @@ class StreamsController(CoreController):
                         else crossfade_buffer_size
                     )
 
-                # Queue chunk for audio analysis (non-blocking)
                 if analysis_session_key:
                     await self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
 
@@ -1182,9 +1179,6 @@ class StreamsController(CoreController):
                     buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
-            # Stream data fully received - finalize audio analysis
-            # We do this here (not after buffer handling) so analysis can run while
-            # remaining audio is being sent to player
             if analysis_session_key:
                 await self._audio_analysis.finalize(analysis_session_key)
                 analysis_session_key = None  # Prevent double finalization
@@ -1577,12 +1571,8 @@ class StreamsController(CoreController):
             "true" if crossfade_data else "false",
         )
 
-        # Start audio analysis for extended smart fades analysis
-        analysis_session_key: str | None = None
-        if smart_fades_mode != SmartFadesMode.DISABLED:
-            analysis_session_key = await self._audio_analysis.start_analysis(
-                queue_item, queue.queue_id, pcm_format
-            )
+        # Start audio analysis on Audio Analysis providers
+        analysis_session_key = await self._audio_analysis.start_analysis(streamdetails, pcm_format)
 
         # Start PCM capture for testing (if enabled via SMART_FADES_TEST_MODE env var)
         pcm_capture_key = self._start_pcm_capture(queue_item, pcm_format)

@@ -1,0 +1,14 @@
+{
+  "type": "audio_analysis",
+  "domain": "smart_fades",
+  "name": "Smart Fades",
+  "description": "Smart fades audio analysis using the Beat This neural network model. Provides beat and downbeat detection for smart crossfade timing.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["beat_this"],
+  "credits": ["[Beat This!](https://github.com/CPJKU/beat_this)"],
+  "documentation": "https://github.com/CPJKU/beat_this",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": true,
+  "icon": "mdi-waveform"
+}

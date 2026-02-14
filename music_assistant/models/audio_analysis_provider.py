@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .provider import Provider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
-    from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.mass import MusicAssistant
+
+
+@dataclass
+class AnalysisSessionData:
+    """Base session data stored per analysis session."""
+
+    stream_details: StreamDetails
+    audio_format: AudioFormat
 
 
 class AudioAnalysisProvider(Provider):
@@ -18,23 +32,43 @@ class AudioAnalysisProvider(Provider):
     Audio Analysis Provider implementations should inherit from this base model.
     These providers receive PCM audio chunks during streaming and produce analysis
     results such as beat tracking, key detection, phrase boundaries, etc.
+
+    The AudioAnalysisController creates session IDs and passes them to all methods.
+    The default start_analysis stores stream_details and audio_format in self._sessions.
+    Providers that need richer per-session state can override start_analysis and cancel.
     """
 
-    @abstractmethod
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize AudioAnalysisProvider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._sessions: dict[str, AnalysisSessionData] = {}
+
     async def start_analysis(
         self,
-        queue_item: QueueItem,
+        session_id: str,
+        stream_details: StreamDetails,
         audio_format: AudioFormat,
-    ) -> str:
-        """Start analysis for a new track.
+    ) -> None:
+        """Start analysis for a new session.
 
-        Called when a new track starts streaming. The provider should initialize
-        any state needed for processing this track.
+        Called when a new track starts streaming. The default implementation stores
+        stream_details and audio_format in self._sessions. Override to initialize
+        richer per-session state.
 
-        :param queue_item: The queue item being analyzed.
+        :param session_id: Session ID created by the AudioAnalysisController.
+        :param stream_details: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
-        :return: A unique analysis session ID for this track.
         """
+        self._sessions[session_id] = AnalysisSessionData(
+            stream_details=stream_details,
+            audio_format=audio_format,
+        )
 
     @abstractmethod
     async def process_pcm_chunk(
@@ -46,7 +80,7 @@ class AudioAnalysisProvider(Provider):
 
         Called for each chunk of audio data during streaming.
 
-        :param session_id: The analysis session ID from start_analysis.
+        :param session_id: The analysis session ID.
         :param pcm_chunk: Raw PCM audio data.
         """
 
@@ -56,7 +90,7 @@ class AudioAnalysisProvider(Provider):
 
         Called when the track has finished streaming.
 
-        :param session_id: The analysis session ID from start_analysis.
+        :param session_id: The analysis session ID.
         :return: Dictionary of analysis results (provider-specific format).
         """
 
@@ -64,7 +98,8 @@ class AudioAnalysisProvider(Provider):
         """Cancel an in-progress analysis session.
 
         Called if streaming is interrupted (skip, stop, error).
+        Default implementation removes the session data.
 
         :param session_id: The analysis session ID to cancel.
         """
-        # Default implementation does nothing; providers can override
+        self._sessions.pop(session_id, None)
