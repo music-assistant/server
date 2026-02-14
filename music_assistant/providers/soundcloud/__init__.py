@@ -338,11 +338,38 @@ class SoundcloudMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of (max 500) tracks for the given artist."""
-        tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 500)
+        """Get a list of (max 20, API doesn't allow a higher limit) tracks for the given artist."""
+        tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 100)
 
-        tracks = []
-        for item in tracks_obj["collection"]:
+        tracks: list[Track] = []
+
+        # Try multiple fallback mechanisms to get tracks collection
+        collection = None
+        if tracks_obj:
+            collection = tracks_obj.get("collection") or tracks_obj.get("items")
+
+        # If still no collection, try getting popular tracks
+        if not collection:
+            try:
+                popular_tracks_obj = await self._soundcloud.get_popular_tracks_user(
+                    prov_artist_id, 100
+                )
+                if popular_tracks_obj:
+                    collection = popular_tracks_obj.get("collection") or popular_tracks_obj.get(
+                        "items"
+                    )
+            except Exception as error:
+                self.logger.debug("Failed to get popular tracks: %s", error)
+
+        # If no collection found, log warning and return empty list
+        if not collection:
+            self.logger.warning(
+                "No tracks found for artist %s (tried collection, items, and popular tracks)",
+                prov_artist_id,
+            )
+            return tracks
+
+        for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
