@@ -79,9 +79,8 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
-    ("LG Electronics", "49SK8500PLA"),
+    ("LG Electronics", "*"),
 )
 
 PIN_REQUIRED = 0x8
-PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
