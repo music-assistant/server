@@ -81,3 +81,7 @@ AIRPLAY_2_DEFAULT_MODELS = (
     ("Ubiquiti Inc.", "*"),
     ("LG Electronics", "49SK8500PLA"),
 )
+
+PIN_REQUIRED = 0x8
+PASSWORD_BIT = 0x80
+LEGACY_PAIRING_BIT = 0x200

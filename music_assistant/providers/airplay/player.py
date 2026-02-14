@@ -28,6 +28,8 @@ from .constants import (
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     FALLBACK_VOLUME,
+    LEGACY_PAIRING_BIT,
+    PIN_REQUIRED,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
@@ -78,9 +80,9 @@ class AirPlayPlayer(Player):
         initial_volume: int = FALLBACK_VOLUME,
     ) -> None:
         """Initialize AirPlayPlayer."""
-        super().__init__(provider, player_id)
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
+        super().__init__(provider, player_id)
         self.address = address
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
@@ -245,19 +247,23 @@ class AirPlayPlayer(Player):
 
         return base_entries
 
-    def _requires_pairing(self) -> bool:
-        """Check if this device requires pairing (Apple TV or macOS)."""
-        if self.device_info.manufacturer.lower() not in {"apple", "lg electronics"}:
-            return False
+    def _get_flags(self) -> int:
+        # Flags are either present via "sf" or "flags. Taken from pyatv.protocols.airplay.utils"
+        if self.airplay_discovery_info is None:
+            return 0
+        flags = (
+            self.airplay_discovery_info.properties.get(b"sf")
+            or self.airplay_discovery_info.properties.get(b"flags")
+            or "0x0"
+        )
+        return int(flags, 16)
 
-        model = self.device_info.model
-        # Apple TV devices
-        if "appletv" in model.lower() or "apple tv" in model.lower():
-            return True
-        if "49sk8500pla" in model.lower():
-            return True
-        # Mac devices (including iMac, MacBook, Mac mini, Mac Pro, Mac Studio)
-        return model.startswith(("Mac", "iMac"))
+    def _requires_pairing(self) -> bool:
+        """Check if this device requires pairing (Apple TV or macOS).
+
+        Adapted from pyatv.protocols.airplay.utils.get_pairing_requirement.
+        """
+        return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
 
     def _get_credentials_key(self, protocol: StreamingProtocol) -> str:
         """Get the config key for credentials for given protocol."""
