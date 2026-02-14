@@ -178,6 +178,8 @@ class MSXHTTPServer:
         self.app.router.add_route("*", "/api/next/{player_id}", self._handle_next)
         self.app.router.add_route("*", "/api/previous/{player_id}", self._handle_previous)
 
+    # --- Server Lifecycle ---
+
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
         """Add CORS headers to all responses."""
@@ -875,6 +877,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             duration=duration,
         )
 
+    # --- Audio Streaming Infrastructure ---
+
     @staticmethod
     def _build_audio_params(
         output_format_str: str, duration: int
@@ -1053,6 +1057,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
             logger.exception("Stream error for player %s", player_id)
         finally:
             self._unregister_stream(player_id, stream_task, transport)
+
+    # --- WebSocket, Broadcast & Health ---
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """Health check endpoint."""
@@ -1542,6 +1548,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
                 "items": [self._format_track(track) for track in tracks],
             }
         )
+
+    # --- Playback Control ---
 
     async def _handle_play(self, request: web.Request) -> web.Response:
         """Start playback of a track."""
