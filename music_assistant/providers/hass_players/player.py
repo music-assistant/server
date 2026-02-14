@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from hass_client.exceptions import FailedCommand
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ImageType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
+from music_assistant_models.media_items import MediaItemImage
 
 from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
@@ -23,7 +26,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -42,13 +45,10 @@ if TYPE_CHECKING:
     from hass_client.models import State as HassState
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
+    from .provider import HomeAssistantPlayerProvider
 
-DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-)
+
+DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 
 class HomeAssistantPlayer(Player):
@@ -80,8 +80,6 @@ class HomeAssistantPlayer(Player):
         hass_supported_features = MediaPlayerEntityFeature(
             hass_state["attributes"]["supported_features"]
         )
-        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
-            self._attr_supported_features.add(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
@@ -104,7 +102,26 @@ class HomeAssistantPlayer(Player):
             self._attr_powered = hass_state["state"] not in OFF_STATES
 
         self.extra_data["hass_supported_features"] = hass_supported_features
+        self._hass_attributes: dict[str, Any] = {}
+
+        # Add External source to support next/prev commands when playing external content
+        self._attr_source_list.append(
+            PlayerSource(
+                id="External",
+                name="External Source",
+                passive=True,
+            )
+        )
+        # Set dynamic features (PAUSE, NEXT_PREVIOUS, SEEK) via shared helper
+        self._update_hass_features(hass_supported_features)
+
         self._update_attributes(hass_state["attributes"])
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        # hass media players are a hot mess so play it safe and always use flow mode
+        return True
 
     async def get_config_entries(
         self,
@@ -112,8 +129,7 @@ class HomeAssistantPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        base_entries = [*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES]
+        base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
         if self.extra_data.get("esphome_supported_audio_formats"):
             # optimized config for new ESPHome mediaplayer
             supported_sample_rates: list[int] = []
@@ -141,7 +157,6 @@ class HomeAssistantPlayer(Player):
             config_entries = [
                 *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
-                CONF_ENTRY_FLOW_MODE_ENFORCED,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             ]
 
@@ -167,10 +182,6 @@ class HomeAssistantPlayer(Player):
         # add alert if player is a known player type that has a native provider in MA
         if self.extra_data.get("hass_domain") in WARN_HASS_INTEGRATIONS:
             base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
-
-        # enable flow mode by default if player does not report enqueue support
-        if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in self.extra_data["hass_supported_features"]:
-            base_entries = [*base_entries, CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED]
 
         return base_entries
 
@@ -231,6 +242,22 @@ class HomeAssistantPlayer(Player):
         await self.hass.call_service(
             domain="media_player",
             service="turn_on" if powered else "turn_off",
+            target={"entity_id": self.player_id},
+        )
+
+    async def next_track(self) -> None:
+        """Handle NEXT_TRACK command on the player."""
+        await self.hass.call_service(
+            domain="media_player",
+            service="media_next_track",
+            target={"entity_id": self.player_id},
+        )
+
+    async def previous_track(self) -> None:
+        """Handle PREVIOUS_TRACK command on the player."""
+        await self.hass.call_service(
+            domain="media_player",
+            service="media_previous_track",
             target={"entity_id": self.player_id},
         )
 
@@ -351,8 +378,35 @@ class HomeAssistantPlayer(Player):
             self._update_attributes(state["a"])
         self.update_state()
 
+    def _update_hass_features(self, hass_supported_features: MediaPlayerEntityFeature) -> None:
+        """Update player and External source features based on HA supported features."""
+        # Update player supported features for PAUSE and NEXT_PREVIOUS
+        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
+            self._attr_supported_features.add(PlayerFeature.PAUSE)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.PAUSE)
+
+        has_next_prev = (
+            MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features
+            or MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features
+        )
+        if has_next_prev:
+            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.NEXT_PREVIOUS)
+
+        # Update the External source capabilities
+        for source in self._attr_source_list:
+            if source.id == "External":
+                source.can_play_pause = MediaPlayerEntityFeature.PAUSE in hass_supported_features
+                source.can_next_previous = has_next_prev
+                source.can_seek = MediaPlayerEntityFeature.SEEK in hass_supported_features
+                break
+
     def _update_attributes(self, attributes: dict[str, Any]) -> None:
         """Update Player attributes from HA state attributes."""
+        self._hass_attributes.update(attributes)
+
         # process optional attributes - these may not be present in all states
         for key, value in attributes.items():
             if key == "friendly_name":
@@ -385,3 +439,71 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
                 else:
                     self._attr_group_members.clear()
+            elif key == "supported_features":
+                # Update supported features dynamically via shared helper
+                hass_supported_features = MediaPlayerEntityFeature(value)
+                self.extra_data["hass_supported_features"] = hass_supported_features
+                self._update_hass_features(hass_supported_features)
+
+        # Check for external playback (not from Music Assistant).
+        # Without media_content_id we cannot reliably determine the source,
+        # so we later only react to state updates that include it.
+        media_content_id = self._hass_attributes.get("media_content_id", "")
+        is_ma_playback = media_content_id.startswith(self.mass.streams.base_url)
+
+        media_title = self._hass_attributes.get("media_title")
+
+        if media_content_id and is_ma_playback:
+            # MA playback - ensure active_source points to player_id for queue lookup.
+            # The actual current_media will be set by MA's queue controller.
+            self._attr_active_source = self.player_id
+        elif (
+            media_content_id
+            and media_title
+            and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        ):
+            # External playback detected - set current_media from HA attributes
+            ha_content_type = self._hass_attributes.get("media_content_type", "")
+            media_type = MediaType.RADIO if ha_content_type == "radio" else MediaType.UNKNOWN
+            current_media = PlayerMedia(
+                uri=media_content_id,
+                media_type=media_type,
+                title=media_title,
+                artist=self._hass_attributes.get("media_artist"),
+                album=self._hass_attributes.get("media_album_name"),
+                image_url=self._get_image_url(self._hass_attributes),
+                duration=int(self._hass_attributes.get("media_duration", 0) or 0) or None,
+            )
+            self._attr_current_media = current_media
+            self._attr_active_source = "External"
+
+        elif self.playback_state == PlaybackState.IDLE:
+            # Clear external media if it was set
+            if self._attr_active_source and self._attr_active_source not in (
+                self.player_id,
+                None,
+            ):
+                self._attr_current_media = None
+                self._attr_active_source = None
+
+    def _get_image_url(self, attributes: dict[str, Any]) -> str | None:
+        """Get the image URL from the attributes."""
+        if entity_picture := attributes.get("entity_picture"):
+            entity_picture = str(entity_picture)
+            if entity_picture.startswith("http"):
+                return entity_picture
+
+            # Access via provider -> hass_prov
+            prov = cast("HomeAssistantPlayerProvider", self.provider)
+
+            # Use proxy for internal HA images
+            # We create a MediaItemImage with the hass provider as source
+            # This will trigger resolve_image on the hass provider when requested
+            image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=entity_picture,
+                provider=prov.hass_prov.instance_id,
+                remotely_accessible=False,
+            )
+            return self.mass.metadata.get_image_url(image)
+        return None

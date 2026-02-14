@@ -48,6 +48,7 @@ class WebRTCSession:
     sendspin_channel: Any = None
     sendspin_ws: Any = None
     sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
+    sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
     sendspin_to_local_task: asyncio.Task[None] | None = None
     sendspin_from_local_task: asyncio.Task[None] | None = None
 
@@ -81,8 +82,10 @@ class WebRTCGateway:
         certificate: RTCCertificate,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
+        sendspin_url: str = "ws://localhost:8927/sendspin",
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
+        set_sendspin_player_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         """
         Initialize the WebRTC Gateway.
@@ -92,16 +95,20 @@ class WebRTCGateway:
         :param certificate: Persistent RTCCertificate for DTLS, enabling client-side pinning.
         :param signaling_url: WebSocket URL of the signaling server.
         :param local_ws_url: Local WebSocket URL to bridge to.
+        :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
+        :param set_sendspin_player_callback: Callback to set sendspin player for a session.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
         self.local_ws_url = local_ws_url
+        self.sendspin_url = sendspin_url
         self._remote_id = remote_id
         self._certificate = certificate
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
+        self._set_sendspin_player_callback = set_sendspin_player_callback
 
         # Static ICE servers used at registration time (relayed to clients via signaling server)
         self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
@@ -533,7 +540,9 @@ class WebRTCGateway:
         if not channel:
             return
         try:
-            session.local_ws = await self.http_session.ws_connect(self.local_ws_url)
+            # Include session_id in URL so server can track WebRTC sessions
+            ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
+            session.local_ws = await self.http_session.ws_connect(ws_url)
             loop = asyncio.get_event_loop()
 
             # Store task references for proper cleanup
@@ -712,27 +721,33 @@ class WebRTCGateway:
             return
 
         try:
-            session.sendspin_ws = await self.http_session.ws_connect("ws://127.0.0.1:8927/sendspin")
-            self.logger.debug("Sendspin channel connected for session %s", session.session_id)
-
             loop = asyncio.get_event_loop()
-
-            session.sendspin_to_local_task = asyncio.create_task(
-                self._forward_sendspin_to_local(session)
-            )
-            session.sendspin_from_local_task = asyncio.create_task(
-                self._forward_sendspin_from_local(session)
-            )
 
             @channel.on("message")  # type: ignore[untyped-decorator]
             def on_message(message: str | bytes) -> None:
-                if session.sendspin_to_local_task and not session.sendspin_to_local_task.done():
+                # Queue if task not yet created (None) or still running.
+                # Only drop when task exists and is done (shutdown).
+                if (
+                    session.sendspin_to_local_task is None
+                    or not session.sendspin_to_local_task.done()
+                ):
                     loop.call_soon_threadsafe(session.sendspin_queue.put_nowait, message)
 
             @channel.on("close")  # type: ignore[untyped-decorator]
             def on_close() -> None:
                 if session.sendspin_ws and not session.sendspin_ws.closed:
                     asyncio.run_coroutine_threadsafe(session.sendspin_ws.close(), loop)
+
+            session.sendspin_ws = await self.http_session.ws_connect(self.sendspin_url)
+            self.logger.debug("Sendspin channel connected for session %s", session.session_id)
+
+            # Start forwarding tasks - queued messages will be processed
+            session.sendspin_to_local_task = asyncio.create_task(
+                self._forward_sendspin_to_local(session)
+            )
+            session.sendspin_from_local_task = asyncio.create_task(
+                self._forward_sendspin_from_local(session)
+            )
 
         except Exception:
             self.logger.exception(
@@ -752,9 +767,17 @@ class WebRTCGateway:
 
         :param session: The WebRTC session.
         """
+        first_message = True
         try:
             while session.sendspin_ws and not session.sendspin_ws.closed:
                 message = await session.sendspin_queue.get()
+
+                # Check only the first message for client_id extraction
+                if first_message:
+                    first_message = False
+                    if isinstance(message, str):
+                        self._try_extract_sendspin_client_id(session, message)
+
                 if session.sendspin_ws and not session.sendspin_ws.closed:
                     if isinstance(message, bytes):
                         await session.sendspin_ws.send_bytes(message)
@@ -768,6 +791,31 @@ class WebRTCGateway:
             raise
         except Exception:
             self.logger.exception("Error forwarding sendspin to local")
+
+    def _try_extract_sendspin_client_id(self, session: WebRTCSession, message: str) -> None:
+        """Try to extract client_id from sendspin auth message and set on websocket client.
+
+        :param session: The WebRTC session.
+        :param message: The first sendspin message (expected to be auth).
+        """
+        try:
+            data = json.loads(message)
+            if data.get("type") != "auth":
+                return  # Not an auth message
+
+            # This is an auth message - extract client_id if present
+            if client_id := data.get("client_id"):
+                session.sendspin_player_id = client_id
+                self.logger.debug(
+                    "Extracted sendspin player %s for session %s",
+                    client_id,
+                    session.session_id,
+                )
+                # Use callback to set sendspin player on the websocket client
+                if self._set_sendspin_player_callback:
+                    self._set_sendspin_player_callback(session.session_id, client_id)
+        except (json.JSONDecodeError, TypeError):
+            pass  # Not valid JSON, ignore
 
     async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:
         """Forward messages from internal sendspin server to sendspin DataChannel.

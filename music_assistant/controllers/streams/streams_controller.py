@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -80,9 +79,9 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     divide_chunks,
+    format_ip_for_url,
     get_ip_addresses,
     get_total_system_memory,
-    select_free_port,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -112,6 +111,7 @@ CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
+DEFAULT_PORT: Final[int] = 8097
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -185,8 +185,7 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
-        default_port = await select_free_port(8097, 9200)
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
                 key=CONF_ALLOW_BUFFER,
@@ -203,7 +202,7 @@ class StreamsController(CoreController):
                 "If you run Music Assistant on a capable device with enough memory, "
                 "enabling this option is strongly recommended.",
                 required=False,
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
@@ -214,7 +213,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
@@ -225,7 +224,7 @@ class StreamsController(CoreController):
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
                     for x in VolumeNormalizationMode
                 ],
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -233,7 +232,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for radio streams",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -241,7 +240,7 @@ class StreamsController(CoreController):
                 range=(-20, 10),
                 default_value=-6,
                 label="Fixed/fallback gain adjustment for tracks",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
@@ -250,7 +249,7 @@ class StreamsController(CoreController):
                 label="Allow crossfade between tracks from the same album",
                 description="Enabling this option allows for crossfading between tracks "
                 "that are part of the same album.",
-                category="audio",
+                category="playback",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
@@ -261,30 +260,36 @@ class StreamsController(CoreController):
                 "\nMake sure that this IP can be reached by players on the local network, "
                 "otherwise audio streaming will not work.",
                 required=False,
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=default_port,
+                default_value=DEFAULT_PORT,
                 label="TCP Port",
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
                 "on the given IP and TCP port by players on the local network.",
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 required=False,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SMART_FADES_LOG_LEVEL,
@@ -293,9 +298,9 @@ class StreamsController(CoreController):
                 description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
-            CONF_ENTRY_ZEROCONF_INTERFACES,
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -307,7 +312,7 @@ class StreamsController(CoreController):
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
-        self.publish_port = config.get_value(CONF_BIND_PORT)
+        self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
@@ -327,7 +332,7 @@ class StreamsController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{self.publish_ip}:{self.publish_port}",
+            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
@@ -442,9 +447,11 @@ class StreamsController(CoreController):
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
+        # see https://github.com/music-assistant/support/issues/4913
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name,
+            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -507,10 +514,14 @@ class StreamsController(CoreController):
             )
         else:
             # no crossfade, just a regular single item stream
-            audio_input = self.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=queue_item.streamdetails.seek_position,
+            audio_input = buffered(
+                self.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=queue_item.streamdetails.seek_position,
+                ),
+                buffer_size=10,
+                min_buffer_before_yield=2,
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
@@ -589,6 +600,8 @@ class StreamsController(CoreController):
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
+
+        queue.flow_mode_stream_log = []
 
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(queue_player)

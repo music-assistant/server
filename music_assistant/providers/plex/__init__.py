@@ -245,7 +245,7 @@ async def get_config_entries(  # noqa: PLR0915
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
@@ -351,7 +351,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Import Collections",
             description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
-            category="advanced",
+            advanced=True,
         )
     )
     entries.append(
@@ -362,7 +362,7 @@ async def get_config_entries(  # noqa: PLR0915
             description="Prefix to add to collection names when imported as playlists",
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
-            category="advanced",
+            advanced=True,
         )
     )
 
@@ -412,7 +412,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Items per hub",
             description="Maximum number of items to load from each hub (default: 10)",
             default_value=10,
-            category="advanced",
+            advanced=True,
             range=(1, 100),
         )
     )
@@ -589,11 +589,11 @@ class PlexProvider(MusicProvider):
     async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
-        elif plex_media.type == "album":
+        if plex_media.type == "album":
             return await self._parse_album(plex_media)
-        elif plex_media.type == "track":
+        if plex_media.type == "track":
             return await self._parse_track(plex_media)
-        elif plex_media.type == "playlist":
+        if plex_media.type == "playlist":
             return await self._parse_playlist(plex_media)
         return None
 

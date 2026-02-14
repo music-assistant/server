@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -60,6 +61,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
+    ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -67,12 +69,16 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     SYNCGROUP_PREFIX,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    get_sendspin_player_id,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
@@ -87,7 +93,12 @@ from .sync_groups import SyncGroupController, SyncGroupPlayer
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+        PlayerConfig,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -155,10 +166,12 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 return
 
             current_user = get_current_user()
+            current_sendspin_player = get_sendspin_player_id()
             if (
                 current_user
                 and current_user.player_filter
                 and player.player_id not in current_user.player_filter
+                and player.player_id != current_sendspin_player
             ):
                 msg = (
                     f"{current_user.username} does not have access to player {player.display_name}"
@@ -216,6 +229,14 @@ class PlayerController(CoreController):
         self._player_command_locks: dict[str, asyncio.Lock] = {}
         self._sync_groups: SyncGroupController = SyncGroupController(self)
 
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return Config Entries for the Player Controller."""
+        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
+
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self._poll_task = self.mass.create_task(self._poll_players())
@@ -264,13 +285,18 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         return [
             player
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
             and (provider_filter is None or player.provider.instance_id == provider_filter)
-            and (not user_filter or player.player_id in user_filter)
+            and (
+                not user_filter
+                or player.player_id in user_filter
+                or player.player_id == current_sendspin_player
+            )
             and (return_sync_groups or not isinstance(player, SyncGroupPlayer))
         ]
 
@@ -344,7 +370,13 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
-        if current_user and user_filter and player_id not in user_filter:
+        current_sendspin_player = get_sendspin_player_id()
+        if (
+            current_user
+            and user_filter
+            and player_id not in user_filter
+            and player_id != current_sendspin_player
+        ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
         if player := self.get(player_id, raise_unavailable):
@@ -355,10 +387,36 @@ class PlayerController(CoreController):
         """
         Return Player by name.
 
+        Performs case-insensitive matching against the player's state name
+        (the final name visible in clients and API).
+        If multiple players match, logs a warning and returns the first match.
+
         :param name: Name of the player.
         :return: Player object or None.
         """
-        return next((x for x in self._players.values() if x.name == name), None)
+        name_normalized = name.strip().lower()
+        matches: list[Player] = []
+
+        for player in self._players.values():
+            if player.state.name.strip().lower() == name_normalized:
+                matches.append(player)
+
+        if not matches:
+            return None
+
+        if len(matches) > 1:
+            player_ids = [p.player_id for p in matches]
+            self.logger.warning(
+                "players/get_by_name: Multiple players found with name '%s': %s - "
+                "returning first match (%s). "
+                "Consider using the players/get API with player_id instead "
+                "for unambiguous lookups.",
+                name,
+                player_ids,
+                matches[0].player_id,
+            )
+
+        return matches[0]
 
     @api_command("players/get_by_name")
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
@@ -374,8 +432,14 @@ class PlayerController(CoreController):
             if current_user and current_user.role != UserRole.ADMIN
             else None
         )
+        current_sendspin_player = get_sendspin_player_id()
         if player := self.get_player_by_name(name):
-            if current_user and user_filter and player.player_id not in user_filter:
+            if (
+                current_user
+                and user_filter
+                and player.player_id not in user_filter
+                and player.player_id != current_sendspin_player
+            ):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
             return player.state
@@ -452,7 +516,7 @@ class PlayerController(CoreController):
                 await player.stop()
 
     @api_command("players/cmd/play")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
@@ -489,7 +553,7 @@ class PlayerController(CoreController):
             await self._handle_cmd_resume(player.player_id)
 
     @api_command("players/cmd/pause")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
@@ -647,7 +711,7 @@ class PlayerController(CoreController):
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
@@ -657,7 +721,7 @@ class PlayerController(CoreController):
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
@@ -705,7 +769,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def cmd_group_volume(
         self,
         player_id: str,
@@ -770,6 +834,25 @@ class PlayerController(CoreController):
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
+    @api_command("players/cmd/group_volume_mute")
+    @handle_player_command
+    async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME_MUTE command to all players in a group.
+
+        - player_id: player_id of the group player or sync leader.
+        - muted: bool if group should be muted.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checker
+        if player.type == PlayerType.GROUP or player.group_members:
+            # dedicated group player or sync leader
+            coros = []
+            for child_player in self.iter_group_members(
+                player, only_powered=True, exclude_self=False
+            ):
+                coros.append(self.cmd_volume_mute(child_player.player_id, muted))
+            await asyncio.gather(*coros)
+
     @api_command("players/cmd/volume_mute")
     @handle_player_command
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
@@ -780,6 +863,15 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
         assert player
+
+        # Set/clear mute lock for players in a group
+        # This prevents auto-unmute when group volume changes
+        is_in_group = bool(player.synced_to or player.group_members)
+        if muted and is_in_group:
+            player.extra_data[ATTR_MUTE_LOCK] = True
+        elif not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
         if player.mute_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support muting"
@@ -823,7 +915,7 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        pre_announce: bool | str | None = None,
+        pre_announce: bool | None = None,
         volume_level: int | None = None,
         pre_announce_url: str | None = None,
     ) -> None:
@@ -900,7 +992,7 @@ class PlayerController(CoreController):
             # we can send a regular play-media call downstream
             announce_data = AnnounceData(
                 announcement_url=url,
-                pre_announce=bool(pre_announce or False),
+                pre_announce=bool(pre_announce),
                 pre_announce_url=pre_announce_url,
             )
             announcement = PlayerMedia(
@@ -934,8 +1026,72 @@ class PlayerController(CoreController):
             player.set_active_mass_source(media.source_id)
         await player.play_media(media)
 
+    @api_command("players/cmd/select_sound_mode")
+    @handle_player_command
+    async def select_sound_mode(self, player_id: str, sound_mode: str) -> None:
+        """
+        Handle SELECT SOUND MODE command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - sound_mode: The ID of the sound mode that needs to be activated/selected.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.SELECT_SOUND_MODE not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support sound mode selection"
+            )
+
+        prev_sound_mode = player.active_sound_mode
+        if sound_mode == prev_sound_mode:
+            return
+
+        # basic check if sound mode is valid for player
+        if not any(x for x in player.sound_mode_list if x.id == sound_mode):
+            raise PlayerCommandFailed(
+                f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
+            )
+
+        # forward to player
+        await player.select_sound_mode(sound_mode)
+
+    @api_command("players/cmd/set_option")
+    @handle_player_command
+    async def set_option(
+        self, player_id: str, option_key: str, option_value: PlayerOptionValueType
+    ) -> None:
+        """
+        Handle SET_OPTION command on given player.
+
+        - player_id: player_id of the player to handle the command
+        - option_key: The key of the player option that needs to be activated/selected.
+        - option_value: The new value of the player option.
+        """
+        player = self.get(player_id, True)
+        assert player is not None  # for type checking
+
+        if PlayerFeature.OPTIONS not in player.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} does not support set_option"
+            )
+
+        prev_player_option = next((x for x in player.options if x.key == option_key), None)
+        if not prev_player_option:
+            return
+        if prev_player_option.value == option_value:
+            return
+
+        if prev_player_option.read_only:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} option {option_key} is read-only"
+            )
+
+        # forward to player
+        await player.set_option(option_key=option_key, option_value=option_value)
+
     @api_command("players/cmd/select_source")
-    @handle_player_command(lock=True)
+    @handle_player_command
     async def select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle SELECT SOURCE command on given player.
@@ -1534,6 +1690,12 @@ class PlayerController(CoreController):
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
+        # signal a separate PlayerOptionsUpdated event
+        if options := changed_values.get("options"):
+            self.mass.signal_event(
+                EventType.PLAYER_OPTIONS_UPDATED, object_id=player_id, data=options
+            )
+
         if skip_forward and not force_update:
             return
 
@@ -1643,6 +1805,7 @@ class PlayerController(CoreController):
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
             # Use private method to skip permission check - already validated on group
+            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
@@ -1761,53 +1924,49 @@ class PlayerController(CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        player = self.get(config.player_id)
+        player_provider = self.mass.get_provider(config.provider)
         player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
-        # signal player provider that the player got enabled/disabled
-        if player_provider := self.mass.get_provider(config.provider):
-            assert isinstance(player_provider, PlayerProvider)  # for type checking
-            if ATTR_ENABLED in changed_keys and not config.enabled:
-                player_provider.on_player_disabled(config.player_id)
-            elif ATTR_ENABLED in changed_keys and config.enabled:
-                player_provider.on_player_enabled(config.player_id)
-        if not (player := self.get(config.player_id)):
-            return  # guard against player not being registered (yet)
-        resume_queue: PlayerQueue | None = (
-            self.mass.player_queues.get(player.active_source) if player.active_source else None
-        )
-        if player_disabled and player.available:
+        player_enabled = ATTR_ENABLED in changed_keys and config.enabled
+
+        if player_disabled and player and player.available:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
                 await self._handle_cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
+
+        # signal player provider that the player got enabled/disabled
+        if (player_enabled or player_disabled) and player_provider:
+            assert isinstance(player_provider, PlayerProvider)  # for type checking
+            if player_disabled:
+                player_provider.on_player_disabled(config.player_id)
+            elif player_enabled:
+                player_provider.on_player_enabled(config.player_id)
+            return  # enabling/disabling a player will be handled by the provider
+
+        if not player:
+            return  # guard against player not being registered (yet)
+
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.active_source) if player.active_source else None
+        )
+
         # ensure player state gets updated with any updated config
         player.set_config(config)
         await player.on_config_updated()
         player.update_state()
         # if the PlayerQueue was playing, restart playback
-        # TODO: add restart_stream property to ConfigEntry and use that instead of immediate_apply
-        # to check if we need to restart playback
-        if not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
-            config_entries = await player.get_config_entries()
-            has_value_changes = False
-            all_immediate_apply = True
-            for key in changed_keys:
-                if not key.startswith("values/"):
-                    continue  # skip root values like "enabled", "name"
-                has_value_changes = True
-                actual_key = key.removeprefix("values/")
-                entry = next((e for e in config_entries if e.key == actual_key), None)
-                if entry is None or not entry.immediate_apply:
-                    all_immediate_apply = False
-                    break
-
-            if has_value_changes and all_immediate_apply:
-                # All changed config entries have immediate_apply=True, so no need to restart
-                # the playback
-                return
-            # always stop first to ensure the player uses the new config
-            await self.mass.player_queues.stop(resume_queue.queue_id)
-            self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
+        if resume_queue and resume_queue.state == PlaybackState.PLAYING:
+            requires_restart = any(
+                v for v in config.values.values() if v.key in changed_keys and v.requires_reload
+            )
+            if requires_restart:
+                # always stop first to ensure the player uses the new config
+                await self.mass.player_queues.stop(resume_queue.queue_id)
+                self.mass.call_later(
+                    1, self.mass.player_queues.resume, resume_queue.queue_id, False
+                )
 
     async def on_player_dsp_change(self, player_id: str) -> None:
         """Call (by config manager) when the DSP settings of a player change."""
@@ -2040,7 +2199,7 @@ class PlayerController(CoreController):
             # nothing to do anymore, player was not previously powered
             # and does not support power control
             return
-        elif prev_synced_to:
+        if prev_synced_to:
             self.logger.debug(
                 "Announcement to player %s - syncing back to %s...",
                 player.display_name,
@@ -2340,11 +2499,15 @@ class PlayerController(CoreController):
                 f"Player {player.display_name} does not support volume control"
             )
 
+        # Check if player has mute lock (set when individually muted in a group)
+        # If locked, don't auto-unmute when volume changes
+        has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
-            player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            not has_mute_lock
+            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.volume_muted
         ):
-            # if player is muted, we unmute it first
+            # if player is muted and not locked, we unmute it first
             # skip this for fake mute since it uses volume to simulate mute
             self.logger.debug(
                 "Unmuting player %s before setting volume",

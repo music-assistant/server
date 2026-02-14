@@ -14,7 +14,11 @@ It is recommended to use Visual Studio Code as your IDE, since launch files to s
 ### Python venv (recommended)
 With this repository cloned locally, execute the following commands in a terminal from the root of your repository:
 * Run our development setup script to setup the development environment:
-* `scripts/setup.sh` (creates a new separate virtual environment to nicely separate the project dependencies)
+
+      scripts/setup.sh
+
+    (creates a new separate virtual environment to nicely separate the project dependencies)
+
 * The setup script will create a separate virtual environment (if needed), install all the project/test dependencies and configure pre-commit for linting and testing.
 * Make sure, that the python interpreter in VS Code is set to the newly generated venv.
 * Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code), or run `python -m music_assistant --log-level debug` from the command line
@@ -53,7 +57,7 @@ The Music Assistant server is fully built in Python. The Python language has no 
 ## Building a new Music Provider
 A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
-TIP: We have created a template/stub provider in `music_assistant/providers/_template_music_provider` to get you started fast!
+TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
 
 **Adding the necessary files for a new Music Provider**
@@ -84,7 +88,7 @@ Create a file called `__init__.py` inside the folder of your provider. This file
 A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and AirPlay are examples of a Player Provider.
 All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
-TIP: We have created a template/stub provider in `music_assistant/providers/_template_player_provider` to get you started fast!
+TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
 ## 💽 Building your own Metadata Provider
 Will follow soon™

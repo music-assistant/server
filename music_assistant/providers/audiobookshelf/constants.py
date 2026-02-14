@@ -18,6 +18,11 @@ CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)
 CONF_VERIFY_SSL = "verify_ssl"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
+# hls options
+CONF_USE_HLS = "use_session_hls"
+CONF_HLS_FORMATS = "hls_formats"
+HLS_FORMATS_SPLIT = ";"
+HLS_ALL_FORMATS = "all"
 
 # CACHE
 CACHE_CATEGORY_LIBRARIES = 0

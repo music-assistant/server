@@ -1,4 +1,4 @@
-"""Helpers/utilities to parse ID3 tags from audio files with ffmpeg."""
+"""Helpers/utilities to parse tags from audio files with ffmpeg and mutagen."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from typing import Any
 import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
+from mutagen._vorbis import VCommentDict
+from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -58,39 +60,164 @@ def split_items(
     return clean_tuple((org_str,))
 
 
-def split_artists(
-    org_artists: str | tuple[str, ...], allow_extra_splitters: bool = False
-) -> tuple[str, ...]:
-    """Parse all artists from a string."""
-    final_artists: list[str] = []
-    # when not using the multi artist tag, the artist string may contain
-    # multiple artists in freeform, even featuring artists may be included in this
-    # string. Try to parse the featuring artists and separate them.
-    splitters = [
-        " featuring ",
-        " feat. ",
-        " feat ",
-        " duet with ",
-        " with ",
-        " ft. ",
-        " vs. ",
-    ]
-    splitters += [x.title() for x in splitters]
-    if allow_extra_splitters:
-        splitters += [" & ", ", ", " + "]
-    artists = split_items(org_artists, allow_unsafe_splitters=False)
-    for item in artists:
-        for splitter in splitters:
-            if splitter not in item:
-                continue
+# Artist splitting logic:
+# When not using the multi-artist tag (ARTISTS), the artist string may contain
+# multiple artists in freeform. Featuring artists may also be included in this
+# string. We parse and separate them based on common splitter patterns.
+#
+# We use the MusicBrainz Artist ID count as a guide for how many artists to extract:
+# - 0 IDs: only split on "featuring" splitters (to capture feat. artists in DB)
+# - 1 ID: don't split at all (single artist confirmed)
+# - 2+ IDs: split on featuring first, then extra splitters until we reach the target count
+#
+# TODO: If a MusicBrainz mirror/local database was available, artist names could be
+# looked up directly using the MB Artist IDs from the tags, eliminating the need for
+# ARTISTS tag parsing or ARTIST tag splitting entirely.
+#
+# Featuring splitters - always split on these to capture featuring artists in the database
+FEATURING_SPLITTERS = [
+    " featuring ",
+    " Featuring ",
+    " feat. ",
+    " Feat. ",
+    " feat ",
+    " Feat ",
+    " duet with ",
+    " Duet With ",
+    " ft. ",
+    " Ft. ",
+    " vs. ",
+    " Vs. ",
+]
+
+# Extra splitters - only use these when we have MB ID evidence of multiple artists
+EXTRA_SPLITTERS = [" & ", ", ", " + ", " with ", " With "]
+
+
+def _split_on_featuring(item: str) -> list[str]:
+    """Split a string on featuring splitters, returns list of parts."""
+    for splitter in FEATURING_SPLITTERS:
+        if splitter in item:
+            parts = []
             for subitem in item.split(splitter):
                 clean_item = subitem.strip()
-                if clean_item and clean_item not in final_artists:
-                    final_artists.append(subitem.strip())
-    if not final_artists:
-        # none of the extra splitters was found
+                if clean_item:
+                    # Recursively process each part for nested featuring splitters
+                    parts.extend(_split_on_featuring(clean_item))
+            return parts
+    return [item]
+
+
+def _split_to_target_count(
+    artists: list[str],
+    expected_count: int,
+    org_artists: str | tuple[str, ...],
+) -> list[str]:
+    """Split artists on extra splitters to reach expected count.
+
+    :param artists: List of artists after featuring splits.
+    :param expected_count: Target number of artists.
+    :param org_artists: Original input for logging.
+    """
+    current_artists = list(artists)
+    stopped_early = False
+
+    # Keep iterating until we reach the target or can't split anymore
+    while len(current_artists) < expected_count:
+        made_progress = False
+
+        for i, item in enumerate(current_artists):
+            if len(current_artists) >= expected_count:
+                break
+
+            for splitter in EXTRA_SPLITTERS:
+                if splitter not in item:
+                    continue
+
+                parts = [p.strip() for p in item.split(splitter) if p.strip()]
+                if len(parts) <= 1:
+                    continue
+
+                potential_count = len(current_artists) - 1 + len(parts)
+
+                if potential_count <= expected_count:
+                    # Safe to split fully - replace item with its parts
+                    current_artists = current_artists[:i] + parts + current_artists[i + 1 :]
+                    made_progress = True
+                else:
+                    # Splitting would exceed target - do partial split
+                    needed = expected_count - len(current_artists) + 1
+                    if needed >= 2:
+                        new_parts = [*parts[: needed - 1], splitter.join(parts[needed - 1 :])]
+                        current_artists = current_artists[:i] + new_parts + current_artists[i + 1 :]
+                        made_progress = True
+                        stopped_early = True
+                break  # Only use first matching splitter for this item
+
+            if made_progress:
+                break  # Restart the outer loop with updated list
+
+        if not made_progress:
+            break  # No more splitting possible
+
+    # Remove duplicates while preserving order
+    seen: set[str] = set()
+    final_artists = []
+    for artist in current_artists:
+        if artist and artist not in seen:
+            seen.add(artist)
+            final_artists.append(artist)
+
+    if stopped_early:
+        LOGGER.warning(
+            "Artist splitting stopped early to match expected count %d: '%s'",
+            expected_count,
+            org_artists,
+        )
+    elif len(final_artists) < expected_count:
+        LOGGER.warning(
+            "Could not split artist string to match expected count %d (got %d): '%s'",
+            expected_count,
+            len(final_artists),
+            org_artists,
+        )
+
+    return final_artists
+
+
+def split_artists(
+    org_artists: str | tuple[str, ...],
+    expected_count: int | None = None,
+) -> tuple[str, ...]:
+    """Parse artists from a string, guided by expected artist count.
+
+    :param org_artists: The artist string or tuple of strings to parse.
+    :param expected_count: Expected number of artists (typically from MB artist IDs).
+        If None or 0: only split on "featuring" splitters, no extra splitting.
+        If 1: return as-is without any splitting.
+        If > 1: split on featuring splitters first, then extra splitters to reach target.
+    """
+    artists = split_items(org_artists, allow_unsafe_splitters=False)
+
+    # If expected_count is 1, return as-is without any splitting
+    if expected_count == 1:
         return artists
-    return tuple(final_artists)
+
+    # Step 1: Always split on featuring splitters
+    final_artists: list[str] = []
+    for item in artists:
+        for part in _split_on_featuring(item):
+            if part and part not in final_artists:
+                final_artists.append(part)
+
+    # Step 2: If no expected_count or already at/above target, we're done
+    if not expected_count or expected_count <= 1 or len(final_artists) >= expected_count:
+        return tuple(final_artists) if final_artists else artists
+
+    # Step 3: Need more artists - split on extra splitters to reach expected_count
+    final_artists = _split_to_target_count(final_artists, expected_count, org_artists)
+
+    return tuple(final_artists) if final_artists else artists
 
 
 @dataclass
@@ -154,39 +281,36 @@ class AudioTags:
     @property
     def artists(self) -> tuple[str, ...]:
         """Return track artists."""
-        # prefer multi-artist tag
+        # prefer multi-artist tag (ARTISTS plural)
         if tag := self.tags.get("artists"):
-            return split_items(tag)
+            artists = split_items(tag)
+            # Warn if ARTISTS tag count doesn't match MB Artist ID count
+            mb_id_count = len(self.musicbrainz_artistids)
+            if mb_id_count and mb_id_count != len(artists):
+                LOGGER.warning(
+                    "ARTISTS tag count (%d) does not match MusicBrainz Artist ID count (%d): %s",
+                    len(artists),
+                    mb_id_count,
+                    tag,
+                )
+            return artists
         # fallback to regular artist string
         if tag := self.tags.get("artist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            if len(self.musicbrainz_artistids) > 1:
-                # special case: artist noted as 2 artists with ampersand or other splitter
-                # but with 2 mb ids so they should be treated as 2 artists
-                # example: John Travolta & Olivia Newton John on the Grease album
-                return split_artists(tag, allow_extra_splitters=True)
-
-            # Check if we have evidence of a SINGLE artist (should NOT split)
-            has_single_mb_id = len(self.musicbrainz_artistids) == 1
-            artists_plural = self.tags.get("artists", "")
-            has_single_in_artists_tag = artists_plural and TAG_SPLITTER not in artists_plural
-
-            if has_single_mb_id or has_single_in_artists_tag:
-                # Single artist confirmed by either single MB ID or ARTISTS tag without semicolons
-                # Return as-is without splitting to avoid incorrectly splitting artist names
-                # containing "with", "featuring", etc.
-                # Example: "Jerk With a Bomb" should not be split into "Jerk" and "a Bomb"
-                return (tag,)
-
-            # No evidence of single artist, proceed with splitting
-            return split_artists(tag)
+            # Use MB artist ID count to guide splitting
+            # - 0 IDs: only split on "feat." etc., not on "&" or ","
+            # - 1 ID: don't split at all
+            # - 2+ IDs: split to match the expected count
+            mb_id_count = len(self.musicbrainz_artistids)
+            return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
         if " - " in title:
             title_parts = title.split(" - ")
             if len(title_parts) >= 2:
-                return split_artists(title_parts[0])
+                # No MB IDs from filename, only split on featuring splitters
+                return split_artists(title_parts[0], expected_count=None)
         return (UNKNOWN_ARTIST,)
 
     @property
@@ -199,39 +323,34 @@ class AudioTags:
         if tag := self.tags.get("writer"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            return split_artists(tag)
+            # No MB IDs for writers, only split on featuring splitters
+            return split_artists(tag, expected_count=None)
         return ()
 
     @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
-        # prefer multi-artist tag
+        # prefer multi-artist tag (ALBUMARTISTS plural)
         if tag := self.tags.get("albumartists"):
-            return split_items(tag)
-        # fallback to regular artist string
+            artists = split_items(tag)
+            # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
+            mb_id_count = len(self.musicbrainz_albumartistids)
+            if mb_id_count and mb_id_count != len(artists):
+                LOGGER.warning(
+                    "ALBUMARTISTS tag count (%d) does not match MusicBrainz Album Artist ID "
+                    "count (%d): %s",
+                    len(artists),
+                    mb_id_count,
+                    tag,
+                )
+            return artists
+        # fallback to regular album artist string
         if tag := self.tags.get("albumartist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            if len(self.musicbrainz_albumartistids) > 1:
-                # special case: album artist noted as 2 artists with ampersand or other splitter
-                # but with 2 mb ids so they should be treated as 2 artists
-                # example: John Travolta & Olivia Newton John on the Grease album
-                return split_artists(tag, allow_extra_splitters=True)
-
-            # Check if we have evidence of a SINGLE album artist (should NOT split)
-            has_single_mb_id = len(self.musicbrainz_albumartistids) == 1
-            albumartists_plural = self.tags.get("albumartists", "")
-            has_single_in_albumartists_tag = (
-                albumartists_plural and TAG_SPLITTER not in albumartists_plural
-            )
-
-            if has_single_mb_id or has_single_in_albumartists_tag:
-                # Single album artist confirmed by either single MB ID or ALBUMARTISTS tag
-                # without semicolons. Return as-is without splitting.
-                return (tag,)
-
-            # No evidence of single artist, proceed with splitting
-            return split_artists(tag)
+            # Use MB album artist ID count to guide splitting
+            mb_id_count = len(self.musicbrainz_albumartistids)
+            return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         return ()
 
     @property
@@ -603,59 +722,375 @@ def get_file_duration(input_file: str) -> float:
         raise InvalidDataError(error_msg) from err
 
 
-def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
-    """
-    Parse tags from an audio file using Mutagen.
+def _decode_mp4_freeform_single(values: list[Any]) -> str:
+    """Decode a single-value MP4 freeform tag (bytes to string).
 
-    NOT Async friendly.
+    :param values: List of MP4FreeForm values (typically contains one item).
+    """
+    if not values:
+        return ""
+    val = values[0]
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
+
+
+def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
+    """Decode a multi-value MP4 freeform tag (bytes to strings).
+
+    :param values: List of MP4FreeForm values.
+    """
+    result = []
+    for val in values:
+        if isinstance(val, bytes):
+            result.append(val.decode("utf-8", errors="replace"))
+        else:
+            result.append(str(val))
+    return result
+
+
+def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
+    """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
+
+    :param tags: The MP4Tags object from mutagen.
+    """
+    result: dict[str, Any] = {}
+
+    # Basic text tags (single value - extract first element)
+    if "©nam" in tags:
+        result["title"] = tags["©nam"][0]
+    if "©ART" in tags:
+        result["artist"] = tags["©ART"][0]
+    if "aART" in tags:
+        result["albumartist"] = tags["aART"][0]
+    if "©alb" in tags:
+        result["album"] = tags["©alb"][0]
+
+    # Genre can have multiple values
+    if "©gen" in tags:
+        result["genre"] = list(tags["©gen"])
+
+    # Sort tags (single value)
+    if "sonm" in tags:
+        result["titlesort"] = tags["sonm"][0]
+    if "soal" in tags:
+        result["albumsort"] = tags["soal"][0]
+    # Sort tags (multi-value to match ID3 behavior)
+    if "soar" in tags:
+        result["artistsort"] = list(tags["soar"])
+    if "soaa" in tags:
+        result["albumartistsort"] = list(tags["soaa"])
+
+    # iTunes freeform tags for MusicBrainz IDs
+    # Single value tags
+    if "----:com.apple.iTunes:MusicBrainz Album Id" in tags:
+        result["musicbrainzalbumid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Album Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Release Group Id" in tags:
+        result["musicbrainzreleasegroupid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Release Group Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Track Id" in tags:
+        result["musicbrainztrackid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Recording Id" in tags:
+        result["musicbrainzrecordingid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Recording Id"]
+        )
+
+    # Multi-value tags (return as list to match ID3 behavior)
+    if "----:com.apple.iTunes:MusicBrainz Artist Id" in tags:
+        result["musicbrainzartistid"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:MusicBrainz Artist Id"]
+        )
+    if "----:com.apple.iTunes:MusicBrainz Album Artist Id" in tags:
+        result["musicbrainzalbumartistid"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:MusicBrainz Album Artist Id"]
+        )
+
+    # Additional freeform tags
+    if "----:com.apple.iTunes:ARTISTS" in tags:
+        result["artists"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ARTISTS"])
+    if "----:com.apple.iTunes:BARCODE" in tags:
+        result["barcode"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:BARCODE"])
+    if "----:com.apple.iTunes:ISRC" in tags:
+        result["tsrc"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ISRC"])
+
+    # Track and disc numbers (MP4 stores as tuple: [(number, total)])
+    # NOTE: type ignores needed because MP4Tags from mutagen uses an untyped get() internally
+    if tags.get("trkn"):  # type: ignore[no-untyped-call]
+        track_info = tags["trkn"][0]
+        if track_info[0]:
+            result["track"] = str(track_info[0])
+        if len(track_info) > 1 and track_info[1]:
+            result["tracktotal"] = str(track_info[1])
+    if tags.get("disk"):  # type: ignore[no-untyped-call]
+        disc_info = tags["disk"][0]
+        if disc_info[0]:
+            result["disc"] = str(disc_info[0])
+        if len(disc_info) > 1 and disc_info[1]:
+            result["disctotal"] = str(disc_info[1])
+
+    # Date
+    if "©day" in tags:
+        result["date"] = tags["©day"][0]
+
+    # Lyrics
+    if "©lyr" in tags:
+        result["lyrics"] = tags["©lyr"][0]
+
+    # Compilation flag
+    if tags.get("cpil"):  # type: ignore[no-untyped-call]
+        result["compilation"] = "1" if tags["cpil"] else "0"
+
+    # Album type (MusicBrainz)
+    if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
+        result["musicbrainzalbumtype"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Album Type"]
+        )
+
+    # ReplayGain tags
+    if "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" in tags:
+        result["replaygaintrackgain"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"]
+        )
+    if "----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN" in tags:
+        result["replaygainalbumgain"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
+        )
+
+    return result
+
+
+def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
+    """Parse ID3 tags (MP3 files) from mutagen tags dict.
+
+    :param tags: Dictionary of ID3 tags from mutagen.
+    """
+    result: dict[str, Any] = {}
+
+    # Basic tags (single value)
+    if "TIT2" in tags:
+        result["title"] = tags["TIT2"].text[0]
+    if "TPE1" in tags:
+        result["artist"] = tags["TPE1"].text[0]
+    if "TPE2" in tags:
+        result["albumartist"] = tags["TPE2"].text[0]
+    if "TALB" in tags:
+        result["album"] = tags["TALB"].text[0]
+
+    # Genre (multi-value)
+    if "TCON" in tags:
+        result["genre"] = tags["TCON"].text
+
+    # Multi-value artist tag
+    if "TXXX:ARTISTS" in tags:
+        result["artists"] = tags["TXXX:ARTISTS"].text
+
+    # MusicBrainz tags (single value)
+    if "TXXX:MusicBrainz Album Id" in tags:
+        result["musicbrainzalbumid"] = tags["TXXX:MusicBrainz Album Id"].text[0]
+    if "TXXX:MusicBrainz Release Group Id" in tags:
+        result["musicbrainzreleasegroupid"] = tags["TXXX:MusicBrainz Release Group Id"].text[0]
+    if "UFID:http://musicbrainz.org" in tags:
+        result["musicbrainzrecordingid"] = tags["UFID:http://musicbrainz.org"].data.decode()
+    if "TXXX:MusicBrainz Track Id" in tags:
+        result["musicbrainztrackid"] = tags["TXXX:MusicBrainz Track Id"].text[0]
+
+    # MusicBrainz tags (multi-value)
+    if "TXXX:MusicBrainz Album Artist Id" in tags:
+        result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
+    if "TXXX:MusicBrainz Artist Id" in tags:
+        result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
+
+    # Additional tags
+    if "TXXX:BARCODE" in tags:
+        result["barcode"] = tags["TXXX:BARCODE"].text
+    if "TXXX:TSRC" in tags:
+        result["tsrc"] = tags["TXXX:TSRC"].text
+
+    # Sort tags (multi-value to support multiple artists)
+    if "TSOP" in tags:
+        result["artistsort"] = tags["TSOP"].text
+    if "TSO2" in tags:
+        result["albumartistsort"] = tags["TSO2"].text
+
+    # Sort tags (single value)
+    if tags.get("TSOT"):
+        result["titlesort"] = tags["TSOT"].text[0]
+    if tags.get("TSOA"):
+        result["albumsort"] = tags["TSOA"].text[0]
+
+    return result
+
+
+def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
+    """Get single value from Vorbis comments (first item if multiple exist).
+
+    :param tags: VCommentDict from mutagen.
+    :param key: Tag name (case insensitive).
+    """
+    values = tags.get(key)  # type: ignore[no-untyped-call]
+    return values[0] if values else None
+
+
+def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
+    """Get all values from Vorbis comments as a list.
+
+    :param tags: VCommentDict from mutagen.
+    :param key: Tag name (case insensitive).
+    """
+    values = tags.get(key)  # type: ignore[no-untyped-call]
+    return list(values) if values else None
+
+
+def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> None:
+    """Parse artist-related tags from Vorbis comments into result dict.
+
+    Handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec, as well as
+    explicit ARTISTS tag which take precedence.
+
+    :param tags: VCommentDict from mutagen.
+    :param result: Dictionary to store parsed tags.
+    """
+    # Artist tags - check for multiple values (per Vorbis spec recommendation)
+    # Multiple ARTIST fields are treated the same as an ARTISTS tag
+    artist_values = _vorbis_get_multi(tags, "ARTIST")
+    if artist_values:
+        if len(artist_values) > 1:
+            # Multiple ARTIST fields - treat as authoritative list (like ARTISTS tag)
+            result["artists"] = artist_values
+        else:
+            # Single ARTIST field - use normal parsing logic
+            result["artist"] = artist_values[0]
+
+    # Album artist tags - same logic for multiple values
+    albumartist_values = _vorbis_get_multi(tags, "ALBUMARTIST")
+    if albumartist_values:
+        if len(albumartist_values) > 1:
+            # Multiple ALBUMARTIST fields - treat as authoritative list
+            result["albumartists"] = albumartist_values
+        else:
+            result["albumartist"] = albumartist_values[0]
+
+    # Explicit ARTISTS tag takes precedence if present
+    if artists := _vorbis_get_multi(tags, "ARTISTS"):
+        result["artists"] = artists
+
+
+def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
+    """Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
+
+    Vorbis comments support multiple values for the same field name per the spec.
+    For example, multiple ARTIST fields can be used instead of a single ARTISTS field.
+    See: https://xiph.org/vorbis/doc/v-comment.html
+
+    :param tags: VCommentDict from mutagen (FLAC, OGG, etc.).
+    """
+    result: dict[str, Any] = {}
+
+    # Basic tags
+    if title := _vorbis_get_single(tags, "TITLE"):
+        result["title"] = title
+    if album := _vorbis_get_single(tags, "ALBUM"):
+        result["album"] = album
+
+    # Artist tags (handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec)
+    _parse_vorbis_artist_tags(tags, result)
+
+    # Genre (multi-value)
+    if genre := _vorbis_get_multi(tags, "GENRE"):
+        result["genre"] = genre
+
+    # MusicBrainz tags (single value)
+    if mb_album := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMID"):
+        result["musicbrainzalbumid"] = mb_album
+    if mb_rg := _vorbis_get_single(tags, "MUSICBRAINZ_RELEASEGROUPID"):
+        result["musicbrainzreleasegroupid"] = mb_rg
+    if mb_track := _vorbis_get_single(tags, "MUSICBRAINZ_TRACKID"):
+        result["musicbrainzrecordingid"] = mb_track
+    if mb_reltrack := _vorbis_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
+        result["musicbrainztrackid"] = mb_reltrack
+
+    # MusicBrainz tags (multi-value)
+    if mb_aa_ids := _vorbis_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
+        result["musicbrainzalbumartistid"] = mb_aa_ids
+    if mb_a_ids := _vorbis_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
+        result["musicbrainzartistid"] = mb_a_ids
+
+    # Additional tags
+    if barcode := _vorbis_get_multi(tags, "BARCODE"):
+        result["barcode"] = barcode
+    if isrc := _vorbis_get_multi(tags, "ISRC"):
+        result["isrc"] = isrc
+
+    # Date
+    if date := _vorbis_get_single(tags, "DATE"):
+        result["date"] = date
+
+    # Lyrics
+    if lyrics := _vorbis_get_single(tags, "LYRICS"):
+        result["lyrics"] = lyrics
+
+    # Compilation flag
+    if compilation := _vorbis_get_single(tags, "COMPILATION"):
+        result["compilation"] = compilation
+
+    # Album type (MusicBrainz)
+    if albumtype := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = albumtype
+    # Also check RELEASETYPE which is an alternative tag name
+    if not result.get("musicbrainzalbumtype"):
+        if releasetype := _vorbis_get_single(tags, "RELEASETYPE"):
+            result["musicbrainzalbumtype"] = releasetype
+
+    # ReplayGain tags
+    if rg_track := _vorbis_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
+        result["replaygaintrackgain"] = rg_track
+    if rg_album := _vorbis_get_single(tags, "REPLAYGAIN_ALBUM_GAIN"):
+        result["replaygainalbumgain"] = rg_album
+
+    # Sort tags
+    if artistsort := _vorbis_get_multi(tags, "ARTISTSORT"):
+        result["artistsort"] = artistsort
+    if albumartistsort := _vorbis_get_multi(tags, "ALBUMARTISTSORT"):
+        result["albumartistsort"] = albumartistsort
+    if titlesort := _vorbis_get_single(tags, "TITLESORT"):
+        result["titlesort"] = titlesort
+    if albumsort := _vorbis_get_single(tags, "ALBUMSORT"):
+        result["albumsort"] = albumsort
+
+    return result
+
+
+def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
+    """Parse tags from an audio file using Mutagen.
+
+    Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), and MP4 tags (AAC/M4A/ALAC).
+
+    :param input_file: Path to the audio file.
     """
     result: dict[str, Any] = {}
     try:
-        # TODO: extend with more tags and file types!
-        # https://mutagen.readthedocs.io/en/latest/user/gettingstarted.html
-        tags = mutagen.File(input_file)  # type: ignore[attr-defined]
-        if tags is None or not tags.tags:
+        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+        if audio is None or not audio.tags:
             return result
-        tags = dict(tags.tags)
-        # ID3 tags
-        if "TIT2" in tags:
-            result["title"] = tags["TIT2"].text[0]
-        if "TPE1" in tags:
-            result["artist"] = tags["TPE1"].text[0]
-        if "TPE2" in tags:
-            result["albumartist"] = tags["TPE2"].text[0]
-        if "TALB" in tags:
-            result["album"] = tags["TALB"].text[0]
-        if "TCON" in tags:
-            result["genre"] = tags["TCON"].text
-        if "TXXX:ARTISTS" in tags:
-            result["artists"] = tags["TXXX:ARTISTS"].text
-        if "TXXX:MusicBrainz Album Id" in tags:
-            result["musicbrainzalbumid"] = tags["TXXX:MusicBrainz Album Id"].text[0]
-        if "TXXX:MusicBrainz Album Artist Id" in tags:
-            result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
-        if "TXXX:MusicBrainz Artist Id" in tags:
-            result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
-        if "TXXX:MusicBrainz Release Group Id" in tags:
-            result["musicbrainzreleasegroupid"] = tags["TXXX:MusicBrainz Release Group Id"].text[0]
-        if "UFID:http://musicbrainz.org" in tags:
-            result["musicbrainzrecordingid"] = tags["UFID:http://musicbrainz.org"].data.decode()
-        if "TXXX:MusicBrainz Track Id" in tags:
-            result["musicbrainztrackid"] = tags["TXXX:MusicBrainz Track Id"].text[0]
-        if "TXXX:BARCODE" in tags:
-            result["barcode"] = tags["TXXX:BARCODE"].text
-        if "TXXX:TSRC" in tags:
-            result["tsrc"] = tags["TXXX:TSRC"].text
-        if "TSOP" in tags:
-            result["artistsort"] = tags["TSOP"].text
-        if "TSO2" in tags:
-            result["albumartistsort"] = tags["TSO2"].text
-        if tags.get("TSOT"):
-            result["titlesort"] = tags["TSOT"].text[0]
-        if tags.get("TSOA"):
-            result["albumsort"] = tags["TSOA"].text[0]
 
-        del tags
+        # Check if MP4/M4A/AAC file (uses MP4Tags)
+        if isinstance(audio.tags, MP4Tags):
+            result = _parse_mp4_tags(audio.tags)
+        # Check if Vorbis comments (FLAC, OGG Vorbis, OGG Opus, etc.)
+        elif isinstance(audio.tags, VCommentDict):
+            result = _parse_vorbis_tags(audio.tags)
+        else:
+            # ID3 tags (MP3) and other formats
+            # TODO: Add _parse_apev2_tags() for WavPack/Musepack/Monkey's Audio to extract
+            # MusicBrainz IDs and multi-artist tags (APEv2 uses different tag names than ID3).
+            tags_dict = dict(audio.tags)
+            result = _parse_id3_tags(tags_dict)
+
         return result
     except Exception as err:
         LOGGER.debug(f"Error parsing mutagen tags for {input_file}: {err}")

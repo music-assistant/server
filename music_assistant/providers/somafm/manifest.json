@@ -1,0 +1,14 @@
+{
+  "type": "music",
+  "domain": "somafm",
+  "stage": "beta",
+  "name": "SomaFM Radio",
+  "description": "Listen to SomaFM. Over 30 channels of commercial-free, human-curated radio programming focusing on non-mainstream music.",
+  "codeowners": ["@macegr"],
+  "credits": [
+    "[SomaFM Radio](https://somafm.com/)",
+    "Listener [donations](https://somafm.com/support) and [merchandise](https://somafm.com/store)"
+  ],
+  "requirements": [],
+  "multi_instance": false
+}

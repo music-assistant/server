@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.sendspin_proxy")
-INTERNAL_SENDSPIN_URL = "ws://127.0.0.1:8927/sendspin"
 
 
 class SendspinProxyHandler:
@@ -42,6 +41,11 @@ class SendspinProxyHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.logger = LOGGER
+
+    @property
+    def internal_sendspin_url(self) -> str:
+        """Return the internal sendspin URL for connecting to the internal Sendspin server."""
+        return f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
@@ -86,7 +90,7 @@ class SendspinProxyHandler:
                 return wsock
 
         try:
-            internal_ws = await self.mass.http_session.ws_connect(INTERNAL_SENDSPIN_URL)
+            internal_ws = await self.mass.http_session.ws_connect(self.internal_sendspin_url)
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")
@@ -137,16 +141,13 @@ class SendspinProxyHandler:
             await wsock.close(code=4001, message=b"Invalid or expired token")
             return None
 
-        # Auto-whitelist player for users with player filters
+        # Set the sendspin player_id on the user's websocket client(s)
+        # This allows the player controller to auto-whitelist this (web)player
+        # without modifying the user's player_filter list
         client_id = auth_data.get("client_id")
-        if client_id and user.player_filter and client_id not in user.player_filter:
-            self.logger.debug(
-                "Auto-whitelisting Sendspin player %s for user %s", client_id, user.username
-            )
-            new_filter = [*user.player_filter, client_id]
-            await self.webserver.auth.update_user_filters(
-                user, player_filter=new_filter, provider_filter=None
-            )
+        if client_id:
+            self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
+            self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')

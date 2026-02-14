@@ -64,9 +64,10 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_FLOW_MODE,
     MASS_LOGO_ONLINE,
+    PLAYLIST_MEDIA_TYPES,
     VERBOSE_LOG_LEVEL,
+    PlaylistPlayableItem,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -84,7 +85,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
-
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
@@ -621,6 +621,33 @@ class PlayerQueuesController(CoreController):
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
+    @api_command("player_queues/move_item_end")
+    def move_item_end(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Move queue item to the end the queue.
+
+        - queue_id: id of the queue to process this request.
+        - queue_item_id: the item_id of the queueitem that needs to be moved.
+        """
+        queue = self._queues[queue_id]
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            raise InvalidDataError(f"Item {queue_item_id} not found in queue")
+        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+            msg = f"{item_index} is already played/buffered"
+            raise IndexError(msg)
+
+        queue_items = self._queue_items[queue_id]
+        if item_index == (len(queue_items) - 1):
+            return
+        queue_items = queue_items.copy()
+
+        new_index = len(self._queue_items[queue_id]) - 1
+
+        # move the item in the list
+        queue_items.insert(new_index, queue_items.pop(item_index))
+        self.update_items(queue_id, queue_items)
+
     @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
@@ -650,8 +677,32 @@ class PlayerQueuesController(CoreController):
         queue.current_index = None
         queue.current_item = None
         queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
+
+    @api_command("player_queues/save_as_playlist")
+    async def save_as_playlist(self, queue_id: str, name: str) -> Playlist:
+        """Save the current queue items as a new playlist.
+
+        :param queue_id: The queue_id of the queue to save.
+        :param name: The name for the new playlist.
+        """
+        if not self.get(queue_id):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        queue_items = self._queue_items.get(queue_id, [])
+        if not queue_items:
+            raise QueueEmpty("Cannot save an empty queue as a playlist.")
+        # collect URIs from queue items that are playlist-compatible
+        uris: list[str] = []
+        for item in queue_items:
+            if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES:
+                uris.append(item.uri)
+        if not uris:
+            raise InvalidDataError("No valid items in queue to save as playlist.")
+        playlist = await self.mass.music.playlists.create_playlist(name)
+        await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
+        return playlist
 
     @api_command("player_queues/stop")
     async def stop(self, queue_id: str) -> None:
@@ -897,13 +948,13 @@ class PlayerQueuesController(CoreController):
         # this way the UI knows immediately that a new item is loading
         queue.current_item = self.get_item(queue_id, index)
         queue.elapsed_time = seek_position
+        queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
         target_player = self.mass.players.get(queue_id)
         if target_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        enqueue_supported = PlayerFeature.ENQUEUE in target_player.supported_features
         queue.next_item_id_enqueued = None
         # always update session id when we start a new playback session
         queue.session_id = shortuuid.random(length=8)
@@ -953,12 +1004,7 @@ class PlayerQueuesController(CoreController):
                 raise MediaNotFoundError("No playable item found to start playback")
 
             # work out if we need to use flow mode
-            prefer_flow_mode = await self.mass.config.get_player_config_value(
-                queue_id, CONF_FLOW_MODE, default=False
-            )
-            flow_mode = (
-                prefer_flow_mode or not enqueue_supported
-            ) and queue_item.media_type not in (
+            flow_mode = target_player.flow_mode and queue_item.media_type not in (
                 # don't use flow mode for duration-less streams
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
@@ -1551,9 +1597,11 @@ class PlayerQueuesController(CoreController):
             result.append(album_track)
         return result
 
-    async def get_playlist_tracks(self, playlist: Playlist, start_item: str | None) -> list[Track]:
+    async def get_playlist_tracks(
+        self, playlist: Playlist, start_item: str | None
+    ) -> list[PlaylistPlayableItem]:
         """Return tracks for given playlist, based on user preference."""
-        result: list[Track] = []
+        result: list[PlaylistPlayableItem] = []
         start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",
@@ -2456,6 +2504,10 @@ class PlayerQueuesController(CoreController):
             # only report on media items
             return
         assert media_item.uri is not None  # uri is set in __post_init__
+
+        if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
+            #  Ignore items that had a stream error
+            return
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)

@@ -1,7 +1,6 @@
 """Constants for snapcast provider."""
 
 import pathlib
-from enum import StrEnum
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
@@ -20,7 +19,6 @@ CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
 
 
 CONF_CATEGORY_GENERIC = "generic"
-CONF_CATEGORY_ADVANCED = "advanced"
 CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
 
 CONF_HELP_LINK = (
@@ -35,6 +33,11 @@ CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(
 DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
+DEFAULT_SNAPSERVER_PLUGIN_DIR = "/usr/share/snapserver/plug-ins"
+DEFAULT_SNAPSERVER_CONFIG_FILE = "/etc/snapserver.conf"
+SHIPPED_SNAPSERVER_CONFIG_FILE = (
+    pathlib.Path(__file__).parent / "snapserver" / "snapserver.conf"
+).resolve()
 
 # Socket path template for control script communication
 # The {queue_id} placeholder will be replaced with the actual queue ID
@@ -61,10 +64,3 @@ DEFAULT_SNAPCAST_PCM_FORMAT = AudioFormat(
     bit_depth=16,
     channels=2,
 )
-
-
-class SnapCastStreamType(StrEnum):
-    """Enum for Snapcast Stream Type."""
-
-    MUSIC = "MUSIC"
-    ANNOUNCEMENT = "ANNOUNCEMENT"

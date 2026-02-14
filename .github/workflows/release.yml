@@ -40,9 +40,12 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  BASE_IMAGE_VERSION_STABLE: "1.4.10"
-  BASE_IMAGE_VERSION_BETA: "1.4.10"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.4.10"
+  BASE_IMAGE_VERSION_STABLE: "1.4.11"
+  BASE_IMAGE_VERSION_BETA: "1.4.11"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.4.11"
+
+permissions:
+  contents: read
 
 jobs:
   determine-branch:
@@ -132,7 +135,7 @@ jobs:
           echo "✅ Version $VERSION is valid for $CHANNEL channel"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -314,7 +317,7 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v3.6.0
+        uses: docker/login-action@v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -361,7 +364,7 @@ jobs:
           echo "Docker tags: $TAGS"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6.18.0
+        uses: docker/build-push-action@v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -498,3 +501,40 @@ jobs:
           git push
 
           echo "✅ Successfully updated add-on repository"
+
+  update-remote-app:
+    name: Update app.music-assistant.io frontend
+    runs-on: ubuntu-latest
+    needs:
+      - validate-and-build
+      - create-release
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-and-build.outputs.branch }}
+
+      - name: Extract frontend version from pyproject.toml
+        id: frontend
+        run: |
+          # Extract frontend version from pyproject.toml
+          FRONTEND_VERSION=$(grep 'music-assistant-frontend==' pyproject.toml | sed 's/.*==\([^"]*\).*/\1/')
+          echo "version=${FRONTEND_VERSION}" >> $GITHUB_OUTPUT
+          echo "Frontend version: ${FRONTEND_VERSION}"
+
+      - name: Trigger app.music-assistant.io update
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          repository: music-assistant/app.music-assistant.io
+          event-type: frontend-update
+          client-payload: |
+            {
+              "channel": "${{ inputs.channel }}",
+              "frontend_version": "${{ steps.frontend.outputs.version }}"
+            }
+
+      - name: Output update info
+        run: |
+          echo "✅ Triggered app.music-assistant.io update"
+          echo "Channel: ${{ inputs.channel }}"
+          echo "Frontend version: ${{ steps.frontend.outputs.version }}"

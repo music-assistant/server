@@ -1,6 +1,7 @@
 """All constants for Music Assistant."""
 
 import pathlib
+from copy import deepcopy
 from typing import Final, cast
 
 from music_assistant_models.config_entries import (
@@ -8,10 +9,27 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    PodcastEpisode,
+    Radio,
+    Track,
+)
 
 APPLICATION_NAME: Final = "Music Assistant"
+
+# Type alias for items that can be added to playlists
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+
+# Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
+PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
 
 
 API_SCHEMA_VERSION: Final[int] = 28
@@ -55,9 +73,6 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
-CONF_DEPRECATED_EQ_BASS: Final[str] = "eq_bass"
-CONF_DEPRECATED_EQ_MID: Final[str] = "eq_mid"
-CONF_DEPRECATED_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
@@ -69,10 +84,9 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
-CONF_DEPRECATED_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
-CONF_HIDE_PLAYER_IN_UI: Final[str] = "hide_player_in_ui"
+CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
 CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
 CONF_TTS_PRE_ANNOUNCE: Final[str] = "tts_pre_announce"
@@ -162,7 +176,8 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
         ConfigValueOption("verbose", "VERBOSE"),
     ],
     default_value="GLOBAL",
-    category="advanced",
+    advanced=True,
+    requires_reload=False,  # applied dynamically via _set_logger()
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
@@ -173,30 +188,11 @@ DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 CONF_ENTRY_FLOW_MODE = ConfigEntry(
     key=CONF_FLOW_MODE,
     type=ConfigEntryType.BOOLEAN,
-    label="Enable queue flow mode",
+    label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
-)
-
-CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}
-)
-
-CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_FLOW_MODE.to_dict(),
-        "default_value": True,
-        "value": True,
-        "hidden": True,
-    }
-)
-
-CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_FLOW_MODE.to_dict(),
-        "default_value": False,
-        "value": False,
-        "hidden": True,
-    }
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
 )
 
 
@@ -223,7 +219,9 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    category="audio",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
@@ -232,7 +230,8 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     label="Enable volume normalization",
     default_value=True,
     description="Enable volume normalization (EBU-R128 based)",
-    category="audio",
+    category="playback",
+    requires_reload=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
@@ -243,7 +242,9 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
-    category="advanced",
+    category="playback",
+    advanced=True,
+    requires_reload=True,
 )
 
 CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
@@ -252,65 +253,11 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
     label="Enable limiting to prevent clipping",
     default_value=True,
     description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
-    category="audio",
+    category="playback",
+    advanced=True,
+    requires_reload=True,
 )
 
-# These EQ Options are deprecated and will be removed in the future
-# To allow for automatic migration to the new DSP system, they are still included in the config
-CONF_ENTRY_DEPRECATED_EQ_BASS = ConfigEntry(
-    key=CONF_DEPRECATED_EQ_BASS,
-    type=ConfigEntryType.INTEGER,
-    range=(-10, 10),
-    default_value=0,
-    label="Equalizer: bass",
-    description="Use the builtin basic equalizer to adjust the bass of audio.",
-    category="audio",
-    hidden=True,  # Hidden, use DSP instead
-)
-
-CONF_ENTRY_DEPRECATED_EQ_MID = ConfigEntry(
-    key=CONF_DEPRECATED_EQ_MID,
-    type=ConfigEntryType.INTEGER,
-    range=(-10, 10),
-    default_value=0,
-    label="Equalizer: midrange",
-    description="Use the builtin basic equalizer to adjust the midrange of audio.",
-    category="audio",
-    hidden=True,  # Hidden, use DSP instead
-)
-
-CONF_ENTRY_DEPRECATED_EQ_TREBLE = ConfigEntry(
-    key=CONF_DEPRECATED_EQ_TREBLE,
-    type=ConfigEntryType.INTEGER,
-    range=(-10, 10),
-    default_value=0,
-    label="Equalizer: treble",
-    description="Use the builtin basic equalizer to adjust the treble of audio.",
-    category="audio",
-    hidden=True,  # Hidden, use DSP instead
-)
-
-
-CONF_ENTRY_DEPRECATED_CROSSFADE = ConfigEntry(
-    key=CONF_DEPRECATED_CROSSFADE,
-    type=ConfigEntryType.BOOLEAN,
-    label="Enable crossfade",
-    default_value=False,
-    description="Enable a crossfade transition between (queue) tracks.",
-    category="audio",
-    hidden=True,  # Hidden, use Smart Fades instead
-)
-
-CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
-    key=CONF_DEPRECATED_CROSSFADE,
-    type=ConfigEntryType.BOOLEAN,
-    label="Enable crossfade",
-    default_value=False,
-    description="Enable a crossfade transition between (queue) tracks.\n\n "
-    "Requires flow-mode to be enabled",
-    category="audio",
-    depends_on=CONF_FLOW_MODE,
-)
 
 CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     key=CONF_SMART_FADES_MODE,
@@ -327,7 +274,8 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     " between tracks.\n"
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",
-    category="audio",
+    category="playback",
+    requires_reload=True,
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
@@ -340,56 +288,9 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="standard_crossfade",
-    category="audio",
-)
-
-CONF_ENTRY_HIDE_PLAYER_IN_UI = ConfigEntry(
-    key=CONF_HIDE_PLAYER_IN_UI,
-    type=ConfigEntryType.STRING,
-    label="Hide this player in the user interface",
-    multi_value=True,
-    options=[
-        ConfigValueOption("Always", HidePlayerOption.ALWAYS.value),
-        ConfigValueOption("When powered off", HidePlayerOption.WHEN_OFF.value),
-        ConfigValueOption("When group active", HidePlayerOption.WHEN_GROUP_ACTIVE.value),
-        ConfigValueOption("When synced", HidePlayerOption.WHEN_SYNCED.value),
-        ConfigValueOption("When unavailable", HidePlayerOption.WHEN_UNAVAILABLE.value),
-    ],
-    default_value=[
-        HidePlayerOption.WHEN_UNAVAILABLE.value,
-        HidePlayerOption.WHEN_GROUP_ACTIVE.value,
-        HidePlayerOption.WHEN_SYNCED.value,
-    ],
-)
-CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HIDE_PLAYER_IN_UI.to_dict(), "default_value": [HidePlayerOption.ALWAYS.value]}
-)
-
-CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HIDE_PLAYER_IN_UI.to_dict(),
-        "default_value": [HidePlayerOption.WHEN_UNAVAILABLE.value],
-        "options": [
-            ConfigValueOption("Always", HidePlayerOption.ALWAYS.value).to_dict(),
-            ConfigValueOption("When powered off", HidePlayerOption.WHEN_OFF.value).to_dict(),
-            ConfigValueOption(
-                "When unavailable", HidePlayerOption.WHEN_UNAVAILABLE.value
-            ).to_dict(),
-        ],
-    }
-)
-
-CONF_ENTRY_EXPOSE_PLAYER_TO_HA = ConfigEntry(
-    key=CONF_EXPOSE_PLAYER_TO_HA,
-    type=ConfigEntryType.BOOLEAN,
-    label="Expose this player to Home Assistant",
-    default_value=True,
-    description="Expose this player to the Home Assistant integration. \n"
-    "If disabled, this player will not be imported into Home Assistant.",
-    category="advanced",
-)
-CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_EXPOSE_PLAYER_TO_HA.to_dict(), "default_value": False}
+    category="playback",
+    advanced=True,
+    requires_reload=True,
 )
 
 
@@ -410,7 +311,9 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     "Some players however do not support FLAC and require the stream to be packed "
     "into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n "
     "Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
 )
 
 CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 = ConfigEntry.from_dict(
@@ -446,7 +349,9 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     description="If this player is playing audio synced with other players "
     "and you always hear the audio too early or late on this player, "
     "you can shift the audio a bit.",
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
 )
 
 
@@ -520,20 +425,6 @@ HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES = (
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_HIDDEN,
 )
 
-CONF_ENTRY_PLAYER_ICON = ConfigEntry(
-    key=CONF_ICON,
-    type=ConfigEntryType.ICON,
-    default_value="mdi-speaker",
-    label="Icon",
-    description="Material design icon for this player. "
-    "\n\nSee https://pictogrammers.com/library/mdi/",
-    category="generic",
-)
-
-CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
-    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
-)
-
 
 CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     key=CONF_SAMPLE_RATES,
@@ -560,9 +451,11 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     default_value=[f"44100{MULTI_VALUE_SPLITTER}16", f"48000{MULTI_VALUE_SPLITTER}16"],
     required=True,
     label="Sample rates supported by this player",
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
     description="The sample rates (and bit depths) supported by this player.\n"
     "Content with unsupported sample rates will be automatically resampled.",
+    requires_reload=True,
 )
 
 
@@ -576,10 +469,12 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     ],
     default_value="no_content_length",
     label="HTTP Profile used for sending audio",
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
     description="This is considered to be a very advanced setting, only adjust this if needed, "
     "for example if your player stops playing halfway streams or if you experience "
     "other playback related issues. In most cases the default setting is fine.",
+    requires_reload=True,
 )
 
 CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
@@ -617,13 +512,16 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
         ConfigValueOption("Profile 2 - full info (including image)", "full"),
     ],
     depends_on=CONF_FLOW_MODE,
+    depends_on_value_not=False,
     default_value="disabled",
     label="Try to inject metadata into stream (ICY)",
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
     description="Try to inject metadata into the stream (ICY) to show track info on the player, "
     "even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by "
     "online radio stations to show you what is playing. \n\nBe aware that not all players support "
     "this correctly. If you experience issues with playback, try disabling this setting.",
+    requires_reload=True,
 )
 
 CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
@@ -633,9 +531,16 @@ CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
 CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
     {
         **CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(),
-        "default_value": False,
-        "value": False,
+        "default_value": "disabled",
+        "value": "disabled",
         "hidden": True,
+    }
+)
+
+CONF_ENTRY_ICY_METADATA_DEFAULT_FULL = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(),
+        "default_value": "full",
     }
 )
 
@@ -648,7 +553,9 @@ CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     "Only enable this option if your player actually support this, otherwise you may "
     "experience audio glitches during transitioning between tracks.",
     default_value=False,
-    category="advanced",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
@@ -674,7 +581,7 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     "the Music Assistant server, you may run into issues with streaming. "
     "In that case always ensure that the players can reach the server on the network "
     "and double check the base URL configuration of the Stream server in the settings.",
-    category="advanced",
+    advanced=True,
     default_value=[],
     required=False,
     multi_value=True,
@@ -706,7 +613,8 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
         ConfigValueOption("All interfaces", "all"),
     ],
     default_value="default",
-    category="advanced",
+    advanced=True,
+    requires_reload=True,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
@@ -909,6 +817,21 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
 )
 
 
+CONF_ENTRY_PLAYER_ICON = ConfigEntry(
+    key=CONF_ICON,
+    type=ConfigEntryType.ICON,
+    default_value="mdi-speaker",
+    label="Icon",
+    description="Material design icon for this player. "
+    "\n\nSee https://pictogrammers.com/library/mdi/",
+    category="generic",
+)
+
+CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
+    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
+)
+
+
 def create_sample_rates_config_entry(
     supported_sample_rates: list[int] | None = None,
     supported_bit_depths: list[int] | None = None,
@@ -927,7 +850,7 @@ def create_sample_rates_config_entry(
         supported_bit_depths = [16]
     final_supported_sample_rates = supported_sample_rates or []
     final_supported_bit_depths = supported_bit_depths or []
-    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
+    conf_entry = deepcopy(CONF_ENTRY_SAMPLE_RATES)
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []
@@ -990,6 +913,7 @@ ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -1009,3 +933,9 @@ SOUNDTRACK_INDICATORS = [
     r"\bfrom the film\b",
     r"\boriginal.*cast.*recording\b",
 ]
+
+# List of providers that do not use HTTP streaming
+# but consume raw audio data over other protocols
+# for provider domains in this list, we won't show the default
+# http-streaming specific config options in player settings
+NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")

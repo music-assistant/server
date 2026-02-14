@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
@@ -66,7 +67,7 @@ from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFAD
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
-from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
@@ -153,7 +154,8 @@ class MusicController(CoreController):
                 description="This will issue a full reset of the library "
                 "database and trigger a full sync. Only use this option as a last resort "
                 "if you are seeing issues with the library database.",
-                category="advanced",
+                category="generic",
+                advanced=True,
             ),
         )
         if action == CONF_RESET_DB:
@@ -306,18 +308,17 @@ class MusicController(CoreController):
                 else:
                     if media_type == MediaType.ARTIST:
                         return SearchResults(artists=[item])
-                    elif media_type == MediaType.ALBUM:
+                    if media_type == MediaType.ALBUM:
                         return SearchResults(albums=[item])
-                    elif media_type == MediaType.TRACK:
+                    if media_type == MediaType.TRACK:
                         return SearchResults(tracks=[item])
-                    elif media_type == MediaType.PLAYLIST:
+                    if media_type == MediaType.PLAYLIST:
                         return SearchResults(playlists=[item])
-                    elif media_type == MediaType.AUDIOBOOK:
+                    if media_type == MediaType.AUDIOBOOK:
                         return SearchResults(audiobooks=[item])
-                    elif media_type == MediaType.PODCAST:
+                    if media_type == MediaType.PODCAST:
                         return SearchResults(podcasts=[item])
-                    else:
-                        return SearchResults()
+                    return SearchResults()
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
         # always first search the library
@@ -875,9 +876,12 @@ class MusicController(CoreController):
 
     @api_command("music/library/add_item")
     async def add_item_to_library(
-        self, item: str | MediaItemType, overwrite_existing: bool = False
+        self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, ItemMapping):
+            # handle browse results that are returned as ItemMappings
+            item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
             full_item = await self.get_item_by_uri(item)
@@ -1418,8 +1422,7 @@ class MusicController(CoreController):
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
-        else:
-            return provider_fully_played, provider_position_ms
+        return provider_fully_played, provider_position_ms
 
     def get_controller(
         self, media_type: MediaType
@@ -1673,6 +1676,34 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         db_item = await ctrl.get_library_item(db_id)
         await ctrl.match_providers(db_item)
+
+    async def update_provider_mapping(
+        self,
+        media_type: MediaType,
+        db_id: str | int,
+        provider_instance_id: str,
+        provider_item_id: str,
+        *,
+        available: bool | Any = UNSET,
+        in_library: bool | Any = UNSET,
+        is_unique: bool | None | Any = UNSET,
+        url: str | None | Any = UNSET,
+        details: str | None | Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
+    ) -> None:
+        """Update an existing provider mapping for a library item."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.update_provider_mapping(
+            item_id=db_id,
+            provider_instance_id=provider_instance_id,
+            provider_item_id=provider_item_id,
+            available=available,
+            in_library=in_library,
+            is_unique=is_unique,
+            url=url,
+            details=details,
+            audio_format=audio_format,
+        )
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""

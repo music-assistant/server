@@ -678,6 +678,9 @@ class SpotifyConnectProvider(PluginProvider):
                 str(EVENTS_SCRIPT),
                 "--emit-sink-events",
             ]
+            bind_ip = self.mass.streams.bind_ip
+            if bind_ip and bind_ip != "0.0.0.0":
+                args.extend(["--zeroconf-interface", bind_ip])
             self._librespot_proc = librespot = AsyncProcess(
                 args, stdout=False, stderr=True, name=f"librespot[{self.name}]", env=env
             )
@@ -755,6 +758,13 @@ class SpotifyConnectProvider(PluginProvider):
         # this player has become the active spotify connect player
         # we need to start the playback
         if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
+            # If we receive a 'sink' event but we are not officially connected
+            # (i.e. we just disconnected), ignore it to prevent accidental
+            # re-activation of this player (trailing event from dying session).
+            if event_name == "sink" and not self._connected_spotify_username:
+                self.logger.debug("Ignoring trailing sink event while disconnected")
+                return Response()
+
             # Check for matching Spotify provider now that playback is starting
             # This ensures the Spotify music provider has had time to initialize
             if not self._connected_spotify_username or not self._spotify_provider:

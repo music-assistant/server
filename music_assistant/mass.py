@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import pathlib
@@ -137,6 +138,7 @@ class MusicAssistant:
         )
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
+        self._mdns_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
@@ -148,15 +150,14 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         # create shared zeroconf instance
-        # TODO: enumerate interfaces and enable IPv6 support
         zeroconf_interfaces = self.config.get_raw_core_config_value(
-            "streams", CONF_ZEROCONF_INTERFACES, "default"
+            "players", CONF_ZEROCONF_INTERFACES, "default"
         )
+        # IPv6 requires InterfaceChoice.All, so only enable when zeroconf_interfaces is "all"
+        use_all_interfaces = zeroconf_interfaces == "all"
         self.aiozc = AsyncZeroconf(
-            ip_version=IPVersion.V4Only,
-            interfaces=InterfaceChoice.All
-            if zeroconf_interfaces == "all"
-            else InterfaceChoice.Default,
+            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
+            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
         )
         # load all available providers from manifest files
         await self.__load_provider_manifests()
@@ -411,7 +412,7 @@ class MusicAssistant:
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if asyncio.iscoroutinefunction(cb_func):
+            if inspect.iscoroutinefunction(cb_func):
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -465,10 +466,10 @@ class MusicAssistant:
                 return existing
         self.verify_event_loop_thread("create_task")
 
-        if asyncio.iscoroutinefunction(target):
+        if inspect.iscoroutinefunction(target):
             # coroutine function
             task = self.loop.create_task(target(*args, **kwargs))
-        elif asyncio.iscoroutine(target):
+        elif inspect.iscoroutine(target):
             # coroutine
             task = self.loop.create_task(target)
         elif callable(target):
@@ -525,7 +526,7 @@ class MusicAssistant:
             self._tracked_timers.pop(task_id)
             self.create_task(_target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
-        if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutine(target):
             # coroutine function
             if TYPE_CHECKING:
                 target = cast("Coroutine[Any, Any, _R]", target)
@@ -703,6 +704,31 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
 
+    async def run_provider_discovery(self, instance_id: str) -> None:
+        """
+        Run mDNS discovery for a given provider.
+
+        In case of a PlayerProvider, will also call its own discovery method.
+        """
+        provider = self.get_provider(instance_id, return_unavailable=False)
+        if not provider:
+            raise KeyError(f"Provider with instance ID {instance_id} not found")
+        if provider.manifest.mdns_discovery:
+            if provider.instance_id not in self._mdns_locks:
+                self._mdns_locks[provider.instance_id] = asyncio.Lock()
+            async with self._mdns_locks[provider.instance_id]:
+                for mdns_type in provider.manifest.mdns_discovery or []:
+                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                        if mdns_type not in mdns_name or mdns_type == mdns_name:
+                            continue
+                        info = AsyncServiceInfo(mdns_type, mdns_name)
+                        if await info.async_request(self.aiozc.zeroconf, 3000):
+                            await provider.on_mdns_service_state_change(
+                                mdns_name, ServiceStateChange.Added, info
+                            )
+        if isinstance(provider, PlayerProvider):
+            await provider.discover_players()
+
     def verify_event_loop_thread(self, what: str) -> None:
         """Report and raise if we are not running in the event loop thread."""
         if self.loop_thread_id != threading.get_ident():
@@ -811,7 +837,20 @@ class MusicAssistant:
         )
         provider.available = True
 
-        self.create_task(provider.loaded_in_mass())
+        # adapt logging name if needed
+        provider._set_log_level_from_config(provider.config)
+
+        # execute post load actions
+        async def _on_provider_loaded() -> None:
+            await provider.loaded_in_mass()
+            await self.run_provider_discovery(provider.instance_id)
+            # push instance name to config (to persist it if it was autogenerated)
+            if provider.default_name != conf.default_name:
+                self.config.set_provider_default_name(provider.instance_id, provider.default_name)
+
+        self.create_task(_on_provider_loaded())
+
+        # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
@@ -922,12 +961,17 @@ class MusicAssistant:
         """Handle MDNS service state callback."""
 
         async def process_mdns_state_change(prov: ProviderInstanceType) -> None:
+            if prov.instance_id not in self._mdns_locks:
+                self._mdns_locks[prov.instance_id] = asyncio.Lock()
             if state_change == ServiceStateChange.Removed:
                 info = None
             else:
                 info = AsyncServiceInfo(service_type, name)
                 await info.async_request(zeroconf, 3000)
-            await prov.on_mdns_service_state_change(name, state_change, info)
+            # use a lock per provider instance to avoid
+            # race conditions in processing mdns events
+            async with self._mdns_locks[prov.instance_id]:
+                await prov.on_mdns_service_state_change(name, state_change, info)
 
         LOGGER.log(
             VERBOSE_LOG_LEVEL,

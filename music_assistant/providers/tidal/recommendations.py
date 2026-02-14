@@ -62,13 +62,6 @@ class TidalRecommendationManager:
                 parser = await self.get_page_content(page_path)
                 page_name = page_path.split("/")[-1].replace("_", " ").title()
 
-                if page_path in ("pages/home", "pages/explore_top_music") and show_user_identifier:
-                    if (
-                        sorted_instances
-                        and self.provider.instance_id != sorted_instances[0].instance_id
-                    ):
-                        continue
-
                 for module_info in parser._module_map:
                     title = module_info.get("title", "Unknown")
                     if not title or title == "Unknown" or "Videos" in title:
@@ -98,12 +91,13 @@ class TidalRecommendationManager:
                 page_name = module_page_names.get(key, "Tidal")
 
                 folder_name = title
-                if show_user_identifier and page_name not in ("Home", "Explore Top Music"):
-                    user_name = (
+                if show_user_identifier:
+                    raw_user_name = (
                         self.auth.user.profile_name
                         or self.auth.user.user_name
                         or str(self.auth.user_id)
                     )
+                    user_name = raw_user_name.split("@", 1)[0]
                     folder_name = f"{title} ({user_name})"
 
                 results.append(

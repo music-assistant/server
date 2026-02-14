@@ -10,6 +10,7 @@ from http.cookies import BaseCookie, Morsel
 from typing import Any, cast
 
 from aiohttp import ClientSession, ClientTimeout
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
@@ -122,9 +123,8 @@ class GWClient:
                 return await self._gw_api_call(
                     method, use_csrf_token, args, params, http_method, False
                 )
-            else:
-                msg = "Failed to call GW-API"
-                raise DeezerGWError(msg, result_json["error"])
+            msg = "Failed to call GW-API"
+            raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
     async def get_song_data(self, track_id: str) -> dict[str, Any]:
@@ -167,7 +167,11 @@ class GWClient:
             msg = "Received an error from API"
             raise DeezerGWError(msg, error)
 
-        return result_json["data"][0]["media"][0], song_data
+        media_list = result_json["data"][0].get("media", [])
+        if not media_list:
+            raise MediaNotFoundError(f"No media available for track {track_id}")
+
+        return media_list[0], song_data
 
     async def log_listen(
         self, next_track: str | None = None, last_track: StreamDetails | None = None

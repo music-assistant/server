@@ -17,6 +17,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
@@ -26,7 +27,12 @@ import ifaddr
 from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
+    LIVE_INDICATORS,
+    SOUNDTRACK_INDICATORS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -298,7 +304,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             for ip in adapter.ips:
                 if ip.is_IPv6 and not include_ipv6:
                     continue
-                ip_str = str(ip.ip)
+                # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
+                ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
                 if ip_str.startswith(("127", "169.254")):
                     # filter out IPv4 loopback/APIPA address
                     continue
@@ -332,15 +339,19 @@ async def is_port_in_use(port: int) -> bool:
     """Check if port is in use."""
 
     def _is_port_in_use() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
-            # Set SO_REUSEADDR to match asyncio.start_server behavior
-            # This allows binding to ports in TIME_WAIT state
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
+        # A port is considered free if it can be bound on at least one address family.
+        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
             try:
-                _sock.bind(("0.0.0.0", port))
+                with socket.socket(family, socket.SOCK_STREAM) as _sock:
+                    # Set SO_REUSEADDR to match asyncio.start_server behavior
+                    # This allows binding to ports in TIME_WAIT state
+                    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    _sock.bind((addr, port))
+                    return False
             except OSError:
-                return True
-        return False
+                continue
+        return True
 
     return await asyncio.to_thread(_is_port_in_use)
 
@@ -375,6 +386,13 @@ async def get_ip_pton(ip_string: str) -> bytes:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
+def format_ip_for_url(ip_address: str) -> str:
+    """Wrap IPv6 addresses in brackets for use in URLs (RFC 2732)."""
+    if ":" in ip_address:
+        return f"[{ip_address}]"
+    return ip_address
+
+
 async def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
 
@@ -383,7 +401,7 @@ async def get_folder_size(folderpath: str) -> float:
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
                 _fp = os.path.join(dirpath, _file)
-                total_size += os.path.getsize(_fp)
+                total_size += Path(_fp).stat().st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -619,6 +637,12 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
             # filter out APIPA address
             continue
         return address
+    # fall back to IPv6 addresses if no usable IPv4 address found
+    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+        if address.startswith(("::1", "fe80")):
+            # filter out loopback and link-local addresses
+            continue
+        return address
     return None
 
 
@@ -686,6 +710,9 @@ def validate_announcement_chime_url(url: str) -> bool:
     """Validate announcement chime URL format."""
     if not url or not url.strip():
         return True  # Empty URL is valid
+
+    if url == ANNOUNCE_ALERT_FILE:
+        return True  # Built-in chime file is valid
 
     try:
         parsed = urlparse(url.strip())

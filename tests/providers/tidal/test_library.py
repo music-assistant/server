@@ -56,7 +56,9 @@ async def test_get_artists(
     mock_parse_artist: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
     """Test get_artists."""
-    provider_mock.api.paginate.return_value = [{"id": 1, "name": "Test Artist"}]
+    provider_mock.api.paginate.return_value = [
+        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "name": "Test Artist"}}
+    ]
     mock_parse_artist.return_value = Mock(item_id="1")
 
     artists = [a async for a in library_manager.get_artists()]
@@ -65,7 +67,6 @@ async def test_get_artists(
     assert artists[0].item_id == "1"
     provider_mock.api.paginate.assert_called_with(
         "users/12345/favorites/artists",
-        nested_key="item",
     )
     mock_parse_artist.assert_called_once()
 
@@ -75,7 +76,9 @@ async def test_get_albums(
     mock_parse_album: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
     """Test get_albums."""
-    provider_mock.api.paginate.return_value = [{"id": 1, "title": "Test Album"}]
+    provider_mock.api.paginate.return_value = [
+        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "title": "Test Album"}}
+    ]
     mock_parse_album.return_value = Mock(item_id="1")
 
     albums = [a async for a in library_manager.get_albums()]
@@ -84,7 +87,6 @@ async def test_get_albums(
     assert albums[0].item_id == "1"
     provider_mock.api.paginate.assert_called_with(
         "users/12345/favorites/albums",
-        nested_key="item",
     )
     mock_parse_album.assert_called_once()
 
@@ -94,7 +96,9 @@ async def test_get_tracks(
     mock_parse_track: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
     """Test get_tracks."""
-    provider_mock.api.paginate.return_value = [{"id": 1, "title": "Test Track"}]
+    provider_mock.api.paginate.return_value = [
+        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "title": "Test Track"}}
+    ]
     mock_parse_track.return_value = Mock(item_id="1")
 
     tracks = [t async for t in library_manager.get_tracks()]
@@ -103,7 +107,6 @@ async def test_get_tracks(
     assert tracks[0].item_id == "1"
     provider_mock.api.paginate.assert_called_with(
         "users/12345/favorites/tracks",
-        nested_key="item",
     )
     mock_parse_track.assert_called_once()
 
@@ -116,7 +119,12 @@ async def test_get_playlists(
     # Mock mixes response
     mixes_response = [{"id": "mix_1", "title": "Mix 1"}]
     # Mock playlists response
-    playlists_response = [{"uuid": "pl_1", "title": "Playlist 1"}]
+    playlists_response = [
+        {
+            "created": "2024-01-01T00:00:00",
+            "playlist": {"uuid": "pl_1", "title": "Playlist 1"},
+        }
+    ]
 
     # Configure paginate side effect
     async def paginate_side_effect(
@@ -126,7 +134,8 @@ async def test_get_playlists(
             for item in mixes_response:
                 yield item
         else:
-            for item in playlists_response:
+            # The ignore[assignment] is needed because of the different return types
+            for item in playlists_response:  # type: ignore[assignment]
                 yield item
 
     provider_mock.api.paginate.side_effect = paginate_side_effect
