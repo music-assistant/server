@@ -177,7 +177,8 @@
             stopPositionTimer();
             wsConnection = null;
             if (event.code !== 1000 && event.code !== 1001) {
-                setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay);
+                var jitter = Math.random() * 1000;
+                setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay + jitter);
                 wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
             }
         };
