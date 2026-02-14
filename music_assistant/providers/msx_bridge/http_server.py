@@ -149,6 +149,10 @@ class MSXHTTPServer:
         self.app.router.add_get("/msx/audio/{player_id}", self._handle_msx_audio)
         self.app.router.add_get("/msx/audio/{player_id}.mp3", self._handle_msx_audio)
 
+        # Kiosk web player (browser-based, no MSX app needed)
+        self.app.router.add_get("/web", self._handle_web_app)
+        self.app.router.add_static("/web/", STATIC_DIR / "web")
+
         # Health
         self.app.router.add_get("/health", self._handle_health)
 
@@ -250,6 +254,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
 <code>http://{request.host}/msx/start.json</code>
 </div>
 <div class="info">
+<h3>Web Player (Kiosk)</h3>
+<a href="/web" style="color: #1976d2;">http://{request.host}/web</a>
+</div>
+<div class="info">
 <h3>Players</h3>
 <ul>{player_info or "<li>No players registered</li>"}</ul>
 </div>
@@ -291,6 +299,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         """Serve input.html and ensure player is registered when Search is opened."""
         await self._ensure_player_for_request(request)
         return web.FileResponse(STATIC_DIR / "input.html")
+
+    async def _handle_web_app(self, request: web.Request) -> web.Response:
+        """Serve the kiosk web player SPA (browser-based, no MSX app needed)."""
+        response = cast("web.Response", web.FileResponse(STATIC_DIR / "web" / "index.html"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 
     # --- MSX Content Pages (native MSX JSON) ---
 
@@ -1643,7 +1657,13 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
-        player = await self.provider.get_or_register_player(player_id)
+        # Web kiosk clients pass source=web to distinguish from MSX TV players
+        display_name: str | None = None
+        if request.query.get("source") == "web":
+            display_name = self.provider._player_display_name_from_id(
+                player_id, prefix_label="WEB TV"
+            )
+        player = await self.provider.get_or_register_player(player_id, display_name=display_name)
         return player_id, device_param, player
 
     def _current_media_matches_uri(self, player: MSXPlayer, track_uri: str) -> bool:

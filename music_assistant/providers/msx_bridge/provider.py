@@ -125,16 +125,16 @@ class MSXBridgeProvider(PlayerProvider):
         self.logger.info("Registered MSX player: %s (%s)", name, player_id)
         return player
 
-    def _player_display_name_from_id(self, player_id: str) -> str:
+    def _player_display_name_from_id(self, player_id: str, prefix_label: str = "MSX TV") -> str:
         """Build a unique display name from player_id for the MA UI."""
         prefix = MSX_PLAYER_ID_PREFIX
         suffix = player_id.removeprefix(prefix)
         if not suffix:
-            return "MSX TV"
+            return prefix_label
         # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
         if "_" in suffix and all(p.isdigit() for p in suffix.replace("_", " ").split()):
-            return f"MSX TV ({suffix.replace('_', '.')})"
-        return f"MSX TV ({suffix})"
+            return f"{prefix_label} ({suffix.replace('_', '.')})"
+        return f"{prefix_label} ({suffix})"
 
     def on_player_activity(self, player_id: str) -> None:
         """Record activity for a player (extends idle timeout)."""

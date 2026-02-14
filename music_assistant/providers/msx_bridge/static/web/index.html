@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Music Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #1a1a1a;
+            --sidebar-bg: #212121;
+            --surface: #2a2a2a;
+            --text: #e0e0e0;
+            --text-dim: #999;
+            --text-menu: #bbb;
+            --accent: #fff;
+            --menu-active: #e0e0e0;
+            --sidebar-w: 220px;
+            --font: 'Outfit', -apple-system, 'Segoe UI', sans-serif;
+        }
+
+        html, body {
+            height: 100%; overflow: hidden;
+            background: var(--bg); color: var(--text);
+            font-family: var(--font); font-size: 15px;
+        }
+
+        /* --- Main layout: sidebar + content --- */
+        #app {
+            height: 100%; display: flex;
+        }
+
+        /* --- Sidebar --- */
+        #sidebar {
+            width: var(--sidebar-w); flex-shrink: 0;
+            background: var(--sidebar-bg);
+            display: flex; flex-direction: column;
+            border-right: 1px solid rgba(255,255,255,0.06);
+            z-index: 10;
+        }
+
+        #sidebar-header {
+            padding: 24px 20px 18px;
+            font-size: 1.15rem; font-weight: 600;
+            color: var(--accent);
+            letter-spacing: -0.01em;
+        }
+
+        #menu { list-style: none; flex: 1; padding: 0 8px; }
+
+        .menu-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 14px; margin: 2px 0;
+            border-radius: 8px; cursor: pointer;
+            color: var(--text-menu); font-size: 0.92rem;
+            transition: background 0.15s, color 0.15s;
+        }
+        .menu-item:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+        .menu-item.active { background: rgba(255,255,255,0.1); color: var(--accent); font-weight: 500; }
+        .menu-item .material-symbols-rounded { font-size: 20px; opacity: 0.7; }
+        .menu-item.active .material-symbols-rounded { opacity: 1; }
+
+        /* --- Right panel --- */
+        #main {
+            flex: 1; display: flex; flex-direction: column;
+            min-width: 0; position: relative;
+        }
+
+        /* Content header with back button */
+        #content-header {
+            display: none; align-items: center; gap: 12px;
+            padding: 12px 20px;
+            background: rgba(255,255,255,0.03);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        #content-header.visible { display: flex; }
+
+        #btn-back {
+            width: 32px; height: 32px; border-radius: 50%; border: none;
+            background: rgba(255,255,255,0.08); color: var(--text);
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            transition: background 0.15s;
+        }
+        #btn-back:hover { background: rgba(255,255,255,0.15); }
+        #btn-back .material-symbols-rounded { font-size: 20px; }
+
+        #content-title {
+            flex: 1; font-size: 0.95rem; font-weight: 500;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* --- Content area --- */
+        #content {
+            flex: 1; overflow-y: auto; overflow-x: hidden;
+            padding: 16px 20px;
+        }
+        #content::-webkit-scrollbar { width: 6px; }
+        #content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+        /* Grid (albums, artists, playlists) */
+        .content-grid {
+            display: grid;
+            grid-template-columns: repeat(var(--cols, 4), 1fr);
+            gap: 16px;
+        }
+
+        .card {
+            cursor: pointer; border-radius: 8px;
+            background: var(--surface); overflow: hidden;
+            transition: transform 0.15s, background 0.15s;
+            animation: fadeIn 0.3s ease both;
+        }
+        .card:hover { transform: scale(1.02); background: #333; }
+        .card:active { transform: scale(0.98); }
+
+        .card-img { aspect-ratio: 1; overflow: hidden; background: #333; }
+        .card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .card-img--empty {
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-dim); font-size: 2rem;
+        }
+        .card-body { padding: 10px 12px; }
+        .card-title {
+            font-weight: 500; font-size: 0.88rem;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .card-sub {
+            color: var(--text-dim); font-size: 0.78rem; margin-top: 3px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* Track list */
+        .track-list { display: flex; flex-direction: column; }
+
+        .track-row {
+            display: flex; align-items: center; gap: 12px;
+            padding: 8px 12px; border-radius: 6px;
+            cursor: pointer; transition: background 0.12s;
+            animation: fadeIn 0.25s ease both;
+        }
+        .track-row:hover { background: rgba(255,255,255,0.06); }
+        .track-row:active { background: rgba(255,255,255,0.1); }
+
+        .track-art {
+            width: 48px; height: 48px; border-radius: 4px;
+            object-fit: cover; background: #333; flex-shrink: 0;
+        }
+        .track-art--empty {
+            width: 48px; height: 48px; border-radius: 4px;
+            background: #333; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-dim); font-size: 1.2rem;
+        }
+        .track-info { flex: 1; min-width: 0; }
+        .track-title {
+            font-weight: 500; font-size: 0.9rem; color: var(--text);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .track-sub {
+            color: var(--text-dim); font-size: 0.8rem; margin-top: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* --- Player bar --- */
+        #player-bar {
+            display: none; align-items: center; gap: 14px;
+            padding: 10px 20px;
+            background: #181818;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            z-index: 20;
+        }
+        #player-bar.active { display: flex; }
+
+        #player-art { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+
+        #bar-info { flex: 1; min-width: 0; cursor: pointer; }
+        #bar-title { font-weight: 500; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #bar-artist { color: var(--text-dim); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        .controls { display: flex; align-items: center; gap: 6px; }
+        .ctrl {
+            width: 36px; height: 36px; border-radius: 50%; border: none;
+            background: transparent; color: var(--text); cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.12s, color 0.12s;
+        }
+        .ctrl:hover { background: rgba(255,255,255,0.1); }
+        .ctrl--primary { width: 40px; height: 40px; background: #fff; color: #1a1a1a; }
+        .ctrl--primary:hover { background: #ddd; color: #1a1a1a; }
+
+        .progress { display: flex; align-items: center; gap: 8px; }
+        .time { color: var(--text-dim); font-size: 0.72rem; font-variant-numeric: tabular-nums; min-width: 32px; }
+
+        input[type="range"] {
+            -webkit-appearance: none; appearance: none;
+            width: 120px; height: 3px;
+            background: rgba(255,255,255,0.15); border-radius: 2px; outline: none; cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 12px; height: 12px;
+            border-radius: 50%; background: #fff; border: none;
+        }
+
+        /* --- Full player --- */
+        #player-full {
+            position: fixed; inset: 0; z-index: 30;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: #111;
+            opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
+        }
+        #player-full.active { opacity: 1; pointer-events: auto; }
+
+        #full-art {
+            width: min(45vw, 45vh); height: min(45vw, 45vh);
+            border-radius: 8px; object-fit: cover;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.5); margin-bottom: 24px;
+        }
+        #full-title { font-size: 1.2rem; font-weight: 600; text-align: center; max-width: 70%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #full-artist { color: var(--text-dim); font-size: 0.9rem; margin-top: 4px; text-align: center; }
+
+        .full-progress { display: flex; align-items: center; gap: 12px; margin-top: 24px; width: min(50vw, 420px); }
+        .full-progress input[type="range"] { flex: 1; height: 4px; }
+        .full-progress .time { font-size: 0.8rem; min-width: 38px; }
+
+        .full-controls { display: flex; align-items: center; gap: 20px; margin-top: 20px; }
+        .full-controls .ctrl { width: 48px; height: 48px; }
+        .full-controls .ctrl--primary { width: 56px; height: 56px; }
+        .full-controls .ctrl .material-symbols-rounded { font-size: 26px; }
+        .full-controls .ctrl--primary .material-symbols-rounded { font-size: 32px; }
+
+        #full-browse {
+            margin-top: 28px; padding: 8px 24px;
+            border: 1px solid rgba(255,255,255,0.15); background: transparent;
+            color: var(--text-dim); border-radius: 20px; cursor: pointer;
+            font-family: var(--font); font-size: 0.82rem;
+            transition: border-color 0.2s, color 0.2s;
+        }
+        #full-browse:hover { border-color: #fff; color: #fff; }
+
+        /* --- Search overlay --- */
+        #search-overlay {
+            position: fixed; inset: 0; z-index: 40;
+            background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
+            display: flex; align-items: flex-start; justify-content: center;
+            padding-top: 12vh;
+            opacity: 0; pointer-events: none; transition: opacity 0.2s;
+        }
+        #search-overlay.active { opacity: 1; pointer-events: auto; }
+
+        .search-box { width: min(88vw, 460px); position: relative; }
+        #search-input {
+            width: 100%; padding: 14px 46px 14px 18px;
+            background: #2a2a2a; border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px; color: var(--text);
+            font-family: var(--font); font-size: 1rem; outline: none;
+        }
+        #search-input:focus { border-color: rgba(255,255,255,0.3); }
+        #search-input::placeholder { color: var(--text-dim); }
+        #search-close {
+            position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+            width: 34px; height: 34px; border-radius: 50%; border: none;
+            background: transparent; color: var(--text-dim); cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        /* --- Loading --- */
+        #loading {
+            position: fixed; inset: 0; z-index: 50;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(26,26,26,0.5);
+            opacity: 0; pointer-events: none; transition: opacity 0.15s;
+        }
+        #loading.active { opacity: 1; pointer-events: auto; }
+        .spinner {
+            width: 32px; height: 32px;
+            border: 3px solid rgba(255,255,255,0.1); border-top-color: #fff;
+            border-radius: 50%; animation: spin 0.7s linear infinite;
+        }
+
+        .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); font-size: 0.95rem; }
+
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* --- Responsive --- */
+        @media (max-width: 900px) {
+            .content-grid { --cols: 3 !important; }
+        }
+        @media (max-width: 640px) {
+            :root { --sidebar-w: 180px; }
+            .content-grid { --cols: 2 !important; gap: 10px; }
+            #content { padding: 12px; }
+            .progress { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <nav id="sidebar">
+            <div id="sidebar-header">Music Assistant</div>
+            <ul id="menu"></ul>
+        </nav>
+
+        <!-- Right panel -->
+        <div id="main">
+            <!-- Content sub-header (back + title for drill-down pages) -->
+            <div id="content-header">
+                <button id="btn-back"><span class="material-symbols-rounded">arrow_back</span></button>
+                <div id="content-title"></div>
+            </div>
+
+            <!-- Content area -->
+            <div id="content"></div>
+
+            <!-- Player bar -->
+            <footer id="player-bar">
+                <img id="player-art" src="" alt="">
+                <div id="bar-info">
+                    <div id="bar-title"></div>
+                    <div id="bar-artist"></div>
+                </div>
+                <div class="controls">
+                    <button id="btn-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
+                    <button id="btn-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
+                    <button id="btn-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+                </div>
+                <div class="progress">
+                    <span id="bar-time" class="time">0:00</span>
+                    <input type="range" id="bar-seek" min="0" max="100" value="0" step="0.1">
+                    <span id="bar-dur" class="time">0:00</span>
+                </div>
+            </footer>
+        </div>
+
+        <!-- Full-screen player -->
+        <div id="player-full">
+            <img id="full-art" src="" alt="">
+            <div id="full-title"></div>
+            <div id="full-artist"></div>
+            <div class="full-progress">
+                <span id="full-time" class="time">0:00</span>
+                <input type="range" id="full-seek" min="0" max="100" value="0" step="0.1">
+                <span id="full-dur" class="time">0:00</span>
+            </div>
+            <div class="full-controls">
+                <button id="full-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
+                <button id="full-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
+                <button id="full-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+            </div>
+            <button id="full-browse">Browse Library</button>
+        </div>
+
+        <!-- Search overlay -->
+        <div id="search-overlay">
+            <div class="search-box">
+                <input type="text" id="search-input" placeholder="Search music...">
+                <button id="search-close"><span class="material-symbols-rounded">close</span></button>
+            </div>
+        </div>
+
+        <div id="loading"><div class="spinner"></div></div>
+    </div>
+
+    <audio id="audio" preload="none"></audio>
+    <script src="/web/web.js"></script>
+</body>
+</html>
