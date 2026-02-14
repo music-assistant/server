@@ -247,12 +247,14 @@ class AirPlayPlayer(Player):
 
     def _requires_pairing(self) -> bool:
         """Check if this device requires pairing (Apple TV or macOS)."""
-        if self.device_info.manufacturer.lower() != "apple":
+        if self.device_info.manufacturer.lower() not in {"apple", "lg electronics"}:
             return False
 
         model = self.device_info.model
         # Apple TV devices
         if "appletv" in model.lower() or "apple tv" in model.lower():
+            return True
+        if "49sk8500pla" in model.lower():
             return True
         # Mac devices (including iMac, MacBook, Mac mini, Mac Pro, Mac Studio)
         return model.startswith(("Mac", "iMac"))
