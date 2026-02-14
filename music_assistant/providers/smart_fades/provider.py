@@ -222,7 +222,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
     @staticmethod
     def _resample_block_sync(pcm: np.ndarray, orig_sr: int) -> np.ndarray:
         """Resample a full audio block to analysis sample rate using soxr. Runs synchronously."""
-        return soxr.resample(pcm, in_rate=orig_sr, out_rate=ANALYSIS_SAMPLE_RATE)
+        resampled: np.ndarray = soxr.resample(pcm, in_rate=orig_sr, out_rate=ANALYSIS_SAMPLE_RATE)
+        return resampled
 
     async def _process_block(self, data: SmartFadesData) -> None:
         """Resample accumulated PCM buffer and extract features.

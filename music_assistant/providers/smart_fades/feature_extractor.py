@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 
 import numpy as np
 import torch
@@ -24,7 +25,9 @@ class AdvancedBeatFeatureExtractor:
     - center=True
 
     Uses a sample-precise overlap approach that extracts exactly the frames
-    corresponding to each chunk's sample range.
+    corresponding to each chunk's sample range. Delays the last few frames
+    of each chunk so they can be recomputed with real forward context from
+    the next chunk, avoiding reflect-padding artifacts at block boundaries.
 
     Assumes input PCM is already at 22050 Hz mono.
     """
@@ -55,11 +58,20 @@ class AdvancedBeatFeatureExtractor:
         self._device = device
         self._n_mels = n_mels
 
+        # Number of frames to delay at the end of each chunk so they can be
+        # recomputed with real forward context from the next chunk.
+        # These frames need n_fft/2 samples of forward context that we don't
+        # have yet; delaying lets the next chunk provide it.
+        self._frames_to_delay = math.ceil((n_fft // 2) / hop_length)
+
         # Track the total samples accumulated so far
         self._total_samples = 0
 
-        # Buffer to hold samples from previous chunk needed for frame computation
-        # We need n_fft/2 samples before each chunk boundary to compute edge frames
+        # Buffer to hold samples from previous chunk needed for frame computation.
+        # Must be large enough to cover backward context for delayed frames:
+        # n_fft//2 (mel window half) + _frames_to_delay * hop_length (delayed range)
+        # + hop_length (hop-alignment margin).
+        self._keep_samples = n_fft + self._frames_to_delay * hop_length
         self._prev_samples: np.ndarray | None = None
 
         # Use torchaudio MelSpectrogram with center=True (standard beat_this approach)
@@ -90,16 +102,29 @@ class AdvancedBeatFeatureExtractor:
             chunk_start = self._total_samples
             chunk_end = chunk_start + len(pcm)
 
-            # Determine which frames belong to this chunk
-            # Frame j is centered at sample j * hop_length
+            # Determine which frames belong to this chunk.
+            # Frame j is centered at sample j * hop_length.
+            # If we have delayed frames from the previous chunk, start from there.
             if chunk_start == 0:
                 first_frame = 0
+            elif self._last_output_frame >= 0:
+                first_frame = self._last_output_frame + 1
             else:
-                # First frame whose center is >= chunk start (ceiling division)
                 first_frame = (chunk_start + self.hop_length - 1) // self.hop_length
 
             # Last frame whose center is within this chunk
             last_frame = (chunk_end - 1) // self.hop_length
+
+            # Delay the last frames so they can be recomputed with forward
+            # context from the next chunk. This avoids reflect-padding artifacts
+            # at block boundaries.
+            output_last_frame = last_frame - self._frames_to_delay
+
+            if output_last_frame < first_frame:
+                # Not enough frames to output anything yet; store samples and wait
+                self._prev_samples = pcm[-self._keep_samples :].copy()
+                self._total_samples = chunk_end
+                return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
             # Determine the audio range needed to compute these frames.
             # Align audio_start to a hop_length boundary so segment frames
@@ -117,11 +142,8 @@ class AdvancedBeatFeatureExtractor:
                 audio_segment = pcm
                 audio_start = chunk_start
 
-            # Store end samples for next chunk.
-            # The hop-aligned start may need up to n_fft//2 + hop - 1 = 952 samples
-            # before chunk_start; use n_fft (1024) for a clean margin.
-            keep_samples = self.n_fft
-            self._prev_samples = pcm[-keep_samples:].copy()
+            # Store end samples for next chunk
+            self._prev_samples = pcm[-self._keep_samples :].copy()
 
             # Update total samples
             self._total_samples = chunk_end
@@ -138,19 +160,19 @@ class AdvancedBeatFeatureExtractor:
             segment_first_global_frame = audio_start // self.hop_length
 
             start_in_segment = first_frame - segment_first_global_frame
-            end_in_segment = last_frame - segment_first_global_frame + 1
+            end_in_segment = output_last_frame - segment_first_global_frame + 1
 
             start_in_segment = max(0, start_in_segment)
             end_in_segment = min(len(features), end_in_segment)
 
-            self._last_output_frame = last_frame
+            self._last_output_frame = output_last_frame
 
             return features[start_in_segment:end_in_segment]
 
         return await asyncio.to_thread(_process_sync)
 
     async def finalize(self) -> np.ndarray:
-        """Process any remaining samples to get the final frames.
+        """Flush delayed frames and process any remaining samples.
 
         :return: Final log-mel features.
         """
@@ -160,8 +182,6 @@ class AdvancedBeatFeatureExtractor:
                 return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
             # MelSpectrogram(center=True) produces 1 + total_samples // hop frames.
-            # process_pcm outputs up to frame (total_samples - 1) // hop.
-            # When total_samples is exactly divisible by hop, one frame is missed.
             total_frames = 1 + self._total_samples // self.hop_length
             extra_count = total_frames - self._last_output_frame - 1
             if extra_count <= 0:
