@@ -23,7 +23,7 @@ from tests.common import MockPlayer, MockProvider
 
 
 @pytest.fixture
-def mock_mass():
+def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
@@ -48,7 +48,7 @@ def controller(mock_mass):
 class TestSetMembersValidation:
     """Test cmd_set_members validation logic."""
 
-    def test_set_members_requires_feature(self, mock_mass):
+    def test_set_members_requires_feature(self, mock_mass: MagicMock) -> None:
         """Test that set_members requires SET_MEMBERS feature."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -69,7 +69,7 @@ class TestSetMembersValidation:
         with pytest.raises(UnsupportedFeaturedException):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
 
-    def test_cannot_group_incompatible_players(self, mock_mass):
+    def test_cannot_group_incompatible_players(self, mock_mass: MagicMock) -> None:
         """Test that incompatible players cannot be grouped."""
         controller = PlayerController(mock_mass)
         provider_a = MockProvider("provider_a", instance_id="provider_a", mass=mock_mass)
@@ -96,7 +96,7 @@ class TestSetMembersValidation:
 class TestCacheInvalidationAfterGrouping:
     """Test that caches are invalidated after grouping operations."""
 
-    async def test_all_players_cache_cleared_after_set_members(self, mock_mass):
+    async def test_all_players_cache_cleared_after_set_members(self, mock_mass: MagicMock) -> None:
         """
         Test that all players' caches are cleared after set_members.
 
@@ -144,7 +144,7 @@ class TestCacheInvalidationAfterGrouping:
 class TestGroupUngroup:
     """Test group and ungroup commands."""
 
-    async def test_group_command(self, mock_mass):
+    async def test_group_command(self, mock_mass: MagicMock) -> None:
         """Test the group command (cmd_group)."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -154,6 +154,8 @@ class TestGroupUngroup:
         leader._attr_can_group_with = {"member"}  # Leader can group with member
 
         member = MockPlayer(provider, "member", "Member")
+        # Make sure member is already powered on to skip power handling
+        member._attr_powered = True
 
         controller._players = {"leader": leader, "member": member}
         controller._player_throttlers = {
@@ -178,6 +180,12 @@ class TestGroupUngroup:
 
         leader.set_members = mock_set_members
 
+        # Mock power handling to skip power control (focus is on grouping logic)
+        async def mock_handle_cmd_power(player_id: str, powered: bool) -> None:
+            pass
+
+        controller._handle_cmd_power = mock_handle_cmd_power
+
         # Execute group command
         await controller.cmd_group("member", "leader")
 
@@ -190,7 +198,7 @@ class TestGroupUngroup:
 class TestPlayerAvailability:
     """Test player availability checks in grouping."""
 
-    def test_unavailable_player_rejected(self, mock_mass):
+    def test_unavailable_player_rejected(self, mock_mass: MagicMock) -> None:
         """Test that unavailable players are rejected when grouping."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)

@@ -14,6 +14,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
 
 def create_mock_config(name: str) -> MagicMock:
@@ -22,6 +23,21 @@ def create_mock_config(name: str) -> MagicMock:
     config.name = None  # No custom name, use default
     config.default_name = name
     return config
+
+
+def create_mock_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
+    """Create a mock UniversalPlayerProvider for testing."""
+    # Create a mock manifest
+    manifest = MagicMock()
+    manifest.domain = "universal_player"
+    manifest.name = "Universal Player"
+
+    # Create provider with the mock manifest
+    provider = UniversalPlayerProvider.__new__(UniversalPlayerProvider)
+    provider.mass = mock_mass
+    provider.manifest = manifest
+    provider.logger = logging.getLogger("test.universal_player")
+    return provider
 
 
 class MockProvider:
@@ -85,7 +101,7 @@ class MockPlayer(Player):
 
 
 @pytest.fixture
-def mock_mass():
+def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
@@ -103,7 +119,7 @@ def mock_mass():
 class TestIdentifiersMatch:
     """Tests for identifier matching logic."""
 
-    def test_mac_address_match(self, mock_mass):
+    def test_mac_address_match(self, mock_mass: MagicMock) -> None:
         """Test that MAC addresses match correctly."""
         controller = PlayerController(mock_mass)
 
@@ -123,7 +139,7 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is True
 
-    def test_mac_address_no_match(self, mock_mass):
+    def test_mac_address_no_match(self, mock_mass: MagicMock) -> None:
         """Test that different MAC addresses don't match."""
         controller = PlayerController(mock_mass)
 
@@ -143,7 +159,7 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is False
 
-    def test_ip_address_no_match(self, mock_mass):
+    def test_ip_address_no_match(self, mock_mass: MagicMock) -> None:
         """Test that IP addresses don't match (IP is excluded as it's not stable)."""
         controller = PlayerController(mock_mass)
 
@@ -164,7 +180,7 @@ class TestIdentifiersMatch:
         # IP address matching is intentionally disabled to prevent false matches
         assert controller._identifiers_match(player_a, player_b) is False
 
-    def test_sonos_uuid_dlna_suffix_match(self, mock_mass):
+    def test_sonos_uuid_dlna_suffix_match(self, mock_mass: MagicMock) -> None:
         """Test Sonos UUID matching with DLNA _MR suffix."""
         controller = PlayerController(mock_mass)
 
@@ -186,7 +202,7 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is True
 
-    def test_no_identifiers_no_match(self, mock_mass):
+    def test_no_identifiers_no_match(self, mock_mass: MagicMock) -> None:
         """Test that players without identifiers don't match."""
         controller = PlayerController(mock_mass)
 
@@ -200,7 +216,7 @@ class TestIdentifiersMatch:
 class TestProtocolPlayerDetection:
     """Tests for protocol player type detection."""
 
-    def test_is_protocol_player_true(self, mock_mass):
+    def test_is_protocol_player_true(self, mock_mass: MagicMock) -> None:
         """Test that PlayerType.PROTOCOL is correctly detected."""
         controller = PlayerController(mock_mass)
 
@@ -214,7 +230,7 @@ class TestProtocolPlayerDetection:
 
         assert controller._is_protocol_player(player) is True
 
-    def test_is_protocol_player_false(self, mock_mass):
+    def test_is_protocol_player_false(self, mock_mass: MagicMock) -> None:
         """Test that PlayerType.PLAYER is not detected as protocol."""
         controller = PlayerController(mock_mass)
 
@@ -232,7 +248,7 @@ class TestProtocolPlayerDetection:
 class TestFindMatchingProtocolPlayers:
     """Tests for finding matching protocol players."""
 
-    def test_find_matching_by_mac(self, mock_mass):
+    def test_find_matching_by_mac(self, mock_mass: MagicMock) -> None:
         """Test finding matching protocol players by MAC address."""
         controller = PlayerController(mock_mass)
 
@@ -277,9 +293,9 @@ class TestFindMatchingProtocolPlayers:
 class TestGetDeviceKeyFromPlayers:
     """Tests for device key generation."""
 
-    def test_device_key_from_mac(self, mock_mass):
+    def test_device_key_from_mac(self, mock_mass: MagicMock) -> None:
         """Test device key generation from MAC address."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("airplay")
         player = MockPlayer(
@@ -289,13 +305,13 @@ class TestGetDeviceKeyFromPlayers:
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
         )
 
-        device_key = controller._get_device_key_from_players([player])
+        device_key = universal_provider._get_device_key_from_players([player])
 
         assert device_key == "aabbccddeeff"
 
-    def test_device_key_from_uuid_fallback(self, mock_mass):
+    def test_device_key_from_uuid_fallback(self, mock_mass: MagicMock) -> None:
         """Test device key generation falls back to UUID when no MAC available."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("dlna")
         player = MockPlayer(
@@ -305,13 +321,13 @@ class TestGetDeviceKeyFromPlayers:
             identifiers={IdentifierType.UUID: "uuid:12345678-1234-1234-1234-123456789abc"},
         )
 
-        device_key = controller._get_device_key_from_players([player])
+        device_key = universal_provider._get_device_key_from_players([player])
 
         assert device_key == "uuid12345678123412341234123456789abc"
 
-    def test_device_key_from_ip_falls_back_to_player_id(self, mock_mass):
+    def test_device_key_from_ip_falls_back_to_player_id(self, mock_mass: MagicMock) -> None:
         """Test that device key falls back to player_id for IP-only players (IP not used)."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("airplay")
         player = MockPlayer(
@@ -321,15 +337,17 @@ class TestGetDeviceKeyFromPlayers:
             identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
         )
 
-        device_key = controller._get_device_key_from_players([player])
+        device_key = universal_provider._get_device_key_from_players([player])
 
         # IP address is not used for device key - falls back to player_id
         # This allows protocol players without MAC/UUID to still get a UniversalPlayer
         assert device_key == "ap_123456"
 
-    def test_device_key_from_no_identifiers_falls_back_to_player_id(self, mock_mass):
+    def test_device_key_from_no_identifiers_falls_back_to_player_id(
+        self, mock_mass: MagicMock
+    ) -> None:
         """Test that device key falls back to player_id when no identifiers at all."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("sendspin")
         player = MockPlayer(
@@ -339,7 +357,7 @@ class TestGetDeviceKeyFromPlayers:
             # No identifiers at all (like Sendspin protocol players)
         )
 
-        device_key = controller._get_device_key_from_players([player])
+        device_key = universal_provider._get_device_key_from_players([player])
 
         # Falls back to player_id when no MAC/UUID identifiers
         assert device_key == "sendspindeviceabc"
@@ -348,9 +366,9 @@ class TestGetDeviceKeyFromPlayers:
 class TestGetCleanPlayerName:
     """Tests for player name selection."""
 
-    def test_prefers_chromecast_name(self, mock_mass):
+    def test_prefers_chromecast_name(self, mock_mass: MagicMock) -> None:
         """Test that Chromecast names are preferred over other protocols."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         airplay_provider = MockProvider("airplay")
         chromecast_provider = MockProvider("chromecast")
@@ -369,12 +387,12 @@ class TestGetCleanPlayerName:
         )
 
         # Chromecast should be preferred (priority 1)
-        clean_name = controller._get_clean_player_name([airplay_player, chromecast_player])
+        clean_name = universal_provider._get_clean_player_name([airplay_player, chromecast_player])
         assert clean_name == "Living Room Speaker"
 
-    def test_filters_mac_address_names(self, mock_mass):
+    def test_filters_mac_address_names(self, mock_mass: MagicMock) -> None:
         """Test that MAC address-like names are filtered out."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         squeezelite_provider = MockProvider("squeezelite")
         airplay_provider = MockProvider("airplay")
@@ -395,12 +413,12 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Kitchen Speaker over MAC address
-        clean_name = controller._get_clean_player_name([sq_player, ap_player])
+        clean_name = universal_provider._get_clean_player_name([sq_player, ap_player])
         assert clean_name == "Kitchen Speaker"
 
-    def test_filters_player_id_names(self, mock_mass):
+    def test_filters_player_id_names(self, mock_mass: MagicMock) -> None:
         """Test that player ID-like names are filtered out."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         sendspin_provider = MockProvider("sendspin")
         dlna_provider = MockProvider("dlna")
@@ -421,12 +439,12 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Bedroom TV over player ID
-        clean_name = controller._get_clean_player_name([ss_player, dlna_player])
+        clean_name = universal_provider._get_clean_player_name([ss_player, dlna_player])
         assert clean_name == "Bedroom TV"
 
-    def test_valid_name_unchanged(self, mock_mass):
+    def test_valid_name_unchanged(self, mock_mass: MagicMock) -> None:
         """Test that valid names are returned unchanged."""
-        controller = PlayerController(mock_mass)
+        universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("airplay")
         player = MockPlayer(
@@ -436,14 +454,14 @@ class TestGetCleanPlayerName:
             player_type=PlayerType.PLAYER,
         )
 
-        clean_name = controller._get_clean_player_name([player])
+        clean_name = universal_provider._get_clean_player_name([player])
         assert clean_name == "HomePod Mini"
 
 
 class TestCachedProtocolParentRestore:
     """Tests for restoring cached protocol parent links."""
 
-    def test_protocol_parent_id_restored_from_config(self, mock_mass):
+    def test_protocol_parent_id_restored_from_config(self, mock_mass: MagicMock) -> None:
         """Test that cached protocol_parent_id is loaded and used for immediate linking."""
         controller = PlayerController(mock_mass)
 
@@ -489,7 +507,9 @@ class TestCachedProtocolParentRestore:
             for link in native_player.linked_output_protocols
         )
 
-    def test_protocol_parent_id_prevents_universal_player_creation(self, mock_mass):
+    def test_protocol_parent_id_prevents_universal_player_creation(
+        self, mock_mass: MagicMock
+    ) -> None:
         """Test that cached protocol_parent_id prevents creating universal player."""
         controller = PlayerController(mock_mass)
 
@@ -525,7 +545,7 @@ class TestCachedProtocolParentRestore:
 class TestSelectBestOutputProtocol:
     """Tests for output protocol selection logic."""
 
-    def test_select_native_when_preferred_is_native(self, mock_mass):
+    def test_select_native_when_preferred_is_native(self, mock_mass: MagicMock) -> None:
         """Test that native protocol is selected when user prefers native."""
         # Mock config to return "native" as preferred
         mock_mass.config.get_raw_player_config_value = MagicMock(return_value="native")
@@ -550,13 +570,13 @@ class TestSelectBestOutputProtocol:
         controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
 
         # Select protocol
-        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
 
         # Should select native player
         assert selected_player == native_player
-        assert protocol_id == "native"
+        assert output_protocol is None  # None means native playback
 
-    def test_select_dlna_when_preferred_is_dlna(self, mock_mass):
+    def test_select_dlna_when_preferred_is_dlna(self, mock_mass: MagicMock) -> None:
         """Test that DLNA protocol is selected when user prefers DLNA."""
         # Mock config to return the full player ID as preferred
         mock_mass.config.get_raw_player_config_value = MagicMock(return_value="dlna_AABBCCDDEEFF")
@@ -606,13 +626,14 @@ class TestSelectBestOutputProtocol:
         )
 
         # Select protocol
-        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
 
         # Should select DLNA player, not native
         assert selected_player == dlna_player
-        assert protocol_id == "dlna_AABBCCDDEEFF"
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "dlna_AABBCCDDEEFF"
 
-    def test_select_airplay_when_preferred_is_airplay(self, mock_mass):
+    def test_select_airplay_when_preferred_is_airplay(self, mock_mass: MagicMock) -> None:
         """Test that AirPlay protocol is selected when user prefers AirPlay."""
         # Mock config to return the full player ID as preferred
         mock_mass.config.get_raw_player_config_value = MagicMock(
@@ -681,14 +702,15 @@ class TestSelectBestOutputProtocol:
         )
 
         # Select protocol
-        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
 
         # Should select AirPlay player (even though DLNA has lower priority value),
         # because user preference overrides priority
         assert selected_player == airplay_player
-        assert protocol_id == "airplay_AABBCCDDEEFF"
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "airplay_AABBCCDDEEFF"
 
-    def test_fallback_to_native_when_auto(self, mock_mass):
+    def test_fallback_to_native_when_auto(self, mock_mass: MagicMock) -> None:
         """Test that native playback is used when preference is auto."""
         # Mock config to return "auto" as preferred
         mock_mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
@@ -708,17 +730,17 @@ class TestSelectBestOutputProtocol:
         controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
 
         # Select protocol with auto preference
-        selected_player, protocol_id = controller._select_best_output_protocol(native_player)
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
 
         # Should select native player
         assert selected_player == native_player
-        assert protocol_id == "native"
+        assert output_protocol is None  # None means native playback
 
 
 class TestPlayerGrouping:
     """Tests for player grouping scenarios."""
 
-    def test_native_to_native_grouping(self, mock_mass):
+    def test_native_to_native_grouping(self, mock_mass: MagicMock) -> None:
         """Test that native players from same provider can group together."""
         controller = PlayerController(mock_mass)
 
@@ -767,7 +789,7 @@ class TestPlayerGrouping:
         assert "sonos_456" in native_members
         assert len(protocol_members) == 0
 
-    def test_protocol_to_protocol_grouping(self, mock_mass):
+    def test_protocol_to_protocol_grouping(self, mock_mass: MagicMock) -> None:
         """Test that protocol players can group via shared protocol."""
         controller = PlayerController(mock_mass)
 
@@ -807,6 +829,7 @@ class TestPlayerGrouping:
         sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         sonos_airplay._attr_can_group_with = {"airplay_wiim"}
         sonos_airplay._cache.clear()
+        sonos_airplay.update_state(signal_event=False)
 
         wiim_airplay = MockPlayer(
             airplay_provider,
@@ -869,7 +892,7 @@ class TestPlayerGrouping:
         assert len(native_members) == 0
         assert protocol_player == sonos_airplay
 
-    def test_hybrid_grouping(self, mock_mass):
+    def test_hybrid_grouping(self, mock_mass: MagicMock) -> None:
         """Test hybrid grouping: native + protocol players in same group."""
         controller = PlayerController(mock_mass)
 
@@ -919,6 +942,7 @@ class TestPlayerGrouping:
         sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         sonos_airplay._attr_can_group_with = {"airplay_wiim"}
         sonos_airplay._cache.clear()
+        sonos_airplay.update_state(signal_event=False)
 
         wiim_airplay = MockPlayer(
             airplay_provider,
@@ -988,7 +1012,7 @@ class TestPlayerGrouping:
         assert len(protocol_members) == 1
         assert "airplay_wiim" in protocol_members
 
-    def test_protocol_selection_requires_set_members(self, mock_mass):
+    def test_protocol_selection_requires_set_members(self, mock_mass: MagicMock) -> None:
         """Test that only protocols with SET_MEMBERS support are selected for grouping."""
         controller = PlayerController(mock_mass)
 
@@ -1137,7 +1161,7 @@ class TestPlayerGrouping:
 class TestCanGroupWith:
     """Tests for can_group_with property with three scenarios."""
 
-    def test_scenario_1_native_active_only_native_players(self, mock_mass):
+    def test_scenario_1_native_active_only_native_players(self, mock_mass: MagicMock) -> None:
         """Test Scenario 1: Native playback active -> all protocols shown (new behavior)."""
         controller = PlayerController(mock_mass)
 
@@ -1218,7 +1242,7 @@ class TestCanGroupWith:
         # Note: airplay_other is not registered in controller._players, so it won't appear
         # But the logic should still allow showing AirPlay options if they were registered
 
-    def test_scenario_2_protocol_active_hybrid_groups(self, mock_mass):
+    def test_scenario_2_protocol_active_hybrid_groups(self, mock_mass: MagicMock) -> None:
         """Test Scenario 2: Protocol active -> show all protocols (new behavior)."""
         controller = PlayerController(mock_mass)
 
@@ -1341,7 +1365,7 @@ class TestCanGroupWith:
         assert "sonos_456" in groupable  # Native Sonos player
         assert "wiim_789" in groupable  # Via airplay_other protocol
 
-    def test_scenario_3_no_active_output_all_protocols_shown(self, mock_mass):
+    def test_scenario_3_no_active_output_all_protocols_shown(self, mock_mass: MagicMock) -> None:
         """Test Scenario 3: No active output -> show all compatible protocols + native."""
         controller = PlayerController(mock_mass)
 
@@ -1495,7 +1519,9 @@ class TestCanGroupWith:
 class TestProtocolSwitchingDuringPlayback:
     """Tests for dynamic protocol switching when group members change during playback."""
 
-    async def test_no_protocol_set_during_grouping_without_playback(self, mock_mass):
+    async def test_no_protocol_set_during_grouping_without_playback(
+        self, mock_mass: MagicMock
+    ) -> None:
         """Test that no protocol is set when grouping players without active playback."""
         controller = PlayerController(mock_mass)
 
@@ -1570,7 +1596,7 @@ class TestProtocolSwitchingDuringPlayback:
         # After grouping, protocol should not be activated until playback starts
         assert sonos_player.active_output_protocol is None
 
-    async def test_protocol_selected_at_playback_time(self, mock_mass):
+    async def test_protocol_selected_at_playback_time(self, mock_mass: MagicMock) -> None:
         """Test that protocol is selected when playback starts, not during grouping."""
         controller = PlayerController(mock_mass)
 
@@ -1627,8 +1653,9 @@ class TestProtocolSwitchingDuringPlayback:
         assert sonos_player.active_output_protocol is None
 
         # Select protocol for playback
-        selected_player, protocol_id = controller._select_best_output_protocol(sonos_player)
+        selected_player, output_protocol = controller._select_best_output_protocol(sonos_player)
 
         # Should select AirPlay protocol because it has group members (Priority 1)
         assert selected_player == sonos_airplay
-        assert protocol_id == "airplay_sonos"
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "airplay_sonos"

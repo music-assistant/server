@@ -20,7 +20,7 @@ from tests.common import MockPlayer, MockProvider
 
 
 @pytest.fixture
-def mock_mass():
+def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
@@ -36,7 +36,7 @@ def mock_mass():
 
 
 @pytest.fixture
-def controller(mock_mass):
+def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
 
@@ -44,7 +44,7 @@ def controller(mock_mass):
 class TestCanGroupWithBasics:
     """Test basic can_group_with filtering logic."""
 
-    def test_ungrouped_players_can_group(self, mock_mass):
+    def test_ungrouped_players_can_group(self, mock_mass: MagicMock) -> None:
         """Test that two ungrouped players can group with each other."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -69,7 +69,7 @@ class TestCanGroupWithBasics:
         assert "player_b" in player_a.state.can_group_with
         assert "player_a" in player_b.state.can_group_with
 
-    def test_unavailable_players_excluded(self, mock_mass):
+    def test_unavailable_players_excluded(self, mock_mass: MagicMock) -> None:
         """Test that unavailable players are excluded from can_group_with."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -91,8 +91,12 @@ class TestCanGroupWithBasics:
         # Unavailable player should be excluded
         assert "player_b" not in player_a.state.can_group_with
 
-    def test_playing_players_with_different_source_excluded(self, mock_mass):
-        """Test that players playing different sources are excluded."""
+    def test_playing_players_with_different_source_excluded(self, mock_mass: MagicMock) -> None:
+        """Test that players playing different sources are NOT excluded (behavior changed).
+
+        Note: Previously, players with different active sources were excluded from grouping,
+        but this was removed as it was difficult to track reliably.
+        """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
 
@@ -113,14 +117,14 @@ class TestCanGroupWithBasics:
         player_a.update_state(signal_event=False)
         player_b.update_state(signal_event=False)
 
-        # Player with different active source should be excluded
-        assert "player_b" not in player_a.state.can_group_with
+        # Player with different active source is now ALLOWED (behavior changed)
+        assert "player_b" in player_a.state.can_group_with
 
 
 class TestSyncedPlayers:
     """Test behavior with synced/grouped players."""
 
-    def test_synced_player_excluded_from_others(self, mock_mass):
+    def test_synced_player_excluded_from_others(self, mock_mass: MagicMock) -> None:
         """
         Test that a player synced to another is excluded from other players' can_group_with.
 
@@ -134,6 +138,7 @@ class TestSyncedPlayers:
         leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         leader._attr_can_group_with = {"synced", "other"}
         leader._attr_group_members = ["leader", "synced"]
+        leader._attr_playback_state = PlaybackState.PLAYING  # Make it playing so it gets excluded
 
         # Synced player
         synced = MockPlayer(provider, "synced", "Synced")
@@ -158,7 +163,9 @@ class TestSyncedPlayers:
         # Other should only see itself as ungrouped
         assert other.state.can_group_with == set()
 
-    def test_sync_leader_excludes_itself_from_members_can_group_with(self, mock_mass):
+    def test_sync_leader_excludes_itself_from_members_can_group_with(
+        self, mock_mass: MagicMock
+    ) -> None:
         """Test that sync leader doesn't appear in its members' can_group_with."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -180,7 +187,7 @@ class TestSyncedPlayers:
         # Member is synced, so can_group_with should be empty
         assert member.state.can_group_with == set()
 
-    def test_group_members_included_in_leader_can_group_with(self, mock_mass):
+    def test_group_members_included_in_leader_can_group_with(self, mock_mass: MagicMock) -> None:
         """
         Test that group members appear in sync leader's can_group_with.
 
@@ -217,7 +224,7 @@ class TestSyncedPlayers:
 class TestSyncLeaderBehavior:
     """Test sync leader specific behavior."""
 
-    def test_sync_leader_excluded_from_can_group_with(self, mock_mass):
+    def test_sync_leader_excluded_from_can_group_with(self, mock_mass: MagicMock) -> None:
         """Test that players with group members (sync leaders) are excluded."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -226,6 +233,7 @@ class TestSyncLeaderBehavior:
         leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         leader._attr_can_group_with = {"member", "other"}
         leader._attr_group_members = ["leader", "member"]
+        leader._attr_playback_state = PlaybackState.PLAYING  # Make it playing so it gets excluded
 
         member = MockPlayer(provider, "member", "Member")
 
@@ -248,7 +256,7 @@ class TestSyncLeaderBehavior:
 class TestCircularDependency:
     """Test that circular dependencies are avoided."""
 
-    def test_no_circular_dependency_in_synced_to(self, mock_mass):
+    def test_no_circular_dependency_in_synced_to(self, mock_mass: MagicMock) -> None:
         """
         Test that synced_to calculation doesn't cause circular dependency.
 
@@ -277,7 +285,7 @@ class TestCircularDependency:
 class TestCacheInvalidation:
     """Test that caches are invalidated correctly."""
 
-    def test_can_group_with_cache_cleared_on_update_state(self, mock_mass):
+    def test_can_group_with_cache_cleared_on_update_state(self, mock_mass: MagicMock) -> None:
         """Test that can_group_with cache is cleared when update_state is called."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -315,7 +323,7 @@ class TestCacheInvalidation:
 class TestProviderInstanceIdExpansion:
     """Test expansion of provider instance IDs in can_group_with."""
 
-    def test_provider_instance_id_expands_to_all_players(self, mock_mass):
+    def test_provider_instance_id_expands_to_all_players(self, mock_mass: MagicMock) -> None:
         """Test that provider instance IDs expand to all available players from that provider."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
