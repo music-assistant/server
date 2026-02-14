@@ -44,6 +44,23 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
+    """Sort album tracks deterministically.
+
+    MA sorts by (disc_number, track_number) but tracks with identical values
+    get non-deterministic ordering between calls. Adding name as a tiebreaker
+    ensures the display page and playlist endpoint always agree on track order.
+    """
+    return sorted(
+        tracks,
+        key=lambda t: (
+            getattr(t, "disc_number", 0) or 0,
+            getattr(t, "track_number", 0) or 0,
+            getattr(t, "name", "") or "",
+        ),
+    )
+
+
 class MSXHTTPServer:
     """HTTP server that serves MSX bootstrap, library API, and stream proxy."""
 
@@ -573,7 +590,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         item_id = request.match_info["item_id"]
         provider = request.query.get("provider", "library")
         try:
-            tracks = await self.provider.mass.music.albums.tracks(item_id, provider)
+            tracks = _sort_album_tracks(
+                await self.provider.mass.music.albums.tracks(item_id, provider)
+            )
         except Exception:
             logger.warning("Failed to fetch tracks for album %s", item_id)
             tracks = []
@@ -675,7 +694,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
         provider_name = request.query.get("provider", "library")
         start = int(request.query.get("start", "0"))
         try:
-            tracks = await self.provider.mass.music.albums.tracks(item_id, provider_name)
+            tracks = _sort_album_tracks(
+                await self.provider.mass.music.albums.tracks(item_id, provider_name)
+            )
         except Exception:
             logger.warning("Failed to fetch tracks for album playlist %s", item_id)
             tracks = []
