@@ -1185,17 +1185,20 @@ class MusicController(CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        if user:
-            # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
-
         # update generic playlog table (when not playing)
         if not is_playing:
-            await self.database.insert(
-                DB_TABLE_PLAYLOG,
-                params,
-                allow_replace=True,
-            )
+            if user:
+                user_ids = [user.user_id]
+            else:
+                # NOTE: if no user was found, we will alter the playlog for all users
+                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+            for user_id in user_ids:
+                params["userid"] = user_id
+                await self.database.insert(
+                    DB_TABLE_PLAYLOG,
+                    params,
+                    allow_replace=True,
+                )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -1262,10 +1265,14 @@ class MusicController(CoreController):
             user = provider_user
 
         if user:
+            user_ids = [user.user_id]
+        else:
             # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
+            user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        for user_id in user_ids:
+            params["userid"] = user_id
+            await self.database.delete(DB_TABLE_PLAYLOG, params)
 
-        await self.database.delete(DB_TABLE_PLAYLOG, params)
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
             if (
