@@ -37,6 +37,7 @@ from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
@@ -351,12 +352,22 @@ async def get_stream_details(
     conf_volume_normalization_target = float(
         str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
     )
-    if conf_volume_normalization_target < -30 or conf_volume_normalization_target >= 0:
-        conf_volume_normalization_target = -17.0  # reset to default if out of bounds
+    # guard against invalid volume normalization values
+    # range and default_value are guaranteed to be set for this constant
+    volume_range = CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.range
+    assert volume_range is not None
+    if (
+        conf_volume_normalization_target < volume_range[0]
+        or conf_volume_normalization_target >= volume_range[1]
+    ):
+        default_val = CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value
+        assert isinstance(default_val, (int, float))
+        conf_volume_normalization_target = float(default_val)
         LOGGER.warning(
             "Invalid volume normalization target configured for player %s, "
-            "resetting to default of -17.0 dB",
+            "resetting to default of %s dB",
             streamdetails.queue_id,
+            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
         )
     streamdetails.target_loudness = conf_volume_normalization_target
     streamdetails.volume_normalization_mode = _get_normalization_mode(

@@ -34,6 +34,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
@@ -408,7 +409,7 @@ class SonosPlayer(Player):
         ) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
-            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
@@ -943,8 +944,10 @@ class SonosPlayer(Player):
             last_index = next_item.queue_item_id
 
         self.sonos_queue.items = items
-        self.logger.debug(
-            "Set Sonos queue items from MA queue %s: %s",
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Set Sonos queue items from MA queue %s on player %s: %s",
             queue_id,
+            self.player_id,
             [x.title for x in self.sonos_queue.items],
         )
