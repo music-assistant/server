@@ -416,24 +416,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
             await self.mass.player_queues.stop(active_queue.queue_id)
             return
-        player.mark_stop_called()
-        # Delegate to active protocol player if one is active
-        target_player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (protocol_player := self.get_player(player.active_output_protocol))
-        ):
-            target_player = protocol_player
-            if PlayerFeature.POWER in target_player.supported_features:
-                # if protocol player supports/requires power,
-                # we power it off instead of just stopping (which also stops playback)
-                await self._handle_cmd_power(target_player.player_id, False)
-                return
-
-        # handle command on player(protocol) directly
-        async with self._player_throttlers[target_player.player_id]:
-            await target_player.stop()
+        # Delegate to internal handler for actual implementation
+        await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play")
     @handle_player_command
@@ -448,30 +432,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 "Ignore PLAY request to player %s: player is already playing", player.state.name
             )
             return
-        # Check if a plugin source is active with a play callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_play_pause and plugin_source.on_play:
-                await plugin_source.on_play()
-                return
-        # handle unpause (=play if player is paused)
-        if player.state.playback_state == PlaybackState.PAUSED:
-            active_source = next(
-                (x for x in player.state.source_list if x.id == player.state.active_source), None
-            )
-            # raise if active source does not support play/pause
-            if active_source and not active_source.can_play_pause:
-                msg = (
-                    f"The active source ({active_source.name}) on player "
-                    f"{player.state.name} does not support play/pause"
-                )
-                raise PlayerCommandFailed(msg)
-            # Delegate to active protocol player if one is active
-            if target_player := self._get_control_target(player, PlayerFeature.PAUSE, True):
-                await target_player.play()
+        # player is not paused: check for queue redirect, then delegate to internal handler
+        if player.state.playback_state != PlaybackState.PAUSED:
+            source = player.state.active_source
+            if active_queue := self.mass.player_queues.get(source or player_id):
+                await self.mass.player_queues.resume(active_queue.queue_id)
                 return
 
-        # player is not paused: try to resume the player
-        await self._handle_cmd_resume(player.player_id)
+        # Delegate to internal handler for actual implementation
+        await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -481,37 +450,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        # Check if a plugin source is active with a pause callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_play_pause and plugin_source.on_pause:
-                await plugin_source.on_pause()
-                return
         # Redirect to queue controller if it is active (skip if already in queue command context)
         if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
             await self.mass.player_queues.pause(active_queue.queue_id)
             return
-        # handle command on player/source directly
-        active_source = next(
-            (x for x in player.state.source_list if x.id == player.state.active_source), None
-        )
-        if active_source and not active_source.can_play_pause:
-            # raise if active source does not support play/pause
-            msg = (
-                f"The active source ({active_source.name}) on player "
-                f"{player.state.name} does not support play/pause"
-            )
-            raise PlayerCommandFailed(msg)
-        # Delegate to active protocol player if one is active
-        if not (target_player := self._get_control_target(player, PlayerFeature.PAUSE, True)):
-            # if player(protocol) does not support pause, we need to send stop
-            self.logger.debug(
-                "Player/protocol %s does not support pause, using STOP instead",
-                player.state.name,
-            )
-            await self.cmd_stop(player.player_id)
-            return
-        # handle command on player(protocol) directly
-        await target_player.pause()
+        # Delegate to internal handler for actual implementation
+        await self._handle_cmd_pause(player.player_id)
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
@@ -957,45 +901,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - media: The Media that needs to be played on the player.
         """
         player = self._get_player_with_redirect(player_id)
-        # set active source if media has a source_id (e.g. plugin source or mass queue source)
-        if media.source_id:
-            player.set_active_mass_source(media.source_id)
-
-        # Select best output protocol for playback
-        target_player, output_protocol = self._select_best_output_protocol(player)
-
-        if target_player.player_id != player.player_id:
-            # Playing via linked protocol - update active output protocol
-            # output_protocol is guaranteed to be non-None when target_player != player
-            assert output_protocol is not None
-            self.logger.debug(
-                "Starting playback on %s via protocol %s (target=%s), group_members=%s",
-                player.state.name,
-                output_protocol.output_protocol_id,
-                target_player.display_name,
-                target_player.state.group_members,
-            )
-            player.set_active_output_protocol(output_protocol.output_protocol_id)
-            # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback
-            if (
-                target_player.state.powered is False
-                and target_player.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(target_player.player_id, True)
-            # forward play media command to protocol player
-            await target_player.play_media(media)
-            # notify the native player that protocol playback started
-            await player.on_protocol_playback(output_protocol=output_protocol)
-        else:
-            # Native playback
-            self.logger.debug(
-                "Starting playback on %s via native, group_members=%s",
-                player.state.name,
-                player.state.group_members,
-            )
-            player.set_active_output_protocol("native")
-            await player.play_media(media)
+        # Delegate to internal handler for actual implementation
+        await self._handle_play_media(player.player_id, media)
 
     @api_command("players/cmd/select_sound_mode")
     @handle_player_command
@@ -1074,39 +981,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        # Check if player is currently grouped (reject for public API)
         if player.state.synced_to or player.state.active_group:
             raise PlayerCommandFailed(f"Player {player.state.name} is currently grouped")
-        # check if player is already playing and source is different
-        # in that case we need to stop the player first
-        prev_source = player.state.active_source
-        if prev_source and source != prev_source:
-            with suppress(PlayerCommandFailed, RuntimeError):
-                # just try to stop (regardless of state)
-                await self.cmd_stop(player_id)
-                await asyncio.sleep(2)  # small delay to allow stop to process
-        # check if source is a pluginsource
-        # in that case the source id is the instance_id of the plugin provider
-        if plugin_prov := self.mass.get_provider(source):
-            player.set_active_mass_source(source)
-            await self._handle_select_plugin_source(player, cast("PluginProvider", plugin_prov))
-            return
-        # check if source is a mass queue
-        # this can be used to restore the queue after a source switch
-        if self.mass.player_queues.get(source):
-            player.set_active_mass_source(source)
-            return
-        # basic check if player supports source selection
-        if PlayerFeature.SELECT_SOURCE not in player.state.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support source selection"
-            )
-        # basic check if source is valid for player
-        if not any(x for x in player.state.source_list if x.id == source):
-            raise PlayerCommandFailed(
-                f"{source} is an invalid source for player {player.state.name}"
-            )
-        # forward to player
-        await player.select_source(source)
+        # Delegate to internal handler for actual implementation
+        await self._handle_select_source(player_id, source)
 
     @handle_player_command(lock=True)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -1118,24 +997,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :raises UnsupportedFeaturedException: if the player does not support enqueueing.
         :raises PlayerUnavailableError: if the player is not available.
         """
-        player = self.get_player(player_id, raise_unavailable=True)
-        assert player is not None  # for type checking
-        if target_player := self._get_control_target(
-            player, required_feature=PlayerFeature.ENQUEUE, require_active=True, allow_native=False
-        ):
-            self.logger.debug(
-                "Redirecting enqueue command to protocol player %s",
-                target_player.provider.manifest.name,
-            )
-            await self.enqueue_next_media(target_player.player_id, media)
-            return
-
-        if PlayerFeature.ENQUEUE not in player.state.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support enqueueing"
-            )
-        async with self._player_throttlers[player_id]:
-            await player.enqueue_next_media(media)
+        # Note: No group redirect needed here as enqueue doesn't use _get_player_with_redirect
+        # Delegate to internal handler for actual implementation
+        await self._handle_enqueue_next_media(player_id, media)
 
     @api_command("players/cmd/set_members")
     async def cmd_set_members(
@@ -2726,6 +2590,261 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
             return
+
+    async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:
+        """
+        Handle play media command without group redirect.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        :param media: The Media that needs to be played on the player.
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+        # set active source if media has a source_id (e.g. plugin source or mass queue source)
+        if media.source_id:
+            player.set_active_mass_source(media.source_id)
+
+        # Select best output protocol for playback
+        target_player, output_protocol = self._select_best_output_protocol(player)
+
+        if target_player.player_id != player.player_id:
+            # Playing via linked protocol - update active output protocol
+            # output_protocol is guaranteed to be non-None when target_player != player
+            assert output_protocol is not None
+            self.logger.debug(
+                "Starting playback on %s via protocol %s (target=%s), group_members=%s",
+                player.state.name,
+                output_protocol.output_protocol_id,
+                target_player.display_name,
+                target_player.state.group_members,
+            )
+            player.set_active_output_protocol(output_protocol.output_protocol_id)
+            # if the (protocol)player has power control and is currently powered off,
+            # we need to power it on before playback
+            if (
+                target_player.state.powered is False
+                and target_player.power_control != PLAYER_CONTROL_NONE
+            ):
+                await self._handle_cmd_power(target_player.player_id, True)
+            # forward play media command to protocol player
+            await target_player.play_media(media)
+            # notify the native player that protocol playback started
+            await player.on_protocol_playback(output_protocol=output_protocol)
+        else:
+            # Native playback
+            self.logger.debug(
+                "Starting playback on %s via native, group_members=%s",
+                player.state.name,
+                player.state.group_members,
+            )
+            player.set_active_output_protocol("native")
+            await player.play_media(media)
+
+    async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """
+        Handle enqueue next media command without group redirect.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        :param media: The Media that needs to be enqueued on the player.
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+        if target_player := self._get_control_target(
+            player, required_feature=PlayerFeature.ENQUEUE, require_active=True, allow_native=False
+        ):
+            self.logger.debug(
+                "Redirecting enqueue command to protocol player %s",
+                target_player.provider.manifest.name,
+            )
+            await self._handle_enqueue_next_media(target_player.player_id, media)
+            return
+
+        if PlayerFeature.ENQUEUE not in player.state.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.state.name} does not support enqueueing"
+            )
+        async with self._player_throttlers[player_id]:
+            await player.enqueue_next_media(media)
+
+    async def _handle_select_source(self, player_id: str, source: str | None) -> None:
+        """
+        Handle select source command without group redirect.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        :param source: The ID of the source that needs to be activated/selected.
+        """
+        if source is None:
+            source = player_id  # default to MA queue source
+        player = self.get_player(player_id, True)
+        assert player is not None
+        # check if player is already playing and source is different
+        # in that case we need to stop the player first
+        prev_source = player.state.active_source
+        if prev_source and source != prev_source:
+            with suppress(PlayerCommandFailed, RuntimeError):
+                # just try to stop (regardless of state)
+                await self._handle_cmd_stop(player_id)
+                await asyncio.sleep(2)  # small delay to allow stop to process
+        # check if source is a pluginsource
+        # in that case the source id is the instance_id of the plugin provider
+        if plugin_prov := self.mass.get_provider(source):
+            player.set_active_mass_source(source)
+            await self._handle_select_plugin_source(player, cast("PluginProvider", plugin_prov))
+            return
+        # check if source is a mass queue
+        # this can be used to restore the queue after a source switch
+        if self.mass.player_queues.get(source):
+            player.set_active_mass_source(source)
+            return
+        # basic check if player supports source selection
+        if PlayerFeature.SELECT_SOURCE not in player.state.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Player {player.state.name} does not support source selection"
+            )
+        # basic check if source is valid for player
+        if not any(x for x in player.state.source_list if x.id == source):
+            raise PlayerCommandFailed(
+                f"{source} is an invalid source for player {player.state.name}"
+            )
+        # forward to player
+        await player.select_source(source)
+
+    async def _handle_cmd_stop(self, player_id: str) -> None:
+        """
+        Handle stop command without any redirects.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+        player.mark_stop_called()
+        # Delegate to active protocol player if one is active
+        target_player = player
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (protocol_player := self.get_player(player.active_output_protocol))
+        ):
+            target_player = protocol_player
+            if PlayerFeature.POWER in target_player.supported_features:
+                # if protocol player supports/requires power,
+                # we power it off instead of just stopping (which also stops playback)
+                await self._handle_cmd_power(target_player.player_id, False)
+                return
+
+        # handle command on player(protocol) directly
+        async with self._player_throttlers[target_player.player_id]:
+            await target_player.stop()
+
+    async def _handle_cmd_play(self, player_id: str) -> None:
+        """
+        Handle play command without group redirect.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+        if player.state.playback_state == PlaybackState.PLAYING:
+            self.logger.info(
+                "Ignore PLAY request to player %s: player is already playing", player.state.name
+            )
+            return
+        # Check if a plugin source is active with a play callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_play_pause and plugin_source.on_play:
+                await plugin_source.on_play()
+                return
+        # handle unpause (=play if player is paused)
+        if player.state.playback_state == PlaybackState.PAUSED:
+            active_source = next(
+                (x for x in player.state.source_list if x.id == player.state.active_source), None
+            )
+            # raise if active source does not support play/pause
+            if active_source and not active_source.can_play_pause:
+                msg = (
+                    f"The active source ({active_source.name}) on player "
+                    f"{player.state.name} does not support play/pause"
+                )
+                raise PlayerCommandFailed(msg)
+            # Delegate to active protocol player if one is active
+            if target_player := self._get_control_target(player, PlayerFeature.PAUSE, True):
+                await target_player.play()
+                return
+
+        # player is not paused: try to resume the player
+        # Note: We handle resume inline here without calling _handle_cmd_resume
+        source = player.state.active_source
+        media = player.state.current_media
+        # power on the player if needed
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True)
+        # try to handle command on player directly
+        active_source = next((x for x in player.state.source_list if x.id == source), None)
+        if (
+            player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
+            and active_source
+            and active_source.can_play_pause
+        ):
+            # player has some other source active and native resume support
+            await player.play()
+            return
+        if active_source and not active_source.passive:
+            await self._handle_select_source(player_id, active_source.id)
+            return
+        if media:
+            # try to re-play the current media item
+            await player.play_media(media)
+            return
+        # fallback: just send play command - which will fail if nothing can be played
+        await player.play()
+
+    async def _handle_cmd_pause(self, player_id: str) -> None:
+        """
+        Handle pause command without any redirects.
+
+        Skips permission checks and all redirect logic (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+        # Check if a plugin source is active with a pause callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_play_pause and plugin_source.on_pause:
+                await plugin_source.on_pause()
+                return
+        # handle command on player/source directly
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
+        if active_source and not active_source.can_play_pause:
+            # raise if active source does not support play/pause
+            msg = (
+                f"The active source ({active_source.name}) on player "
+                f"{player.state.name} does not support play/pause"
+            )
+            raise PlayerCommandFailed(msg)
+        # Delegate to active protocol player if one is active
+        if not (target_player := self._get_control_target(player, PlayerFeature.PAUSE, True)):
+            # if player(protocol) does not support pause, we need to send stop
+            self.logger.debug(
+                "Player/protocol %s does not support pause, using STOP instead",
+                player.state.name,
+            )
+            await self._handle_cmd_stop(player.player_id)
+            return
+        # handle command on player(protocol) directly
+        await target_player.pause()
 
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""

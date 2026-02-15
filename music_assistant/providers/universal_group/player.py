@@ -81,18 +81,26 @@ class UniversalGroupPlayer(GroupPlayer):
                 f"/ugp/{self.player_id}.aac", self._serve_ugp_stream
             )
         )
-        # allow grouping with all providers, except the ugp provider itself
-        self._attr_can_group_with = {
-            x.instance_id
-            for x in self.mass.players.providers
-            if x.instance_id != self.provider.instance_id
-        }
         self._set_attributes()
 
     @property
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return the id's of players this player can group with."""
+        if not self.is_dynamic:
+            # in case of static members,
+            # we can only group with the players defined in the config, so we return those directly
+            return set(self._attr_static_group_members)
+        # allow grouping with all providers, except the ugp provider itself
+        return {
+            x.instance_id
+            for x in self.mass.players.providers
+            if x.instance_id != self.provider.instance_id
+        }
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
@@ -148,7 +156,8 @@ class UniversalGroupPlayer(GroupPlayer):
         """Handle STOP command."""
         async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(self, active_only=True):
-                tg.create_task(member.stop())
+                # Use internal handler to get protocol selection and avoid redirect
+                tg.create_task(self.mass.players._handle_cmd_stop(member.player_id))
         # abort the stream session
         if self.stream and not self.stream.done:
             await self.stream.stop()
@@ -187,7 +196,8 @@ class UniversalGroupPlayer(GroupPlayer):
                     and member.active_source != self.active_source
                 ):
                     # stop playing existing content on member if we start the group player
-                    await member.stop()
+                    # Use internal handler to get protocol selection and avoid redirect
+                    await self.mass.players._handle_cmd_stop(member.player_id)
                 if (
                     member.state.active_group is not None
                     and member.state.active_group != self.player_id
@@ -259,14 +269,16 @@ class UniversalGroupPlayer(GroupPlayer):
             for member in self.mass.players.iter_group_members(
                 self, only_powered=True, active_only=True
             ):
+                # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(
-                    member.play_media(
+                    self.mass.players._handle_play_media(
+                        member.player_id,
                         PlayerMedia(
                             uri=f"{base_url}?player_id={member.player_id}",
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
-                        )
+                        ),
                     )
                 )
 
@@ -297,12 +309,14 @@ class UniversalGroupPlayer(GroupPlayer):
             # let the newly add member join the stream if we're playing
             if self.stream and not self.stream.done and self.powered:
                 base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
-                await child_player.play_media(
-                    media=PlayerMedia(
+                # Use internal handler to get protocol selection and avoid redirect
+                await self.mass.players._handle_play_media(
+                    player_id,
+                    PlayerMedia(
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
-                        source_id=child_player.player_id,
+                        source_id=player_id,
                     ),
                 )
         # handle removals
@@ -321,7 +335,8 @@ class UniversalGroupPlayer(GroupPlayer):
                 PlaybackState.PAUSED,
             ):
                 # if the child player is playing the group stream, stop it
-                await child_player.stop()
+                # Use internal handler to get protocol selection and avoid redirect
+                await self.mass.players._handle_cmd_stop(player_id)
         self.update_state()
 
     async def poll(self) -> None:

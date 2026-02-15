@@ -9,6 +9,5 @@
   "documentation": "https://music-assistant.io/faq/groups/",
   "multi_instance": false,
   "builtin": true,
-  "allow_disable": false,
-  "icon": "mdi-speaker-group"
+  "allow_disable": false
 }

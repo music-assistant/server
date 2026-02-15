@@ -320,6 +320,8 @@ class Player(ABC):
         for player in self.mass.players.all_players(
             return_unavailable=False, return_protocol_players=True
         ):
+            if player.type == PlayerType.GROUP:
+                continue
             if self.player_id in player.group_members and player.player_id != self.player_id:
                 return player.player_id
         return None
@@ -1430,7 +1432,7 @@ class Player(ABC):
                 continue
             if group_player.player_id == self.player_id:
                 continue
-            if not (group_player.powered or group_player.playback_state == PlaybackState.PLAYING):
+            if group_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 continue
             if self.player_id in group_player.group_members:
                 return group_player.player_id
@@ -1623,12 +1625,13 @@ class Player(ABC):
                     if member.player_id not in members:
                         members.append(member.player_id)
 
-        # Ensure the player_id is first in the group_members list
-        if len(members) > 0 and members[0] != self.player_id:
-            members = [self.player_id, *[m for m in members if m != self.player_id]]
-        # If the only member is self, return empty list
-        if members == [self.player_id]:
-            return []
+        if self.type != PlayerType.GROUP:
+            # Ensure the player_id is first in the group_members list
+            if len(members) > 0 and members[0] != self.player_id:
+                members = [self.player_id, *[m for m in members if m != self.player_id]]
+            # If the only member is self, return empty list
+            if members == [self.player_id]:
+                return []
         return members
 
     @cached_property

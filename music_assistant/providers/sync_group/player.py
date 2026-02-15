@@ -16,7 +16,7 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
-from music_assistant.models.player import DeviceInfo, GroupPlayer, Player, PlayerMedia, PlayerSource
+from music_assistant.models.player import DeviceInfo, GroupPlayer, Player, PlayerMedia
 
 from .constants import CONF_ENTRY_SGP_NOTE, EXTRA_FEATURES_FROM_MEMBERS, SUPPORT_DYNAMIC_LEADER
 
@@ -50,11 +50,6 @@ class SyncGroupPlayer(GroupPlayer):
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    @property
-    def is_active(self) -> bool:
-        """Return if the sync group player is active."""
-        return len(self._attr_group_members) > 0 and self.sync_leader is not None
-
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
         # Config is only available after the player was registered
@@ -77,14 +72,12 @@ class SyncGroupPlayer(GroupPlayer):
         base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
-        if not self.is_active:
+        if not self.sync_leader:
             return base_features
-        if self.sync_leader:
-            # add features supported by the sync leader
-            for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                if feature in self.sync_leader.supported_features:
-                    base_features.add(feature)
-            return base_features
+        # add features supported by the sync leader
+        for feature in EXTRA_FEATURES_FROM_MEMBERS:
+            if feature in self.sync_leader.state.supported_features:
+                base_features.add(feature)
         return base_features
 
     @property
@@ -119,46 +112,38 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def active_source(self) -> str | None:
         """Return the active source id (if any) of the player."""
-        return self.sync_leader.active_source if self.sync_leader else self._attr_active_source
-
-    @property
-    def source_list(self) -> list[PlayerSource]:
-        """Return list of available (native) sources for this player."""
-        if self.sync_leader:
-            return self.sync_leader.source_list
-        return []
+        return self.sync_leader.active_source if self.sync_leader else None
 
     @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
+        if not self.is_dynamic:
+            # in case of static members,
+            # we can only group with the players defined in the config, so we return those directly
+            return set(self._attr_static_group_members)
         # if we already have a sync leader, we use its can_group_with as reference
         if self.sync_leader:
-            return self.sync_leader.state.can_group_with
+            return {self.sync_leader.player_id, *self.sync_leader.state.can_group_with}
         # If we have no members, but we do have default members in the config,
         # we can group with players that are compatible with those
         default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for member_id in default_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
-                return member_player.state.can_group_with
-        if self.is_dynamic:
-            # Dynamic groups can potentially group with any compatible players
-            # Actual compatibility is validated when adding members
-            temp_can_group_with = set()
-            for player in self.mass.players.all_players(return_unavailable=False):
-                if not player.available or player.type == PlayerType.GROUP:
-                    # let's avoid showing group players as options to group with
-                    continue
-                if (
-                    PlayerFeature.SET_MEMBERS in player.state.supported_features
-                    and player.state.can_group_with
-                ):
-                    temp_can_group_with.add(player.player_id)
-            return temp_can_group_with
-        # this should not happen since we should always have default members
-        # in the config for static groups, but just in case, we return an empty
-        # set to prevent grouping with incompatible players
-        return set()
+                return {*default_members, *member_player.state.can_group_with}
+        # Dynamic groups can potentially group with any compatible players
+        # Actual compatibility is validated when adding members
+        temp_can_group_with = set()
+        for player in self.mass.players.all_players(return_unavailable=False):
+            if not player.available or player.type == PlayerType.GROUP:
+                # let's avoid showing group players as options to group with
+                continue
+            if (
+                PlayerFeature.SET_MEMBERS in player.state.supported_features
+                and player.state.can_group_with
+            ):
+                temp_can_group_with.add(player.player_id)
+        return temp_can_group_with
 
     async def get_config_entries(
         self,
@@ -195,33 +180,36 @@ class SyncGroupPlayer(GroupPlayer):
                 required=False,
             ),
         ]
-        # TODO: Add streaming/audio config entries similar to universal_group if needed
-        # For now, the sync is handled by the underlying protocol, so we may not need these
         return entries
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
         if sync_leader := self.sync_leader:
-            await sync_leader.stop()
+            # Use internal handler to bypass group redirect logic and avoid infinite loop
+            # (sync_leader is part of this group, so redirect would loop back here)
+            await self.mass.players._handle_cmd_stop(sync_leader.player_id)
         # dissolve the sync group since we stopped playback
         await self._dissolve_syncgroup()
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
         if sync_leader := self.sync_leader:
-            await sync_leader.play()
+            # Use internal handler to bypass group redirect logic and avoid infinite loop
+            await self.mass.players._handle_cmd_play(sync_leader.player_id)
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
         if sync_leader := self.sync_leader:
-            await sync_leader.pause()
+            # Use internal handler to bypass group redirect logic and avoid infinite loop
+            await self.mass.players._handle_cmd_pause(sync_leader.player_id)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
-            await sync_leader.play_media(media)
+            # Use internal handler to bypass group redirect logic and preserve protocol selection
+            await self.mass.players._handle_play_media(sync_leader.player_id, media)
             self._attr_current_media = deepcopy(media)
             self.update_state()
         else:
@@ -230,19 +218,8 @@ class SyncGroupPlayer(GroupPlayer):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
         if sync_leader := self.sync_leader:
-            await sync_leader.enqueue_next_media(media)
-
-    async def select_source(self, source: str) -> None:
-        """
-        Handle SELECT SOURCE command on the player.
-
-        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
-
-        :param source: The source(id) to select, as defined in the source_list.
-        """
-        if sync_leader := self.sync_leader:
-            await sync_leader.select_source(source)
-            self.update_state()
+            # Use internal handler to bypass group redirect logic and avoid infinite loop
+            await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
     async def set_members(
         self,
@@ -344,7 +321,9 @@ class SyncGroupPlayer(GroupPlayer):
             ]
             if sync_children:
                 await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
-        self._attr_group_members = []
+        # reset to default member list
+        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_group_members = default_members.copy()
         self.sync_leader = None
         self.update_state()
 
