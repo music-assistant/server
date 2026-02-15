@@ -139,6 +139,9 @@ class YandexMusicProvider(MusicProvider):
 
         :param is_removed: Whether the provider is being removed.
         """
+        # Clean up any temp files from preload streaming
+        if self._streaming:
+            self._streaming.cleanup_all_temp_files()
         if self._client:
             await self._client.disconnect()
         self._client = None
@@ -1254,11 +1257,15 @@ class YandexMusicProvider(MusicProvider):
             )
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion for My Wave rotor feedback.
+        """Report stream completion for My Wave rotor feedback and cleanup temp files.
 
         Sends trackFinished or skip with actual seconds_streamed so Yandex
-        can improve recommendations.
+        can improve recommendations. Also cleans up any temp files from preload mode.
         """
+        # Clean up temp file if this was a preloaded stream
+        if self._streaming:
+            self._streaming.cleanup_temp_file(streamdetails.item_id)
+
         # Skip radio feedback if disabled
         if not self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True):
             return

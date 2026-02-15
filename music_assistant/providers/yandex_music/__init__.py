@@ -148,10 +148,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PRELOAD_BUFFER_MB,
             type=ConfigEntryType.INTEGER,
-            label="Preload memory limit (MB)",
-            description="Maximum memory (MB) for preloading encrypted files. "
-            "Files exceeding this limit will use a temporary file on disk. "
-            "Default: 100 MB.",
+            label="Preload max file size (MB)",
+            description="Maximum file size (MB) for Preload mode. "
+            "Files within this limit are fully downloaded and decrypted before playback, "
+            "enabling seek and accurate progress. "
+            "Files exceeding this limit automatically use Buffered mode (streaming without seek). "
+            "Default: 100 MB (typical FLAC track is 30-50 MB).",
             range=(10, 500),
             default_value=100,
             category="streaming",

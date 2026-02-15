@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import tempfile
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -32,6 +35,9 @@ if TYPE_CHECKING:
 
     from .provider import YandexMusicProvider
 
+# Temp file prefix for easy identification and cleanup
+TEMP_FILE_PREFIX = "yandex_flac_"
+
 
 class YandexMusicStreamingManager:
     """Manages Yandex Music streaming operations."""
@@ -45,12 +51,109 @@ class YandexMusicStreamingManager:
         self.client = provider.client
         self.mass = provider.mass
         self.logger = provider.logger
+        # Track temp files for cleanup: item_id -> temp_file_path
+        self._temp_files: dict[str, str] = {}
 
     def _track_id_from_item_id(self, item_id: str) -> str:
         """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
         if RADIO_TRACK_ID_SEP in item_id:
             return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
         return item_id
+
+    async def _get_content_length(self, url: str) -> int | None:
+        """Get Content-Length from URL via HEAD request.
+
+        :param url: URL to check.
+        :return: Content length in bytes, or None if unavailable.
+        """
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.head(url, timeout=timeout, allow_redirects=True) as response,
+            ):
+                if response.status == 200:
+                    content_length = response.headers.get("Content-Length")
+                    if content_length:
+                        return int(content_length)
+        except Exception as err:
+            self.logger.debug("Failed to get Content-Length for %s: %s", url[:80], err)
+        return None
+
+    async def _download_and_decrypt_to_file(
+        self,
+        encrypted_url: str,
+        decryption_key: str,
+        item_id: str,
+    ) -> str:
+        """Download encrypted data, decrypt, and save to a temp file.
+
+        :param encrypted_url: URL of the encrypted file.
+        :param decryption_key: Hex-encoded AES-256 decryption key.
+        :param item_id: Track item ID for logging.
+        :return: Path to the decrypted temp file.
+        :raises MediaNotFoundError: If download fails.
+        """
+        key_bytes = bytes.fromhex(decryption_key)
+        nonce = bytes(12)
+        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR)
+
+        chunk_size = 65536
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
+
+        # Create temp file with .flac extension for proper handling
+        temp_fd, temp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=".flac")
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(encrypted_url, timeout=timeout) as response,
+            ):
+                if response.status != 200:
+                    msg = f"Failed to download encrypted track: HTTP {response.status}"
+                    self.logger.error(msg)
+                    raise MediaNotFoundError(msg)
+
+                total_bytes = 0
+                with os.fdopen(temp_fd, "wb") as f:
+                    async for encrypted_chunk in response.content.iter_chunked(chunk_size):
+                        decrypted_chunk = cipher.decrypt(encrypted_chunk)
+                        f.write(decrypted_chunk)
+                        total_bytes += len(decrypted_chunk)
+
+                self.logger.info(
+                    "Preloaded and decrypted track %s to %s (%d bytes)",
+                    item_id,
+                    temp_path,
+                    total_bytes,
+                )
+                return temp_path
+
+        except Exception:
+            # Clean up temp file on error
+            with contextlib.suppress(OSError):
+                os.close(temp_fd)
+            with contextlib.suppress(OSError):
+                Path(temp_path).unlink()
+            raise
+
+    def cleanup_temp_file(self, item_id: str) -> None:
+        """Clean up temp file for a track after playback.
+
+        :param item_id: Track item ID.
+        """
+        temp_path = self._temp_files.pop(item_id, None)
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+                self.logger.debug("Cleaned up temp file for %s: %s", item_id, temp_path)
+            except Exception as err:
+                self.logger.warning("Failed to clean up temp file %s: %s", temp_path, err)
+
+    def cleanup_all_temp_files(self) -> None:
+        """Clean up all tracked temp files (called on provider unload)."""
+        for item_id in list(self._temp_files.keys()):
+            self.cleanup_temp_file(item_id)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get stream details for a track.
@@ -89,6 +192,63 @@ class YandexMusicStreamingManager:
 
                     # Handle encrypted URLs from encraw transport
                     if needs_decryption and "key" in file_info:
+                        streaming_mode = (
+                            self.provider.config.get_value(CONF_STREAMING_MODE)
+                            or STREAMING_MODE_BUFFERED
+                        )
+
+                        # For Preload mode: check file size and preload if within limit
+                        if streaming_mode == STREAMING_MODE_PRELOAD:
+                            max_size_mb = int(
+                                self.provider.config.get_value(CONF_PRELOAD_BUFFER_MB) or 100  # type: ignore[arg-type]
+                            )
+                            max_size_bytes = max_size_mb * 1024 * 1024
+
+                            # Check file size first
+                            content_length = await self._get_content_length(url)
+                            if content_length and content_length <= max_size_bytes:
+                                self.logger.info(
+                                    "Preloading encrypted FLAC for track %s "
+                                    "(size=%dMB, limit=%dMB)",
+                                    track_id,
+                                    content_length // (1024 * 1024),
+                                    max_size_mb,
+                                )
+                                # Download, decrypt, save to temp file
+                                temp_path = await self._download_and_decrypt_to_file(
+                                    url, file_info["key"], item_id
+                                )
+                                # Track for cleanup
+                                self._temp_files[item_id] = temp_path
+
+                                return StreamDetails(
+                                    item_id=item_id,
+                                    provider=self.provider.instance_id,
+                                    audio_format=AudioFormat(
+                                        content_type=content_type,
+                                        bit_rate=0,
+                                    ),
+                                    stream_type=StreamType.LOCAL_FILE,
+                                    duration=track.duration,
+                                    path=temp_path,
+                                    can_seek=True,
+                                    allow_seek=True,
+                                )
+                            # File too large or size unknown - fall back to buffered
+                            size_info = (
+                                f"{content_length // (1024 * 1024)}MB"
+                                if content_length
+                                else "unknown size"
+                            )
+                            self.logger.info(
+                                "Track %s (%s) exceeds preload limit (%dMB), "
+                                "using buffered streaming",
+                                track_id,
+                                size_info,
+                                max_size_mb,
+                            )
+                            # Fall through to CUSTOM streaming below
+
                         self.logger.info(
                             "Streaming encrypted FLAC for track %s (codec=%s) - "
                             "will decrypt on-the-fly",
