@@ -373,6 +373,46 @@ class YandexMusicClient:
             LOGGER.error("Error fetching track %s: %s", track_id, err)
             return None
 
+    async def get_track_lyrics(self, track_id: str) -> tuple[str | None, bool]:
+        """Get lyrics for a track.
+
+        Fetches lyrics from Yandex Music API. Returns the lyrics text and whether
+        it's in synced LRC format (with timestamps) or plain text.
+
+        :param track_id: Track ID.
+        :return: Tuple of (lyrics_text, is_synced). Returns (None, False) if unavailable.
+        """
+        try:
+            tracks = await self._call_with_retry(lambda c: c.tracks([track_id]))
+            if not tracks:
+                return None, False
+
+            track = tracks[0]
+            if not track.lyrics_available:
+                LOGGER.debug("Lyrics not available for track %s", track_id)
+                return None, False
+
+            track_lyrics = await track.get_lyrics_async()
+            if not track_lyrics:
+                LOGGER.debug("Failed to get lyrics metadata for track %s", track_id)
+                return None, False
+
+            lyrics_text = await track_lyrics.fetch_lyrics_async()
+            if not lyrics_text:
+                return None, False
+
+            # Check if it's LRC format (synced lyrics start with timestamp like [00:12.34])
+            is_synced = bool(lyrics_text.strip().startswith("["))
+            return lyrics_text, is_synced
+
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching lyrics for track %s: %s", track_id, err)
+            return None, False
+        except Exception as err:
+            # Catch any other errors (e.g., geo-restrictions, API changes)
+            LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
+            return None, False
+
     async def get_tracks(self, track_ids: list[str]) -> list[YandexTrack]:
         """Get multiple tracks by IDs.
 

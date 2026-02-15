@@ -69,6 +69,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.LYRICS,
 }
 
 

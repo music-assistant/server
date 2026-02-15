@@ -639,7 +639,11 @@ class YandexMusicProvider(MusicProvider):
         yandex_track = await self.client.get_track(track_id)
         if not yandex_track:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
-        return parse_track(self, yandex_track)
+
+        # Fetch lyrics if available
+        lyrics, lyrics_synced = await self.client.get_track_lyrics(track_id)
+
+        return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
     @use_cache(3600 * 24 * 30)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

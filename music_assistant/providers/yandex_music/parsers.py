@@ -208,11 +208,18 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
     return album
 
 
-def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
+def parse_track(
+    provider: YandexMusicProvider,
+    track_obj: YandexTrack,
+    lyrics: str | None = None,
+    lyrics_synced: bool = False,
+) -> Track:
     """Parse Yandex track object to MA Track model.
 
     :param provider: The Yandex Music provider instance.
     :param track_obj: Yandex track object.
+    :param lyrics: Optional lyrics text.
+    :param lyrics_synced: Whether lyrics are in synced LRC format.
     :return: Music Assistant Track model.
     """
     name, version = parse_title_and_version(
@@ -280,6 +287,13 @@ def parse_track(provider: YandexMusicProvider, track_obj: YandexTrack) -> Track:
     # Metadata
     if track_obj.content_warning:
         track.metadata.explicit = track_obj.content_warning == "explicit"
+
+    # Lyrics
+    if lyrics:
+        if lyrics_synced:
+            track.metadata.lrc_lyrics = lyrics
+        else:
+            track.metadata.lyrics = lyrics
 
     return track
 
