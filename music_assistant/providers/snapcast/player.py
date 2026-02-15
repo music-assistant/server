@@ -6,27 +6,28 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import (
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import (
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-    SYNCGROUP_PREFIX,
-)
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import CONF_ENTRY_SAMPLE_RATES_SNAPCAST
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
+from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
     from music_assistant.providers.snapcast.provider import SnapCastProvider
-    from music_assistant.providers.snapcast.snap_cntrl_proto import (
-        SnapclientProto,
-        SnapstreamProto,
-    )
+    from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
 
 
 class TrackedPlayerState(TypedDict, total=False):
@@ -57,6 +58,8 @@ class TrackedPlayerState(TypedDict, total=False):
 
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
+
+    _attr_type = PlayerType.PROTOCOL
 
     def __init__(
         self,
@@ -97,7 +100,7 @@ class SnapCastPlayer(Player):
         if len(grp_player_ids) < 2 or grp_name not in grp_player_ids:
             return None
 
-        if leader_player := self.mass.players.get(grp_name):
+        if leader_player := self.mass.players.get_player(grp_name):
             return grp_name if leader_player.available else None
 
         return None
@@ -168,13 +171,17 @@ class SnapCastPlayer(Player):
         self._attr_available = self.snap_client.connected
 
         host_dict = self.snap_client._client.get("host", {})
-        os, arch, ip = (host_dict.get(key, "") for key in ["os", "arch", "ip"])
+        os, arch, ip, mac = (host_dict.get(key, "") for key in ["os", "arch", "ip", "mac"])
         self._attr_device_info = DeviceInfo(
             model=os,
             manufacturer=arch,
         )
-        self._attr_device_info.ip_address = ip
+        if ip and (host := self.snap_client._client.get("host")):
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, host.get("ip"))
+        if mac:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -231,19 +238,17 @@ class SnapCastPlayer(Player):
         ]
 
         curr_stream_id = player_group.stream
-        sync_group_player = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
             if media.media_type == MediaType.PLUGIN_SOURCE:
                 custom_data = media.custom_data or {}
                 assigned_player = custom_data.get("player_id", "")
-                if assigned_player.startswith(SYNCGROUP_PREFIX):
-                    sync_group_player = self.mass.players.get(assigned_player)
+                if assigned_player.startswith(SGP_PREFIX):
+                    sync_group_player = self.mass.players.get_player(assigned_player)
             else:
                 media_src_id = media.source_id or ""
-                if media_src_id.startswith(SYNCGROUP_PREFIX):
-                    sync_group_player = self.mass.players.get(media_src_id)
-
+                if media_src_id.startswith(SGP_PREFIX):
+                    sync_group_player = self.mass.players.get_player(media_src_id)
         if sync_group_player and self.player_id in (player_ids_to_remove or []):
             # players in sync_group_player.group_members will be rejoined
             # remove others first
@@ -429,7 +434,7 @@ class SnapCastPlayer(Player):
                 pl.available
                 for cl_id in members
                 if (pl_id := self.snap_provider._get_ma_id(cl_id))
-                and (pl := self.mass.players.get(pl_id))
+                and (pl := self.mass.players.get_player(pl_id))
             ],
         }
 
@@ -504,35 +509,16 @@ class SnapCastPlayer(Player):
             return ""
         return snap_group.name
 
-    @cached_property
-    def _current_media(self) -> PlayerMedia | None:
-        """
-        Return the current media being played by the player.
-
-        Note that this is NOT the final current media of the player,
-        as it may be overridden by a active group/sync membership.
-        Hence it's marked as a private property.
-        The final current media can be retrieved by using the 'current_media' property.
-        """
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Return the current media being played by the player."""
         if snap_ma_stream := self.active_snap_ma_stream:
             return snap_ma_stream.media
         return None
 
     @property
-    def _active_source(self) -> str | None:
-        """
-        Return the (id of) the active source of the player.
-
-        Only required if the player supports PlayerFeature.SELECT_SOURCE.
-
-        Set to None if the player is not currently playing a source or
-        the player_id if the player is currently playing a MA queue.
-
-        Note that this is NOT the final active source of the player,
-        as it may be overridden by a active group/sync membership.
-        Hence it's marked as a private property.
-        The final active source can be retrieved by using the 'active_source' property.
-        """
+    def active_source(self) -> str | None:
+        """Return the (id of) the active source of the player."""
         grp = self.snap_client.group
         if grp is None or grp.stream is None:
             return None
@@ -567,5 +553,5 @@ class SnapCastPlayer(Player):
         return [
             ma_player
             for ma_id in self._get_player_ids_of_curr_group()
-            if (ma_player := self.mass.players.get(ma_id))
+            if (ma_player := self.mass.players.get_player(ma_id))
         ]

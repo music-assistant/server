@@ -359,6 +359,7 @@ class AlexaPlayer(Player):
         super().__init__(provider, player_id)
         self.device = device
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
@@ -432,17 +433,19 @@ class AlexaPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         # Prefer the player's current_media (may contain enriched metadata),
         # fallback to the provided `media` parameter. Ensure values are
         # non-None strings to avoid sending nulls to external API
-        current = getattr(self, "current_media", None) or media
+        state = getattr(self, "state", None)
+        current = getattr(state, "current_media", None) or media
         title = getattr(current, "title", None) or media.title or ""
         artist = getattr(current, "artist", None) or media.artist or ""
         album = getattr(current, "album", None) or media.album or ""
         image_url = getattr(current, "image_url", None) or media.image_url or ""
 
         payload = {
-            "streamUrl": media.uri,
+            "streamUrl": stream_url,
             "title": title,
             "artist": artist,
             "album": album,

@@ -137,7 +137,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
         def update_player_from_state_msg(entity_id: str, state: CompressedState) -> None:
             """Handle updating MA player with updated info in a HA CompressedState."""
-            player = cast("HomeAssistantPlayer | None", self.mass.players.get(entity_id))
+            player = cast("HomeAssistantPlayer | None", self.mass.players.get_player(entity_id))
             if player is None:
                 # edge case - one of our subscribed entities was not available at startup
                 # and now came available - we should still set it up

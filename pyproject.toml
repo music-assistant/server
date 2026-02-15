@@ -10,9 +10,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "aiodns>=3.2.0",
-  # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes
-  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
+  "aiodns>=3.2.0", # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
@@ -200,8 +198,7 @@ ignore = [
   "COM812", # Conflicts with the Ruff formatter
   "ASYNC109", # Not relevant, since we use helpers with configurable timeouts
   "ASYNC110", # Use `asyncio.Event` instead of awaiting `asyncio.sleep` in a `while` loop
-  "N818", # Just annoying, not really useful
-  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "N818", # Just annoying, not really useful  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",

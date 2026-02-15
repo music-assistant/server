@@ -17,7 +17,12 @@ from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+)
 from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
@@ -108,6 +113,7 @@ class MusicCastPlayer(Player):
     def set_static_attributes(self) -> None:
         """Set static properties."""
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,  # for non MA control, see pause method
@@ -126,6 +132,14 @@ class MusicCastPlayer(Player):
             model=self.physical_device.device.data.model_name or "unknown model",
             software_version=(self.physical_device.device.data.system_version or "unknown version"),
         )
+        if device_ip := self.physical_device.device.device.ip:
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device_ip)
+        if device_id := self.physical_device.device.data.device_id:
+            self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
+            # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
+            if len(device_id) == 12:
+                mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
 
         # polling
         self._attr_needs_poll = True
@@ -258,7 +272,9 @@ class MusicCastPlayer(Player):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
+            _server_player = cast(
+                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
+            )
             _server_update_helper: None | UpnpUpdateHelper = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
@@ -292,7 +308,9 @@ class MusicCastPlayer(Player):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
+            _server_player = cast(
+                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
+            )
             if _server_player is not None and _server_player.upnp_update_helper is not None:
                 self._attr_active_source = (
                     self.zone_device.source_id
@@ -466,7 +484,7 @@ class MusicCastPlayer(Player):
         )
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
-        mass_player = self.mass.players.get(player_id)
+        mass_player = self.mass.players.get_player(player_id)
         if mass_player is None:
             # Do not assert here, should the player not yet exist
             return
@@ -523,7 +541,7 @@ class MusicCastPlayer(Player):
 
         # set other zone unavailable
         for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get(
+            if zone_device_player := self.mass.players.get_player(
                 self._get_player_id_from_zone_device(zone_device)
             ):
                 assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -624,6 +642,7 @@ class MusicCastPlayer(Player):
             # just in case
             if self.zone_device.source_id != "server":
                 await self.select_source("server")
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
             await avt_play(self.mass.http_session, self.physical_device)
 
@@ -707,7 +726,7 @@ class MusicCastPlayer(Player):
         # Removing players
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player := self.mass.players.get(player_id):
+                if player := self.mass.players.get_player(player_id):
                     assert isinstance(player, MusicCastPlayer)  # for type checking
                     await player.ungroup()
 
@@ -718,7 +737,7 @@ class MusicCastPlayer(Player):
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            if child_player := self.mass.players.get(child_id):
+            if child_player := self.mass.players.get_player(child_id):
                 assert isinstance(child_player, MusicCastPlayer)  # for type checking
                 _other_zone_mc: MusicCastZoneDevice | None = None
                 for x in child_player.zone_device.other_zones:
@@ -737,7 +756,7 @@ class MusicCastPlayer(Player):
                     children.add(child_id)
 
         for child_id in children_zones:
-            child_player = self.mass.players.get(child_id)
+            child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             if child_player.zone_device.state == MusicCastPlayerState.OFF:
@@ -748,7 +767,7 @@ class MusicCastPlayer(Player):
 
         child_player_zone_devices: list[MusicCastZoneDevice] = []
         for child_id in children:
-            child_player = self.mass.players.get(child_id)
+            child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             child_player_zone_devices.append(child_player.zone_device)
