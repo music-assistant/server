@@ -249,13 +249,14 @@ class AirPlayPlayer(Player):
 
     def _get_flags(self) -> int:
         # Flags are either present via "sf" or "flags. Taken from pyatv.protocols.airplay.utils"
-        if self.airplay_discovery_info is None:
+        if self.airplay_discovery_info:
+            properties = self.airplay_discovery_info.properties
+        elif self.raop_discovery_info:
+            properties = self.raop_discovery_info.properties
+        else:
             return 0
-        flags = (
-            self.airplay_discovery_info.properties.get(b"sf")
-            or self.airplay_discovery_info.properties.get(b"flags")
-            or "0x0"
-        )
+
+        flags = properties.get(b"sf") or properties.get(b"flags") or "0x0"
         return int(flags, 16)
 
     def _requires_pairing(self) -> bool:
