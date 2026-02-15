@@ -410,7 +410,8 @@ class YandexMusicProvider(MusicProvider):
         :return: List of folders or playlists.
         """
         names = self._get_browse_names()
-        base = path.rsplit("/", 1)[0] + "/" if "/" in path.split("://")[1] else path + "/"
+        # base should always end with current path + /
+        base = path.rstrip("/") + "/"
 
         # picks/ - show category folders
         if len(path_parts) == 1:
@@ -448,6 +449,15 @@ class YandexMusicProvider(MusicProvider):
         category = path_parts[1] if len(path_parts) > 1 else None
         tag = path_parts[2] if len(path_parts) > 2 else None
 
+        self.logger.debug(
+            "Browse picks: path=%s, path_parts=%s, category=%s, tag=%s, base=%s",
+            path,
+            path_parts,
+            category,
+            tag,
+            base,
+        )
+
         # Determine tags for the category
         category_tags: list[str] = []
         if category == "mood":
@@ -458,6 +468,8 @@ class YandexMusicProvider(MusicProvider):
             category_tags = TAG_CATEGORY_ERA
         elif category == "genres":
             category_tags = TAG_CATEGORY_GENRES
+
+        self.logger.debug("Category tags for %s: %s", category, category_tags)
 
         # picks/category/ - show tag folders
         if category and not tag:
@@ -472,12 +484,15 @@ class YandexMusicProvider(MusicProvider):
                         is_playable=True,
                     )
                 )
+            self.logger.debug("Returning %d tag folders for category %s", len(folders), category)
             return folders
 
         # picks/category/tag - show playlists for the tag
         if tag and tag in category_tags:
+            self.logger.debug("Fetching playlists for tag: %s", tag)
             return await self._get_tag_playlists_as_browse(tag)
 
+        self.logger.debug("No match found, returning empty list")
         return []
 
     async def _browse_mixes(
@@ -490,7 +505,8 @@ class YandexMusicProvider(MusicProvider):
         :return: List of folders or playlists.
         """
         names = self._get_browse_names()
-        base = path.rsplit("/", 1)[0] + "/" if "/" in path.split("://")[1] else path + "/"
+        # base should always end with current path + /
+        base = path.rstrip("/") + "/"
 
         # mixes/ - show seasonal folders
         if len(path_parts) == 1:
@@ -523,13 +539,16 @@ class YandexMusicProvider(MusicProvider):
         :param tag_id: Tag identifier (e.g. 'chill', '80s').
         :return: List of Playlist objects.
         """
+        self.logger.debug("Fetching playlists for tag: %s", tag_id)
         playlists = await self.client.get_tag_playlists(tag_id)
+        self.logger.debug("Got %d playlists for tag %s", len(playlists), tag_id)
         result: list[Playlist] = []
         for playlist in playlists:
             try:
                 result.append(parse_playlist(self, playlist))
             except InvalidDataError as err:
                 self.logger.debug("Error parsing tag playlist: %s", err)
+        self.logger.debug("Parsed %d playlists for tag %s", len(result), tag_id)
         return result
 
     # Search
