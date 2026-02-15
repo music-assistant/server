@@ -1,26 +1,22 @@
 /**
- * Music Assistant — Kiosk Web Player
+ * Music Assistant — Web Player
  *
  * Renders MSX JSON content in a browser with sidebar + content layout.
  * Connects to the same /msx/* endpoints and /ws WebSocket as the MSX TV app.
  *
- * Supports two audio modes:
- * - HTTP Stream (default): Traditional <audio> element streaming
- * - Sendspin: Clock-synchronized audio via sendspin-js SDK
+ * Audio modes:
+ * - Normal mode: HTML5 streaming with WebSocket sync
+ * - Kiosk mode (?kiosk=1): Sendspin synchronized audio (receives from MA)
  *
  * URL Parameters:
- * - sendspin_url: Enable Sendspin mode with MA server URL (e.g., ?sendspin_url=http://ma:8095)
- * - kiosk: Enable kiosk mode (fullscreen player, no sidebar) (e.g., ?kiosk=1)
+ * - kiosk: Enable kiosk mode with Sendspin (e.g., ?kiosk=1)
+ * - sendspin_url: Custom Sendspin server URL (e.g., ?sendspin_url=http://ma:8927)
  */
 
 // --- URL Parameters ---
 const urlParams = new URLSearchParams(window.location.search);
-const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 const KIOSK_MODE = urlParams.get('kiosk') === '1';
-
-// Audio mode: can be toggled at runtime
-const AUDIO_MODE_KEY = 'ma_audio_mode';
-const SENDSPIN_URL_KEY = 'ma_sendspin_url';
+const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
 (function () {
     'use strict';
@@ -32,31 +28,16 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
     var POS_INTERVAL = 3000;
     var SEARCH_DELAY = 400;
 
-    // Audio mode state (can change at runtime)
-    var currentAudioMode = 'html5'; // 'html5' or 'sendspin'
+    // Sendspin only in kiosk mode
     var sendspinUrl = '';
 
     function getDefaultSendspinUrl() {
-        // Default: same host, port 8095
         var hostname = location.hostname;
-        return 'http://' + hostname + ':8095';
-    }
-
-    function loadAudioModeSettings() {
-        // Priority: URL param > localStorage
-        if (SENDSPIN_URL_PARAM) {
-            currentAudioMode = 'sendspin';
-            sendspinUrl = SENDSPIN_URL_PARAM;
-            localStorage.setItem(AUDIO_MODE_KEY, 'sendspin');
-            localStorage.setItem(SENDSPIN_URL_KEY, sendspinUrl);
-        } else {
-            currentAudioMode = localStorage.getItem(AUDIO_MODE_KEY) || 'html5';
-            sendspinUrl = localStorage.getItem(SENDSPIN_URL_KEY) || getDefaultSendspinUrl();
-        }
+        return 'http://' + hostname + ':8927';
     }
 
     function isSendspinMode() {
-        return currentAudioMode === 'sendspin';
+        return KIOSK_MODE;
     }
 
     // --- Device ID ---
@@ -95,7 +76,7 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
     var pausedByWS = false;
     var resumedByWS = false;
 
-    // Sendspin state
+    // Sendspin state (kiosk mode only)
     var sendspinPlayer = null;
     var sendspinReady = false;
     var progressInterval = null;
@@ -124,7 +105,7 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
     }
 
     function fmtDur(sec) {
-        if (!sec || !isFinite(sec) || sec < 0) return '';
+        if (!sec || !isFinite(sec) || sec < 0) return '0:00';
         var m = Math.floor(sec / 60);
         var s = Math.floor(sec % 60);
         return m + ':' + (s < 10 ? '0' : '') + s;
@@ -143,9 +124,11 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
         return d.innerHTML;
     }
 
-    // --- Sendspin Integration ---
+    // --- Sendspin Integration (Kiosk Mode Only) ---
     async function initSendspin() {
-        if (!isSendspinMode()) return;
+        if (!KIOSK_MODE) return;
+
+        sendspinUrl = SENDSPIN_URL_PARAM || getDefaultSendspinUrl();
 
         try {
             var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@latest/dist/index.js';
@@ -155,9 +138,9 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
             console.log('[Sendspin] SDK loaded, connecting to:', sendspinUrl);
 
             sendspinPlayer = new SendspinPlayer({
-                playerId: 'msx-web-' + deviceId.substring(0, 8),
+                playerId: 'web-kiosk-' + deviceId.substring(0, 8),
                 baseUrl: sendspinUrl,
-                clientName: 'MSX Web Player',
+                clientName: 'Web Kiosk Player',
                 correctionMode: 'sync',
                 onStateChange: onSendspinStateChange
             });
@@ -166,149 +149,31 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
             sendspinReady = true;
             console.log('[Sendspin] Connected successfully');
 
-            // Update body class
-            document.body.classList.add('sendspin-mode');
-
-            // Show sync status in UI
-            updateSendspinStatus();
-            updateModeToggleUI();
-
-            // Start progress tracking
+            updateSendspinStatus('connected');
             progressInterval = setInterval(updateSendspinProgress, 500);
 
         } catch (e) {
             console.error('[Sendspin] Failed to initialize:', e);
-            showSendspinError('Sendspin connection failed: ' + e.message);
-            // Fallback to HTML5 mode
-            currentAudioMode = 'html5';
-            localStorage.setItem(AUDIO_MODE_KEY, 'html5');
-            document.body.classList.remove('sendspin-mode');
-            updateModeToggleUI();
-            connectWS();
+            updateSendspinStatus('error', e.message);
         }
-    }
-
-    function disconnectSendspin() {
-        if (sendspinPlayer) {
-            sendspinPlayer.disconnect('mode_switch');
-            sendspinPlayer = null;
-        }
-        sendspinReady = false;
-        if (progressInterval) {
-            clearInterval(progressInterval);
-            progressInterval = null;
-        }
-        document.body.classList.remove('sendspin-mode');
-    }
-
-    async function switchAudioMode(newMode) {
-        if (newMode === currentAudioMode) return;
-
-        console.log('[AudioMode] Switching from', currentAudioMode, 'to', newMode);
-
-        // Stop current playback
-        if (currentAudioMode === 'sendspin') {
-            disconnectSendspin();
-        } else {
-            audio.pause();
-            audio.removeAttribute('src');
-            stopPosReport();
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
-        }
-
-        // Hide player bar during switch
-        document.getElementById('player-bar').classList.remove('active');
-
-        // Update mode
-        currentAudioMode = newMode;
-        localStorage.setItem(AUDIO_MODE_KEY, newMode);
-
-        // Initialize new mode
-        if (newMode === 'sendspin') {
-            await initSendspin();
-        } else {
-            document.body.classList.remove('sendspin-mode');
-            connectWS();
-        }
-
-        updateModeToggleUI();
-    }
-
-    function updateModeToggleUI() {
-        var isSendspin = isSendspinMode();
-
-        // Update sidebar toggle
-        var modeSwitch = document.getElementById('mode-switch');
-        var modeLabel = document.getElementById('mode-label');
-        if (modeSwitch) {
-            modeSwitch.classList.toggle('active', isSendspin);
-        }
-        if (modeLabel) {
-            modeLabel.textContent = isSendspin ? 'Sendspin' : 'HTML5';
-        }
-
-        // Update kiosk toggle
-        var modeSwitchKiosk = document.getElementById('mode-switch-kiosk');
-        var modeLabelKiosk = document.getElementById('mode-label-kiosk');
-        if (modeSwitchKiosk) {
-            modeSwitchKiosk.classList.toggle('active', isSendspin);
-        }
-        if (modeLabelKiosk) {
-            modeLabelKiosk.textContent = isSendspin ? 'Sendspin' : 'HTML5';
-        }
-    }
-
-    function setupModeToggle() {
-        var toggle = document.getElementById('audio-mode-toggle');
-        var toggleKiosk = document.getElementById('mode-switch-kiosk');
-
-        if (toggle) {
-            toggle.addEventListener('click', function() {
-                var newMode = isSendspinMode() ? 'html5' : 'sendspin';
-                switchAudioMode(newMode);
-            });
-        }
-
-        if (toggleKiosk) {
-            toggleKiosk.parentElement.addEventListener('click', function() {
-                var newMode = isSendspinMode() ? 'html5' : 'sendspin';
-                switchAudioMode(newMode);
-            });
-        }
-
-        // Initial UI state
-        updateModeToggleUI();
     }
 
     function onSendspinStateChange(state) {
         console.log('[Sendspin] State changed:', state);
 
-        // Update play/pause button
         syncPlayBtn();
 
-        // Update metadata from server state
         if (state.serverState && state.serverState.metadata) {
             var meta = state.serverState.metadata;
-            updatePlayerBar({
+            updateKioskPlayer({
                 title: meta.title || '',
                 artist: meta.artist || '',
                 image: meta.artwork_url || '',
                 duration: meta.track_duration ? meta.track_duration / 1000 : 0
             });
-            updateFullPlayer({
-                title: meta.title || '',
-                artist: meta.artist || '',
-                image: meta.artwork_url || '',
-                duration: meta.track_duration ? meta.track_duration / 1000 : 0
-            });
-            document.getElementById('player-bar').classList.add('active');
         }
 
-        // Update sync status
-        updateSendspinStatus();
+        updateSendspinStatus(sendspinPlayer.isClockSynced ? 'synced' : 'syncing');
     }
 
     function updateSendspinProgress() {
@@ -319,48 +184,61 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
             var cur = progress.positionMs / 1000;
             var dur = progress.durationMs / 1000;
 
-            document.getElementById('bar-time').textContent = fmtDur(cur);
-            document.getElementById('full-time').textContent = fmtDur(cur);
+            var timeEl = document.getElementById('kiosk-time');
+            var durEl = document.getElementById('kiosk-dur');
+            var seekEl = document.getElementById('kiosk-seek');
 
-            if (dur > 0) {
-                var pct = (cur / dur) * 100;
-                document.getElementById('bar-seek').value = pct;
-                document.getElementById('full-seek').value = pct;
-                document.getElementById('bar-dur').textContent = fmtDur(dur);
-                document.getElementById('full-dur').textContent = fmtDur(dur);
-            }
+            if (timeEl) timeEl.textContent = fmtDur(cur);
+            if (durEl) durEl.textContent = fmtDur(dur);
+            if (seekEl && dur > 0) seekEl.value = (cur / dur) * 100;
+
+            // Also update bar/full player elements if they exist
+            var barTime = document.getElementById('bar-time');
+            var fullTime = document.getElementById('full-time');
+            if (barTime) barTime.textContent = fmtDur(cur);
+            if (fullTime) fullTime.textContent = fmtDur(cur);
         }
     }
 
-    function updateSendspinStatus() {
-        var statusEl = document.getElementById('sendspin-status');
+    function updateSendspinStatus(status, msg) {
+        var statusEl = document.getElementById('kiosk-sync-status');
         if (!statusEl) return;
 
-        if (!sendspinPlayer || !sendspinReady) {
-            statusEl.innerHTML = '<span class="status-dot disconnected"></span> Disconnected';
-            return;
+        statusEl.className = 'sync-indicator';
+        if (status === 'connected' || status === 'synced') {
+            statusEl.classList.add('synced');
+            statusEl.textContent = 'SYNC';
+        } else if (status === 'syncing') {
+            statusEl.classList.add('syncing');
+            statusEl.textContent = 'SYNCING...';
+        } else if (status === 'error') {
+            statusEl.classList.add('error');
+            statusEl.textContent = 'ERROR: ' + (msg || 'Connection failed');
+        } else {
+            statusEl.textContent = 'CONNECTING...';
         }
-
-        var state = sendspinPlayer.playerState;
-        var syncInfo = sendspinPlayer.syncInfo;
-
-        var statusClass = state === 'synchronized' ? 'synced' : 'syncing';
-        var statusText = state || 'connecting';
-
-        var html = '<span class="status-dot ' + statusClass + '"></span> ' + statusText;
-
-        if (syncInfo && syncInfo.syncErrorMs !== undefined) {
-            html += ' <span class="sync-error">(' + syncInfo.syncErrorMs.toFixed(0) + 'ms)</span>';
-        }
-
-        statusEl.innerHTML = html;
     }
 
-    function showSendspinError(msg) {
-        var statusEl = document.getElementById('sendspin-status');
-        if (statusEl) {
-            statusEl.innerHTML = '<span class="status-dot error"></span> ' + esc(msg);
+    function updateKioskPlayer(track) {
+        var artEl = document.getElementById('kiosk-art');
+        var titleEl = document.getElementById('kiosk-title');
+        var artistEl = document.getElementById('kiosk-artist');
+        var durEl = document.getElementById('kiosk-dur');
+
+        if (artEl) {
+            if (track.image) {
+                artEl.src = track.image;
+                artEl.style.display = '';
+            } else {
+                artEl.style.display = 'none';
+            }
         }
+        if (titleEl) titleEl.textContent = track.title || 'No track playing';
+        if (artistEl) artistEl.textContent = track.artist || '';
+        if (durEl) durEl.textContent = track.duration ? fmtDur(track.duration) : '';
+
+        // Also update full player
+        updateFullPlayer(track);
     }
 
     // --- Sidebar Menu ---
@@ -563,23 +441,16 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
         }
     }
 
-    // --- Audio (HTTP Stream mode) ---
+    // --- Audio (HTTP Stream mode - normal mode only) ---
     function playSingle(url, item) {
-        if (isSendspinMode()) {
-            // In Sendspin mode, send command to server instead
-            console.log('[Sendspin] playSingle not supported, use MA queue');
-            return;
-        }
+        if (isSendspinMode()) return;
         playlist = [makeTrack(url, item)];
         trackIdx = 0;
         playCurrent();
     }
 
     function loadPlaylist(url) {
-        if (isSendspinMode()) {
-            console.log('[Sendspin] loadPlaylist not supported, use MA queue');
-            return;
-        }
+        if (isSendspinMode()) return;
         var fullUrl = addParam(resolveUrl(url), deviceParam);
         fetch(fullUrl)
             .then(function (r) { return r.json(); })
@@ -629,11 +500,16 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
 
     function updateFullPlayer(track) {
         var art = document.getElementById('full-art');
-        if (track.image) { art.src = track.image; art.style.display = ''; }
-        else { art.style.display = 'none'; }
-        document.getElementById('full-title').textContent = track.title;
-        document.getElementById('full-artist').textContent = track.artist;
-        document.getElementById('full-dur').textContent = track.duration ? fmtDur(track.duration) : '';
+        if (art) {
+            if (track.image) { art.src = track.image; art.style.display = ''; }
+            else { art.style.display = 'none'; }
+        }
+        var titleEl = document.getElementById('full-title');
+        var artistEl = document.getElementById('full-artist');
+        var durEl = document.getElementById('full-dur');
+        if (titleEl) titleEl.textContent = track.title;
+        if (artistEl) artistEl.textContent = track.artist;
+        if (durEl) durEl.textContent = track.duration ? fmtDur(track.duration) : '';
     }
 
     function syncPlayBtn() {
@@ -645,8 +521,14 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
         }
         var icon = isPlaying ? 'pause' : 'play_arrow';
         var html = '<span class="material-symbols-rounded">' + icon + '</span>';
-        document.getElementById('btn-play').innerHTML = html;
-        document.getElementById('full-play').innerHTML = html;
+
+        var btnPlay = document.getElementById('btn-play');
+        var fullPlay = document.getElementById('full-play');
+        var kioskPlay = document.getElementById('kiosk-play');
+
+        if (btnPlay) btnPlay.innerHTML = html;
+        if (fullPlay) fullPlay.innerHTML = html;
+        if (kioskPlay) kioskPlay.innerHTML = html;
     }
 
     function togglePlay() {
@@ -685,28 +567,30 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
 
     // --- Progress ---
     function updateProgress() {
-        if (isSendspinMode()) return; // Handled by updateSendspinProgress
+        if (isSendspinMode()) return;
         var cur = audio.currentTime;
         var dur = audio.duration || 0;
         document.getElementById('bar-time').textContent = fmtDur(cur);
-        document.getElementById('full-time').textContent = fmtDur(cur);
+        var fullTime = document.getElementById('full-time');
+        if (fullTime) fullTime.textContent = fmtDur(cur);
         if (dur > 0) {
             var pct = (cur / dur) * 100;
             document.getElementById('bar-seek').value = pct;
-            document.getElementById('full-seek').value = pct;
+            var fullSeek = document.getElementById('full-seek');
+            if (fullSeek) fullSeek.value = pct;
         }
     }
 
     function seekTo(pct) {
-        if (isSendspinMode()) return; // Seek not supported in Sendspin mode
+        if (isSendspinMode()) return;
         var dur = audio.duration;
         if (dur && isFinite(dur)) audio.currentTime = (pct / 100) * dur;
     }
 
-    // --- WebSocket ---
+    // --- WebSocket (normal mode only) ---
     function connectWS() {
         if (!window.WebSocket) return;
-        if (isSendspinMode()) return; // Don't use WS in Sendspin mode
+        if (isSendspinMode()) return;
 
         var url = WS_URL + '?device_id=' + encodeURIComponent(deviceId) + '&source=web';
         ws = new WebSocket(url);
@@ -816,130 +700,93 @@ const SENDSPIN_URL_KEY = 'ma_sendspin_url';
         document.getElementById('player-full').classList.toggle('active');
     }
 
-    // --- Kiosk Mode ---
-    function setupKioskMode() {
-        if (!KIOSK_MODE) return;
-
-        document.body.classList.add('kiosk-mode');
-
-        // Auto-show full player if Sendspin and playing
-        if (isSendspinMode()) {
-            document.getElementById('player-full').classList.add('active');
-        }
-    }
-
-    // --- Sendspin Volume Control ---
-    function setupVolumeControl() {
-        var volumeSlider = document.getElementById('volume-slider');
-        var volumeBtn = document.getElementById('btn-volume');
-
-        if (!volumeSlider || !isSendspinMode()) return;
-
-        // Show volume control in Sendspin mode
-        var volumeControl = document.getElementById('volume-control');
-        if (volumeControl) volumeControl.style.display = 'flex';
-
-        volumeSlider.addEventListener('input', function(e) {
-            if (sendspinPlayer) {
-                sendspinPlayer.setVolume(parseInt(e.target.value, 10));
-            }
-        });
-
-        if (volumeBtn) {
-            volumeBtn.addEventListener('click', function() {
-                if (sendspinPlayer) {
-                    sendspinPlayer.setMuted(!sendspinPlayer.muted);
-                    volumeBtn.querySelector('.material-symbols-rounded').textContent =
-                        sendspinPlayer.muted ? 'volume_off' : 'volume_up';
-                }
-            });
-        }
-    }
-
     // --- UI Helpers ---
     function showLoading(on) { document.getElementById('loading').classList.toggle('active', on); }
     function showError(msg) { document.getElementById('content').innerHTML = '<div class="empty-state">' + esc(msg) + '</div>'; }
 
     // --- Init ---
     async function init() {
-        // Load audio mode settings first
-        loadAudioModeSettings();
-
-        // Setup kiosk mode
-        setupKioskMode();
-
-        // Setup mode toggle
-        setupModeToggle();
-
-        // Initialize audio backend based on mode
-        if (isSendspinMode()) {
+        if (KIOSK_MODE) {
+            // Kiosk mode: Sendspin only, show fullscreen player
+            document.body.classList.add('kiosk-mode');
             await initSendspin();
-            setupVolumeControl();
+
+            // Setup kiosk controls
+            var kioskPlay = document.getElementById('kiosk-play');
+            var kioskPrev = document.getElementById('kiosk-prev');
+            var kioskNext = document.getElementById('kiosk-next');
+
+            if (kioskPlay) kioskPlay.addEventListener('click', togglePlay);
+            if (kioskPrev) kioskPrev.addEventListener('click', prevTrack);
+            if (kioskNext) kioskNext.addEventListener('click', nextTrack);
+
+            console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
         } else {
+            // Normal mode: HTML5 streaming with WebSocket
             connectWS();
+
+            // Audio events
+            audio.addEventListener('timeupdate', updateProgress);
+            audio.addEventListener('ended', nextTrack);
+            audio.addEventListener('pause', function () {
+                syncPlayBtn();
+                if (pausedByWS) { pausedByWS = false; return; }
+                sendWS({ type: 'pause', position: audio.currentTime });
+                stopPosReport();
+            });
+            audio.addEventListener('play', function () {
+                syncPlayBtn();
+                if (resumedByWS) { resumedByWS = false; return; }
+                sendWS({ type: 'resume' });
+                startPosReport();
+            });
+
+            // Bar controls
+            document.getElementById('btn-play').addEventListener('click', togglePlay);
+            document.getElementById('btn-prev').addEventListener('click', prevTrack);
+            document.getElementById('btn-next').addEventListener('click', nextTrack);
+            document.getElementById('bar-seek').addEventListener('input', function (e) { seekTo(e.target.value); });
+            document.getElementById('bar-info').addEventListener('click', function () {
+                if (playlist.length) toggleMode();
+            });
+
+            // Full player controls
+            var fullPlay = document.getElementById('full-play');
+            var fullPrev = document.getElementById('full-prev');
+            var fullNext = document.getElementById('full-next');
+            var fullSeek = document.getElementById('full-seek');
+            var fullBrowse = document.getElementById('full-browse');
+
+            if (fullPlay) fullPlay.addEventListener('click', togglePlay);
+            if (fullPrev) fullPrev.addEventListener('click', prevTrack);
+            if (fullNext) fullNext.addEventListener('click', nextTrack);
+            if (fullSeek) fullSeek.addEventListener('input', function (e) { seekTo(e.target.value); });
+            if (fullBrowse) fullBrowse.addEventListener('click', toggleMode);
+
+            // Back button
+            document.getElementById('btn-back').addEventListener('click', goBack);
+
+            // Search
+            document.getElementById('search-close').addEventListener('click', hideSearch);
+            document.getElementById('search-input').addEventListener('input', function (e) {
+                clearTimeout(searchTimer);
+                var val = e.target.value;
+                searchTimer = setTimeout(function () { doSearch(val); }, SEARCH_DELAY);
+            });
+            document.getElementById('search-input').addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(e.target.value); }
+                if (e.key === 'Escape') hideSearch();
+            });
+
+            // Load menu
+            var menuUrl = addParam('/msx/menu.json', deviceParam);
+            fetch(resolveUrl(menuUrl))
+                .then(function (r) { return r.json(); })
+                .then(function (data) { buildMenu(data); })
+                .catch(function (e) { console.error('Menu load failed:', e); });
+
+            console.log('[WebPlayer] Normal mode initialized with HTML5 streaming');
         }
-
-        // Audio events (always register, used in HTML5 mode)
-        audio.addEventListener('timeupdate', updateProgress);
-        audio.addEventListener('ended', nextTrack);
-        audio.addEventListener('pause', function () {
-            syncPlayBtn();
-            if (isSendspinMode()) return;
-            if (pausedByWS) { pausedByWS = false; return; }
-            sendWS({ type: 'pause', position: audio.currentTime });
-            stopPosReport();
-        });
-        audio.addEventListener('play', function () {
-            syncPlayBtn();
-            if (isSendspinMode()) return;
-            if (resumedByWS) { resumedByWS = false; return; }
-            sendWS({ type: 'resume' });
-            startPosReport();
-        });
-
-        // Bar controls
-        document.getElementById('btn-play').addEventListener('click', togglePlay);
-        document.getElementById('btn-prev').addEventListener('click', prevTrack);
-        document.getElementById('btn-next').addEventListener('click', nextTrack);
-        document.getElementById('bar-seek').addEventListener('input', function (e) { seekTo(e.target.value); });
-        document.getElementById('bar-info').addEventListener('click', function () {
-            if (playlist.length || isSendspinMode()) toggleMode();
-        });
-
-        // Full player controls
-        document.getElementById('full-play').addEventListener('click', togglePlay);
-        document.getElementById('full-prev').addEventListener('click', prevTrack);
-        document.getElementById('full-next').addEventListener('click', nextTrack);
-        document.getElementById('full-seek').addEventListener('input', function (e) { seekTo(e.target.value); });
-        document.getElementById('full-browse').addEventListener('click', toggleMode);
-
-        // Back button
-        document.getElementById('btn-back').addEventListener('click', goBack);
-
-        // Search
-        document.getElementById('search-close').addEventListener('click', hideSearch);
-        document.getElementById('search-input').addEventListener('input', function (e) {
-            clearTimeout(searchTimer);
-            var val = e.target.value;
-            searchTimer = setTimeout(function () { doSearch(val); }, SEARCH_DELAY);
-        });
-        document.getElementById('search-input').addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(e.target.value); }
-            if (e.key === 'Escape') hideSearch();
-        });
-
-        // Load menu
-        var menuUrl = addParam('/msx/menu.json', deviceParam);
-        fetch(resolveUrl(menuUrl))
-            .then(function (r) { return r.json(); })
-            .then(function (data) { buildMenu(data); })
-            .catch(function (e) { console.error('Menu load failed:', e); });
-
-        console.log('[WebPlayer] Initialized', {
-            mode: currentAudioMode,
-            kiosk: KIOSK_MODE,
-            sendspinUrl: sendspinUrl
-        });
     }
 
     if (document.readyState === 'loading') {

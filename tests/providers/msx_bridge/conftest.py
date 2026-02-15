@@ -66,7 +66,6 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     # Playback control
     mass.player_queues.play_media = AsyncMock()
     mass.player_queues.resume = AsyncMock()
-    mass.player_queues.seek = AsyncMock()
     mass.player_queues.items = Mock(return_value=[])
     mass.player_queues.get = Mock(return_value=None)
     mass.players.cmd_pause = AsyncMock()
@@ -131,7 +130,9 @@ def player(provider: MSXBridgeProvider) -> MSXPlayer:
 
 
 @pytest.fixture
-async def http_client(provider: MSXBridgeProvider) -> AsyncGenerator[TestClient[Any, Any], None]:
+async def http_client(
+    provider: MSXBridgeProvider,
+) -> AsyncGenerator[TestClient[Any, Any], None]:
     """Return an aiohttp TestClient for the MSX HTTP server."""
     server = MSXHTTPServer(provider, 0)
     client = TestClient(TestServer(server.app))
