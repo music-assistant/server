@@ -100,6 +100,29 @@ FLOW_PLAYLIST_ID = "flow"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
 RADIO_PLAYLIST_PREFIX = "radio_"
+MOOD_FLOW_PREFIX = "mood_flow_"
+
+# Mood-based Flow variants (personalized, always available)
+MOOD_FLOWS = [
+    ("happy", "Flow: Happy"),
+    ("motivation", "Flow: Motivation"),
+    ("party", "Flow: Party"),
+    ("chill", "Flow: Chill"),
+    ("melancholy", "Flow: Melancholy"),
+    ("you_and_me", "Flow: Love"),
+    ("focus", "Flow: Focus"),
+]
+
+# Genre-based Flow variants (may vary by region/user)
+GENRE_FLOWS = [
+    ("genre-rock", "Flow: Rock"),
+    ("genre-metal", "Flow: Metal"),
+    ("genre-electronic", "Flow: Electronic"),
+    ("genre-classical", "Flow: Classical"),
+    ("genre-danceedm", "Flow: Dance & EDM"),
+    ("genre-house", "Flow: House"),
+    ("genre-lofi", "Flow: Lofi"),
+]
 
 # Curated Deezer radio station IDs
 CURATED_RADIO_IDS = [
@@ -237,6 +260,14 @@ class DeezerProvider(MusicProvider):
         chart = await self.client.get_chart()
         return list(chart.tracks[:100]) if chart.tracks else []
 
+    @use_cache(3600)  # Cache for 1 hour
+    async def _get_mood_flow_tracks(self, config_id: str) -> list[dict[str, Any]]:
+        """Get cached mood/genre Flow tracks from the GW API.
+
+        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        """
+        return await self.gw_client.get_user_radio(config_id)
+
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
@@ -364,6 +395,11 @@ class DeezerProvider(MusicProvider):
             except Exception as err:
                 self.logger.warning("Failed getting radio %s: %s", radio_id, err)
                 raise MediaNotFoundError(f"Radio {prov_playlist_id} not found on Deezer") from err
+        if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            flow_names = dict(MOOD_FLOWS + GENRE_FLOWS)
+            display_name = flow_names.get(config_id, f"Flow: {config_id}")
+            return self._create_virtual_playlist(prov_playlist_id, display_name)
         try:
             return self.parse_playlist(
                 playlist=await self.client.get_playlist(playlist_id=int(prov_playlist_id)),
@@ -422,6 +458,11 @@ class DeezerProvider(MusicProvider):
             except Exception as err:
                 self.logger.debug("Failed to get radio tracks %s: %s", radio_id, err)
                 return []
+
+        if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            gw_tracks = await self._get_mood_flow_tracks(config_id)
+            return [await self.get_track(track["SNG_ID"]) for track in gw_tracks]
 
         # Regular Deezer playlists (cached separately)
         return await self._get_regular_playlist_tracks(prov_playlist_id)
@@ -595,6 +636,28 @@ class DeezerProvider(MusicProvider):
                     ),
                 )
             )
+
+        # Deezer Mood and Genre Flows - personalized playlists
+        for folder_id, folder_name, flows in [
+            ("mood_flows", "Deezer Mood Flows", MOOD_FLOWS),
+            ("genre_flows", "Deezer Genre Flows", GENRE_FLOWS),
+        ]:
+            flow_playlists = [
+                self._create_virtual_playlist(
+                    item_id=f"{MOOD_FLOW_PREFIX}{config_id}",
+                    name=display_name,
+                )
+                for config_id, display_name in flows
+            ]
+            if flow_playlists:
+                result.append(
+                    RecommendationFolder(
+                        item_id=folder_id,
+                        provider=self.instance_id,
+                        name=folder_name,
+                        items=UniqueList(flow_playlists),
+                    )
+                )
 
         # Deezer Radios - curated selection (as virtual playlists in one folder)
         radio_playlists: list[Playlist] = []

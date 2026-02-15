@@ -36,6 +36,7 @@ class GWClient:
     _gw_csrf_token: str | None
     _license: str | None
     _license_expiration_timestamp: int
+    _user_id: int
     session: ClientSession
     formats: list[dict[str, str]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
@@ -67,6 +68,7 @@ class GWClient:
             raise DeezerGWError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
+        self._user_id = int(user_data["results"]["USER"]["USER_ID"])
         self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
@@ -126,6 +128,17 @@ class GWClient:
             msg = "Failed to call GW-API"
             raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
+
+    async def get_user_radio(self, config_id: str) -> list[dict[str, Any]]:
+        """Get personalized Flow tracks for a specific mood or genre.
+
+        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        """
+        result = await self._gw_api_call(
+            "radio.getUserRadio",
+            args={"config_id": config_id, "user_id": self._user_id},
+        )
+        return cast("list[dict[str, Any]]", result["results"]["data"])
 
     async def get_song_data(self, track_id: str) -> dict[str, Any]:
         """Get data such as the track token for a given track."""
