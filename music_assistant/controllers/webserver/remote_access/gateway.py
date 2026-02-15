@@ -627,11 +627,13 @@ class WebRTCGateway:
         path = request_data.get("path", "/")
         headers = request_data.get("headers", {})
 
-        # Build local HTTP URL
-        # Extract host and port from local_ws_url (ws://localhost:8095/ws)
-        ws_url_parts = self.local_ws_url.replace("ws://", "").split("/")
-        host_port = ws_url_parts[0]  # localhost:8095
-        local_http_url = f"http://{host_port}{path}"
+        # Build local HTTP URL from the WebSocket URL.
+        # Handle both ws:// and wss:// schemes.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.local_ws_url)
+        http_scheme = "https" if parsed.scheme == "wss" else "http"
+        local_http_url = f"{http_scheme}://{parsed.netloc}{path}"
 
         self.logger.debug("HTTP proxy request: %s %s", method, local_http_url)
 
