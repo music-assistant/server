@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRES,
     DEFAULT_GENRE_MAPPING,
 )
-from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 
@@ -33,6 +35,13 @@ from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+
+
+# Background scanner configuration
+GENRE_MAPPING_SCAN_INTERVAL = 60 * 60 * 2  # 2 hours
+# Items per media type per scan cycle (5 tracks + 5 albums + 5 artists = 15 total)
+GENRE_MAPPING_BATCH_SIZE = 5
+GENRE_MAPPING_ITEM_DELAY = 5  # Seconds between items
 
 
 class GenreController(MediaControllerBase[Genre]):
@@ -46,6 +55,9 @@ class GenreController(MediaControllerBase[Genre]):
         """Initialize class."""
         super().__init__(mass)
         self._db_add_lock = asyncio.Lock()
+        # Background scanner state tracking
+        self._scanner_running: bool = False
+        self._last_scan_time: float = 0
         self.base_query = f"SELECT {DB_TABLE_GENRES}.* FROM {DB_TABLE_GENRES}"
         self.alias_base_query = f"""
         SELECT
@@ -102,6 +114,18 @@ class GenreController(MediaControllerBase[Genre]):
             "music/genres/radio_mode_base_tracks",
             self.get_radio_mode_base_tracks,
         )
+        self.mass.register_api_command(
+            "music/genres/scan_mappings",
+            self.scan_mappings,
+            required_role="admin",
+        )
+        self.mass.register_api_command(
+            "music/genres/scanner_status",
+            self.get_scanner_status,
+        )
+
+        # Schedule genre mapping scanner (start after 5 minutes to allow system startup)
+        self.mass.call_later(300, self._scan_genre_mappings)
 
     async def _add_library_item(self, item: Genre, overwrite_existing: bool = False) -> int:
         """Add a new genre record to the database."""
@@ -898,23 +922,73 @@ class GenreController(MediaControllerBase[Genre]):
         )
 
     async def _get_alias_id_by_name(self, name: str) -> int | None:
+        """Get alias ID by name with fuzzy matching fallback.
+
+        First tries exact match using normalized search_name.
+        If no match, tries fuzzy matching against all existing aliases.
+
+        :param name: Alias name to search for.
+        :return: Alias ID if found, None otherwise.
+        """
         search_name = create_safe_string(name, True, True)
         if not search_name:
             return None
+
+        # Try exact match first (handles "Synth wave" = "synthwave")
         if db_row := await self.mass.music.database.get_row(
             DB_TABLE_ALIASES, {"search_name": search_name}
         ):
             return int(db_row["item_id"])
+
+        # Fuzzy match fallback (handles typos, minor variations)
+        all_aliases = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name FROM {DB_TABLE_ALIASES}",
+            limit=0,
+        )
+        for alias_row in all_aliases:
+            if compare_strings(name, alias_row["name"], strict=False):
+                self.logger.debug(
+                    "Fuzzy matched alias '%s' to existing alias '%s'",
+                    name,
+                    alias_row["name"],
+                )
+                return int(alias_row["item_id"])
+
         return None
 
     async def _get_genre_id_by_name(self, name: str) -> int | None:
+        """Get genre ID by name with fuzzy matching fallback.
+
+        First tries exact match using normalized search_name.
+        If no match, tries fuzzy matching against all existing genres.
+
+        :param name: Genre name to search for.
+        :return: Genre ID if found, None otherwise.
+        """
         search_name = create_safe_string(name, True, True)
         if not search_name:
             return None
+
+        # Try exact match first (handles "Synth wave" = "synthwave")
         if db_row := await self.mass.music.database.get_row(
             DB_TABLE_GENRES, {"search_name": search_name}
         ):
             return int(db_row["item_id"])
+
+        # Fuzzy match fallback (handles typos, minor variations)
+        all_genres = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name FROM {DB_TABLE_GENRES}",
+            limit=0,
+        )
+        for genre_row in all_genres:
+            if compare_strings(name, genre_row["name"], strict=False):
+                self.logger.debug(
+                    "Fuzzy matched genre '%s' to existing genre '%s'",
+                    name,
+                    genre_row["name"],
+                )
+                return int(genre_row["item_id"])
+
         return None
 
     async def _get_genre_id_by_alias(self, alias_id: int) -> int | None:
@@ -1132,3 +1206,140 @@ class GenreController(MediaControllerBase[Genre]):
             return None
         search_sort_name = create_safe_string(sort_name or "", True, True)
         return name, sort_name, search_name, search_sort_name
+
+    async def _scan_genre_mappings(self) -> None:
+        """Periodic scanner to map media items with metadata.genres to genre aliases.
+
+        This scanner runs in the background and processes tracks, albums, and artists
+        that have genres in their metadata but may not be fully mapped to the genre
+        alias system.
+        """
+        if self._scanner_running:
+            self.logger.debug("Genre mapping scanner already running, skipping this cycle")
+            self.mass.call_later(GENRE_MAPPING_SCAN_INTERVAL, self._scan_genre_mappings)
+            return
+
+        self._scanner_running = True
+        self._last_scan_time = time.time()
+
+        try:
+            self.logger.debug("Starting genre mapping background scan...")
+
+            # Process each media type
+            track_count = await self._scan_media_type_genres(
+                MediaType.TRACK, self.mass.music.tracks
+            )
+            album_count = await self._scan_media_type_genres(
+                MediaType.ALBUM, self.mass.music.albums
+            )
+            artist_count = await self._scan_media_type_genres(
+                MediaType.ARTIST, self.mass.music.artists
+            )
+
+            self.logger.info(
+                "Genre mapping scan completed: %d tracks, %d albums, %d artists (%.1fs)",
+                track_count,
+                album_count,
+                artist_count,
+                time.time() - self._last_scan_time,
+            )
+
+        except Exception as err:
+            self.logger.error(
+                "Error in genre mapping scanner: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+
+        finally:
+            self._scanner_running = False
+            # Reschedule next scan
+            self.mass.call_later(GENRE_MAPPING_SCAN_INTERVAL, self._scan_genre_mappings)
+
+    async def _scan_media_type_genres(
+        self, media_type: MediaType, controller: MediaControllerBase[Any]
+    ) -> int:
+        """Scan and map genres for a specific media type.
+
+        :param media_type: The type of media to scan (TRACK, ALBUM, or ARTIST).
+        :param controller: The controller for this media type.
+        :return: Number of items successfully mapped.
+        """
+        # Query for items with metadata.genres
+        query = (
+            f"json_extract({controller.db_table}.metadata,'$.genres') IS NOT NULL "
+            f"AND json_extract({controller.db_table}.metadata,'$.genres') != '[]'"
+        )
+
+        items = await controller.get_library_items_by_query(
+            limit=GENRE_MAPPING_BATCH_SIZE,
+            order_by="random",  # Distribute load evenly over time
+            extra_query_parts=[query],
+        )
+
+        mapped_count = 0
+        for item in items:
+            try:
+                # Get genres from metadata
+                genre_names = set(item.metadata.genres or [])
+                if not genre_names:
+                    continue
+
+                # Map genres to aliases
+                await self.sync_media_item_genres(
+                    media_type,
+                    item.item_id,
+                    genre_names,
+                )
+                mapped_count += 1
+
+                # Yield to event loop between items
+                await asyncio.sleep(GENRE_MAPPING_ITEM_DELAY)
+
+            except Exception as err:
+                self.logger.warning(
+                    "Error mapping genres for %s %s: %s",
+                    media_type.value,
+                    item.name,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
+                # Continue with next item even if one fails
+                continue
+
+        return mapped_count
+
+    async def scan_mappings(self) -> dict[str, Any]:
+        """Manually trigger a genre mapping scan (admin only).
+
+        :return: Status information about the scan trigger.
+        """
+        if self._scanner_running:
+            return {
+                "status": "already_running",
+                "message": "Genre mapping scanner is already running",
+            }
+
+        # Trigger scan immediately (cancel any pending scheduled scan)
+        self.mass.create_task(self._scan_genre_mappings())
+
+        return {
+            "status": "triggered",
+            "message": "Genre mapping scan triggered",
+            "last_scan": self._last_scan_time,
+        }
+
+    async def get_scanner_status(self) -> dict[str, Any]:
+        """Get status of the genre mapping background scanner.
+
+        :return: Scanner status information.
+        """
+        return {
+            "running": self._scanner_running,
+            "last_scan_time": self._last_scan_time,
+            "last_scan_ago_seconds": (
+                int(time.time() - self._last_scan_time) if self._last_scan_time else None
+            ),
+            "next_scan_in_seconds": GENRE_MAPPING_SCAN_INTERVAL,
+            "batch_size": GENRE_MAPPING_BATCH_SIZE,
+        }
