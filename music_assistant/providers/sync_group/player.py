@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -105,9 +104,7 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def current_media(self) -> PlayerMedia | None:
         """Return the current media item (if any) loaded in the player."""
-        return (
-            self.sync_leader.state.current_media if self.sync_leader else self._attr_current_media
-        )
+        return self.sync_leader.state.current_media if self.sync_leader else None
 
     @property
     def active_source(self) -> str | None:
@@ -205,12 +202,12 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        await self._form_syncgroup()
+        if not self.sync_leader:
+            await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
             # Use internal handler to bypass group redirect logic and preserve protocol selection
             await self.mass.players._handle_play_media(sync_leader.player_id, media)
-            self._attr_current_media = deepcopy(media)
             self.update_state()
         else:
             raise RuntimeError("An empty group cannot play media, consider adding members first")
@@ -288,11 +285,6 @@ class SyncGroupPlayer(GroupPlayer):
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
         if not self.sync_leader:
-            # make sure that we always add the default members from the config
-            default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-            for default_member in default_members:
-                if default_member not in self._attr_group_members:
-                    self._attr_group_members.append(default_member)
             self.sync_leader = self._select_sync_leader()
 
         if not self.sync_leader:
@@ -321,9 +313,6 @@ class SyncGroupPlayer(GroupPlayer):
             ]
             if sync_children:
                 await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
-        # reset to default member list
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        self._attr_group_members = default_members.copy()
         self.sync_leader = None
         self.update_state()
 
@@ -344,16 +333,15 @@ class SyncGroupPlayer(GroupPlayer):
 
             if provider_protocol and provider_protocol in SUPPORT_DYNAMIC_LEADER:
                 # TODO: figure out how to handle dynamic leader transition without
-                # stoppingplayback, which has become complicated due
+                # stopping playback, which has become complicated due
                 # to a player can support multiple protocols
                 pass
 
         if prev_leader:
             # Save current media and playback state for potential restart
             was_playing = self.playback_state == PlaybackState.PLAYING
-            # Stop current playback and dissolve existing group
+            # Stop current playback (which also dissolves the existing syncgroup)
             await self.stop()
-            await self._dissolve_syncgroup()
             # allow some time to propagate the changes before resyncing
             await asyncio.sleep(2)
 
