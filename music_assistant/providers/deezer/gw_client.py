@@ -5,6 +5,7 @@ cookie based on the api_token.
 """
 
 import datetime
+import json as json_module
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
 from typing import Any, cast
@@ -139,6 +140,27 @@ class GWClient:
             args={"config_id": config_id, "user_id": self._user_id},
         )
         return cast("list[dict[str, Any]]", result["results"]["data"])
+
+    async def get_home_flows(self) -> list[dict[str, Any]]:
+        """Discover available Flow variants from the Deezer home page.
+
+        :param: None
+        """
+        gateway_input = json_module.dumps(
+            {
+                "PAGE": "home",
+                "VERSION": "2.5",
+                "SUPPORT": {"filterable-grid": ["flow"]},
+            }
+        )
+        result = await self._gw_api_call(
+            "page.get",
+            params={"gateway_input": gateway_input},
+        )
+        for section in result["results"]["sections"]:
+            if section.get("layout") == "filterable-grid":
+                return cast("list[dict[str, Any]]", section["items"])
+        return []
 
     async def get_song_data(self, track_id: str) -> dict[str, Any]:
         """Get data such as the track token for a given track."""
