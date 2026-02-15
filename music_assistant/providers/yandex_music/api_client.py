@@ -28,6 +28,9 @@ from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
+    from yandex_music.feed.feed import Feed
+    from yandex_music.landing.chart_info import ChartInfo
+    from yandex_music.landing.landing_list import LandingList
 
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
@@ -658,6 +661,79 @@ class YandexMusicClient:
             )
 
         return None
+
+    # Discovery / recommendations
+
+    async def get_feed(self) -> Feed | None:
+        """Get personalized feed with generated playlists (Playlist of the Day, etc.).
+
+        :return: Feed object with generated_playlists, or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.feed())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching feed: %s", err)
+            return None
+
+    async def get_chart(self, chart_option: str = "") -> ChartInfo | None:
+        """Get chart data.
+
+        :param chart_option: Optional chart variant (e.g. 'world', 'russia').
+        :return: ChartInfo object or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.chart(chart_option))
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching chart: %s", err)
+            return None
+
+    async def get_new_releases(self) -> LandingList | None:
+        """Get new album releases.
+
+        :return: LandingList with new_releases (list of album IDs) or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.new_releases())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching new releases: %s", err)
+            return None
+
+    async def get_new_playlists(self) -> LandingList | None:
+        """Get new editorial playlists.
+
+        :return: LandingList with new_playlists (list of PlaylistId) or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.new_playlists())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching new playlists: %s", err)
+            return None
+
+    async def get_albums(self, album_ids: list[str]) -> list[YandexAlbum]:
+        """Get multiple albums by IDs.
+
+        :param album_ids: List of album IDs.
+        :return: List of album objects.
+        """
+        try:
+            result = await self._call_with_retry(lambda c: c.albums(album_ids))
+            return result or []
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching albums: %s", err)
+            return []
+
+    async def get_playlists(self, playlist_ids: list[str]) -> list[YandexPlaylist]:
+        """Get multiple playlists by IDs (format: 'uid:kind').
+
+        :param playlist_ids: List of playlist IDs in 'uid:kind' format.
+        :return: List of playlist objects.
+        """
+        try:
+            result = await self._call_with_retry(lambda c: c.playlists_list(playlist_ids))
+            return result or []
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching playlists: %s", err)
+            return []
 
     # Library modifications
 

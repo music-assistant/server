@@ -52,6 +52,12 @@ CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
 CONF_ENABLE_LIKED_TRACKS_BROWSE: Final[str] = "enable_liked_tracks_browse"
 CONF_ENABLE_LIKED_TRACKS_PLAYLIST: Final[str] = "enable_liked_tracks_playlist"
 
+# Configuration keys for Discovery recommendations
+CONF_ENABLE_FEED_RECOMMENDATIONS: Final[str] = "enable_feed_recommendations"
+CONF_ENABLE_CHART: Final[str] = "enable_chart"
+CONF_ENABLE_NEW_RELEASES: Final[str] = "enable_new_releases"
+CONF_ENABLE_NEW_PLAYLISTS: Final[str] = "enable_new_playlists"
+
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
@@ -79,6 +85,10 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "albums": "Мои альбомы",
     "tracks": "Мне нравится",
     "playlists": "Мои плейлисты",
+    "feed": "Для вас",
+    "chart": "Чарт",
+    "new_releases": "Новинки",
+    "new_playlists": "Новые плейлисты",
 }
 BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "my_wave": "My Wave",
@@ -86,4 +96,8 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "albums": "My Albums",
     "tracks": "My Favorites",
     "playlists": "My Playlists",
+    "feed": "Made for You",
+    "chart": "Chart",
+    "new_releases": "New Releases",
+    "new_playlists": "New Playlists",
 }

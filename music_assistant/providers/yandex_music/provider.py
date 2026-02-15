@@ -38,11 +38,15 @@ from .constants import (
     CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_CHART,
+    CONF_ENABLE_FEED_RECOMMENDATIONS,
     CONF_ENABLE_LIKED_TRACKS_BROWSE,
     CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
     CONF_ENABLE_MY_WAVE_BROWSE,
     CONF_ENABLE_MY_WAVE_PLAYLIST,
     CONF_ENABLE_MY_WAVE_RADIO,
+    CONF_ENABLE_NEW_PLAYLISTS,
+    CONF_ENABLE_NEW_RELEASES,
     CONF_ENABLE_RECOMMENDATIONS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_BATCH_SIZE,
@@ -706,19 +710,49 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar track: %s", err)
         return tracks
 
-    @use_cache(60)  # Cache for only 1 minute to allow auto-refresh
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations; includes My Wave (Моя волна) as first folder.
+        """Get recommendations with multiple discovery folders.
 
-        Fetches fresh tracks on each call for discovery experience.
+        Returns My Wave, Feed (Made for You), Chart, New Releases, and
+        New Playlists sections — each controlled by its own config toggle.
 
-        :return: List of recommendation folders (My Wave with tracks).
+        :return: List of recommendation folders.
         """
-        # Check if recommendations are enabled (this check is redundant if we remove
-        # from supported_features, but provides defense in depth)
-        if not self.config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
-            return []
+        folders: list[RecommendationFolder] = []
 
+        if self.config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
+            folder = await self._get_my_wave_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_FEED_RECOMMENDATIONS, True):
+            folder = await self._get_feed_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_CHART, True):
+            folder = await self._get_chart_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_NEW_RELEASES, True):
+            folder = await self._get_new_releases_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_NEW_PLAYLISTS, True):
+            folder = await self._get_new_playlists_recommendations()
+            if folder:
+                folders.append(folder)
+
+        return folders
+
+    @use_cache(60)
+    async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
+        """Get My Wave recommendation folder with personalized tracks.
+
+        :return: RecommendationFolder with My Wave tracks, or None if empty.
+        """
         max_tracks_config = int(
             self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
         )
@@ -726,12 +760,10 @@ class YandexMusicProvider(MusicProvider):
             self.config.get_value(CONF_MY_WAVE_BATCH_SIZE) or 3  # type: ignore[arg-type]
         )
 
-        # Reset for fresh recommendations
         seen_track_ids: set[str] = set()
         items: list[Track] = []
         queue: str | int | None = None
 
-        # Fetch multiple batches based on config
         for _ in range(batch_size_config):
             if len(seen_track_ids) >= max_tracks_config:
                 break
@@ -751,7 +783,6 @@ class YandexMusicProvider(MusicProvider):
                         str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
                     )
                     if track_id:
-                        # Check for duplicates
                         if track_id in seen_track_ids:
                             continue
 
@@ -768,12 +799,13 @@ class YandexMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing My Wave track for recommendations: %s", err)
 
-            # Set queue for next batch
             queue = first_track_id_this_batch
             if not queue:
                 break
 
-        # Apply initial tracks limit for Discovery
+        if not items:
+            return None
+
         initial_tracks_limit = int(
             self.config.get_value(CONF_DISCOVERY_INITIAL_TRACKS) or 5  # type: ignore[arg-type]
         )
@@ -781,15 +813,143 @@ class YandexMusicProvider(MusicProvider):
             items = items[:initial_tracks_limit]
 
         names = self._get_browse_names()
-        return [
-            RecommendationFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
-                items=UniqueList(items),
-                icon="mdi-waveform",
-            )
+        return RecommendationFolder(
+            item_id=MY_WAVE_PLAYLIST_ID,
+            provider=self.instance_id,
+            name=names[MY_WAVE_PLAYLIST_ID],
+            items=UniqueList(items),
+            icon="mdi-waveform",
+        )
+
+    @use_cache(1800)
+    async def _get_feed_recommendations(self) -> RecommendationFolder | None:
+        """Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
+
+        :return: RecommendationFolder with generated playlists, or None if unavailable.
+        """
+        feed = await self.client.get_feed()
+        if not feed or not feed.generated_playlists:
+            return None
+        items: list[Playlist] = []
+        for gen_playlist in feed.generated_playlists:
+            if gen_playlist.data and gen_playlist.ready:
+                try:
+                    items.append(parse_playlist(self, gen_playlist.data))
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing feed playlist: %s", err)
+        if not items:
+            return None
+        names = self._get_browse_names()
+        return RecommendationFolder(
+            item_id="feed",
+            provider=self.instance_id,
+            name=names["feed"],
+            items=UniqueList(items),
+            icon="mdi-account-music",
+        )
+
+    @use_cache(3600)
+    async def _get_chart_recommendations(self) -> RecommendationFolder | None:
+        """Get chart tracks (hot tracks of the month).
+
+        :return: RecommendationFolder with chart tracks, or None if unavailable.
+        """
+        chart_info = await self.client.get_chart()
+        if not chart_info or not chart_info.chart:
+            return None
+        playlist = chart_info.chart
+        if not playlist.tracks:
+            return None
+        # TrackShort objects in chart context have .track (full Track) and .chart (position)
+        tracks: list[Track] = []
+        for track_short in playlist.tracks[:20]:
+            track_obj = getattr(track_short, "track", None)
+            if not track_obj:
+                continue
+            try:
+                tracks.append(parse_track(self, track_obj))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing chart track: %s", err)
+        if not tracks:
+            return None
+        names = self._get_browse_names()
+        return RecommendationFolder(
+            item_id="chart",
+            provider=self.instance_id,
+            name=names["chart"],
+            items=UniqueList(tracks),
+            icon="mdi-chart-line",
+        )
+
+    @use_cache(3600)
+    async def _get_new_releases_recommendations(self) -> RecommendationFolder | None:
+        """Get new album releases.
+
+        :return: RecommendationFolder with new albums, or None if unavailable.
+        """
+        releases = await self.client.get_new_releases()
+        if not releases or not releases.new_releases:
+            return None
+        # new_releases is a list of album IDs (int) — need to batch-fetch full details
+        album_ids = [str(aid) for aid in releases.new_releases[:20]]
+        if not album_ids:
+            return None
+        full_albums = await self.client.get_albums(album_ids)
+        if not full_albums:
+            return None
+        albums: list[Album] = []
+        for album in full_albums:
+            try:
+                albums.append(parse_album(self, album))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing new release album: %s", err)
+        if not albums:
+            return None
+        names = self._get_browse_names()
+        return RecommendationFolder(
+            item_id="new_releases",
+            provider=self.instance_id,
+            name=names["new_releases"],
+            items=UniqueList(albums),
+            icon="mdi-new-box",
+        )
+
+    @use_cache(3600)
+    async def _get_new_playlists_recommendations(self) -> RecommendationFolder | None:
+        """Get new editorial playlists.
+
+        :return: RecommendationFolder with new playlists, or None if unavailable.
+        """
+        result = await self.client.get_new_playlists()
+        if not result or not result.new_playlists:
+            return None
+        # new_playlists is a list of PlaylistId objects (uid, kind) — fetch full details
+        playlist_ids = [
+            f"{pid.uid}:{pid.kind}"
+            for pid in result.new_playlists[:20]
+            if hasattr(pid, "uid") and hasattr(pid, "kind")
         ]
+        if not playlist_ids:
+            return None
+        full_playlists = await self.client.get_playlists(playlist_ids)
+        if not full_playlists:
+            return None
+        playlists: list[Playlist] = []
+        for playlist in full_playlists:
+            try:
+                playlists.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing new playlist: %s", err)
+        if not playlists:
+            return None
+        names = self._get_browse_names()
+        return RecommendationFolder(
+            item_id="new_playlists",
+            provider=self.instance_id,
+            name=names["new_playlists"],
+            items=UniqueList(playlists),
+            icon="mdi-playlist-star",
+        )
 
     @use_cache(3600 * 3)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
