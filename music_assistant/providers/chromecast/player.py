@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -75,8 +76,13 @@ class ChromecastPlayer(Player):
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        else:
+        elif self._is_google_device(cast_info):
+            # Google devices (Chromecast, Nest, Google Home) have native Cast support
             player_type = PlayerType.PLAYER
+        else:
+            # Non-Google devices are generic Chromecast receivers
+            # Will be wrapped in a UniversalPlayer
+            player_type = PlayerType.PROTOCOL
         self.cc = chromecast
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
@@ -85,6 +91,7 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
@@ -109,7 +116,11 @@ class ChromecastPlayer(Player):
             model=self.cast_info.model_name,
             manufacturer=self.cast_info.manufacturer or "",
         )
-        self._attr_device_info.ip_address = self.cast_info.host
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+        self._attr_device_info.add_identifier(
+            IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+        )
+        self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         assert provider.mz_mgr is not None  # for type checking
         status_listener = CastStatusListener(self, provider.mz_mgr)
         self.status_listener = status_listener
@@ -137,6 +148,20 @@ class ChromecastPlayer(Player):
             )
         )
 
+    @staticmethod
+    def _is_google_device(cast_info: ChromecastInfo) -> bool:
+        """Check if a device is a Google device with native Cast support.
+
+        Google devices (Chromecast, Nest, Google Home) have native Cast support
+        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+        support should be exposed as PlayerType.PROTOCOL.
+        """
+        if not cast_info.manufacturer:
+            # If no manufacturer, check model name for Google devices
+            model = cast_info.model_name.lower() if cast_info.model_name else ""
+            return any(google in model for google in ("chromecast", "google", "nest", "home"))
+        return cast_info.manufacturer.lower() in ("google", "google inc.")
+
     @property
     def sendspin_mode_enabled(self) -> bool:
         """Return if sendspin mode is enabled for the player."""
@@ -150,14 +175,14 @@ class ChromecastPlayer(Player):
         """Return the linked sendspin player if available/enabled."""
         if enabled_only and not self.sendspin_mode_enabled:
             return None
-        if not (sendspin_player := self.mass.players.get(self.sendspin_player_id)):
+        if not (sendspin_player := self.mass.players.get_player(self.sendspin_player_id)):
             return None
         if not sendspin_player.available:
             return None
         return sendspin_player
 
     @property
-    def supported_features(self) -> set[PlayerFeature]:
+    def _supported_features(self) -> set[PlayerFeature]:
         """Return the supported features for this player."""
         try:
             if self.sendspin_mode_enabled:
@@ -178,7 +203,7 @@ class ChromecastPlayer(Player):
         if not sendspin_player_id.startswith("cast-"):
             return None
         # Search for a Chromecast player with matching sendspin_player_id
-        for player in self.mass.players.all():
+        for player in self.mass.players.all_players():
             if hasattr(player, "sendspin_player_id"):
                 if player.sendspin_player_id == sendspin_player_id:
                     return player.player_id
@@ -424,6 +449,7 @@ class ChromecastPlayer(Player):
             await self._play_media_sendspin(media)
             return
 
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         queuedata = {
             "type": "LOAD",
             "media": self._create_cc_media_item(media),
@@ -501,7 +527,7 @@ class ChromecastPlayer(Player):
             return
         if self.active_cast_group:
             return
-        if self.playback_state != PlaybackState.PLAYING:
+        if self._attr_playback_state != PlaybackState.PLAYING:
             return
         if not (current_media := self.current_media):
             return
@@ -623,13 +649,14 @@ class ChromecastPlayer(Player):
         # handle stereo pairs
         if self.cast_info.is_multichannel_group:
             self._attr_type = PlayerType.STEREO_PAIR
-            self.group_members.clear()
+            self._attr_group_members.clear()
         # handle cast groups
         if self.cast_info.is_audio_group and not self.cast_info.is_multichannel_group:
             assert self.mz_controller is not None  # for type checking
             self._attr_type = PlayerType.GROUP
             self._attr_group_members = [str(UUID(x)) for x in self.mz_controller.members]
             self._attr_supported_features = {
+                PlayerFeature.PLAY_MEDIA,
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.PAUSE,
@@ -642,10 +669,10 @@ class ChromecastPlayer(Player):
         self._attr_volume_muted = status.volume_muted
         new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
         self._attr_powered = new_powered
-        if self._attr_powered and not new_powered and self._attr_type == PlayerType.GROUP:
+        if self._attr_powered and not new_powered and self.type == PlayerType.GROUP:
             # group is being powered off, update group childs
             for child_id in self.group_members:
-                if child := self.mass.players.get(child_id):
+                if child := self.mass.players.get_player(child_id):
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
@@ -663,7 +690,7 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            if not (group_player := self.mass.players.get(self.active_cast_group)):
+            if not (group_player := self.mass.players.get_player(self.active_cast_group)):
                 return
             if not isinstance(group_player, ChromecastPlayer):
                 return
@@ -732,15 +759,15 @@ class ChromecastPlayer(Player):
         # so we need to update the group child(s) manually
         if self.type == PlayerType.GROUP and self.powered:
             for child_id in self.group_members:
-                if child := self.mass.players.get(child_id):
+                if child := self.mass.players.get_player(child_id):
                     assert isinstance(child, ChromecastPlayer)  # for type checking
                     if not child.cast_info.is_multichannel_group:
                         continue
-                    child._attr_playback_state = self.playback_state
-                    child._attr_current_media = self.current_media
-                    child._attr_elapsed_time = self.elapsed_time
-                    child._attr_elapsed_time_last_updated = self.elapsed_time_last_updated
-                    child._attr_active_source = self.active_source
+                    child._attr_playback_state = self._attr_playback_state
+                    child._attr_current_media = self._attr_current_media
+                    child._attr_elapsed_time = self._attr_elapsed_time
+                    child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
+                    child._attr_active_source = self._active_source
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
@@ -770,7 +797,12 @@ class ChromecastPlayer(Player):
                 model=self.cast_info.model_name,
                 manufacturer=self.cast_info.manufacturer or "",
             )
-            self._attr_device_info.ip_address = self.cast_info.host
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+            self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
+            if self.cast_info.mac_address:
+                self._attr_device_info.add_identifier(
+                    IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+                )
             self.mass.loop.call_soon_threadsafe(self.update_state)
 
             if new_available and self.type == PlayerType.PLAYER:
@@ -917,7 +949,7 @@ class ChromecastPlayer(Player):
         """Wait for the Sendspin player to connect and become available."""
         start_time = time.time()
         while (time.time() - start_time) < timeout:
-            if sendspin_player := self.mass.players.get(self.sendspin_player_id):
+            if sendspin_player := self.mass.players.get_player(self.sendspin_player_id):
                 if sendspin_player.available:
                     self.logger.debug(
                         "Sendspin player %s is now available", self.sendspin_player_id

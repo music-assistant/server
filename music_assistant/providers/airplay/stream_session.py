@@ -59,8 +59,6 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        self.total_pause_time: float = 0.0
-        self.last_paused: float | None = None
         self._first_chunk_received = asyncio.Event()
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
@@ -149,7 +147,7 @@ class AirPlayStreamSession:
         )
         if not allow_late_join:
             await self.stop()
-            if sync_leader.current_media:
+            if sync_leader.state.current_media:
                 self.mass.call_later(
                     0.5,
                     self.mass.players.cmd_resume(sync_leader.player_id),
