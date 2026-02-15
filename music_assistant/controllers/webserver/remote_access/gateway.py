@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import aiohttp
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
@@ -629,8 +630,6 @@ class WebRTCGateway:
 
         # Build local HTTP URL from the WebSocket URL.
         # Handle both ws:// and wss:// schemes.
-        from urllib.parse import urlparse
-
         parsed = urlparse(self.local_ws_url)
         http_scheme = "https" if parsed.scheme == "wss" else "http"
         local_http_url = f"{http_scheme}://{parsed.netloc}{path}"
