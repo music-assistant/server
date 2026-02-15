@@ -101,10 +101,11 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             )
 
             async def execute() -> None:
-                try:
-                    await fn(self, *args, **kwargs)
-                except Exception as err:
-                    raise PlayerCommandFailed(str(err)) from err
+                async with self._player_throttlers[player_id]:
+                    try:
+                        await fn(self, *args, **kwargs)
+                    except Exception as err:
+                        raise PlayerCommandFailed(str(err)) from err
 
             if lock:
                 # Acquire a lock specific to player_id and function name

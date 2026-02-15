@@ -739,8 +739,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
         if player.mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
-            async with self._player_throttlers[player_id]:
-                await player.volume_mute(muted)
+            await player.volume_mute(muted)
             return
         if player.mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
@@ -768,9 +767,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
-            async with self._player_throttlers[player_id]:
-                assert player_control.mute_set is not None
-                await player_control.mute_set(muted)
+            assert player_control.mute_set is not None
+            await player_control.mute_set(muted)
             return
 
         # handle to protocol player as volume_mute control
@@ -1026,13 +1024,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
+        # guard edge case: player already synced to another player
         if parent_player.state.synced_to:
-            # guard edge case: player already synced to another player
             raise PlayerCommandFailed(
                 f"Player {parent_player.name} is already synced to another player on its own, "
                 "you need to ungroup it first before you can join other players to it.",
             )
-
+        # handle dissolve sync group if the target player is currently
+        # a sync leader and is being removed from itself
+        should_stop = False
+        if player_ids_to_remove and target_player in player_ids_to_remove:
+            self.logger.info(
+                "Dissolving sync group of player %s as it is being removed from itself",
+                parent_player.name,
+            )
+            player_ids_to_add = None
+            player_ids_to_remove = [
+                x for x in parent_player.state.group_members if x != target_player
+            ]
+            should_stop = True
         # filter all player ids on compatibility and availability
         final_player_ids_to_add: list[str] = []
         for child_player_id in player_ids_to_add or []:
@@ -1077,56 +1087,56 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         final_player_ids_to_remove: list[str] = []
         if player_ids_to_remove:
             for child_player_id in player_ids_to_remove:
-                if child_player_id == target_player:
-                    raise UnsupportedFeaturedException(
-                        f"Cannot remove {parent_player.name} from itself as a member!"
-                    )
                 if child_player_id not in parent_player.state.group_members:
                     continue
                 final_player_ids_to_remove.append(child_player_id)
 
         # Forward command to the appropriate player after all (base) sanity checks
-        async with self._player_throttlers[target_player]:
-            # GROUP players (sync_group, universal_group) manage their own members internally
-            # and don't need protocol translation - call their set_members directly
-            if parent_player.type == PlayerType.GROUP:
-                await parent_player.set_members(
-                    player_ids_to_add=final_player_ids_to_add,
-                    player_ids_to_remove=final_player_ids_to_remove,
+        # GROUP players (sync_group, universal_group) manage their own members internally
+        # and don't need protocol translation - call their set_members directly
+        if parent_player.type == PlayerType.GROUP:
+            await parent_player.set_members(
+                player_ids_to_add=final_player_ids_to_add,
+                player_ids_to_remove=final_player_ids_to_remove,
+            )
+            return
+        # For regular players, handle protocol selection and translation
+        # Store playback state before changing members to detect protocol changes
+        was_playing = parent_player.playback_state in (
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
+        )
+        previous_protocol = parent_player.active_output_protocol if was_playing else None
+
+        await self._handle_set_members_with_protocols(
+            parent_player, final_player_ids_to_add, final_player_ids_to_remove
+        )
+
+        if should_stop:
+            # Stop playback on the player if it is being removed from itself
+            await self._handle_cmd_stop(parent_player.player_id)
+            return
+
+        # Check if protocol changed due to member change and restart playback if needed
+        if not should_stop and was_playing:
+            # Determine which protocol would be used now with new members
+            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
+            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
+            previous_protocol_id = previous_protocol or "native"
+
+            # If protocol changed, restart playback
+            if new_protocol_id != previous_protocol_id:
+                self.logger.info(
+                    "Protocol changed from %s to %s due to member change, restarting playback",
+                    previous_protocol_id,
+                    new_protocol_id,
                 )
-                return
-            # For regular players, handle protocol selection and translation
-            # Store playback state before changing members to detect protocol changes
-            was_playing = parent_player.playback_state in (
-                PlaybackState.PLAYING,
-                PlaybackState.PAUSED,
-            )
-            previous_protocol = parent_player.active_output_protocol if was_playing else None
-
-            await self._handle_set_members_with_protocols(
-                parent_player, final_player_ids_to_add, final_player_ids_to_remove
-            )
-
-            # Check if protocol changed due to member change and restart playback if needed
-            if was_playing:
-                # Determine which protocol would be used now with new members
-                _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
-                new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
-                previous_protocol_id = previous_protocol or "native"
-
-                # If protocol changed, restart playback
-                if new_protocol_id != previous_protocol_id:
-                    self.logger.info(
-                        "Protocol changed from %s to %s due to member change, restarting playback",
-                        previous_protocol_id,
-                        new_protocol_id,
-                    )
-                    # Restart playback on the new protocol using resume
-                    await self.cmd_resume(
-                        parent_player.player_id,
-                        parent_player.state.active_source,
-                        parent_player.state.current_media,
-                    )
+                # Restart playback on the new protocol using resume
+                await self.cmd_resume(
+                    parent_player.player_id,
+                    parent_player.state.active_source,
+                    parent_player.state.current_media,
+                )
 
     @api_command("players/cmd/group")
     @handle_player_command
@@ -2474,8 +2484,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
-            async with self._player_throttlers[player_id]:
-                await player.power(powered)
+            await player.power(powered)
         elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
@@ -2554,8 +2563,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
-            async with self._player_throttlers[player_id]:
-                await player.volume_set(volume_level)
+            await player.volume_set(volume_level)
             return
         # Handle fake volume control support
         if player.volume_control == PLAYER_CONTROL_FAKE:
@@ -2578,9 +2586,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
-            async with self._player_throttlers[player_id]:
-                assert player_control.volume_set is not None
-                await player_control.volume_set(volume_level)
+            assert player_control.volume_set is not None
+            await player_control.volume_set(volume_level)
             return
         if protocol_player := self.get_player(player.state.volume_control):
             # redirect to protocol player volume control
@@ -2667,8 +2674,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             raise UnsupportedFeaturedException(
                 f"Player {player.state.name} does not support enqueueing"
             )
-        async with self._player_throttlers[player_id]:
-            await player.enqueue_next_media(media)
+        await player.enqueue_next_media(media)
 
     async def _handle_select_source(self, player_id: str, source: str | None) -> None:
         """
@@ -2741,8 +2747,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 return
 
         # handle command on player(protocol) directly
-        async with self._player_throttlers[target_player.player_id]:
-            await target_player.stop()
+        await target_player.stop()
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """
