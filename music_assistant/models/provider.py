@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
+    mass: MusicAssistant
+    manifest: ProviderManifest
+    config: ProviderConfig
+
     def __init__(
         self,
         mass: MusicAssistant,

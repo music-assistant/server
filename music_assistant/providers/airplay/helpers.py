@@ -130,6 +130,16 @@ def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
     return False
 
 
+def is_apple_device(manufacturer: str) -> bool:
+    """Check if a device is an Apple device with native AirPlay support.
+
+    Apple devices (HomePod, Apple TV, Mac, etc.) have native AirPlay support
+    and should be exposed as PlayerType.PLAYER. Non-Apple devices with AirPlay
+    support should be exposed as PlayerType.PROTOCOL.
+    """
+    return manufacturer.lower() == "apple"
+
+
 async def get_cli_binary(protocol: StreamingProtocol) -> str:
     """Find the correct raop/airplay binary belonging to the platform.
 
