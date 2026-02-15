@@ -1656,7 +1656,7 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        if int(progress.current_time) == 0:
+        if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(mass_audiobook)
         else:
             await self.mass.music.mark_item_played(
@@ -1677,7 +1677,7 @@ for more details.
             mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
         except MediaNotFoundError:
             return
-        if int(progress.current_time) == 0:
+        if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(mass_episode)
         else:
             await self.mass.music.mark_item_played(
