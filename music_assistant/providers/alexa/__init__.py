@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -181,7 +182,7 @@ async def get_config_entries(
             key=CONF_API_URL,
             type=ConfigEntryType.STRING,
             label="API Url",
-            default_value="http://localhost:3000",
+            default_value="http://localhost:5000",
             required=True,
             value=values.get(CONF_API_URL) if values else None,
         ),
@@ -244,6 +245,97 @@ async def delete_cookie(cookiefile: str) -> None:
         _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
+async def _request_with_session(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    json_data: dict[str, Any] | None,
+    timeout: int,
+    auth: BasicAuth | None,
+) -> str:
+    """Handle an API request with a provided aiohttp session.
+
+    :param session: The aiohttp session to use.
+    :param method: HTTP method to use for the request.
+    :param url: Full URL for the request.
+    :param json_data: Optional JSON payload or query params.
+    :param timeout: Timeout in seconds for the request.
+    :param auth: Optional basic auth credentials.
+    """
+    request_timeout = aiohttp.ClientTimeout(total=timeout)
+    if method.upper() == "GET":
+        async with session.get(url, params=json_data, timeout=request_timeout, auth=auth) as resp:
+            resp_text = await resp.text()
+            if resp.status < 200 or resp.status >= 300:
+                msg = (
+                    f"Failed API request to {url}: Status code: {resp.status}, "
+                    f"Response: {resp_text}"
+                )
+                _LOGGER.error(msg)
+                raise ActionUnavailable(msg)
+            return resp_text
+
+    async with session.request(
+        method.upper(),
+        url,
+        json=json_data,
+        timeout=request_timeout,
+        auth=auth,
+    ) as resp:
+        resp_text = await resp.text()
+        if resp.status < 200 or resp.status >= 300:
+            msg = f"Failed API request to {url}: Status code: {resp.status}, Response: {resp_text}"
+            _LOGGER.error(msg)
+            raise ActionUnavailable(msg)
+        return resp_text
+
+
+async def api_request(
+    provider: Any,
+    endpoint: str,
+    method: str = "POST",
+    json_data: dict[str, Any] | None = None,
+    timeout: int = 10,
+) -> str:
+    """Send a request to the configured Music Assistant / Alexa API.
+
+    Returns the response text on success or raises `ActionUnavailable` on failure.
+    """
+    username = provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
+    password = provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+
+    auth = None
+    if username is not None and password is not None:
+        auth = BasicAuth(str(username), str(password))
+
+    api_url = provider.config.get_value(CONF_API_URL) or ""
+    url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+    mass_session = None
+    try:
+        mass_session = provider.mass.http_session
+    except Exception:
+        mass_session = None
+
+    if mass_session:
+        try:
+            return await _request_with_session(mass_session, method, url, json_data, timeout, auth)
+        except ActionUnavailable:
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.error("Failed API request to %s: %s", url, exc)
+            raise ActionUnavailable("Failed to connect to the configured API endpoint.")
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            return await _request_with_session(session, method, url, json_data, timeout, auth)
+        except ActionUnavailable:
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.error("Failed API request to %s: %s", url, exc)
+            raise ActionUnavailable("Failed to connect to the configured API endpoint.")
+
+
 class AlexaDevice:
     """Representation of an Alexa Device."""
 
@@ -288,20 +380,47 @@ class AlexaPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        await self.api.stop()
+        provider = cast("AlexaProvider", self.provider)
+        try:
+            utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
+            await self.api.run_custom(utter)
+        except ActionUnavailable:
+            raise
+        except Exception as exc:
+            _LOGGER.error("Failed to run Stop intent: %s", exc)
+            raise ActionUnavailable("Failed to trigger Alexa Stop intent")
+
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        await self.api.play()
+        provider = cast("AlexaProvider", self.provider)
+        try:
+            utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+            await self.api.run_custom(utter)
+        except ActionUnavailable:
+            raise
+        except Exception as exc:
+            _LOGGER.error("Failed to run Resume intent: %s", exc)
+            raise ActionUnavailable("Failed to trigger Alexa Resume intent")
+
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        await self.api.pause()
+        provider = cast("AlexaProvider", self.provider)
+        try:
+            utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+            await self.api.run_custom(utter)
+        except ActionUnavailable:
+            raise
+        except Exception as exc:
+            _LOGGER.error("Failed to run Pause intent: %s", exc)
+            raise ActionUnavailable("Failed to trigger Alexa Pause intent")
+
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -313,45 +432,36 @@ class AlexaPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        username = self.provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
-        password = self.provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+        # Prefer the player's current_media (may contain enriched metadata),
+        # fallback to the provided `media` parameter. Ensure values are
+        # non-None strings to avoid sending nulls to external API
+        current = getattr(self, "current_media", None) or media
+        title = getattr(current, "title", None) or media.title or ""
+        artist = getattr(current, "artist", None) or media.artist or ""
+        album = getattr(current, "album", None) or media.album or ""
+        image_url = getattr(current, "image_url", None) or media.image_url or ""
 
-        auth = None
-        if username is not None and password is not None:
-            auth = BasicAuth(str(username), str(password))
+        payload = {
+            "streamUrl": media.uri,
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "imageUrl": image_url,
+        }
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(
-                    f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
-                    json={
-                        "streamUrl": media.uri,
-                        "title": media.title,
-                        "artist": media.artist,
-                        "album": media.album,
-                        "imageUrl": media.image_url,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    auth=auth,
-                ) as resp:
-                    resp_text = await resp.text()
-                    if resp.status < 200 or resp.status >= 300:
-                        msg = (
-                            f"Failed to push URL to MA Alexa API: "
-                            f"Status code: {resp.status}, Response: {resp_text}. "
-                            "Please verify your API connection and configuration"
-                        )
-                        _LOGGER.error(msg)
-                        raise ActionUnavailable(msg)
-            except ActionUnavailable:
-                raise
-            except Exception as exc:
-                msg = (
-                    "Failed to push URL to MA Alexa API: "
-                    "Please verify your API connection and configuration"
-                )
-                _LOGGER.error("Failed to push URL to MA Alexa API: %s", exc)
-                raise ActionUnavailable(msg)
+        try:
+            await api_request(
+                self.provider, "/ma/push-url", method="POST", json_data=payload, timeout=10
+            )
+        except ActionUnavailable:
+            raise
+        except Exception as exc:
+            msg = (
+                "Failed to push URL to MA Alexa API: "
+                "Please verify your API connection and configuration"
+            )
+            _LOGGER.error("Failed to push URL to MA Alexa API: %s", exc)
+            raise ActionUnavailable(msg)
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
@@ -387,6 +497,8 @@ class AlexaProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.devices = {}
+        self._intents: list[dict[str, Any]] | None = None
+        self._invocation_name: str | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -429,3 +541,50 @@ class AlexaProvider(PlayerProvider):
                 # Create AlexaPlayer instance
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
+
+        # Prefetch intents so players can use cached utterances
+        try:
+            await self._load_intents()
+        except Exception:  # don't fail provider load on intent fetch issues
+            _LOGGER.debug("Could not prefetch Alexa intents, will lazy-load on use.")
+
+    async def _load_intents(self) -> None:
+        """Load intents from the configured API and cache them on the provider."""
+        try:
+            resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
+            data = json.loads(resp)
+            if isinstance(data, dict):
+                # cache invocationName if present
+                self._invocation_name = data.get("invocationName")
+                self._intents = data.get("intents", []) or []
+            else:
+                self._intents = []
+        except ActionUnavailable:
+            raise
+        except Exception as exc:
+            _LOGGER.debug("Failed to load Alexa intents: %s", exc)
+            self._intents = []
+
+    async def get_intent_utterance(self, intent_name: str, default: str) -> str:
+        """Return the first utterance for the given intent name (cached).
+
+        If intents are not yet cached, attempt to load them.
+        """
+        if self._intents is None:
+            try:
+                await self._load_intents()
+            except ActionUnavailable:
+                raise
+            except Exception:
+                return default
+
+        for intent in self._intents or []:
+            if intent.get("intent") == intent_name:
+                utts = cast("list[str]", intent.get("utterances") or [])
+                if utts:
+                    utter = utts[0]
+                    if self._invocation_name:
+                        inv = self._invocation_name.strip()
+                        return f"{inv} {utter}".strip()
+                    return utter
+        return default
