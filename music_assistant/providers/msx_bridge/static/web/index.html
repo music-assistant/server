@@ -51,7 +51,12 @@
             letter-spacing: -0.01em;
         }
 
-        #menu { list-style: none; flex: 1; padding: 0 8px; }
+        #menu { list-style: none; flex: 1; padding: 0 8px; overflow-y: auto; }
+
+        #sidebar-footer {
+            padding: 12px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
 
         .menu-item {
             display: flex; align-items: center; gap: 12px;
@@ -287,6 +292,109 @@
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* --- Sendspin Status --- */
+        #sendspin-status {
+            display: none;
+            align-items: center; gap: 8px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+        body.sendspin-mode #sendspin-status { display: flex; }
+
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .status-dot.synced { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+        .status-dot.syncing { background: #f59e0b; animation: pulse 1s infinite; }
+        .status-dot.disconnected { background: #ef4444; }
+        .status-dot.error { background: #ef4444; }
+
+        .sync-error { color: #f59e0b; font-size: 0.7rem; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* --- Volume Control (Sendspin) --- */
+        #volume-control {
+            display: none;
+            align-items: center; gap: 8px;
+        }
+        body.sendspin-mode #volume-control { display: flex; }
+
+        #volume-slider {
+            width: 80px;
+        }
+
+        /* --- Audio Mode Toggle --- */
+        #audio-mode-toggle {
+            display: flex;
+            align-items: center; gap: 8px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            cursor: pointer;
+            transition: background 0.15s;
+            user-select: none;
+        }
+        #audio-mode-toggle:hover { background: rgba(255,255,255,0.1); }
+
+        .mode-switch {
+            position: relative;
+            width: 36px; height: 18px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 9px;
+            transition: background 0.2s;
+        }
+        .mode-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 2px;
+            width: 14px; height: 14px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+        .mode-switch.active { background: #22c55e; }
+        .mode-switch.active::after { transform: translateX(18px); }
+
+        #mode-label { min-width: 60px; }
+
+        /* --- Kiosk Mode --- */
+        body.kiosk-mode #sidebar { display: none; }
+        body.kiosk-mode #main { width: 100%; }
+        body.kiosk-mode #content-header { display: none !important; }
+        body.kiosk-mode #content { display: none; }
+        body.kiosk-mode #player-bar { display: none !important; }
+        body.kiosk-mode #player-full {
+            opacity: 1; pointer-events: auto;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        body.kiosk-mode #full-browse { display: none; }
+        body.kiosk-mode #full-art {
+            width: min(60vw, 60vh); height: min(60vw, 60vh);
+        }
+        body.kiosk-mode #full-title { font-size: 1.5rem; max-width: 80%; }
+        body.kiosk-mode #full-artist { font-size: 1.1rem; }
+
+        /* Kiosk status bar */
+        #kiosk-status {
+            position: fixed;
+            top: 20px; right: 20px;
+            display: none;
+            align-items: center; gap: 12px;
+            z-index: 35;
+        }
+        body.kiosk-mode #kiosk-status { display: flex; }
+
         /* --- Responsive --- */
         @media (max-width: 900px) {
             .content-grid { --cols: 3 !important; }
@@ -296,6 +404,9 @@
             .content-grid { --cols: 2 !important; gap: 10px; }
             #content { padding: 12px; }
             .progress { display: none; }
+            body.kiosk-mode #full-art {
+                width: min(80vw, 40vh); height: min(80vw, 40vh);
+            }
         }
     </style>
 </head>
@@ -305,6 +416,14 @@
         <nav id="sidebar">
             <div id="sidebar-header">Music Assistant</div>
             <ul id="menu"></ul>
+            <!-- Audio mode toggle -->
+            <div id="sidebar-footer">
+                <div id="audio-mode-toggle" title="Switch between HTML5 and Sendspin audio">
+                    <span class="material-symbols-rounded" style="font-size: 16px;">sync</span>
+                    <div class="mode-switch" id="mode-switch"></div>
+                    <span id="mode-label">HTML5</span>
+                </div>
+            </div>
         </nav>
 
         <!-- Right panel -->
@@ -353,7 +472,21 @@
                 <button id="full-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
                 <button id="full-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
             </div>
+            <div id="volume-control">
+                <button id="btn-volume" class="ctrl"><span class="material-symbols-rounded">volume_up</span></button>
+                <input type="range" id="volume-slider" min="0" max="100" value="80">
+            </div>
             <button id="full-browse">Browse Library</button>
+        </div>
+
+        <!-- Kiosk status bar (top right) -->
+        <div id="kiosk-status">
+            <div id="sendspin-status"></div>
+            <div id="audio-mode-toggle" title="Switch between HTML5 and Sendspin audio">
+                <span class="material-symbols-rounded" style="font-size: 16px;">sync</span>
+                <div class="mode-switch" id="mode-switch-kiosk"></div>
+                <span id="mode-label-kiosk">HTML5</span>
+            </div>
         </div>
 
         <!-- Search overlay -->
@@ -368,6 +501,18 @@
     </div>
 
     <audio id="audio" preload="none"></audio>
-    <script src="/web/web.js"></script>
+    <script>
+        // Detect modes from URL params and add body classes
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('sendspin_url')) {
+                document.body.classList.add('sendspin-mode');
+            }
+            if (params.get('kiosk') === '1') {
+                document.body.classList.add('kiosk-mode');
+            }
+        })();
+    </script>
+    <script type="module" src="/web/web.js"></script>
 </body>
 </html>

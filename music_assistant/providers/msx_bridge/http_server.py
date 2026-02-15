@@ -241,30 +241,66 @@ class MSXHTTPServer:
             row += '<button type="submit" class="btn">Quick stop</button></form></li>'
             player_rows.append(row)
         player_info = "".join(player_rows) if player_rows else ""
+
+        # Build Sendspin URL (MA server, typically port 8095)
+        host_parts = request.host.split(":")
+        hostname = host_parts[0]
+        ma_port = "8095"
+        sendspin_url = f"http://{hostname}:{ma_port}"
+        sendspin_web_url = f"{base}/web?sendspin_url={quote(sendspin_url, safe='')}"
+        sendspin_kiosk_url = f"{sendspin_web_url}&kiosk=1"
+
         html = f"""<!DOCTYPE html>
 <html>
 <head><title>MSX Bridge</title>
 <style>
 body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }}
 .info {{ background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }}
+.info-sendspin {{ background: #e8f5e9; }}
+code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: break-all; }}
 .player-row {{ display: flex; align-items: center; gap: 12px; margin: 8px 0; list-style: none; }}
 .player-row form {{ margin: 0; }}
 .btn {{ padding: 6px 12px; border-radius: 4px; border: 1px solid #1976d2;
   background: #1976d2; color: white; cursor: pointer; font-size: 14px; }}
 .btn:hover {{ background: #1565c0; }}
+.link-row {{ margin: 8px 0; }}
+.link-row a {{ color: #1976d2; text-decoration: none; }}
+.link-row a:hover {{ text-decoration: underline; }}
+small {{ color: #666; display: block; margin-top: 4px; }}
 </style>
 </head>
 <body>
 <h1>MSX Music Assistant Bridge</h1>
+
 <div class="info">
 <h3>MSX Setup URL</h3>
 <code>http://{request.host}/msx/start.json</code>
 </div>
+
 <div class="info">
-<h3>Web Player (Kiosk)</h3>
-<a href="/web" style="color: #1976d2;">http://{request.host}/web</a>
+<h3>Web Player</h3>
+<div class="link-row">
+<a href="/web">http://{request.host}/web</a>
+<small>Browser-based player with library navigation (HTTP streaming)</small>
 </div>
+</div>
+
+<div class="info info-sendspin">
+<h3>Sendspin Player (Synchronized Audio)</h3>
+<div class="link-row">
+<a href="{sendspin_web_url}">Web Player + Sendspin</a>
+<small>Library navigation with clock-synchronized audio</small>
+</div>
+<div class="link-row">
+<a href="{sendspin_kiosk_url}">Kiosk Mode (Sendspin)</a>
+<small>Fullscreen player only - ideal for dedicated displays</small>
+</div>
+<div class="link-row" style="margin-top: 12px;">
+<strong>Custom Sendspin URL:</strong><br>
+<code>/web?sendspin_url=http://&lt;ma-server&gt;:8095&amp;kiosk=1</code>
+</div>
+</div>
+
 <div class="info">
 <h3>Players</h3>
 <ul>{player_info or "<li>No players registered</li>"}</ul>
