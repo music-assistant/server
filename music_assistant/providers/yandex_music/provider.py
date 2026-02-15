@@ -128,7 +128,9 @@ class YandexMusicProvider(MusicProvider):
         try:
             locale = (self.mass.metadata.locale or "en_US").lower()
             use_russian = locale.startswith("ru")
-        except Exception:
+            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
+        except Exception as err:
+            self.logger.debug("Locale detection failed: %s", err)
             use_russian = False
         return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
 
@@ -645,7 +647,6 @@ class YandexMusicProvider(MusicProvider):
 
         return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
-    @use_cache(3600 * 24 * 30)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by ID.
 
@@ -657,6 +658,7 @@ class YandexMusicProvider(MusicProvider):
         :return: Playlist object.
         :raises MediaNotFoundError: If playlist not found.
         """
+        # Virtual playlists - not cached (locale-dependent names)
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
             names = self._get_browse_names()
             return Playlist(
@@ -693,6 +695,17 @@ class YandexMusicProvider(MusicProvider):
                 is_editable=False,
             )
 
+        # Real playlists - use cached method
+        return await self._get_real_playlist(prov_playlist_id)
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get real playlist details by ID (cached).
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :return: Playlist object.
+        :raises MediaNotFoundError: If playlist not found.
+        """
         # Parse the playlist ID (format: owner_id:kind)
         if PLAYLIST_ID_SPLITTER in prov_playlist_id:
             owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
