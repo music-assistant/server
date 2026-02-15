@@ -58,6 +58,14 @@ CONF_ENABLE_CHART: Final[str] = "enable_chart"
 CONF_ENABLE_NEW_RELEASES: Final[str] = "enable_new_releases"
 CONF_ENABLE_NEW_PLAYLISTS: Final[str] = "enable_new_playlists"
 
+# Configuration keys for Picks & Mixes
+CONF_ENABLE_PICKS_BROWSE: Final[str] = "enable_picks_browse"
+CONF_ENABLE_MIXES_BROWSE: Final[str] = "enable_mixes_browse"
+CONF_ENABLE_TOP_PICKS: Final[str] = "enable_top_picks"
+CONF_ENABLE_MOOD_MIXES: Final[str] = "enable_mood_mixes"
+CONF_ENABLE_ACTIVITY_MIXES: Final[str] = "enable_activity_mixes"
+CONF_ENABLE_SEASONAL_MIXES: Final[str] = "enable_seasonal_mixes"
+
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
@@ -89,6 +97,47 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "chart": "Чарт",
     "new_releases": "Новинки",
     "new_playlists": "Новые плейлисты",
+    # Picks & Mixes
+    "picks": "Подборки",
+    "mixes": "Миксы",
+    "mood": "Настроение",
+    "activity": "Активность",
+    "era": "Эпоха",
+    "genres": "Жанры",
+    # Mood tags
+    "chill": "Расслабляющее",
+    "sad": "Грустное",
+    "romantic": "Романтическое",
+    "party": "Вечеринка",
+    "relax": "Релакс",
+    # Activity tags
+    "workout": "Тренировка",
+    "focus": "Концентрация",
+    "morning": "Утро",
+    "evening": "Вечер",
+    "driving": "В дороге",  # noqa: RUF001
+    # Era tags
+    "80s": "80-е",  # noqa: RUF001
+    "90s": "90-е",  # noqa: RUF001
+    "2000s": "2000-е",  # noqa: RUF001
+    "retro": "Ретро",
+    # Genre tags
+    "rock": "Рок",
+    "jazz": "Джаз",
+    "classical": "Классика",
+    "electronic": "Электроника",
+    "rnb": "R&B",
+    "hiphop": "Хип-хоп",
+    # Seasonal tags
+    "winter": "Зима",
+    "summer": "Лето",
+    "autumn": "Осень",
+    "newyear": "Новый год",
+    # Discovery
+    "top_picks": "Топ подборки",
+    "mood_mix": "Настроение",
+    "activity_mix": "Активность",
+    "seasonal_mix": "Сезонное",
 }
 BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "my_wave": "My Wave",
@@ -100,4 +149,70 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "chart": "Chart",
     "new_releases": "New Releases",
     "new_playlists": "New Playlists",
+    # Picks & Mixes
+    "picks": "Picks",
+    "mixes": "Mixes",
+    "mood": "Mood",
+    "activity": "Activity",
+    "era": "Era",
+    "genres": "Genres",
+    # Mood tags
+    "chill": "Chill",
+    "sad": "Sad",
+    "romantic": "Romantic",
+    "party": "Party",
+    "relax": "Relax",
+    # Activity tags
+    "workout": "Workout",
+    "focus": "Focus",
+    "morning": "Morning",
+    "evening": "Evening",
+    "driving": "Driving",
+    # Era tags
+    "80s": "80s",
+    "90s": "90s",
+    "2000s": "2000s",
+    "retro": "Retro",
+    # Genre tags
+    "rock": "Rock",
+    "jazz": "Jazz",
+    "classical": "Classical",
+    "electronic": "Electronic",
+    "rnb": "R&B",
+    "hiphop": "Hip-Hop",
+    # Seasonal tags
+    "winter": "Winter",
+    "summer": "Summer",
+    "autumn": "Autumn",
+    "newyear": "New Year",
+    # Discovery
+    "top_picks": "Top Picks",
+    "mood_mix": "Mood Mix",
+    "activity_mix": "Activity Mix",
+    "seasonal_mix": "Seasonal",
 }
+
+# Tag categories for Picks
+TAG_CATEGORY_MOOD: Final[list[str]] = ["chill", "sad", "romantic", "party", "relax"]
+TAG_CATEGORY_ACTIVITY: Final[list[str]] = ["workout", "focus", "morning", "evening", "driving"]
+TAG_CATEGORY_ERA: Final[list[str]] = ["80s", "90s", "2000s", "retro"]
+TAG_CATEGORY_GENRES: Final[list[str]] = ["rock", "jazz", "classical", "electronic", "rnb", "hiphop"]
+
+# Seasonal tags mapped to months (month number -> tag)
+TAG_SEASONAL_MAP: Final[dict[int, str]] = {
+    1: "winter",  # January
+    2: "winter",  # February
+    3: "spring",  # March (fallback to autumn if spring doesn't exist)
+    4: "spring",  # April
+    5: "spring",  # May
+    6: "summer",  # June
+    7: "summer",  # July
+    8: "summer",  # August
+    9: "autumn",  # September
+    10: "autumn",  # October
+    11: "autumn",  # November
+    12: "winter",  # December
+}
+
+# Tags for Mixes (seasonal collections)
+TAG_MIXES: Final[list[str]] = ["winter", "summer", "autumn", "newyear"]

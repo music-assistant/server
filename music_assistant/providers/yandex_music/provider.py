@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -38,16 +40,22 @@ from .constants import (
     CONF_BASE_URL,
     CONF_BROWSE_INITIAL_TRACKS,
     CONF_DISCOVERY_INITIAL_TRACKS,
+    CONF_ENABLE_ACTIVITY_MIXES,
     CONF_ENABLE_CHART,
     CONF_ENABLE_FEED_RECOMMENDATIONS,
     CONF_ENABLE_LIKED_TRACKS_BROWSE,
     CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
+    CONF_ENABLE_MIXES_BROWSE,
+    CONF_ENABLE_MOOD_MIXES,
     CONF_ENABLE_MY_WAVE_BROWSE,
     CONF_ENABLE_MY_WAVE_PLAYLIST,
     CONF_ENABLE_MY_WAVE_RADIO,
     CONF_ENABLE_NEW_PLAYLISTS,
     CONF_ENABLE_NEW_RELEASES,
+    CONF_ENABLE_PICKS_BROWSE,
     CONF_ENABLE_RECOMMENDATIONS,
+    CONF_ENABLE_SEASONAL_MIXES,
+    CONF_ENABLE_TOP_PICKS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -59,6 +67,12 @@ from .constants import (
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
+    TAG_CATEGORY_ACTIVITY,
+    TAG_CATEGORY_ERA,
+    TAG_CATEGORY_GENRES,
+    TAG_CATEGORY_MOOD,
+    TAG_MIXES,
+    TAG_SEASONAL_MAP,
 )
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import YandexMusicStreamingManager
@@ -289,6 +303,14 @@ class YandexMusicProvider(MusicProvider):
                 )
             return all_tracks
 
+        # Handle picks/ path (mood, activity, era, genres)
+        if subpath == "picks":
+            return await self._browse_picks(path, path_parts)
+
+        # Handle mixes/ path (seasonal collections)
+        if subpath == "mixes":
+            return await self._browse_mixes(path, path_parts)
+
         if subpath:
             return await super().browse(path)
 
@@ -350,9 +372,163 @@ class YandexMusicProvider(MusicProvider):
                     is_playable=True,
                 )
             )
+        # Add Picks folder if enabled
+        if self.config.get_value(CONF_ENABLE_PICKS_BROWSE, True):
+            folders.append(
+                BrowseFolder(
+                    item_id="picks",
+                    provider=self.instance_id,
+                    path=f"{base}picks",
+                    name=names.get("picks", "Picks"),
+                    is_playable=False,
+                )
+            )
+        # Add Mixes folder if enabled
+        if self.config.get_value(CONF_ENABLE_MIXES_BROWSE, True):
+            folders.append(
+                BrowseFolder(
+                    item_id="mixes",
+                    provider=self.instance_id,
+                    path=f"{base}mixes",
+                    name=names.get("mixes", "Mixes"),
+                    is_playable=False,
+                )
+            )
         if len(folders) == 1:
             return await self.browse(folders[0].path)
         return folders
+
+    async def _browse_picks(
+        self, path: str, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse picks folder (mood, activity, era, genres).
+
+        :param path: Full browse path.
+        :param path_parts: Split path parts after ://.
+        :return: List of folders or playlists.
+        """
+        names = self._get_browse_names()
+        base = path.rsplit("/", 1)[0] + "/" if "/" in path.split("://")[1] else path + "/"
+
+        # picks/ - show category folders
+        if len(path_parts) == 1:
+            return [
+                BrowseFolder(
+                    item_id="mood",
+                    provider=self.instance_id,
+                    path=f"{base}mood",
+                    name=names.get("mood", "Mood"),
+                    is_playable=False,
+                ),
+                BrowseFolder(
+                    item_id="activity",
+                    provider=self.instance_id,
+                    path=f"{base}activity",
+                    name=names.get("activity", "Activity"),
+                    is_playable=False,
+                ),
+                BrowseFolder(
+                    item_id="era",
+                    provider=self.instance_id,
+                    path=f"{base}era",
+                    name=names.get("era", "Era"),
+                    is_playable=False,
+                ),
+                BrowseFolder(
+                    item_id="genres",
+                    provider=self.instance_id,
+                    path=f"{base}genres",
+                    name=names.get("genres", "Genres"),
+                    is_playable=False,
+                ),
+            ]
+
+        category = path_parts[1] if len(path_parts) > 1 else None
+        tag = path_parts[2] if len(path_parts) > 2 else None
+
+        # Determine tags for the category
+        category_tags: list[str] = []
+        if category == "mood":
+            category_tags = TAG_CATEGORY_MOOD
+        elif category == "activity":
+            category_tags = TAG_CATEGORY_ACTIVITY
+        elif category == "era":
+            category_tags = TAG_CATEGORY_ERA
+        elif category == "genres":
+            category_tags = TAG_CATEGORY_GENRES
+
+        # picks/category/ - show tag folders
+        if category and not tag:
+            folders = []
+            for t in category_tags:
+                folders.append(
+                    BrowseFolder(
+                        item_id=t,
+                        provider=self.instance_id,
+                        path=f"{base}{t}",
+                        name=names.get(t, t.title()),
+                        is_playable=True,
+                    )
+                )
+            return folders
+
+        # picks/category/tag - show playlists for the tag
+        if tag and tag in category_tags:
+            return await self._get_tag_playlists_as_browse(tag)
+
+        return []
+
+    async def _browse_mixes(
+        self, path: str, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse mixes folder (seasonal collections).
+
+        :param path: Full browse path.
+        :param path_parts: Split path parts after ://.
+        :return: List of folders or playlists.
+        """
+        names = self._get_browse_names()
+        base = path.rsplit("/", 1)[0] + "/" if "/" in path.split("://")[1] else path + "/"
+
+        # mixes/ - show seasonal folders
+        if len(path_parts) == 1:
+            folders = []
+            for t in TAG_MIXES:
+                folders.append(
+                    BrowseFolder(
+                        item_id=t,
+                        provider=self.instance_id,
+                        path=f"{base}{t}",
+                        name=names.get(t, t.title()),
+                        is_playable=True,
+                    )
+                )
+            return folders
+
+        # mixes/tag - show playlists for the tag
+        tag = path_parts[1] if len(path_parts) > 1 else None
+        if tag and tag in TAG_MIXES:
+            return await self._get_tag_playlists_as_browse(tag)
+
+        return []
+
+    @use_cache(3600)
+    async def _get_tag_playlists_as_browse(
+        self, tag_id: str
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Get playlists for a tag and return as browse items.
+
+        :param tag_id: Tag identifier (e.g. 'chill', '80s').
+        :return: List of Playlist objects.
+        """
+        playlists = await self.client.get_tag_playlists(tag_id)
+        result: list[Playlist] = []
+        for playlist in playlists:
+            try:
+                result.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing tag playlist: %s", err)
+        return result
 
     # Search
 
@@ -748,6 +924,27 @@ class YandexMusicProvider(MusicProvider):
             if folder:
                 folders.append(folder)
 
+        # New Picks & Mixes recommendations
+        if self.config.get_value(CONF_ENABLE_TOP_PICKS, True):
+            folder = await self._get_top_picks_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_MOOD_MIXES, True):
+            folder = await self._get_mood_mix_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_ACTIVITY_MIXES, True):
+            folder = await self._get_activity_mix_recommendations()
+            if folder:
+                folders.append(folder)
+
+        if self.config.get_value(CONF_ENABLE_SEASONAL_MIXES, True):
+            folder = await self._get_seasonal_mix_recommendations()
+            if folder:
+                folders.append(folder)
+
         return folders
 
     @use_cache(60)
@@ -952,6 +1149,125 @@ class YandexMusicProvider(MusicProvider):
             name=names["new_playlists"],
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
+        )
+
+    @use_cache(3600)
+    async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
+        """Get Top Picks recommendation folder (tag: top).
+
+        :return: RecommendationFolder with top playlists, or None if unavailable.
+        """
+        playlists = await self.client.get_tag_playlists("top")
+        if not playlists:
+            return None
+        items: list[Playlist] = []
+        for playlist in playlists[:10]:
+            try:
+                items.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing top picks playlist: %s", err)
+        if not items:
+            return None
+        names = self._get_browse_names()
+        return RecommendationFolder(
+            item_id="top_picks",
+            provider=self.instance_id,
+            name=names.get("top_picks", "Top Picks"),
+            items=UniqueList(items),
+            icon="mdi-star",
+        )
+
+    @use_cache(1800)
+    async def _get_mood_mix_recommendations(self) -> RecommendationFolder | None:
+        """Get Mood Mix recommendation folder (rotating mood tags).
+
+        :return: RecommendationFolder with mood playlists, or None if unavailable.
+        """
+        # Rotate through mood tags
+        mood_tag = random.choice(TAG_CATEGORY_MOOD)
+        playlists = await self.client.get_tag_playlists(mood_tag)
+        if not playlists:
+            return None
+        items: list[Playlist] = []
+        for playlist in playlists[:8]:
+            try:
+                items.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing mood playlist: %s", err)
+        if not items:
+            return None
+        names = self._get_browse_names()
+        tag_name = names.get(mood_tag, mood_tag.title())
+        return RecommendationFolder(
+            item_id="mood_mix",
+            provider=self.instance_id,
+            name=f"{names.get('mood_mix', 'Mood')}: {tag_name}",
+            items=UniqueList(items),
+            icon="mdi-emoticon-outline",
+        )
+
+    @use_cache(1800)
+    async def _get_activity_mix_recommendations(self) -> RecommendationFolder | None:
+        """Get Activity Mix recommendation folder (rotating activity tags).
+
+        :return: RecommendationFolder with activity playlists, or None if unavailable.
+        """
+        # Rotate through activity tags
+        activity_tag = random.choice(TAG_CATEGORY_ACTIVITY)
+        playlists = await self.client.get_tag_playlists(activity_tag)
+        if not playlists:
+            return None
+        items: list[Playlist] = []
+        for playlist in playlists[:8]:
+            try:
+                items.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing activity playlist: %s", err)
+        if not items:
+            return None
+        names = self._get_browse_names()
+        tag_name = names.get(activity_tag, activity_tag.title())
+        return RecommendationFolder(
+            item_id="activity_mix",
+            provider=self.instance_id,
+            name=f"{names.get('activity_mix', 'Activity')}: {tag_name}",
+            items=UniqueList(items),
+            icon="mdi-run",
+        )
+
+    @use_cache(3600 * 6)
+    async def _get_seasonal_mix_recommendations(self) -> RecommendationFolder | None:
+        """Get Seasonal Mix recommendation folder (based on current month).
+
+        :return: RecommendationFolder with seasonal playlists, or None if unavailable.
+        """
+        # Determine current season tag
+        current_month = datetime.now().month
+        seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
+
+        # Handle spring fallback (spring tag may not exist)
+        if seasonal_tag == "spring":
+            seasonal_tag = "autumn"  # Fallback
+
+        playlists = await self.client.get_tag_playlists(seasonal_tag)
+        if not playlists:
+            return None
+        items: list[Playlist] = []
+        for playlist in playlists[:8]:
+            try:
+                items.append(parse_playlist(self, playlist))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing seasonal playlist: %s", err)
+        if not items:
+            return None
+        names = self._get_browse_names()
+        tag_name = names.get(seasonal_tag, seasonal_tag.title())
+        return RecommendationFolder(
+            item_id="seasonal_mix",
+            provider=self.instance_id,
+            name=f"{names.get('seasonal_mix', 'Seasonal')}: {tag_name}",
+            items=UniqueList(items),
+            icon="mdi-weather-sunny",
         )
 
     @use_cache(3600 * 3)

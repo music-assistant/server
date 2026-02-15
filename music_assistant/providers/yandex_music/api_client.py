@@ -735,6 +735,33 @@ class YandexMusicClient:
             LOGGER.debug("Error fetching playlists: %s", err)
             return []
 
+    async def get_tag_playlists(self, tag_id: str) -> list[YandexPlaylist]:
+        """Get playlists for a specific tag (mood, era, activity, genre, etc.).
+
+        Tags are used for curated collections like 'chill', '80s', 'workout', 'rock', etc.
+        The API returns playlist IDs which are then fetched in full.
+
+        :param tag_id: Tag identifier (e.g. 'chill', '80s', 'workout', 'rock').
+        :return: List of playlist objects with full details.
+        """
+        try:
+            tag_result = await self._call_with_retry(lambda c: c.tags(tag_id))
+            if not tag_result or not tag_result.ids:
+                LOGGER.debug("No playlists found for tag: %s", tag_id)
+                return []
+
+            # Convert PlaylistId objects to 'uid:kind' format
+            playlist_ids = [f"{pid.uid}:{pid.kind}" for pid in tag_result.ids]
+
+            # Fetch full playlist details
+            return await self.get_playlists(playlist_ids)
+        except BadRequestError as err:
+            LOGGER.debug("Tag %s not found: %s", tag_id, err)
+            return []
+        except (NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching tag %s playlists: %s", tag_id, err)
+            return []
+
     # Library modifications
 
     async def like_track(self, track_id: str) -> bool:
