@@ -1279,16 +1279,33 @@ class ProtocolLinkingMixin:
         )
 
         # If we added members via this protocol, set it as the active output protocol
-        # This ensures playback will be restarted on the correct protocol if needed
+        # and restart playback if currently playing
         if (
             filtered_protocol_add
             and parent_player.active_output_protocol != parent_protocol_player.player_id
         ):
+            previous_protocol = parent_player.active_output_protocol
+            was_playing = parent_player.state.playback_state == PlaybackState.PLAYING
+
             self.logger.debug(
-                "Setting active output protocol to %s after grouping members",
+                "Setting active output protocol to %s after grouping members "
+                "(previous: %s, was_playing: %s)",
                 parent_protocol_player.player_id,
+                previous_protocol,
+                was_playing,
             )
             parent_player.set_active_output_protocol(parent_protocol_player.player_id)
+
+            # Restart playback on the new protocol if we were playing
+            if was_playing:
+                self.logger.info(
+                    "Restarting playback on %s via %s protocol after grouping members",
+                    parent_player.state.name,
+                    parent_protocol_player.provider.domain,
+                )
+                # Use resume to restart from current position
+                await self.mass.players.cmd_resume(parent_player.player_id)
+
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
             parent_protocol_player.state.name,
