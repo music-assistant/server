@@ -50,12 +50,13 @@ from .constants import (
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
+    TAG_BLACKLIST,
     TAG_CATEGORY_ACTIVITY,
-    TAG_CATEGORY_ERA,
-    TAG_CATEGORY_GENRES,
     TAG_CATEGORY_MOOD,
+    TAG_CATEGORY_ORDER,
     TAG_MIXES,
     TAG_SEASONAL_MAP,
+    TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
 )
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
@@ -301,15 +302,8 @@ class YandexMusicProvider(MusicProvider):
         # Handle direct tag subpath (when folder is played by URI, the full path
         # "picks/category/tag" is lost and only the tag slug arrives as subpath)
         if subpath:
-            all_hardcoded_tags = set(
-                TAG_CATEGORY_MOOD
-                + TAG_CATEGORY_ACTIVITY
-                + TAG_CATEGORY_ERA
-                + TAG_CATEGORY_GENRES
-                + TAG_MIXES
-            )
             discovered_tags = await self._get_discovered_tag_slugs()
-            if subpath in (all_hardcoded_tags | discovered_tags):
+            if subpath in discovered_tags and subpath not in TAG_BLACKLIST:
                 return await self._get_tag_playlists_as_browse(subpath)
 
         if subpath:
@@ -422,122 +416,101 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse picks folder (mood, activity, era, genres).
+        """Browse picks folder using dynamically discovered tags.
+
+        Tags are discovered via Landing API and categorized using TAG_SLUG_CATEGORY.
+        Only categories with at least one discovered tag are shown.
+        Blacklisted tags are filtered out.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
         names = self._get_browse_names()
-        # base should always end with current path + /
         base = path.rstrip("/") + "/"
 
-        # picks/ - show category folders
-        if len(path_parts) == 1:
-            return [
-                BrowseFolder(
-                    item_id="mood",
-                    provider=self.instance_id,
-                    path=f"{base}mood",
-                    name=names.get("mood", "Mood"),
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="activity",
-                    provider=self.instance_id,
-                    path=f"{base}activity",
-                    name=names.get("activity", "Activity"),
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="era",
-                    provider=self.instance_id,
-                    path=f"{base}era",
-                    name=names.get("era", "Era"),
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="genres",
-                    provider=self.instance_id,
-                    path=f"{base}genres",
-                    name=names.get("genres", "Genres"),
-                    is_playable=False,
-                ),
-            ]
+        # Get discovered tags, filter blacklisted
+        discovered = await self._get_discovered_tags()
+        discovered = [(slug, title) for slug, title in discovered if slug not in TAG_BLACKLIST]
 
-        category = path_parts[1] if len(path_parts) > 1 else None
-        tag = path_parts[2] if len(path_parts) > 2 else None
+        # Categorize discovered tags
+        categorized: dict[str, list[tuple[str, str]]] = {}
+        for slug, title in discovered:
+            cat = TAG_SLUG_CATEGORY.get(slug, "mood")
+            # Skip seasonal tags — they belong in mixes, not picks
+            if cat == "seasonal":
+                continue
+            categorized.setdefault(cat, []).append((slug, title))
+
+        # Sort tags within each category by preferred order
+        for cat, cat_tags in categorized.items():
+            order = TAG_CATEGORY_ORDER.get(cat, [])
+            order_map = {s: i for i, s in enumerate(order)}
+            cat_tags.sort(key=lambda t: order_map.get(t[0], len(order)))
+
+        # picks/ - show category folders (only those with discovered tags)
+        if len(path_parts) == 1:
+            category_display_order = ["mood", "activity", "era", "genres"]
+            folders: list[BrowseFolder] = []
+            for cat in category_display_order:
+                if cat in categorized:
+                    folders.append(
+                        BrowseFolder(
+                            item_id=cat,
+                            provider=self.instance_id,
+                            path=f"{base}{cat}",
+                            name=names.get(cat, cat.title()),
+                            is_playable=False,
+                        )
+                    )
+            # Show any extra categories not in the standard order
+            for cat in categorized:
+                if cat not in category_display_order:
+                    folders.append(
+                        BrowseFolder(
+                            item_id=cat,
+                            provider=self.instance_id,
+                            path=f"{base}{cat}",
+                            name=names.get(cat, cat.title()),
+                            is_playable=False,
+                        )
+                    )
+            return folders
+
+        category: str | None = path_parts[1] if len(path_parts) > 1 else None
+        tag: str | None = path_parts[2] if len(path_parts) > 2 else None
 
         self.logger.debug(
-            "Browse picks: path=%s, path_parts=%s, category=%s, tag=%s, base=%s",
+            "Browse picks: path=%s, category=%s, tag=%s",
             path,
-            path_parts,
             category,
             tag,
-            base,
         )
 
-        # Determine tags for the category
-        category_tags: list[str] = []
-        if category == "mood":
-            category_tags = list(TAG_CATEGORY_MOOD)
-        elif category == "activity":
-            category_tags = list(TAG_CATEGORY_ACTIVITY)
-        elif category == "era":
-            category_tags = list(TAG_CATEGORY_ERA)
-        elif category == "genres":
-            category_tags = list(TAG_CATEGORY_GENRES)
-
-        # Enrich with dynamically discovered tags not already in any hardcoded category
-        all_hardcoded = set(
-            TAG_CATEGORY_MOOD
-            + TAG_CATEGORY_ACTIVITY
-            + TAG_CATEGORY_ERA
-            + TAG_CATEGORY_GENRES
-            + TAG_MIXES
-        )
-        discovered = await self._get_discovered_tags()
-        discovered_tags = [(slug, title) for slug, title in discovered if slug not in all_hardcoded]
-
-        self.logger.debug("Category tags for %s: %s", category, category_tags)
-
-        # Build set of all valid tags for this category (hardcoded + discovered)
-        discovered_slug_set = {slug for slug, _ in discovered_tags}
-        all_valid_tags = set(category_tags) | discovered_slug_set
-
-        # picks/category/ - show tag folders
+        # picks/category/ - show discovered tag folders for this category
         if category and not tag:
+            category_tags = categorized.get(category, [])
             folders = []
-            for t in category_tags:
+            for slug, title in category_tags:
                 folders.append(
                     BrowseFolder(
-                        item_id=t,
+                        item_id=slug,
                         provider=self.instance_id,
-                        path=f"{base}{t}",
-                        name=names.get(t, t.title()),
-                        is_playable=True,
+                        path=f"{base}{slug}",
+                        name=names.get(slug, title),
+                        is_playable=False,
                     )
                 )
-            # Add discovered tags (not in any hardcoded category) to the "mood" category
-            if category == "mood":
-                for slug, title in discovered_tags:
-                    if slug not in category_tags:
-                        folders.append(
-                            BrowseFolder(
-                                item_id=slug,
-                                provider=self.instance_id,
-                                path=f"{base}{slug}",
-                                name=names.get(slug, title),
-                                is_playable=True,
-                            )
-                        )
             self.logger.debug("Returning %d tag folders for category %s", len(folders), category)
             return folders
 
         # picks/category/tag - show playlists for the tag
-        if tag and tag in all_valid_tags:
-            self.logger.debug("Fetching playlists for tag: %s", tag)
-            return await self._get_tag_playlists_as_browse(tag)
+        if tag:
+            # Verify tag is actually discovered
+            discovered_slugs = {slug for slug, _ in discovered}
+            if tag in discovered_slugs:
+                self.logger.debug("Fetching playlists for tag: %s", tag)
+                return await self._get_tag_playlists_as_browse(tag)
 
         self.logger.debug("No match found, returning empty list")
         return []
@@ -545,39 +518,44 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_mixes(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse mixes folder (seasonal collections).
+        """Browse mixes folder (seasonal collections) using discovered tags.
+
+        Only shows seasonal tags that are actually available via the Landing API.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
         names = self._get_browse_names()
-        # base should always end with current path + /
         base = path.rstrip("/") + "/"
 
-        # mixes/ - show seasonal folders
+        # Get discovered tags, filter to only seasonal ones from TAG_MIXES
+        discovered_slugs = await self._get_discovered_tag_slugs()
+        available_mixes = [t for t in TAG_MIXES if t in discovered_slugs]
+
+        # mixes/ - show seasonal folders (only discovered ones)
         if len(path_parts) == 1:
             folders = []
-            for t in TAG_MIXES:
+            for t in available_mixes:
                 folders.append(
                     BrowseFolder(
                         item_id=t,
                         provider=self.instance_id,
                         path=f"{base}{t}",
                         name=names.get(t, t.title()),
-                        is_playable=True,
+                        is_playable=False,
                     )
                 )
             return folders
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
-        if tag and tag in TAG_MIXES:
+        if tag and tag in discovered_slugs:
             return await self._get_tag_playlists_as_browse(tag)
 
         return []
 
-    @use_cache(3600)
+    @use_cache(600)
     async def _get_tag_playlists_as_browse(
         self, tag_id: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:

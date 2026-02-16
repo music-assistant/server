@@ -174,11 +174,57 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "seasonal_mix": "Seasonal",
 }
 
-# Tag categories for Picks
+# Tag categories for Picks (kept for recommendations; browse uses TAG_SLUG_CATEGORY)
 TAG_CATEGORY_MOOD: Final[list[str]] = ["chill", "sad", "romantic", "party", "relax"]
 TAG_CATEGORY_ACTIVITY: Final[list[str]] = ["workout", "focus", "morning", "evening", "driving"]
 TAG_CATEGORY_ERA: Final[list[str]] = ["80s", "90s", "2000s", "retro"]
 TAG_CATEGORY_GENRES: Final[list[str]] = ["rock", "jazz", "classical", "electronic", "rnb", "hiphop"]
+
+# Tag slug -> display category mapping
+# Used to categorize dynamically discovered tags into browse folders.
+# Tags not in this mapping default to "mood" category.
+TAG_SLUG_CATEGORY: Final[dict[str, str]] = {
+    # Mood
+    "chill": "mood",
+    "sad": "mood",
+    "romantic": "mood",
+    "party": "mood",
+    "relax": "mood",
+    # Activity
+    "workout": "activity",
+    "focus": "activity",
+    "morning": "activity",
+    "evening": "activity",
+    "driving": "activity",
+    # Era
+    "80s": "era",
+    "90s": "era",
+    "2000s": "era",
+    "retro": "era",
+    # Genres
+    "rock": "genres",
+    "jazz": "genres",
+    "classical": "genres",
+    "electronic": "genres",
+    "rnb": "genres",
+    "hiphop": "genres",
+    # Seasonal (for mixes)
+    "winter": "seasonal",
+    "summer": "seasonal",
+    "autumn": "seasonal",
+    "newyear": "seasonal",
+}
+
+# Tags to exclude from browse (not useful for music browsing)
+TAG_BLACKLIST: Final[set[str]] = {"albomy-s-videoshotami"}
+
+# Preferred tag order within categories (discovered tags sorted by this)
+TAG_CATEGORY_ORDER: Final[dict[str, list[str]]] = {
+    "mood": ["chill", "sad", "romantic", "party", "relax"],
+    "activity": ["workout", "focus", "morning", "evening", "driving"],
+    "era": ["80s", "90s", "2000s", "retro"],
+    "genres": ["rock", "jazz", "classical", "electronic", "rnb", "hiphop"],
+}
 
 # Seasonal tags mapped to months (month number -> tag)
 TAG_SEASONAL_MAP: Final[dict[int, str]] = {
