@@ -567,14 +567,14 @@ class YandexMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def _decrypt_track_url(self, encrypted_url: str, key_base64: str) -> bytes:
+    async def _decrypt_track_url(self, encrypted_url: str, key_hex: str) -> bytes:
         """Decrypt encrypted track data using AES-256 CTR mode.
 
         The Yandex Music API returns encrypted URLs when using transports=encraw.
         This matches the decryption implementation from yandex-music-downloader-realflac.
 
         :param encrypted_url: The encrypted download URL.
-        :param key_base64: Base64-encoded AES-256 decryption key.
+        :param key_hex: HEX-encoded AES-256 decryption key.
         :return: Decrypted audio data bytes.
         """
         # Download encrypted data using direct HTTP request
@@ -589,8 +589,8 @@ class YandexMusicClient:
             LOGGER.debug("Downloaded %d bytes of encrypted data", len(encrypted_data))
 
         # Decrypt using AES CTR with 12-byte null nonce
-        # Note: key is HEX-encoded in the API response, not base64!
-        key_bytes = bytes.fromhex(key_base64)
+        # Note: key is HEX-encoded in the API response
+        key_bytes = bytes.fromhex(key_hex)
         nonce = bytes(12)  # 12-byte null nonce as per working implementation
 
         LOGGER.debug(
