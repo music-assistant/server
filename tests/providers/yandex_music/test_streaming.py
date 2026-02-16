@@ -140,3 +140,18 @@ def test_get_content_type_flac_mp4_returns_flac(
     """flac-mp4 codec from get-file-info is mapped to ContentType.FLAC."""
     assert streaming_manager._get_content_type("flac-mp4") == ContentType.FLAC
     assert streaming_manager._get_content_type("FLAC-MP4") == ContentType.FLAC
+
+
+def test_get_content_type_aac_variants_return_aac(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """All AAC codec variants are mapped to ContentType.AAC."""
+    # Test all AAC variants defined in GET_FILE_INFO_CODECS
+    assert streaming_manager._get_content_type("aac") == ContentType.AAC
+    assert streaming_manager._get_content_type("AAC") == ContentType.AAC
+    assert streaming_manager._get_content_type("aac-mp4") == ContentType.AAC
+    assert streaming_manager._get_content_type("AAC-MP4") == ContentType.AAC
+    assert streaming_manager._get_content_type("he-aac") == ContentType.AAC
+    assert streaming_manager._get_content_type("HE-AAC") == ContentType.AAC
+    assert streaming_manager._get_content_type("he-aac-mp4") == ContentType.AAC
+    assert streaming_manager._get_content_type("HE-AAC-MP4") == ContentType.AAC
