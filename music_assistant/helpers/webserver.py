@@ -226,46 +226,34 @@ class Webserver:
         When a reverse proxy forwards /music/callback/xyz, this handler strips
         /music to get /callback/xyz and looks up the dynamic route at that clean path.
         """
-        assert self._dynamic_routes is not None  # for type checking
         clean_path = request.path[len(self._base_path) :] or "/"
+        return await self._resolve_dynamic_route(request, clean_path)
+
+    async def _handle_catch_all(self, request: web.Request) -> web.Response | web.StreamResponse:
+        """Handle requests to root-level URLs."""
+        return await self._resolve_dynamic_route(request, request.path)
+
+    async def _resolve_dynamic_route(
+        self, request: web.Request, lookup_path: str
+    ) -> web.Response | web.StreamResponse:
+        """Find and execute a matching dynamic route handler.
+
+        :param request: The incoming web request.
+        :param lookup_path: The path to match against registered routes
+                            (may differ from request.path when a base_path prefix is stripped).
+        """
+        assert self._dynamic_routes is not None  # for type checking
         # Try exact match first
-        for key in (f"{request.method}.{clean_path}", f"*.{clean_path}"):
+        for key in (f"{request.method}.{lookup_path}", f"*.{lookup_path}"):
             if handler := self._dynamic_routes.get(key):
                 return await handler(request)
         # Try prefix match (for routes registered with /*)
-        for route_key, handler in self._dynamic_routes.items():
+        for route_key, handler in list(self._dynamic_routes.items()):
             method, path = route_key.split(".", 1)
             if method in (request.method, "*") and path.endswith("/*"):
                 prefix = path[:-2]
-                if clean_path.startswith(prefix):
+                if lookup_path.startswith(prefix):
                     return await handler(request)
-        # deny all other requests
-        self.logger.warning(
-            "Received unhandled %s request to %s (clean: %s) from %s\nheaders: %s\n",
-            request.method,
-            request.path,
-            clean_path,
-            request.remote,
-            request.headers,
-        )
-        return web.Response(status=404)
-
-    async def _handle_catch_all(self, request: web.Request) -> web.Response | web.StreamResponse:
-        """Redirect request to correct destination."""
-        # find handler for the request
-        # Try exact match first
-        for key in (f"{request.method}.{request.path}", f"*.{request.path}"):
-            assert self._dynamic_routes is not None  # for type checking
-            if handler := self._dynamic_routes.get(key):
-                return await handler(request)
-        # Try prefix match (for routes registered with /*)
-        if self._dynamic_routes is not None:
-            for route_key, handler in list(self._dynamic_routes.items()):
-                method, path = route_key.split(".", 1)
-                if method in (request.method, "*") and path.endswith("/*"):
-                    prefix = path[:-2]
-                    if request.path.startswith(prefix):
-                        return await handler(request)
         # deny all other requests
         self.logger.warning(
             "Received unhandled %s request to %s from %s\nheaders: %s\n",
