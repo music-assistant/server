@@ -8,7 +8,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any
 
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -25,7 +25,6 @@ from .constants import (
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
-    GROUP_STREAM_MODE_REDIRECT,
     GROUP_STREAM_MODE_SHARED,
     MSX_PLAYER_ID_PREFIX,
 )
@@ -80,10 +79,10 @@ class SharedGroupStream:
             async for chunk in audio_chunks:
                 chunk_count += 1
                 self._total_bytes += len(chunk)
-                self.buffer.append(chunk)
+                async with self._lock:
+                    self.buffer.append(chunk)
 
                 if not self.started.is_set():
-                    # Signal that stream has started (first chunk received)
                     self.started.set()
                     logger.debug(
                         "[SharedStream:%s] First chunk received, signaling started",
@@ -164,7 +163,8 @@ class SharedGroupStream:
                 return
 
             # Phase 1: Catch-up from buffer (for late joiners)
-            buffer_snapshot = list(self.buffer)
+            async with self._lock:
+                buffer_snapshot = list(self.buffer)
             buffer_bytes = sum(len(c) for c in buffer_snapshot)
             logger.debug(
                 "[SharedStream:%s] Sending %d catch-up chunks (%d bytes) to %s",
@@ -246,13 +246,20 @@ class MSXBridgeProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""
-        port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
+        raw_port = self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            port = DEFAULT_HTTP_PORT
+        if port < 1 or port > 65535:
+            logger.warning("Invalid port %s, using default %s", raw_port, DEFAULT_HTTP_PORT)
+            port = DEFAULT_HTTP_PORT
         self.grouping_enabled = bool(
             self.config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING)
         )
-        self.group_stream_mode = cast(
-            "str",
-            self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE),
+        self.group_stream_mode = str(
+            self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE)
+            or DEFAULT_GROUP_STREAM_MODE
         )
         self.http_server = MSXHTTPServer(self, port)
         await self.http_server.start()
@@ -323,8 +330,9 @@ class MSXBridgeProvider(PlayerProvider):
         if existing and isinstance(existing, MSXPlayer):
             self.on_player_activity(player_id)
             return existing
-        output_format = cast(
-            "str", self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
+        output_format = str(
+            self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
+            or DEFAULT_OUTPUT_FORMAT
         )
         name = display_name or self._player_display_name_from_id(player_id)
         player = MSXPlayer(
@@ -460,9 +468,8 @@ class MSXBridgeProvider(PlayerProvider):
         server = self.http_server
         if not server:
             return
-        abort_first = cast(
-            "bool",
-            self.config.get_value(CONF_ABORT_STREAM_FIRST, DEFAULT_ABORT_STREAM_FIRST),
+        abort_first = bool(
+            self.config.get_value(CONF_ABORT_STREAM_FIRST, DEFAULT_ABORT_STREAM_FIRST)
         )
 
         def _send() -> None:
@@ -490,10 +497,13 @@ class MSXBridgeProvider(PlayerProvider):
 
     async def _run_idle_timeout_loop(self) -> None:
         """Background task: unregister players idle longer than configured timeout."""
-        timeout_minutes = cast(
-            "int",
-            self.config.get_value(CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT),
+        raw_timeout = self.config.get_value(
+            CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT
         )
+        try:
+            timeout_minutes = int(raw_timeout)
+        except (TypeError, ValueError):
+            timeout_minutes = DEFAULT_PLAYER_IDLE_TIMEOUT
         interval_seconds = 60
         while not self.mass.closing:
             try:
@@ -520,9 +530,8 @@ class MSXBridgeProvider(PlayerProvider):
         """Check if shared buffer stream mode is enabled."""
         return self.group_stream_mode == GROUP_STREAM_MODE_SHARED
 
-    def is_redirect_stream_mode(self) -> bool:
-        """Check if MA redirect stream mode is enabled."""
-        return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
+    # Note: is_redirect_stream_mode() and get_ma_stream_url() removed as dead code.
+    # They can be restored when GROUP_STREAM_MODE_REDIRECT is implemented.
 
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
         """Get group ID if player is in a group (as leader or member).
@@ -606,62 +615,8 @@ class MSXBridgeProvider(PlayerProvider):
             logger.info("[GroupStream] Removed shared stream for group %s", group_id)
             self.mass.create_task(stream.stop())
 
-    async def get_ma_stream_url(
-        self,
-        media: Any,
-        output_format: str = "mp3",
-    ) -> str | None:
-        """Get direct stream URL from MA Streamserver for redirect mode.
-
-        Args:
-            media: PlayerMedia with queue_item_id and source_id
-            output_format: Audio format (mp3, aac, flac)
-
-        Returns:
-            Direct URL to MA Streamserver, or None if unavailable
-        """
-        if not media:
-            logger.debug("[MARedirect] No media provided")
-            return None
-
-        queue_item_id = getattr(media, "queue_item_id", None)
-        source_id = getattr(media, "source_id", None)
-
-        if not queue_item_id or not source_id:
-            logger.debug(
-                "[MARedirect] Media missing queue_item_id=%s or source_id=%s",
-                queue_item_id,
-                source_id,
-            )
-            return None
-
-        try:
-            # Get queue to find session_id
-            queue = self.mass.player_queues.get(source_id)
-            if not queue:
-                logger.warning("[MARedirect] Queue not found for source_id=%s", source_id)
-                return None
-
-            # Build MA Streamserver URL
-            # Format: /api/streams/single/{queue_id}/queue/{queue_item_id}.{format}
-            base_url = getattr(self.mass.streams, "base_url", None)
-            if not base_url:
-                # Fallback: use webserver base_url
-                base_url = self.mass.webserver.base_url
-
-            stream_url = (
-                f"{base_url}/api/streams/single/{source_id}/queue/{queue_item_id}.{output_format}"
-            )
-
-            logger.info(
-                "[MARedirect] Generated MA stream URL: %s",
-                stream_url,
-            )
-            return stream_url
-
-        except Exception as err:
-            logger.warning("[MARedirect] Failed to get MA stream URL: %s", err, exc_info=True)
-            return None
+    # Note: get_ma_stream_url() removed as dead code (GROUP_STREAM_MODE_REDIRECT).
+    # Can be restored when redirect mode is implemented.
 
     async def cleanup_shared_streams(self) -> None:
         """Cleanup all shared streams (called on unload)."""

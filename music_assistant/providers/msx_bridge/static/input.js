@@ -1,7 +1,18 @@
 /******************************************************************************/
-//Input Interaction Plugin v0.0.20
-//(c) 2025 Benjamin Zachey
-//Action syntax examples:
+// Input Interaction Plugin v0.0.20
+// (c) 2025 Benjamin Zachey
+//
+// This file is a bundled copy of the upstream "Input Interaction Plugin"
+// distributed for MSX by Benjamin Zachey. It is vendored into this project
+// without functional modification.
+//
+// Upstream project page (including license and terms of use):
+//   https://msx.benzac.de/interaction/input.html
+//
+// This file is redistributed under the same license terms as the upstream
+// project. See the upstream site for the applicable license text.
+//
+// Action syntax examples:
 //- "content:request:interaction:http://link.to.input.handler?input={INPUT}@http://msx.benzac.de/interaction/input.html"
 //- "content:request:interaction:http://link.to.input.handler?input={INPUT}|secret@http://msx.benzac.de/interaction/input.html"
 //- "content:request:interaction:http://link.to.input.handler?input={INPUT}|search|en@http://msx.benzac.de/interaction/input.html"

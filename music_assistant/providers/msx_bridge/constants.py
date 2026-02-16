@@ -20,7 +20,7 @@ DEFAULT_ENABLE_GROUPING = True
 # Group stream modes
 GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream (default)
 GROUP_STREAM_MODE_SHARED = "shared"  # Shared buffer: one ffmpeg, multiple readers
-GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect to MA Streamserver
+# GROUP_STREAM_MODE_REDIRECT = "redirect"  # Reserved for future MA Streamserver integration
 DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_INDEPENDENT
 
 # Player ID prefix for dynamically registered players

@@ -413,7 +413,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 layout="0,0,3,4",
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No albums found")],
+            items=items or [MsxItem(title="No albums found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -433,7 +433,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 layout="0,0,2,3",
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No artists found")],
+            items=items or [MsxItem(title="No artists found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -455,7 +455,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 layout="0,0,3,4",
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No playlists found")],
+            items=items or [MsxItem(title="No playlists found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -488,7 +488,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_width=0.83,
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No tracks found")],
+            items=items or [MsxItem(title="No tracks found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -520,7 +520,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_width=0.83,
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No recently played tracks")],
+            items=items or [MsxItem(title="No recently played tracks")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -590,7 +590,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 layout="0,0,2,4",
                 image_filler="default",
             ),
-            items=items if items else [MsxItem(title="No results found")],
+            items=items or [MsxItem(title="No results found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -623,7 +623,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 layout="0,0,2,4",
                 image_filler="default",
             ),
-            items=items if items else [MsxItem(title="No results found")],
+            items=items or [MsxItem(title="No results found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -700,7 +700,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_width=0.83,
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No tracks found")],
+            items=items or [MsxItem(title="No tracks found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -726,7 +726,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_width=1.5,
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No albums found")],
+            items=items or [MsxItem(title="No albums found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -763,7 +763,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_width=0.83,
                 color="msx-glass",
             ),
-            items=items if items else [MsxItem(title="No tracks found")],
+            items=items or [MsxItem(title="No tracks found")],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
