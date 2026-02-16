@@ -114,9 +114,7 @@ class Webserver:
                     "*", self._base_path + "/{tail:.*}", self._handle_prefixed_catch_all
                 )
                 # redirect bare base_path to base_path/
-                self._webapp.router.add_route(
-                    "GET", self._base_path, self._handle_root_redirect
-                )
+                self._webapp.router.add_route("GET", self._base_path, self._handle_root_redirect)
             # root-level catch-all (handles ingress + direct access + non-subpath setups)
             self._webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
         await self._apprunner.setup()
