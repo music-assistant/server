@@ -20,7 +20,7 @@ from music_assistant_models.errors import (
 )
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
-from yandex_music import ClientAsync, Search, TrackShort
+from yandex_music import ClientAsync, MixLink, Search, TrackShort
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from yandex_music import DownloadInfo
     from yandex_music.feed.feed import Feed
     from yandex_music.landing.chart_info import ChartInfo
+    from yandex_music.landing.landing import Landing
     from yandex_music.landing.landing_list import LandingList
 
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
@@ -801,6 +802,34 @@ class YandexMusicClient:
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching tag %s playlists: %s", tag_id, err)
             return []
+
+    async def get_landing_tags(self) -> list[tuple[str, str]]:
+        """Discover available tag slugs from the landing mixes block.
+
+        Uses the landing("mixes") API which returns MixLink entities
+        containing tag URLs (e.g., /tag/chill/) and display titles.
+
+        :return: List of (tag_slug, title) tuples.
+        """
+        try:
+            landing: Landing | None = await self._call_with_retry(lambda c: c.landing("mixes"))
+            if not landing or not landing.blocks:
+                return []
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching landing tags: %s", err)
+            return []
+
+        tags: list[tuple[str, str]] = []
+        for block in landing.blocks:
+            if not block.entities:
+                continue
+            for entity in block.entities:
+                if entity.type == "mix-link" and isinstance(entity.data, MixLink):
+                    url = entity.data.url  # e.g., "/tag/chill/"
+                    slug = url.strip("/").split("/")[-1]
+                    if slug:
+                        tags.append((slug, entity.data.title))
+        return tags
 
     # Library modifications
 

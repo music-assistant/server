@@ -293,6 +293,20 @@ class YandexMusicProvider(MusicProvider):
         if subpath == "mixes":
             return await self._browse_mixes(path, path_parts)
 
+        # Handle direct tag subpath (when folder is played by URI, the full path
+        # "picks/category/tag" is lost and only the tag slug arrives as subpath)
+        if subpath:
+            all_hardcoded_tags = set(
+                TAG_CATEGORY_MOOD
+                + TAG_CATEGORY_ACTIVITY
+                + TAG_CATEGORY_ERA
+                + TAG_CATEGORY_GENRES
+                + TAG_MIXES
+            )
+            discovered_tags = await self._get_discovered_tag_slugs()
+            if subpath in (all_hardcoded_tags | discovered_tags):
+                return await self._get_tag_playlists_as_browse(subpath)
+
         if subpath:
             return await super().browse(path)
 
@@ -375,6 +389,40 @@ class YandexMusicProvider(MusicProvider):
             return await self.browse(folders[0].path)
         return folders
 
+    @use_cache(3600)
+    async def _get_discovered_tags(self) -> dict[str, list[tuple[str, str]]]:
+        """Discover available tags from Landing API and organize by category.
+
+        Calls the landing("mixes") API to discover actual tag slugs that Yandex Music
+        supports. Results are cached for 1 hour. Falls back to hardcoded tags on failure.
+
+        :return: Dict mapping category names to lists of (slug, title) tuples.
+        """
+        try:
+            tags = await self.client.get_landing_tags()
+        except Exception as err:
+            self.logger.debug("Failed to discover tags from landing API: %s", err)
+            tags = []
+
+        if not tags:
+            return {}
+
+        # Return all discovered tags as a flat "discovered" category
+        # The browse code will use these to populate categories
+        return {"discovered": tags}
+
+    async def _get_discovered_tag_slugs(self) -> set[str]:
+        """Get set of all discovered tag slugs (cached).
+
+        :return: Set of tag slug strings discovered from Landing API.
+        """
+        discovered = await self._get_discovered_tags()
+        slugs: set[str] = set()
+        for tag_list in discovered.values():
+            for slug, _title in tag_list:
+                slugs.add(slug)
+        return slugs
+
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -436,15 +484,35 @@ class YandexMusicProvider(MusicProvider):
         # Determine tags for the category
         category_tags: list[str] = []
         if category == "mood":
-            category_tags = TAG_CATEGORY_MOOD
+            category_tags = list(TAG_CATEGORY_MOOD)
         elif category == "activity":
-            category_tags = TAG_CATEGORY_ACTIVITY
+            category_tags = list(TAG_CATEGORY_ACTIVITY)
         elif category == "era":
-            category_tags = TAG_CATEGORY_ERA
+            category_tags = list(TAG_CATEGORY_ERA)
         elif category == "genres":
-            category_tags = TAG_CATEGORY_GENRES
+            category_tags = list(TAG_CATEGORY_GENRES)
+
+        # Enrich with dynamically discovered tags not already in any hardcoded category
+        all_hardcoded = set(
+            TAG_CATEGORY_MOOD
+            + TAG_CATEGORY_ACTIVITY
+            + TAG_CATEGORY_ERA
+            + TAG_CATEGORY_GENRES
+            + TAG_MIXES
+        )
+        discovered = await self._get_discovered_tags()
+        discovered_tags = [
+            (slug, title)
+            for tag_list in discovered.values()
+            for slug, title in tag_list
+            if slug not in all_hardcoded
+        ]
 
         self.logger.debug("Category tags for %s: %s", category, category_tags)
+
+        # Build set of all valid tags for this category (hardcoded + discovered)
+        discovered_slug_set = {slug for slug, _ in discovered_tags}
+        all_valid_tags = set(category_tags) | discovered_slug_set
 
         # picks/category/ - show tag folders
         if category and not tag:
@@ -459,11 +527,24 @@ class YandexMusicProvider(MusicProvider):
                         is_playable=True,
                     )
                 )
+            # Add discovered tags (not in any hardcoded category) to the "mood" category
+            if category == "mood":
+                for slug, title in discovered_tags:
+                    if slug not in category_tags:
+                        folders.append(
+                            BrowseFolder(
+                                item_id=slug,
+                                provider=self.instance_id,
+                                path=f"{base}{slug}",
+                                name=names.get(slug, title),
+                                is_playable=True,
+                            )
+                        )
             self.logger.debug("Returning %d tag folders for category %s", len(folders), category)
             return folders
 
         # picks/category/tag - show playlists for the tag
-        if tag and tag in category_tags:
+        if tag and tag in all_valid_tags:
             self.logger.debug("Fetching playlists for tag: %s", tag)
             return await self._get_tag_playlists_as_browse(tag)
 
@@ -943,7 +1024,7 @@ class YandexMusicProvider(MusicProvider):
 
         return folders
 
-    @use_cache(60)
+    @use_cache(600)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """Get My Wave recommendation folder with personalized tracks.
 
