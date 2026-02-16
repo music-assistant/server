@@ -985,8 +985,6 @@ class DeezerProvider(MusicProvider):
     def _parse_gw_track(self, gw_track: dict[str, Any]) -> Track:
         """Parse a raw GW API track dict directly to a Music Assistant track.
 
-        This avoids individual REST API calls for each track (e.g. from Flow responses).
-
         :param gw_track: Raw track dict from the GW API with keys like SNG_ID, SNG_TITLE, etc.
         """
         track_id = str(gw_track["SNG_ID"])
