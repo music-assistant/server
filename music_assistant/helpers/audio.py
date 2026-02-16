@@ -46,10 +46,10 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.players.sync_groups import SyncGroupPlayer
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
+from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.player import Player
+    from music_assistant.providers.sync_group import SyncGroupPlayer
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
@@ -187,16 +188,17 @@ def get_stream_dsp_details(
     queue_id: str,
 ) -> dict[str, DSPDetails]:
     """Return DSP details of all players playing this queue, keyed by player_id."""
-    player = mass.players.get(queue_id)
+    player = mass.players.get_player(queue_id)
     dsp: dict[str, DSPDetails] = {}
     assert player is not None  # for type checking
     group_preventing_dsp = is_grouping_preventing_dsp(player)
     output_format = None
     is_external_group = False
 
-    if player.type == PlayerType.GROUP and isinstance(player, SyncGroupPlayer):
+    if player.player_id.startswith(SGP_PREFIX):
         if group_preventing_dsp:
-            if sync_leader := player.sync_leader:
+            sgp_player = cast("SyncGroupPlayer", player)
+            if sync_leader := sgp_player.sync_leader:
                 output_format = sync_leader.extra_data.get("output_format", None)
     else:
         # We only add real players (so skip the PlayerGroups as they only sync containing players)
@@ -206,17 +208,17 @@ def get_stream_dsp_details(
             # The leader is responsible for sending the (combined) audio stream, so get
             # the output format from the leader.
             output_format = player.extra_data.get("output_format", None)
-        is_external_group = player.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR)
+        is_external_group = player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR)
 
     # We don't enumerate all group members in case this group is externally created
     # (e.g. a Chromecast group from the Google Home app)
-    if player and player.group_members and not is_external_group:
+    if player and player.state.group_members and not is_external_group:
         # grouped playback, get DSP details for each player in the group
-        for child_id in player.group_members:
+        for child_id in player.state.group_members:
             # skip if we already have the details (so if it's the group leader)
             if child_id in dsp:
                 continue
-            if child_player := mass.players.get(child_id):
+            if child_player := mass.players.get_player(child_id):
                 dsp[child_id] = get_player_dsp_details(
                     mass, child_player, group_preventing_dsp=group_preventing_dsp
                 )
@@ -1351,17 +1353,17 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     If this returns True, no DSP should be applied to the player.
     This function will not check if the Player is in a group, the caller should do that first.
     """
-    # We require the caller to handle non-leader cases themselves since player.synced_to
+    # We require the caller to handle non-leader cases themselves since player.state.synced_to
     # can be unreliable in some edge cases
-    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
-    child_count = len(player.group_members) if player.group_members else 0
+    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
+    child_count = len(player.state.group_members) if player.state.group_members else 0
 
     is_multiple_devices: bool
     if player.provider.domain == "player_group":
         # PlayerGroups have no leader, so having a child count of 1 means
         # the group actually contains only a single player.
         is_multiple_devices = child_count > 1
-    elif player.type == PlayerType.GROUP:
+    elif player.state.type == PlayerType.GROUP:
         # This is an group player external to Music Assistant.
         is_multiple_devices = True
     else:
@@ -1377,12 +1379,12 @@ def is_output_limiter_enabled(mass: MusicAssistant, player: Player) -> bool:
     decides if the limiter should be turned on or not.
     """
     deciding_player_id = player.player_id
-    if player.active_group:
+    if player.state.active_group:
         # Syncgroup, get from the group player
-        deciding_player_id = player.active_group
-    elif player.synced_to:
+        deciding_player_id = player.state.active_group
+    elif player.state.synced_to:
         # Not in sync group, but synced, get from the leader
-        deciding_player_id = player.synced_to
+        deciding_player_id = player.state.synced_to
     output_limiter_enabled = mass.config.get_raw_player_config_value(
         deciding_player_id,
         CONF_ENTRY_OUTPUT_LIMITER.key,
@@ -1403,20 +1405,20 @@ def get_player_filter_params(
     dsp = mass.config.get_player_dsp_config(player_id)
     limiter_enabled = True
 
-    if player := mass.players.get(player_id):
+    if player := mass.players.get_player(player_id):
         if is_grouping_preventing_dsp(player):
             # We can not correctly apply DSP to a grouped player without multi-device DSP support,
             # so we disable it.
             dsp.enabled = False
         elif player.provider.domain == "player_group" and (
-            PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
+            PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
         ):
             # This is a special case! We have a player group where:
             # - The group leader does not support MULTI_DEVICE_DSP
             # - But only contains a single player (since nothing is preventing DSP)
             # We can still apply the DSP of that single player.
-            if player.group_members:
-                child_player = mass.players.get(player.group_members[0])
+            if player.state.group_members:
+                child_player = mass.players.get_player(player.state.group_members[0])
                 assert child_player is not None  # for type checking
                 dsp = mass.config.get_player_dsp_config(child_player.player_id)
             else:
