@@ -262,7 +262,7 @@ class ITunesPodcastsProvider(MusicProvider):
         return [
             RecommendationFolder(
                 item_id="itunes-top-podcasts",
-                name="",
+                name="Trending Podcasts",
                 icon="mdi-trending-up",
                 translation_key="trending_podcasts",
                 items=UniqueList(podcast_list),

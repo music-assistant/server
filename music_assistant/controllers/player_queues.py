@@ -64,6 +64,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
+    PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
@@ -313,7 +314,9 @@ class PlayerQueuesController(CoreController):
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
         queue_items = self._queue_items[queue_id]
-        cur_index = queue.index_in_buffer or queue.current_index
+        cur_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
+        )
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]
@@ -522,7 +525,11 @@ class PlayerQueuesController(CoreController):
 
         # load the items into the queue
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            cur_index = queue.index_in_buffer or queue.current_index or 0
+            cur_index = (
+                queue.index_in_buffer
+                if queue.index_in_buffer is not None
+                else (queue.current_index if queue.current_index is not None else 0)
+            )
         else:
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1
@@ -2309,7 +2316,7 @@ class PlayerQueuesController(CoreController):
         # we do this every 30 seconds or when the state changes
         if (
             changed_keys.intersection({"state", "current_item_id"})
-            or int(queue.elapsed_time) % 30 == 0
+            or int(queue.elapsed_time) % PLAYBACK_REPORT_INTERVAL_SECONDS == 0
         ):
             self._handle_playback_progress_report(queue, prev_state, new_state)
 
