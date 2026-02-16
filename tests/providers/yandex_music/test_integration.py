@@ -135,6 +135,7 @@ async def yandex_music_provider(
         mock_client.get_playlist = mock.AsyncMock(return_value=playlist)
         mock_client.get_track_download_info = mock.AsyncMock(return_value=[download_info])
         mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, False))
+        mock_client.get_track_lyrics_from_track = mock.AsyncMock(return_value=(None, False))
 
         async with wait_for_sync_completion(mass):
             config = await mass.config.save_provider_config(
@@ -210,6 +211,7 @@ async def yandex_music_provider_lossless(
         mock_client.get_track_file_info_lossless = mock.AsyncMock(return_value=None)
         mock_client.get_track_download_info = mock.AsyncMock(return_value=download_infos)
         mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, False))
+        mock_client.get_track_lyrics_from_track = mock.AsyncMock(return_value=(None, False))
 
         async with wait_for_sync_completion(mass):
             config = await mass.config.save_provider_config(

@@ -260,7 +260,12 @@ class YandexMusicProvider(MusicProvider):
                         self.logger.debug("Error parsing My Wave track: %s", err)
                 if first_track_id_this_batch is not None:
                     self._my_wave_last_track_id = first_track_id_this_batch
-                if not batch_id or not yandex_tracks or total_track_count >= max_tracks_config:
+                if (
+                    first_track_id_this_batch is None
+                    or not batch_id
+                    or not yandex_tracks
+                    or total_track_count >= max_tracks_config
+                ):
                     break
                 queue = first_track_id_this_batch
 
@@ -390,13 +395,13 @@ class YandexMusicProvider(MusicProvider):
         return folders
 
     @use_cache(3600)
-    async def _get_discovered_tags(self) -> dict[str, list[tuple[str, str]]]:
-        """Discover available tags from Landing API and organize by category.
+    async def _get_discovered_tags(self) -> list[tuple[str, str]]:
+        """Discover available tags from Landing API.
 
         Calls the landing("mixes") API to discover actual tag slugs that Yandex Music
-        supports. Results are cached for 1 hour. Falls back to hardcoded tags on failure.
+        supports. Results are cached for 1 hour. Falls back to empty list on failure.
 
-        :return: Dict mapping category names to lists of (slug, title) tuples.
+        :return: List of (slug, title) tuples discovered from the API.
         """
         try:
             tags = await self.client.get_landing_tags()
@@ -404,12 +409,7 @@ class YandexMusicProvider(MusicProvider):
             self.logger.debug("Failed to discover tags from landing API: %s", err)
             tags = []
 
-        if not tags:
-            return {}
-
-        # Return all discovered tags as a flat "discovered" category
-        # The browse code will use these to populate categories
-        return {"discovered": tags}
+        return tags
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
         """Get set of all discovered tag slugs (cached).
@@ -417,11 +417,7 @@ class YandexMusicProvider(MusicProvider):
         :return: Set of tag slug strings discovered from Landing API.
         """
         discovered = await self._get_discovered_tags()
-        slugs: set[str] = set()
-        for tag_list in discovered.values():
-            for slug, _title in tag_list:
-                slugs.add(slug)
-        return slugs
+        return {slug for slug, _title in discovered}
 
     async def _browse_picks(
         self, path: str, path_parts: list[str]
@@ -501,12 +497,7 @@ class YandexMusicProvider(MusicProvider):
             + TAG_MIXES
         )
         discovered = await self._get_discovered_tags()
-        discovered_tags = [
-            (slug, title)
-            for tag_list in discovered.values()
-            for slug, title in tag_list
-            if slug not in all_hardcoded
-        ]
+        discovered_tags = [(slug, title) for slug, title in discovered if slug not in all_hardcoded]
 
         self.logger.debug("Category tags for %s: %s", category, category_tags)
 
@@ -717,8 +708,8 @@ class YandexMusicProvider(MusicProvider):
         if not yandex_track:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
-        # Fetch lyrics if available
-        lyrics, lyrics_synced = await self.client.get_track_lyrics(track_id)
+        # Use the already-fetched track object to avoid a duplicate API call
+        lyrics, lyrics_synced = await self.client.get_track_lyrics_from_track(yandex_track)
 
         return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
@@ -860,6 +851,10 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing My Wave track: %s", err)
         if first_track_id_this_batch is not None:
             self._my_wave_playlist_next_cursor = first_track_id_this_batch
+        else:
+            # All tracks in this batch were duplicates or failed to parse;
+            # clear cursor so the next page call returns [] instead of re-fetching
+            self._my_wave_playlist_next_cursor = None
         return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:

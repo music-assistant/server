@@ -69,10 +69,9 @@ class YandexMusicStreamingManager:
         """
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         try:
-            async with (
-                aiohttp.ClientSession() as session,
-                session.head(url, timeout=timeout, allow_redirects=True) as response,
-            ):
+            async with self.mass.http_session.head(
+                url, timeout=timeout, allow_redirects=True
+            ) as response:
                 if response.status == 200:
                     content_length = response.headers.get("Content-Length")
                     if content_length:
@@ -88,6 +87,10 @@ class YandexMusicStreamingManager:
         item_id: str,
     ) -> str:
         """Download encrypted data, decrypt, and save to a temp file.
+
+        Uses a dedicated aiohttp session (not self.mass.http_session) because
+        long-lived downloads from Yandex CDN should not occupy the shared
+        session's connection pool or be affected by its TLS/proxy settings.
 
         :param encrypted_url: URL of the encrypted file.
         :param decryption_key: Hex-encoded AES-256 decryption key.
@@ -428,8 +431,8 @@ class YandexMusicStreamingManager:
                 download_infos,
                 key=lambda x: x.bitrate_in_kbps or 999,
             )
-            # Prefer AAC for efficiency, then MP3
-            for codec in ("aac", "he-aac", "mp3"):
+            # Prefer AAC for efficiency, then MP3 (include MP4 container variants)
+            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
                 for info in sorted_infos_asc:
                     if info.codec and info.codec.lower() == codec:
                         return info
@@ -470,8 +473,8 @@ class YandexMusicStreamingManager:
             if info.bitrate_in_kbps and 128 <= info.bitrate_in_kbps <= 256
         ]
         if balanced_infos:
-            # Prefer AAC over MP3 at similar bitrate
-            for codec in ("aac", "mp3"):
+            # Prefer AAC over MP3 at similar bitrate (include MP4 container variants)
+            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
                 for info in balanced_infos:
                     if info.codec and info.codec.lower() == codec:
                         return info
@@ -518,7 +521,10 @@ class YandexMusicStreamingManager:
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with decryption.
 
-        Dispatches to the configured streaming mode: direct, buffered, or preload.
+        Dispatches to the configured streaming mode: direct or buffered.
+        Preload mode is handled entirely in get_stream_details() which downloads,
+        decrypts, and returns a LOCAL_FILE StreamType — so get_audio_stream is never
+        called for preload.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :param seek_position: Seek position (not supported for encrypted streams).
@@ -532,8 +538,6 @@ class YandexMusicStreamingManager:
 
         if mode == STREAMING_MODE_DIRECT:
             gen = self._stream_direct(streamdetails)
-        elif mode == STREAMING_MODE_PRELOAD:
-            gen = self._stream_preload(streamdetails)
         else:
             gen = self._stream_buffered(streamdetails)
 
@@ -545,6 +549,10 @@ class YandexMusicStreamingManager:
 
         Download and decryption are coupled — each chunk is decrypted as it arrives.
         Best for fast networks and powerful CPUs.
+
+        Uses a dedicated aiohttp session (not self.mass.http_session) because
+        long-lived streaming connections to Yandex CDN should not occupy the
+        shared session's connection pool or be affected by its TLS/proxy settings.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         """
@@ -597,6 +605,10 @@ class YandexMusicStreamingManager:
         A background task downloads and decrypts chunks into a bounded queue.
         The consumer yields from the queue at its own pace. Backpressure is handled
         by the queue's maxsize — download blocks when the queue is full.
+
+        Uses a dedicated aiohttp session (not self.mass.http_session) because
+        long-lived streaming connections to Yandex CDN should not occupy the
+        shared session's connection pool or be affected by its TLS/proxy settings.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         """
@@ -664,83 +676,3 @@ class YandexMusicStreamingManager:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-
-    async def _stream_preload(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
-        """Download the entire encrypted file first, then decrypt and yield.
-
-        Uses SpooledTemporaryFile which keeps data in memory until the configured
-        limit is exceeded, then transparently spills to disk.
-
-        :param streamdetails: Stream details containing encrypted URL and key.
-        """
-        cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
-
-        self.logger.info(
-            "Starting preload streaming for track %s (codec=%s)",
-            streamdetails.item_id,
-            codec,
-        )
-
-        buffer_limit = int(
-            self.provider.config.get_value(CONF_PRELOAD_BUFFER_MB) or 100  # type: ignore[arg-type]
-        )
-        max_bytes = buffer_limit * 1024 * 1024
-        chunk_size = 65536
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
-
-        with tempfile.SpooledTemporaryFile(max_size=max_bytes) as buf:
-            try:
-                async with (
-                    aiohttp.ClientSession() as session,
-                    session.get(encrypted_url, timeout=timeout) as response,
-                ):
-                    if response.status != 200:
-                        msg = f"Failed to stream encrypted track: HTTP {response.status}"
-                        self.logger.error(msg)
-                        raise MediaNotFoundError(msg)
-
-                    self.logger.debug("Preloading encrypted data from %s", encrypted_url[:100])
-                    async for chunk in response.content.iter_chunked(chunk_size):
-                        buf.write(chunk)
-                        if buf.tell() > max_bytes:
-                            self.logger.warning(
-                                "Download exceeded size limit (%dMB) for track %s, "
-                                "aborting preload",
-                                buffer_limit,
-                                streamdetails.item_id,
-                            )
-                            raise MediaNotFoundError(
-                                f"Track too large for preload "
-                                f"({buf.tell()} bytes > {max_bytes} limit)"
-                            )
-
-                download_size = buf.tell()
-                self.logger.debug(
-                    "Preloaded %d bytes for track %s, decrypting",
-                    download_size,
-                    streamdetails.item_id,
-                )
-
-                buf.seek(0)
-                total_bytes = 0
-                while True:
-                    encrypted_chunk = buf.read(chunk_size)
-                    if not encrypted_chunk:
-                        break
-                    decrypted = cipher.decrypt(encrypted_chunk)
-                    total_bytes += len(decrypted)
-                    yield decrypted
-
-                self.logger.info(
-                    "Completed preload streaming for track %s: %d bytes total",
-                    streamdetails.item_id,
-                    total_bytes,
-                )
-
-            except Exception as err:
-                self.logger.exception(
-                    "Error during preload streaming for track %s: %s",
-                    streamdetails.item_id,
-                    err,
-                )
-                raise

@@ -380,6 +380,10 @@ class YandexMusicClient:
         Fetches lyrics from Yandex Music API. Returns the lyrics text and whether
         it's in synced LRC format (with timestamps) or plain text.
 
+        Note: This method fetches the track first to check lyrics_available. If you
+        already have the YandexTrack object, use get_track_lyrics_from_track() to
+        avoid a redundant API call.
+
         :param track_id: Track ID.
         :return: Tuple of (lyrics_text, is_synced). Returns (None, False) if unavailable.
         """
@@ -388,7 +392,27 @@ class YandexMusicClient:
             if not tracks:
                 return None, False
 
-            track = tracks[0]
+            return await self.get_track_lyrics_from_track(tracks[0])
+
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching lyrics for track %s: %s", track_id, err)
+            return None, False
+        except Exception as err:
+            # Catch any other errors (e.g., geo-restrictions, API changes)
+            LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
+            return None, False
+
+    async def get_track_lyrics_from_track(self, track: YandexTrack) -> tuple[str | None, bool]:
+        """Get lyrics for an already-fetched track.
+
+        Avoids the extra tracks([track_id]) API call when the YandexTrack object
+        is already available.
+
+        :param track: YandexTrack object (already fetched).
+        :return: Tuple of (lyrics_text, is_synced). Returns (None, False) if unavailable.
+        """
+        track_id = getattr(track, "id", None) or getattr(track, "track_id", "unknown")
+        try:
             if not track.lyrics_available:
                 LOGGER.debug("Lyrics not available for track %s", track_id)
                 return None, False
