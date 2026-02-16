@@ -22,7 +22,7 @@ from yandex_music.utils.sign_request import get_sign_request
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-from .constants import DEFAULT_BASE_URL, DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
+from .constants import DEFAULT_BASE_URL, DEFAULT_LIMIT, ROTOR_FEEDBACK_FROM, ROTOR_STATION_MY_MIX
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (KION API moved to these formats around 2025)
@@ -168,7 +168,7 @@ class KionMusicClient:
         """Send rotor station feedback for My Mix recommendations.
 
         Used to report radioStarted, trackStarted, trackFinished, skip so that
-        Yandex can improve subsequent recommendations.
+        the service can improve subsequent recommendations.
 
         :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX).
         :param feedback_type: One of 'radioStarted', 'trackStarted', 'trackFinished', 'skip'.
@@ -183,7 +183,7 @@ class KionMusicClient:
             "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         if feedback_type == "radioStarted":
-            payload["from"] = "YandexMusicDesktopAppWindows"
+            payload["from"] = ROTOR_FEEDBACK_FROM
         if track_id is not None:
             payload["trackId"] = track_id
         if total_played_seconds is not None:
@@ -195,7 +195,7 @@ class KionMusicClient:
         for attempt in range(2):
             client = self._ensure_connected()
             try:
-                await client._request.post(url, payload)
+                await client.request.post(url, payload)
                 return True
             except BadRequestError as err:
                 LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
@@ -530,7 +530,7 @@ class KionMusicClient:
         url = f"{client.base_url}/get-file-info"
         params_encraw = {**base_params, "transports": "encraw"}
         try:
-            result = await client._request.get(url, params=params_encraw)
+            result = await client.request.get(url, params=params_encraw)
             return _parse_file_info_result(result)
         except (BadRequestError, NetworkError) as err:
             LOGGER.debug(
@@ -553,7 +553,7 @@ class KionMusicClient:
             )
             params_raw = {**base_params, "transports": "raw"}
             try:
-                result = await client._request.get(url, params=params_raw)
+                result = await client.request.get(url, params=params_raw)
                 return _parse_file_info_result(result)
             except (BadRequestError, NetworkError, UnauthorizedError) as retry_err:
                 LOGGER.debug(

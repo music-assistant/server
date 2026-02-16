@@ -11,7 +11,7 @@ from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
-    from tests.providers.yandex_music.conftest import (
+    from tests.providers.kion_music.conftest import (
         StreamingProviderStub,
         StreamingProviderStubWithTracking,
     )

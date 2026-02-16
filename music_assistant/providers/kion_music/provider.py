@@ -33,24 +33,20 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import KionMusicClient
 from .constants import (
+    BROWSE_INITIAL_TRACKS,
     BROWSE_NAMES_EN,
     BROWSE_NAMES_RU,
     CONF_BASE_URL,
-    CONF_BROWSE_INITIAL_TRACKS,
-    CONF_DISCOVERY_INITIAL_TRACKS,
-    CONF_ENABLE_MY_MIX_BROWSE,
-    CONF_ENABLE_MY_MIX_PLAYLIST,
-    CONF_ENABLE_MY_MIX_RADIO,
-    CONF_ENABLE_RECOMMENDATIONS,
-    CONF_MY_MIX_BATCH_SIZE,
-    CONF_MY_MIX_MAX_TRACKS,
     CONF_TOKEN,
-    CONF_TRACK_BATCH_SIZE,
     DEFAULT_BASE_URL,
+    DISCOVERY_INITIAL_TRACKS,
+    MY_MIX_BATCH_SIZE,
+    MY_MIX_MAX_TRACKS,
     MY_MIX_PLAYLIST_ID,
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_MIX,
+    TRACK_BATCH_SIZE,
 )
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import KionMusicStreamingManager
@@ -154,9 +150,78 @@ class KionMusicProvider(MusicProvider):
             name=name,
         )
 
-    async def browse(  # noqa: PLR0915
-        self, path: str
-    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def _fetch_my_mix_tracks(
+        self,
+        *,
+        max_tracks: int = MY_MIX_MAX_TRACKS,
+        max_batches: int = MY_MIX_BATCH_SIZE,
+        initial_queue: str | int | None = None,
+        seen_track_ids: set[str] | None = None,
+    ) -> tuple[list[Track], str | None, str | None, set[str]]:
+        """Fetch My Mix tracks with de-duplication and radio feedback.
+
+        :param max_tracks: Maximum number of tracks to return.
+        :param max_batches: Maximum number of API batch calls.
+        :param initial_queue: Optional track ID for API pagination.
+        :param seen_track_ids: Already-seen track IDs for de-duplication.
+        :return: (tracks, last_batch_id, last_first_track_id, updated_seen_ids).
+        """
+        if seen_track_ids is None:
+            seen_track_ids = set()
+
+        tracks: list[Track] = []
+        last_batch_id: str | None = None
+        last_first_track_id: str | None = None
+        queue: str | int | None = initial_queue
+
+        for _ in range(max_batches):
+            if len(tracks) >= max_tracks:
+                break
+
+            yandex_tracks, batch_id = await self.client.get_my_mix_tracks(queue=queue)
+            if batch_id:
+                self._my_mix_batch_id = batch_id
+                last_batch_id = batch_id
+            if not self._my_mix_radio_started_sent and yandex_tracks:
+                self._my_mix_radio_started_sent = True
+                await self.client.send_rotor_station_feedback(
+                    ROTOR_STATION_MY_MIX,
+                    "radioStarted",
+                    batch_id=batch_id,
+                )
+            first_track_id_this_batch: str | None = None
+            for yt in yandex_tracks:
+                if len(tracks) >= max_tracks:
+                    break
+                try:
+                    t = parse_track(self, yt)
+                    track_id = (
+                        str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
+                    )
+                    if track_id:
+                        if track_id in seen_track_ids:
+                            self.logger.debug("Skipping duplicate My Mix track: %s", track_id)
+                            continue
+                        seen_track_ids.add(track_id)
+                        if first_track_id_this_batch is None:
+                            first_track_id_this_batch = track_id
+                        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_MIX}"
+                        for pm in t.provider_mappings:
+                            if pm.provider_instance == self.instance_id:
+                                pm.item_id = t.item_id
+                                break
+                    tracks.append(t)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing My Mix track: %s", err)
+            if first_track_id_this_batch is not None:
+                last_first_track_id = first_track_id_this_batch
+            if not batch_id or not yandex_tracks or len(tracks) >= max_tracks:
+                break
+            queue = first_track_id_this_batch
+
+        return (tracks, last_batch_id, last_first_track_id, seen_track_ids)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse provider items with locale-based folder names and My Mix.
 
         Root level shows My Mix, artists, albums, liked tracks, playlists. Names
@@ -173,19 +238,8 @@ class KionMusicProvider(MusicProvider):
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
         if subpath == MY_MIX_PLAYLIST_ID:
-            # Get config values for max tracks and batch size
-            max_tracks_config = int(
-                self.config.get_value(CONF_MY_MIX_MAX_TRACKS) or 150  # type: ignore[arg-type]
-            )
-            batch_size_config = int(
-                self.config.get_value(CONF_MY_MIX_BATCH_SIZE) or 3  # type: ignore[arg-type]
-            )
+            max_batches = MY_MIX_BATCH_SIZE if sub_subpath != "next" else 1
 
-            # Root my_mix: fetch up to batch_size_config batches so Play adds more tracks.
-            # "Load more" always uses single next batch.
-            max_batches = batch_size_config if sub_subpath != "next" else 1
-
-            # Reset seen tracks on fresh browse (not "load more")
             if sub_subpath != "next":
                 self._my_mix_seen_track_ids = set()
 
@@ -195,76 +249,28 @@ class KionMusicProvider(MusicProvider):
             elif sub_subpath:
                 queue = sub_subpath
 
-            all_tracks: list[Track | BrowseFolder] = []
-            last_batch_id: str | None = None
-            first_track_id_this_batch: str | None = None
-            total_track_count = 0
+            (
+                fetched,
+                last_batch_id,
+                last_first_track_id,
+                self._my_mix_seen_track_ids,
+            ) = await self._fetch_my_mix_tracks(
+                max_batches=max_batches,
+                initial_queue=queue,
+                seen_track_ids=self._my_mix_seen_track_ids,
+            )
+            if last_first_track_id is not None:
+                self._my_mix_last_track_id = last_first_track_id
 
-            for _ in range(max_batches):
-                # Check if we've reached the max track limit
-                if total_track_count >= max_tracks_config:
-                    break
-
-                yandex_tracks, batch_id = await self.client.get_my_mix_tracks(queue=queue)
-                if batch_id:
-                    self._my_mix_batch_id = batch_id
-                    last_batch_id = batch_id
-                if not self._my_mix_radio_started_sent and yandex_tracks:
-                    self._my_mix_radio_started_sent = True
-                    await self.client.send_rotor_station_feedback(
-                        ROTOR_STATION_MY_MIX,
-                        "radioStarted",
-                        batch_id=batch_id,
-                    )
-                first_track_id_this_batch = None
-                for yt in yandex_tracks:
-                    # Check if we've reached the max track limit
-                    if total_track_count >= max_tracks_config:
-                        break
-
-                    try:
-                        t = parse_track(self, yt)
-                        track_id = (
-                            str(yt.id)
-                            if hasattr(yt, "id") and yt.id
-                            else getattr(yt, "track_id", None)
-                        )
-                        if track_id:
-                            # Check for duplicates
-                            if track_id in self._my_mix_seen_track_ids:
-                                self.logger.debug("Skipping duplicate My Mix track: %s", track_id)
-                                continue
-
-                            # Mark track as seen
-                            self._my_mix_seen_track_ids.add(track_id)
-
-                            if first_track_id_this_batch is None:
-                                first_track_id_this_batch = track_id
-                            t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_MIX}"
-                            for pm in t.provider_mappings:
-                                if pm.provider_instance == self.instance_id:
-                                    pm.item_id = t.item_id
-                                    break
-                        all_tracks.append(t)
-                        total_track_count += 1
-                    except InvalidDataError as err:
-                        self.logger.debug("Error parsing My Mix track: %s", err)
-                if first_track_id_this_batch is not None:
-                    self._my_mix_last_track_id = first_track_id_this_batch
-                if not batch_id or not yandex_tracks or total_track_count >= max_tracks_config:
-                    break
-                queue = first_track_id_this_batch
+            all_tracks: list[Track | BrowseFolder] = list(fetched)
 
             # Apply initial tracks limit if not in "load more" mode
             if sub_subpath != "next":
-                initial_tracks_limit = int(
-                    self.config.get_value(CONF_BROWSE_INITIAL_TRACKS) or 15  # type: ignore[arg-type]
-                )
-                if len(all_tracks) > initial_tracks_limit:
-                    all_tracks = all_tracks[:initial_tracks_limit]
+                if len(all_tracks) > BROWSE_INITIAL_TRACKS:
+                    all_tracks = all_tracks[:BROWSE_INITIAL_TRACKS]
 
             # Only show "Load more" if we haven't reached the limit and there's more data
-            if last_batch_id and total_track_count < max_tracks_config:
+            if last_batch_id and len(fetched) < MY_MIX_MAX_TRACKS:
                 names = self._get_browse_names()
                 next_name = "Ещё" if names is BROWSE_NAMES_RU else "Load more"
                 all_tracks.append(
@@ -285,17 +291,15 @@ class KionMusicProvider(MusicProvider):
 
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        # Only add My Mix folder if enabled
-        if self.config.get_value(CONF_ENABLE_MY_MIX_BROWSE, True):
-            folders.append(
-                BrowseFolder(
-                    item_id=MY_MIX_PLAYLIST_ID,
-                    provider=self.instance_id,
-                    path=f"{base}{MY_MIX_PLAYLIST_ID}",
-                    name=names[MY_MIX_PLAYLIST_ID],
-                    is_playable=True,
-                )
+        folders.append(
+            BrowseFolder(
+                item_id=MY_MIX_PLAYLIST_ID,
+                provider=self.instance_id,
+                path=f"{base}{MY_MIX_PLAYLIST_ID}",
+                name=names[MY_MIX_PLAYLIST_ID],
+                is_playable=True,
             )
+        )
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
                 BrowseFolder(
@@ -498,11 +502,6 @@ class KionMusicProvider(MusicProvider):
         :param page: Page number (0 = first batch, 1+ = next batches via queue cursor).
         :return: List of Track objects for this page.
         """
-        max_tracks_config = int(
-            self.config.get_value(CONF_MY_MIX_MAX_TRACKS) or 150  # type: ignore[arg-type]
-        )
-
-        # Reset seen tracks on first page
         if page == 0:
             self._my_mix_seen_track_ids = set()
 
@@ -512,53 +511,21 @@ class KionMusicProvider(MusicProvider):
             if not queue:
                 return []
 
-        # Check if we've already reached the limit
-        if len(self._my_mix_seen_track_ids) >= max_tracks_config:
+        if len(self._my_mix_seen_track_ids) >= MY_MIX_MAX_TRACKS:
             return []
 
-        yandex_tracks, batch_id = await self.client.get_my_mix_tracks(queue=queue)
-        if batch_id:
-            self._my_mix_batch_id = batch_id
-        if not self._my_mix_radio_started_sent and yandex_tracks:
-            self._my_mix_radio_started_sent = True
-            await self.client.send_rotor_station_feedback(
-                ROTOR_STATION_MY_MIX,
-                "radioStarted",
-                batch_id=batch_id,
-            )
-        first_track_id_this_batch = None
-        tracks = []
-        for yt in yandex_tracks:
-            # Check if we've reached the max track limit
-            if len(self._my_mix_seen_track_ids) >= max_tracks_config:
-                break
-
-            try:
-                t = parse_track(self, yt)
-                track_id = (
-                    str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
-                )
-                if track_id:
-                    # Check for duplicates
-                    if track_id in self._my_mix_seen_track_ids:
-                        self.logger.debug("Skipping duplicate My Mix track: %s", track_id)
-                        continue
-
-                    # Mark track as seen
-                    self._my_mix_seen_track_ids.add(track_id)
-
-                    if first_track_id_this_batch is None:
-                        first_track_id_this_batch = track_id
-                    t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_MIX}"
-                    for pm in t.provider_mappings:
-                        if pm.provider_instance == self.instance_id:
-                            pm.item_id = t.item_id
-                            break
-                tracks.append(t)
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing My Mix track: %s", err)
-        if first_track_id_this_batch is not None:
-            self._my_mix_playlist_next_cursor = first_track_id_this_batch
+        (
+            tracks,
+            _,
+            last_first_track_id,
+            self._my_mix_seen_track_ids,
+        ) = await self._fetch_my_mix_tracks(
+            max_batches=1,
+            initial_queue=queue,
+            seen_track_ids=self._my_mix_seen_track_ids,
+        )
+        if last_first_track_id is not None:
+            self._my_mix_playlist_next_cursor = last_first_track_id
         return tracks
 
     # Get related items
@@ -588,9 +555,9 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks using Yandex Rotor station for this track.
+        """Get similar tracks using rotor station for this track.
 
-        Uses rotor station track:{id} so MA radio mode gets Yandex recommendations.
+        Uses rotor station track:{id} so MA radio mode gets recommendations.
 
         :param prov_track_id: Provider track ID (plain or track_id@station_id).
         :param limit: Maximum number of tracks to return.
@@ -615,71 +582,9 @@ class KionMusicProvider(MusicProvider):
 
         :return: List of recommendation folders (My Mix with tracks).
         """
-        # Check if recommendations are enabled (this check is redundant if we remove
-        # from supported_features, but provides defense in depth)
-        if not self.config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
-            return []
-
-        max_tracks_config = int(
-            self.config.get_value(CONF_MY_MIX_MAX_TRACKS) or 150  # type: ignore[arg-type]
+        items, _, _, _ = await self._fetch_my_mix_tracks(
+            max_tracks=DISCOVERY_INITIAL_TRACKS,
         )
-        batch_size_config = int(
-            self.config.get_value(CONF_MY_MIX_BATCH_SIZE) or 3  # type: ignore[arg-type]
-        )
-
-        # Reset for fresh recommendations
-        seen_track_ids: set[str] = set()
-        items: list[Track] = []
-        queue: str | int | None = None
-
-        # Fetch multiple batches based on config
-        for _ in range(batch_size_config):
-            if len(seen_track_ids) >= max_tracks_config:
-                break
-
-            yandex_tracks, _ = await self.client.get_my_mix_tracks(queue=queue)
-            if not yandex_tracks:
-                break
-
-            first_track_id_this_batch = None
-            for yt in yandex_tracks:
-                if len(seen_track_ids) >= max_tracks_config:
-                    break
-
-                try:
-                    t = parse_track(self, yt)
-                    track_id = (
-                        str(yt.id) if hasattr(yt, "id") and yt.id else getattr(yt, "track_id", None)
-                    )
-                    if track_id:
-                        # Check for duplicates
-                        if track_id in seen_track_ids:
-                            continue
-
-                        seen_track_ids.add(track_id)
-
-                        if first_track_id_this_batch is None:
-                            first_track_id_this_batch = track_id
-                        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_MIX}"
-                        for pm in t.provider_mappings:
-                            if pm.provider_instance == self.instance_id:
-                                pm.item_id = t.item_id
-                                break
-                    items.append(t)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing My Mix track for recommendations: %s", err)
-
-            # Set queue for next batch
-            queue = first_track_id_this_batch
-            if not queue:
-                break
-
-        # Apply initial tracks limit for Discovery
-        initial_tracks_limit = int(
-            self.config.get_value(CONF_DISCOVERY_INITIAL_TRACKS) or 5  # type: ignore[arg-type]
-        )
-        if len(items) > initial_tracks_limit:
-            items = items[:initial_tracks_limit]
 
         names = self._get_browse_names()
         return [
@@ -742,7 +647,7 @@ class KionMusicProvider(MusicProvider):
         if not tracks_list:
             return []
 
-        # Yandex returns TrackShort objects, we need to fetch full track info
+        # API returns TrackShort objects, we need to fetch full track info
         track_ids = [
             str(track.track_id) if hasattr(track, "track_id") else str(track.id)
             for track in tracks_list
@@ -752,12 +657,9 @@ class KionMusicProvider(MusicProvider):
             return []
 
         # Fetch full track details in batches to avoid timeouts
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
         full_tracks = []
-        for i in range(0, len(track_ids), batch_size):
-            batch = track_ids[i : i + batch_size]
+        for i in range(0, len(track_ids), TRACK_BATCH_SIZE):
+            batch = track_ids[i : i + TRACK_BATCH_SIZE]
             batch_result = await self.client.get_tracks(batch)
             if not batch_result:
                 self.logger.warning(
@@ -827,10 +729,7 @@ class KionMusicProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from KION Music."""
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
-        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        albums = await self.client.get_liked_albums(batch_size=TRACK_BATCH_SIZE)
         for album in albums:
             try:
                 yield parse_album(self, album)
@@ -845,11 +744,8 @@ class KionMusicProvider(MusicProvider):
 
         # Fetch full track details in batches
         track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
-        for i in range(0, len(track_ids), batch_size):
-            batch_ids = track_ids[i : i + batch_size]
+        for i in range(0, len(track_ids), TRACK_BATCH_SIZE):
+            batch_ids = track_ids[i : i + TRACK_BATCH_SIZE]
             full_tracks = await self.client.get_tracks(batch_ids)
             for track in full_tracks:
                 try:
@@ -860,11 +756,9 @@ class KionMusicProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from KION Music.
 
-        Includes the virtual My Mix playlist first (if enabled), then user playlists.
+        Includes the virtual My Mix playlist first, then user playlists.
         """
-        # Only include My Mix playlist if enabled
-        if self.config.get_value(CONF_ENABLE_MY_MIX_PLAYLIST, True):
-            yield await self.get_playlist(MY_MIX_PLAYLIST_ID)
+        yield await self.get_playlist(MY_MIX_PLAYLIST_ID)
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:
@@ -943,9 +837,6 @@ class KionMusicProvider(MusicProvider):
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
         """
-        # Skip radio feedback if disabled
-        if not self.config.get_value(CONF_ENABLE_MY_MIX_RADIO, True):
-            return
         if media_type != MediaType.TRACK:
             return
         track_id, station_id = _parse_radio_item_id(prov_item_id)
@@ -962,12 +853,9 @@ class KionMusicProvider(MusicProvider):
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Report stream completion for My Mix rotor feedback.
 
-        Sends trackFinished or skip with actual seconds_streamed so Yandex
+        Sends trackFinished or skip with actual seconds_streamed so the service
         can improve recommendations.
         """
-        # Skip radio feedback if disabled
-        if not self.config.get_value(CONF_ENABLE_MY_MIX_RADIO, True):
-            return
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return

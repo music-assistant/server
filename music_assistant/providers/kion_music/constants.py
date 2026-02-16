@@ -25,16 +25,12 @@ DEFAULT_BASE_URL: Final[str] = "https://music.mts.ru/ya_proxy_api"
 QUALITY_HIGH = "high"
 QUALITY_LOSSLESS = "lossless"
 
-# Configuration keys for My Mix behavior
-CONF_MY_MIX_MAX_TRACKS: Final[str] = "my_mix_max_tracks"
-CONF_MY_MIX_BATCH_SIZE: Final[str] = "my_mix_batch_size"
-CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
-CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
-CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
-CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
-CONF_ENABLE_MY_MIX_BROWSE: Final[str] = "enable_my_mix_browse"
-CONF_ENABLE_MY_MIX_PLAYLIST: Final[str] = "enable_my_mix_playlist"
-CONF_ENABLE_MY_MIX_RADIO: Final[str] = "enable_my_mix_radio"
+# Default tuning values for My Mix / browse / discovery behaviour
+MY_MIX_MAX_TRACKS: Final[int] = 150
+MY_MIX_BATCH_SIZE: Final[int] = 3
+TRACK_BATCH_SIZE: Final[int] = 50
+DISCOVERY_INITIAL_TRACKS: Final[int] = 5
+BROWSE_INITIAL_TRACKS: Final[int] = 15
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
@@ -46,6 +42,11 @@ PLAYLIST_ID_SPLITTER: Final[str] = ":"
 
 # Rotor (radio) station identifiers
 ROTOR_STATION_MY_MIX: Final[str] = "user:onyourwave"
+
+# Client identifier for rotor radioStarted feedback.
+# The API expects a "from" field identifying the client; the desktop app
+# identifier ensures the rotor API returns proper recommendations.
+ROTOR_FEEDBACK_FROM: Final[str] = "YandexMusicDesktopAppWindows"
 
 # Virtual playlist ID for My Mix (used in get_playlist / get_playlist_tracks; not owner_id:kind)
 MY_MIX_PLAYLIST_ID: Final[str] = "my_mix"
