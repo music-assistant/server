@@ -651,15 +651,18 @@ class ProtocolLinkingMixin:
             if not protocol_provider:
                 continue
 
+            # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
+            protocol_domain = protocol_provider.split("--")[0]
+
             # Get provider name for display
             provider_name = "Protocol"  # Default fallback
             for provider in self.mass.get_providers(ProviderType.PLAYER):
-                if provider.domain == protocol_provider:
+                if provider.domain == protocol_domain:
                     provider_name = provider.name
                     break
 
             # Get priority for this protocol
-            priority = PROTOCOL_PRIORITY.get(protocol_provider, 100)
+            priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
             # Check if protocol player is available (registered)
             protocol_player = self.get_player(protocol_id)
@@ -670,7 +673,7 @@ class ProtocolLinkingMixin:
                 OutputProtocol(
                     output_protocol_id=protocol_id,
                     name=provider_name,
-                    protocol_domain=protocol_provider,
+                    protocol_domain=protocol_domain,
                     priority=priority,
                     is_native=False,
                     available=is_available,
