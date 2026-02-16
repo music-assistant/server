@@ -45,7 +45,7 @@ CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
 # Hardcoded default values for removed config entries
 MY_WAVE_BATCH_SIZE: Final[int] = 3
 TRACK_BATCH_SIZE: Final[int] = 50
-DISCOVERY_INITIAL_TRACKS: Final[int] = 5
+DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
 
 # Image sizes
