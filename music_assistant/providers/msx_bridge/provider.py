@@ -521,7 +521,14 @@ class MSXBridgeProvider(PlayerProvider):
         return self.group_stream_mode == GROUP_STREAM_MODE_SHARED
 
     def is_redirect_stream_mode(self) -> bool:
-        """Check if MA redirect stream mode is enabled."""
+        """Check if MA redirect stream mode is enabled.
+
+        NOTE: Redirect mode is a scaffold for future MA Streamserver integration
+        (MA 2.6+). It is NOT exposed in the provider config UI — users cannot
+        select it. The constant GROUP_STREAM_MODE_REDIRECT exists so the code
+        path compiles and can be activated once MA exposes a public stream URL
+        endpoint. See also ``get_ma_stream_url()``.
+        """
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
 
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
@@ -612,6 +619,12 @@ class MSXBridgeProvider(PlayerProvider):
         output_format: str = "mp3",
     ) -> str | None:
         """Get direct stream URL from MA Streamserver for redirect mode.
+
+        NOTE: This is a scaffold for future MA Streamserver integration. The
+        ``/api/streams/single/...`` route does not exist in current MA versions.
+        This method is only reachable if ``group_stream_mode`` is set to
+        ``redirect``, which is NOT exposed in the provider config UI.
+        It will be activated once MA exposes a public streaming endpoint.
 
         Args:
             media: PlayerMedia with queue_item_id and source_id

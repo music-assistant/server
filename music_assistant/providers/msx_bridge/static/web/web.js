@@ -114,7 +114,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     function msxIcon(name) {
         if (!name) return '';
         var mapped = name.replace('msx-white-soft:', '').replace('msx-white:', '').replace(/-/g, '_');
-        return '<span class="material-symbols-rounded">' + mapped + '</span>';
+        return '<span class="material-symbols-rounded">' + esc(mapped) + '</span>';
     }
 
     function esc(str) {
@@ -131,8 +131,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         sendspinUrl = SENDSPIN_URL_PARAM || getDefaultSendspinUrl();
 
         try {
-            // Pin Sendspin SDK version for reproducible builds. Update manually when needed.
-            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@1.0.0/dist/index.js';
+            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@latest/dist/index.js';
             var module = await import(sdkUrl);
             var SendspinPlayer = module.SendspinPlayer;
 

@@ -101,7 +101,7 @@ def _build_audio_action(
 ) -> str:
     """Build audio action URL for MSX playback."""
     # Standard HTTP streaming mode
-    audio_url = f"{prefix}/msx/audio/{player_id}.mp3?uri={quote(track_uri, safe='')}"
+    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}"
     if from_playlist:
         audio_url += "&from_playlist=1"
     audio_url = append_device_param(audio_url, device_param)
