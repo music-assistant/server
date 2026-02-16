@@ -207,7 +207,7 @@ class MusicAssistant:
         self.signal_event(EventType.SHUTDOWN)
         self.closing = True
         # cancel all running tasks
-        for task in self._tracked_tasks.values():
+        for task in list(self._tracked_tasks.values()):
             task.cancel()
         # cleanup all providers
         await asyncio.gather(
@@ -302,7 +302,7 @@ class MusicAssistant:
         )
         return [
             x
-            for x in self._providers.values()
+            for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
             # apply user provider filter
             and (
@@ -386,7 +386,7 @@ class MusicAssistant:
         """
         return [
             prov
-            for prov in self._providers.values()
+            for prov in list(self._providers.values())
             if (provider_type is None or provider_type == prov.type)
             and prov.domain == domain
             and (return_unavailable or prov.available)
