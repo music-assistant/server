@@ -31,8 +31,6 @@ SOURCE_UNKNOWN = "unknown"
 SOURCE_TV = "tv"
 SOURCE_RADIO = "radio"
 
-CONF_AIRPLAY_MODE = "airplay_mode"
-
 PLAYER_SOURCE_MAP = {
     SOURCE_LINE_IN: PlayerSource(
         id=SOURCE_LINE_IN,

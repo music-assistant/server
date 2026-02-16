@@ -118,6 +118,12 @@ class RaopStream(AirPlayProtocol):
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=0, stream=self
                 )
+            elif "elapsed milliseconds:" in line:
+                # this is received more or less every second while playing
+                millis = int(line.split("elapsed milliseconds: ")[1])
+                # note that this represents the total elapsed time of the streaming session
+                elapsed_time = millis / 1000
+                player.set_state_from_stream(elapsed_time=elapsed_time)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
