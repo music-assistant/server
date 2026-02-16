@@ -139,13 +139,12 @@ class GWClient:
             "radio.getUserRadio",
             args={"config_id": config_id, "user_id": self._user_id},
         )
+        if "data" not in result["results"]:
+            return []
         return cast("list[dict[str, Any]]", result["results"]["data"])
 
     async def get_home_flows(self) -> list[dict[str, Any]]:
-        """Discover available Flow variants from the Deezer home page.
-
-        :param: None
-        """
+        """Discover available Flow variants from the Deezer home page."""
         gateway_input = json_module.dumps(
             {
                 "PAGE": "home",
@@ -157,7 +156,8 @@ class GWClient:
             "page.get",
             params={"gateway_input": gateway_input},
         )
-        for section in result["results"]["sections"]:
+        sections = result["results"].get("sections", [])
+        for section in sections:
             if section.get("layout") == "filterable-grid":
                 return cast("list[dict[str, Any]]", section["items"])
         return []
