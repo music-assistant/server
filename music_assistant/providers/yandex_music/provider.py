@@ -815,35 +815,31 @@ class YandexMusicProvider(MusicProvider):
 
         batch_size = TRACK_BATCH_SIZE
         full_tracks = []
-        batch_to_ids = {}  # Map batch results back to original compound IDs
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
             self.logger.debug("Fetching batch %s: %s tracks", i // batch_size + 1, len(batch_ids))
             batch_result = await self.client.get_tracks(batch_ids)
             self.logger.debug("Batch returned %s tracks", len(batch_result))
-            # Map each returned track back to its original compound ID
-            for j, track in enumerate(batch_result):
-                if j < len(batch_ids):
-                    batch_to_ids[str(track.id) if hasattr(track, "id") else None] = batch_ids[j]
             full_tracks.extend(batch_result)
 
         self.logger.debug("Total full_tracks fetched: %s", len(full_tracks))
 
-        # Create track ID to full track mapping using compound IDs
+        # Create track ID to full track mapping by track ID directly
         track_map = {}
         for t in full_tracks:
             if hasattr(t, "id") and t.id:
-                # Use the compound ID from our mapping
-                compound_id = batch_to_ids.get(str(t.id), str(t.id))
-                track_map[compound_id] = t
+                track_map[str(t.id)] = t
         self.logger.debug("Created track_map with %s entries", len(track_map))
 
         # Parse tracks in the original order (reverse chronological)
         tracks = []
         for track_id in track_ids:
-            if track_id in track_map:
+            # track_id may be compound "trackId:albumId", extract base ID for lookup
+            base_id = track_id.split(":")[0] if ":" in track_id else track_id
+            found = track_map.get(track_id) or track_map.get(base_id)
+            if found:
                 try:
-                    tracks.append(parse_track(self, track_map[track_id]))
+                    tracks.append(parse_track(self, found))
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing liked track %s: %s", track_id, err)
             else:
@@ -1275,18 +1271,18 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number for pagination.
         :return: List of Track objects.
         """
-        self.logger.info(
+        self.logger.debug(
             "get_playlist_tracks called: prov_playlist_id=%s, page=%s", prov_playlist_id, page
         )
 
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            self.logger.info("Fetching My Wave tracks")
+            self.logger.debug("Fetching My Wave tracks")
             return await self._get_my_wave_playlist_tracks(page)
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            self.logger.info("Fetching Liked Tracks for virtual playlist")
+            self.logger.debug("Fetching Liked Tracks for virtual playlist")
             result = await self._get_liked_tracks_playlist_tracks(page)
-            self.logger.info("Liked Tracks playlist returned %s tracks", len(result))
+            self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
         # Yandex Music API returns all playlist tracks in one call (no server-side pagination).

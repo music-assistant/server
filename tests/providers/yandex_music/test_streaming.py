@@ -68,7 +68,7 @@ def test_select_best_quality_lossless_returns_flac(
     assert result.direct_link == "https://example.com/track.flac"
 
 
-def test_select_best_quality_high_returns_highest_bitrate(
+def test_select_best_quality_balanced_returns_medium_bitrate(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
     """When preferred is 'balanced' and no option in range, fallback to highest bitrate."""

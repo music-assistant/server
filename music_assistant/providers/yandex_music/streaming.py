@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -121,6 +122,9 @@ class YandexMusicStreamingManager:
                         f.write(decrypted_chunk)
                         total_bytes += len(decrypted_chunk)
 
+                # temp_fd is now closed by os.fdopen context manager
+                temp_fd = -1  # Mark as closed
+
                 self.logger.info(
                     "Preloaded and decrypted track %s to %s (%d bytes)",
                     item_id,
@@ -130,8 +134,11 @@ class YandexMusicStreamingManager:
                 return temp_path
 
         except Exception:
+            # Close fd if not yet closed by os.fdopen
+            if temp_fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(temp_fd)
             # Clean up temp file on error
-            # Note: temp_fd is already closed by os.fdopen context manager
             with contextlib.suppress(OSError):
                 os.unlink(temp_path)  # noqa: PTH108
             raise
@@ -149,6 +156,28 @@ class YandexMusicStreamingManager:
             except Exception as err:
                 self.logger.warning("Failed to clean up temp file %s: %s", temp_path, err)
 
+    def cleanup_stale_temp_files(self, max_age_seconds: int = 1800) -> None:
+        """Clean up temp files older than max_age_seconds.
+
+        :param max_age_seconds: Maximum age in seconds (default: 1800 = 30 minutes).
+        """
+        now = time.time()
+        for item_id in list(self._temp_files.keys()):
+            temp_path = self._temp_files.get(item_id)
+            if temp_path:
+                try:
+                    file_age = now - Path(temp_path).stat().st_mtime
+                    if file_age > max_age_seconds:
+                        self.cleanup_temp_file(item_id)
+                        self.logger.debug(
+                            "Cleaned up stale temp file for %s (age=%ds)",
+                            item_id,
+                            int(file_age),
+                        )
+                except OSError:
+                    # File already gone, just remove from tracking
+                    self._temp_files.pop(item_id, None)
+
     def cleanup_all_temp_files(self) -> None:
         """Clean up all tracked temp files (called on provider unload)."""
         for item_id in list(self._temp_files.keys()):
@@ -161,6 +190,9 @@ class YandexMusicStreamingManager:
         :return: StreamDetails for the track (item_id preserved for on_streamed).
         :raises MediaNotFoundError: If stream URL cannot be obtained.
         """
+        # Clean up stale temp files periodically
+        self.cleanup_stale_temp_files()
+
         track_id = self._track_id_from_item_id(item_id)
         track = await self.provider.get_track(item_id)
         if not track:
@@ -249,7 +281,25 @@ class YandexMusicStreamingManager:
                                 size_info,
                                 max_size_mb,
                             )
-                            # Fall through to CUSTOM streaming below
+                            # Return with streaming_mode_override to force buffered mode
+                            return StreamDetails(
+                                item_id=item_id,
+                                provider=self.provider.instance_id,
+                                audio_format=AudioFormat(
+                                    content_type=content_type,
+                                    bit_rate=0,  # FLAC is variable bitrate
+                                ),
+                                stream_type=StreamType.CUSTOM,
+                                duration=track.duration,
+                                data={
+                                    "encrypted_url": url,
+                                    "decryption_key": file_info["key"],
+                                    "codec": codec,
+                                    "streaming_mode_override": STREAMING_MODE_BUFFERED,
+                                },
+                                can_seek=False,  # Seeking not supported in streaming mode
+                                allow_seek=False,
+                            )
 
                         self.logger.info(
                             "Streaming encrypted FLAC for track %s (codec=%s) - "
@@ -474,7 +524,11 @@ class YandexMusicStreamingManager:
         :param seek_position: Seek position (not supported for encrypted streams).
         :return: Async generator yielding decrypted audio bytes.
         """
-        mode = self.provider.config.get_value(CONF_STREAMING_MODE) or STREAMING_MODE_BUFFERED
+        mode = (
+            streamdetails.data.get("streaming_mode_override")
+            or self.provider.config.get_value(CONF_STREAMING_MODE)
+            or STREAMING_MODE_BUFFERED
+        )
 
         if mode == STREAMING_MODE_DIRECT:
             gen = self._stream_direct(streamdetails)
@@ -608,6 +662,8 @@ class YandexMusicStreamingManager:
         finally:
             if not task.done():
                 task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     async def _stream_preload(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
         """Download the entire encrypted file first, then decrypt and yield.
@@ -646,6 +702,17 @@ class YandexMusicStreamingManager:
                     self.logger.debug("Preloading encrypted data from %s", encrypted_url[:100])
                     async for chunk in response.content.iter_chunked(chunk_size):
                         buf.write(chunk)
+                        if buf.tell() > max_bytes:
+                            self.logger.warning(
+                                "Download exceeded size limit (%dMB) for track %s, "
+                                "aborting preload",
+                                buffer_limit,
+                                streamdetails.item_id,
+                            )
+                            raise MediaNotFoundError(
+                                f"Track too large for preload "
+                                f"({buf.tell()} bytes > {max_bytes} limit)"
+                            )
 
                 download_size = buf.tell()
                 self.logger.debug(
