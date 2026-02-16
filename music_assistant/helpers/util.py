@@ -733,10 +733,65 @@ def validate_announcement_chime_url(url: str) -> bool:
 
 
 async def get_mac_address(ip_address: str) -> str | None:
-    """Get MAC address for given IP address."""
-    from getmac import get_mac_address  # noqa: PLC0415
+    """Get MAC address for given IP address via ARP lookup."""
+    try:
+        from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-    return await asyncio.to_thread(get_mac_address, ip=ip_address)
+        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+    except ImportError:
+        LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except Exception as err:
+        LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
+        return None
+
+
+def is_locally_administered_mac(mac_address: str) -> bool:
+    """
+    Check if a MAC address is locally administered (virtual/randomized).
+
+    Locally administered addresses have bit 1 of the first octet set to 1.
+    These are often used by devices for virtual interfaces or protocol-specific
+    addresses (e.g., AirPlay, DLNA may use different virtual MACs than the real hardware MAC).
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: True if locally administered, False if globally unique (real hardware MAC).
+    """
+    # Normalize MAC address
+    mac_clean = mac_address.upper().replace(":", "").replace("-", "")
+    if len(mac_clean) < 2:
+        return False
+
+    # Get first octet and check bit 1 (second bit from right)
+    try:
+        first_octet = int(mac_clean[:2], 16)
+        return bool(first_octet & 0x02)
+    except ValueError:
+        return False
+
+
+async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | None) -> str | None:
+    """
+    Resolve the real MAC address for a device.
+
+    Some devices report different virtual MAC addresses per protocol (AirPlay, DLNA,
+    Chromecast). This function tries to resolve the actual hardware MAC via ARP
+    when the reported MAC appears to be locally administered (virtual).
+
+    :param reported_mac: The MAC address reported by the protocol.
+    :param ip_address: The IP address of the device (for ARP lookup).
+    :return: The real MAC address if found, or None if it couldn't be resolved.
+    """
+    if not ip_address:
+        return None
+
+    # If no MAC reported or it's a locally administered one, try ARP lookup
+    if not reported_mac or is_locally_administered_mac(reported_mac):
+        real_mac = await get_mac_address(ip_address)
+        if real_mac and real_mac.lower() not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+            return real_mac.upper()
+
+    return None
 
 
 class TaskManager:
