@@ -36,35 +36,17 @@ QUALITY_BALANCED = "balanced"  # Medium quality, balanced performance (~192kbps 
 QUALITY_HIGH = "high"  # High quality, lossy (~320kbps MP3)
 QUALITY_SUPERB = "superb"  # Highest quality, lossless (FLAC)
 
-# Configuration keys for My Wave behavior
+# Configuration keys for My Wave behavior (kept)
 CONF_MY_WAVE_MAX_TRACKS: Final[str] = "my_wave_max_tracks"
-CONF_MY_WAVE_BATCH_SIZE: Final[str] = "my_wave_batch_size"
-CONF_TRACK_BATCH_SIZE: Final[str] = "track_batch_size"
-CONF_DISCOVERY_INITIAL_TRACKS: Final[str] = "discovery_initial_tracks"
-CONF_BROWSE_INITIAL_TRACKS: Final[str] = "browse_initial_tracks"
-CONF_ENABLE_RECOMMENDATIONS: Final[str] = "enable_recommendations"
-CONF_ENABLE_MY_WAVE_BROWSE: Final[str] = "enable_my_wave_browse"
-CONF_ENABLE_MY_WAVE_PLAYLIST: Final[str] = "enable_my_wave_playlist"
-CONF_ENABLE_MY_WAVE_RADIO: Final[str] = "enable_my_wave_radio"
 
-# Configuration keys for Liked Tracks behavior
+# Configuration keys for Liked Tracks behavior (kept)
 CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
-CONF_ENABLE_LIKED_TRACKS_BROWSE: Final[str] = "enable_liked_tracks_browse"
-CONF_ENABLE_LIKED_TRACKS_PLAYLIST: Final[str] = "enable_liked_tracks_playlist"
 
-# Configuration keys for Discovery recommendations
-CONF_ENABLE_FEED_RECOMMENDATIONS: Final[str] = "enable_feed_recommendations"
-CONF_ENABLE_CHART: Final[str] = "enable_chart"
-CONF_ENABLE_NEW_RELEASES: Final[str] = "enable_new_releases"
-CONF_ENABLE_NEW_PLAYLISTS: Final[str] = "enable_new_playlists"
-
-# Configuration keys for Picks & Mixes
-CONF_ENABLE_PICKS_BROWSE: Final[str] = "enable_picks_browse"
-CONF_ENABLE_MIXES_BROWSE: Final[str] = "enable_mixes_browse"
-CONF_ENABLE_TOP_PICKS: Final[str] = "enable_top_picks"
-CONF_ENABLE_MOOD_MIXES: Final[str] = "enable_mood_mixes"
-CONF_ENABLE_ACTIVITY_MIXES: Final[str] = "enable_activity_mixes"
-CONF_ENABLE_SEASONAL_MIXES: Final[str] = "enable_seasonal_mixes"
+# Hardcoded default values for removed config entries
+MY_WAVE_BATCH_SIZE: Final[int] = 3
+TRACK_BATCH_SIZE: Final[int] = 50
+DISCOVERY_INITIAL_TRACKS: Final[int] = 5
+BROWSE_INITIAL_TRACKS: Final[int] = 15
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"

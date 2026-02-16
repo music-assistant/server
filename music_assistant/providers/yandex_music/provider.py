@@ -35,34 +35,17 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import YandexMusicClient
 from .constants import (
+    BROWSE_INITIAL_TRACKS,
     BROWSE_NAMES_EN,
     BROWSE_NAMES_RU,
     CONF_BASE_URL,
-    CONF_BROWSE_INITIAL_TRACKS,
-    CONF_DISCOVERY_INITIAL_TRACKS,
-    CONF_ENABLE_ACTIVITY_MIXES,
-    CONF_ENABLE_CHART,
-    CONF_ENABLE_FEED_RECOMMENDATIONS,
-    CONF_ENABLE_LIKED_TRACKS_BROWSE,
-    CONF_ENABLE_LIKED_TRACKS_PLAYLIST,
-    CONF_ENABLE_MIXES_BROWSE,
-    CONF_ENABLE_MOOD_MIXES,
-    CONF_ENABLE_MY_WAVE_BROWSE,
-    CONF_ENABLE_MY_WAVE_PLAYLIST,
-    CONF_ENABLE_MY_WAVE_RADIO,
-    CONF_ENABLE_NEW_PLAYLISTS,
-    CONF_ENABLE_NEW_RELEASES,
-    CONF_ENABLE_PICKS_BROWSE,
-    CONF_ENABLE_RECOMMENDATIONS,
-    CONF_ENABLE_SEASONAL_MIXES,
-    CONF_ENABLE_TOP_PICKS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
-    CONF_MY_WAVE_BATCH_SIZE,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_TOKEN,
-    CONF_TRACK_BATCH_SIZE,
     DEFAULT_BASE_URL,
+    DISCOVERY_INITIAL_TRACKS,
     LIKED_TRACKS_PLAYLIST_ID,
+    MY_WAVE_BATCH_SIZE,
     MY_WAVE_PLAYLIST_ID,
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
@@ -73,6 +56,7 @@ from .constants import (
     TAG_CATEGORY_MOOD,
     TAG_MIXES,
     TAG_SEASONAL_MAP,
+    TRACK_BATCH_SIZE,
 )
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import YandexMusicStreamingManager
@@ -204,9 +188,7 @@ class YandexMusicProvider(MusicProvider):
             max_tracks_config = int(
                 self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
             )
-            batch_size_config = int(
-                self.config.get_value(CONF_MY_WAVE_BATCH_SIZE) or 3  # type: ignore[arg-type]
-            )
+            batch_size_config = MY_WAVE_BATCH_SIZE
 
             # Root my_wave: fetch up to batch_size_config batches so Play adds more tracks.
             # "Load more" always uses single next batch.
@@ -284,9 +266,7 @@ class YandexMusicProvider(MusicProvider):
 
             # Apply initial tracks limit if not in "load more" mode
             if sub_subpath != "next":
-                initial_tracks_limit = int(
-                    self.config.get_value(CONF_BROWSE_INITIAL_TRACKS) or 15  # type: ignore[arg-type]
-                )
+                initial_tracks_limit = BROWSE_INITIAL_TRACKS
                 if len(all_tracks) > initial_tracks_limit:
                     all_tracks = all_tracks[:initial_tracks_limit]
 
@@ -320,17 +300,16 @@ class YandexMusicProvider(MusicProvider):
 
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        # Only add My Wave folder if enabled
-        if self.config.get_value(CONF_ENABLE_MY_WAVE_BROWSE, True):
-            folders.append(
-                BrowseFolder(
-                    item_id=MY_WAVE_PLAYLIST_ID,
-                    provider=self.instance_id,
-                    path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                    name=names[MY_WAVE_PLAYLIST_ID],
-                    is_playable=True,
-                )
+        # My Wave folder (always enabled)
+        folders.append(
+            BrowseFolder(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
+                name=names[MY_WAVE_PLAYLIST_ID],
+                is_playable=True,
             )
+        )
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
                 BrowseFolder(
@@ -351,10 +330,8 @@ class YandexMusicProvider(MusicProvider):
                     is_playable=True,
                 )
             )
-        # Only add Liked Tracks folder if enabled
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features and self.config.get_value(
-            CONF_ENABLE_LIKED_TRACKS_BROWSE, True
-        ):
+        # Liked Tracks folder (always enabled)
+        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             folders.append(
                 BrowseFolder(
                     item_id="tracks",
@@ -374,28 +351,26 @@ class YandexMusicProvider(MusicProvider):
                     is_playable=True,
                 )
             )
-        # Add Picks folder if enabled
-        if self.config.get_value(CONF_ENABLE_PICKS_BROWSE, True):
-            folders.append(
-                BrowseFolder(
-                    item_id="picks",
-                    provider=self.instance_id,
-                    path=f"{base}picks",
-                    name=names.get("picks", "Picks"),
-                    is_playable=False,
-                )
+        # Picks folder (always enabled)
+        folders.append(
+            BrowseFolder(
+                item_id="picks",
+                provider=self.instance_id,
+                path=f"{base}picks",
+                name=names.get("picks", "Picks"),
+                is_playable=False,
             )
-        # Add Mixes folder if enabled
-        if self.config.get_value(CONF_ENABLE_MIXES_BROWSE, True):
-            folders.append(
-                BrowseFolder(
-                    item_id="mixes",
-                    provider=self.instance_id,
-                    path=f"{base}mixes",
-                    name=names.get("mixes", "Mixes"),
-                    is_playable=False,
-                )
+        )
+        # Mixes folder (always enabled)
+        folders.append(
+            BrowseFolder(
+                item_id="mixes",
+                provider=self.instance_id,
+                path=f"{base}mixes",
+                name=names.get("mixes", "Mixes"),
+                is_playable=False,
             )
+        )
         if len(folders) == 1:
             return await self.browse(folders[0].path)
         return folders
@@ -812,7 +787,7 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
         """
-        self.logger.debug(f"_get_liked_tracks_playlist_tracks called with page={page}")
+        self.logger.debug("_get_liked_tracks_playlist_tracks called with page=%s", page)
         # Liked tracks API returns all tracks at once, so only return tracks on page 0
         if page > 0:
             self.logger.debug("Returning empty list for page > 0")
@@ -821,40 +796,38 @@ class YandexMusicProvider(MusicProvider):
         max_tracks_config = int(
             self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 500  # type: ignore[arg-type]
         )
-        self.logger.debug(f"Max tracks config: {max_tracks_config}")
+        self.logger.debug("Max tracks config: %s", max_tracks_config)
 
         # Fetch liked tracks (already sorted in reverse chronological order by api_client)
         track_shorts = await self.client.get_liked_tracks()
-        self.logger.debug(f"Got {len(track_shorts)} liked tracks from API")
+        self.logger.debug("Got %s liked tracks from API", len(track_shorts))
         if not track_shorts:
             self.logger.warning("No liked tracks found!")
             return []
 
         # Apply max tracks limit
         track_shorts = track_shorts[:max_tracks_config]
-        self.logger.debug(f"After limit, processing {len(track_shorts)} tracks")
+        self.logger.debug("After limit, processing %s tracks", len(track_shorts))
 
         # Fetch full track details in batches
         track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
-        self.logger.debug(f"Extracted {len(track_ids)} track IDs. First 3: {track_ids[:3]}")
+        self.logger.debug("Extracted %s track IDs. First 3: %s", len(track_ids), track_ids[:3])
 
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = TRACK_BATCH_SIZE
         full_tracks = []
         batch_to_ids = {}  # Map batch results back to original compound IDs
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
-            self.logger.debug(f"Fetching batch {i // batch_size + 1}: {len(batch_ids)} tracks")
+            self.logger.debug("Fetching batch %s: %s tracks", i // batch_size + 1, len(batch_ids))
             batch_result = await self.client.get_tracks(batch_ids)
-            self.logger.debug(f"Batch returned {len(batch_result)} tracks")
+            self.logger.debug("Batch returned %s tracks", len(batch_result))
             # Map each returned track back to its original compound ID
             for j, track in enumerate(batch_result):
                 if j < len(batch_ids):
                     batch_to_ids[str(track.id) if hasattr(track, "id") else None] = batch_ids[j]
             full_tracks.extend(batch_result)
 
-        self.logger.debug(f"Total full_tracks fetched: {len(full_tracks)}")
+        self.logger.debug("Total full_tracks fetched: %s", len(full_tracks))
 
         # Create track ID to full track mapping using compound IDs
         track_map = {}
@@ -863,7 +836,7 @@ class YandexMusicProvider(MusicProvider):
                 # Use the compound ID from our mapping
                 compound_id = batch_to_ids.get(str(t.id), str(t.id))
                 track_map[compound_id] = t
-        self.logger.debug(f"Created track_map with {len(track_map)} entries")
+        self.logger.debug("Created track_map with %s entries", len(track_map))
 
         # Parse tracks in the original order (reverse chronological)
         tracks = []
@@ -872,11 +845,11 @@ class YandexMusicProvider(MusicProvider):
                 try:
                     tracks.append(parse_track(self, track_map[track_id]))
                 except InvalidDataError as err:
-                    self.logger.debug(f"Error parsing liked track {track_id}: {err}")
+                    self.logger.debug("Error parsing liked track %s: %s", track_id, err)
             else:
-                self.logger.debug(f"Track ID {track_id} not found in track_map")
+                self.logger.debug("Track ID %s not found in track_map", track_id)
 
-        self.logger.debug(f"Successfully parsed {len(tracks)} tracks")
+        self.logger.debug("Successfully parsed %s tracks", len(tracks))
         return tracks
 
     # Get related items
@@ -929,57 +902,48 @@ class YandexMusicProvider(MusicProvider):
         """Get recommendations with multiple discovery folders.
 
         Returns My Wave, Feed (Made for You), Chart, New Releases, and
-        New Playlists sections — each controlled by its own config toggle.
+        New Playlists sections.
 
         :return: List of recommendation folders.
         """
         folders: list[RecommendationFolder] = []
 
-        if self.config.get_value(CONF_ENABLE_RECOMMENDATIONS, True):
-            folder = await self._get_my_wave_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_my_wave_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_FEED_RECOMMENDATIONS, True):
-            folder = await self._get_feed_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_feed_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_CHART, True):
-            folder = await self._get_chart_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_chart_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_NEW_RELEASES, True):
-            folder = await self._get_new_releases_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_new_releases_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_NEW_PLAYLISTS, True):
-            folder = await self._get_new_playlists_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_new_playlists_recommendations()
+        if folder:
+            folders.append(folder)
 
-        # New Picks & Mixes recommendations
-        if self.config.get_value(CONF_ENABLE_TOP_PICKS, True):
-            folder = await self._get_top_picks_recommendations()
-            if folder:
-                folders.append(folder)
+        # Picks & Mixes recommendations
+        folder = await self._get_top_picks_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_MOOD_MIXES, True):
-            folder = await self._get_mood_mix_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_mood_mix_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_ACTIVITY_MIXES, True):
-            folder = await self._get_activity_mix_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_activity_mix_recommendations()
+        if folder:
+            folders.append(folder)
 
-        if self.config.get_value(CONF_ENABLE_SEASONAL_MIXES, True):
-            folder = await self._get_seasonal_mix_recommendations()
-            if folder:
-                folders.append(folder)
+        folder = await self._get_seasonal_mix_recommendations()
+        if folder:
+            folders.append(folder)
 
         return folders
 
@@ -992,9 +956,7 @@ class YandexMusicProvider(MusicProvider):
         max_tracks_config = int(
             self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
         )
-        batch_size_config = int(
-            self.config.get_value(CONF_MY_WAVE_BATCH_SIZE) or 3  # type: ignore[arg-type]
-        )
+        batch_size_config = MY_WAVE_BATCH_SIZE
 
         seen_track_ids: set[str] = set()
         items: list[Track] = []
@@ -1042,9 +1004,7 @@ class YandexMusicProvider(MusicProvider):
         if not items:
             return None
 
-        initial_tracks_limit = int(
-            self.config.get_value(CONF_DISCOVERY_INITIAL_TRACKS) or 5  # type: ignore[arg-type]
-        )
+        initial_tracks_limit = DISCOVERY_INITIAL_TRACKS
         if len(items) > initial_tracks_limit:
             items = items[:initial_tracks_limit]
 
@@ -1316,7 +1276,7 @@ class YandexMusicProvider(MusicProvider):
         :return: List of Track objects.
         """
         self.logger.info(
-            f"get_playlist_tracks called: prov_playlist_id={prov_playlist_id}, page={page}"
+            "get_playlist_tracks called: prov_playlist_id=%s, page=%s", prov_playlist_id, page
         )
 
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
@@ -1326,7 +1286,7 @@ class YandexMusicProvider(MusicProvider):
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
             self.logger.info("Fetching Liked Tracks for virtual playlist")
             result = await self._get_liked_tracks_playlist_tracks(page)
-            self.logger.info(f"Liked Tracks playlist returned {len(result)} tracks")
+            self.logger.info("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
         # Yandex Music API returns all playlist tracks in one call (no server-side pagination).
@@ -1378,9 +1338,7 @@ class YandexMusicProvider(MusicProvider):
             return []
 
         # Fetch full track details in batches to avoid timeouts
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = TRACK_BATCH_SIZE
         full_tracks = []
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i : i + batch_size]
@@ -1453,9 +1411,7 @@ class YandexMusicProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from Yandex Music."""
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = TRACK_BATCH_SIZE
         albums = await self.client.get_liked_albums(batch_size=batch_size)
         for album in albums:
             try:
@@ -1471,9 +1427,7 @@ class YandexMusicProvider(MusicProvider):
 
         # Fetch full track details in batches
         track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
-        batch_size = int(
-            self.config.get_value(CONF_TRACK_BATCH_SIZE) or 50  # type: ignore[arg-type]
-        )
+        batch_size = TRACK_BATCH_SIZE
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
             full_tracks = await self.client.get_tracks(batch_ids)
@@ -1488,17 +1442,13 @@ class YandexMusicProvider(MusicProvider):
 
         Includes virtual playlists (My Wave and Liked Tracks if enabled), then user playlists.
         """
-        # Include My Wave playlist if enabled
-        my_wave_enabled = self.config.get_value(CONF_ENABLE_MY_WAVE_PLAYLIST, True)
-        self.logger.debug(f"My Wave playlist enabled: {my_wave_enabled}")
-        if my_wave_enabled:
-            yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
-        # Include Liked Tracks playlist if enabled
-        liked_tracks_enabled = self.config.get_value(CONF_ENABLE_LIKED_TRACKS_PLAYLIST, True)
-        self.logger.debug(f"Liked Tracks playlist enabled: {liked_tracks_enabled}")
-        if liked_tracks_enabled:
-            self.logger.debug(f"Yielding Liked Tracks playlist with ID: {LIKED_TRACKS_PLAYLIST_ID}")
-            yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
+        # Include My Wave playlist (always enabled)
+        self.logger.debug("My Wave playlist enabled: %s", True)
+        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
+        # Include Liked Tracks playlist (always enabled)
+        self.logger.debug("Liked Tracks playlist enabled: %s", True)
+        self.logger.debug("Yielding Liked Tracks playlist with ID: %s", LIKED_TRACKS_PLAYLIST_ID)
+        yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
         playlists = await self.client.get_user_playlists()
         for playlist in playlists:
             try:
@@ -1592,9 +1542,7 @@ class YandexMusicProvider(MusicProvider):
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
         """
-        # Skip radio feedback if disabled
-        if not self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True):
-            return
+        # Radio feedback always enabled
         if media_type != MediaType.TRACK:
             return
         track_id, station_id = _parse_radio_item_id(prov_item_id)
@@ -1618,9 +1566,7 @@ class YandexMusicProvider(MusicProvider):
         if self._streaming:
             self._streaming.cleanup_temp_file(streamdetails.item_id)
 
-        # Skip radio feedback if disabled
-        if not self.config.get_value(CONF_ENABLE_MY_WAVE_RADIO, True):
-            return
+        # Radio feedback always enabled
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
