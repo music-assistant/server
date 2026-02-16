@@ -74,6 +74,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.cmd_next_track = AsyncMock()
     mass.players.cmd_previous_track = AsyncMock()
     mass.players.get = Mock(return_value=None)
+    mass.players.get_player = Mock(return_value=None)
     mass.players.register = AsyncMock()
     mass.players.unregister = AsyncMock()
     mass.players.all = Mock(return_value=[])
