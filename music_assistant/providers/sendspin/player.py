@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
 from collections.abc import Callable
-from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
-from uuid import UUID
 
 from aiosendspin.models import AudioCodec, MediaCommand
 from aiosendspin.models.types import PlaybackStateType
@@ -64,12 +61,7 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.sendspin.playback import (
-    _DSPChannel,
-    _HistoricalInjection,
-    _MainPCMCacheChunk,
-    _release_player_channel,
-    prepare_dsp_for_join,
-    run_playback,
+    SendspinPlaybackSession,
 )
 
 # Supported group commands for Sendspin players
@@ -136,9 +128,7 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
 if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.server.client import SendspinClient
-    from aiosendspin.server.push_stream import PushStream
     from music_assistant_models.config_entries import ConfigValueType
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
@@ -153,14 +143,7 @@ class SendspinPlayer(Player):
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
     last_sent_artist_artwork_url: str | None = None
-    _playback_task: asyncio.Task[None] | None = None
-    _push_stream: PushStream | None = None
-    _dsp_channels: dict[str, _DSPChannel]
-    _player_channel_map: dict[str, UUID]
-    _pending_join_members: set[str]
-    _pending_historical_injections: dict[str, _HistoricalInjection]
-    _main_pcm_cache: deque[_MainPCMCacheChunk]
-    _pcm_format: AudioFormat | None = None
+    playback_session: SendspinPlaybackSession
     is_web_player: bool = False
 
     @property
@@ -180,11 +163,7 @@ class SendspinPlayer(Player):
         if controller_role := self._controller_role:
             controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
-        self._dsp_channels = {}
-        self._player_channel_map = {}
-        self._pending_join_members = set()
-        self._pending_historical_injections = {}
-        self._main_pcm_cache = deque()
+        self.playback_session = SendspinPlaybackSession(self)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -282,22 +261,6 @@ class SendspinPlayer(Player):
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
 
-    async def _cancel_playback_task(self, reason: str) -> None:
-        """Cancel and await the active playback task, if any."""
-        task = self._playback_task
-        if task is None:
-            return
-        if task.done():
-            if self._playback_task is task:
-                self._playback_task = None
-            return
-        self.logger.debug("Cancelling playback task (%s)", reason)
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-        if self._playback_task is task:
-            self._playback_task = None
-
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
@@ -310,6 +273,8 @@ class SendspinPlayer(Player):
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
                 if controller_role := self._controller_role:
                     controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+                # Cancel active playback - push stream belongs to the old group
+                self.mass.create_task(self.playback_session.cancel("group changed"))
                 # Sync playback state from the new group
                 match new_group.state:
                     case PlaybackStateType.PLAYING:
@@ -349,6 +314,8 @@ class SendspinPlayer(Player):
                         self._attr_playback_state = PlaybackState.IDLE
                         self._attr_elapsed_time = 0
                         self._attr_elapsed_time_last_updated = time.time()
+                        if self.synced_to is None:
+                            self.mass.create_task(self.playback_session.cancel("group stopped"))
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
                 if client_id not in self._attr_group_members:
@@ -408,7 +375,7 @@ class SendspinPlayer(Player):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
-        await self._cancel_playback_task("stop command")
+        await self.playback_session.cancel("stop command")
         await self.api.group.stop()
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
@@ -429,10 +396,9 @@ class SendspinPlayer(Player):
         # playback_state will be set by the group state change event
 
         # Stop previous stream in case we were already playing something
-        await self._cancel_playback_task("new media requested")
+        await self.playback_session.cancel("new media requested")
         await self.api.group.stop()
-        # Run playback in background task to immediately return
-        self._playback_task = asyncio.create_task(self._run_playback(media))
+        await self.playback_session.start(media)
         self.update_state()
 
     async def on_config_updated(self) -> None:
@@ -471,10 +437,6 @@ class SendspinPlayer(Player):
                 self.display_name,
             )
 
-    async def _run_playback(self, media: PlayerMedia) -> None:
-        """Run the actual playback in a background task."""
-        await run_playback(self, media)
-
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -482,23 +444,9 @@ class SendspinPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         for player_id in player_ids_to_remove or []:
-            player = self.mass.players.get(player_id, True)
-            player = cast("SendspinPlayer", player)  # For type checking
-            await self.api.group.remove_client(player.api)
-            await _release_player_channel(self, player_id)
+            await self.playback_session.remove_member(player_id)
         for player_id in player_ids_to_add or []:
-            self._pending_join_members.add(player_id)
-            try:
-                if self._pcm_format is not None and self._push_stream is not None:
-                    await prepare_dsp_for_join(self, player_id)
-                player = self.mass.players.get(player_id, True)
-                player = cast("SendspinPlayer", player)  # For type checking
-                await self.api.group.add_client(player.api)
-            except Exception:
-                await _release_player_channel(self, player_id)
-                raise
-            finally:
-                self._pending_join_members.discard(player_id)
+            await self.playback_session.add_member(player_id)
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
@@ -675,7 +623,7 @@ class SendspinPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        await self._cancel_playback_task("player unload")
+        await self.playback_session.close()
         await super().on_unload()
         self.unsub_event_cb()
         self.unsub_group_event_cb()
