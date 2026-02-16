@@ -927,7 +927,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         from_playlist = request.query.get("from_playlist") == "1"
 
         self.provider.on_player_activity(player_id)
-        player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+        player = self.provider.mass.players.get_player(player_id)
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
 
@@ -1573,7 +1573,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         try:
             await self.provider.mass.players.cmd_pause(player_id)
         finally:
-            player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+            player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
                 player._skip_ws_notify = False
 
@@ -1582,7 +1582,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         try:
             await self.provider.mass.players.cmd_play(player_id)
         finally:
-            player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+            player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
                 player._skip_ws_notify = False
 
@@ -1598,12 +1598,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if msg_type == "position":
             position = msg.get("position")
             if position is not None:
-                player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+                player = self.provider.mass.players.get_player(player_id)
                 if player and isinstance(player, MSXPlayer):
                     player.update_position(float(position))
                     self.provider.on_player_activity(player_id)
         elif msg_type == "pause":
-            player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+            player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
                 position = msg.get("position")
                 if position is not None:
@@ -1613,7 +1613,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "resume":
-            player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+            player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
                 player._skip_ws_notify = True
                 self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
@@ -1628,7 +1628,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player_id = _strip_known_extension(request.match_info["player_id"])
 
         self.provider.on_player_activity(player_id)
-        player = self.provider.mass.players.get_player(player_id)  # type: ignore[attr-defined]
+        player = self.provider.mass.players.get_player(player_id)
         if not player or not isinstance(player, MSXPlayer):
             return web.Response(status=404, text="Player not found")
 

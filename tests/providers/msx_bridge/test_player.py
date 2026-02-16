@@ -286,7 +286,7 @@ async def test_play_media_propagates_to_group_members(provider: Any, mass_mock: 
     """play_media should propagate to group members when leader (direct member.play_media)."""
     leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
     leader.update_state = Mock()  # type: ignore[misc,method-assign]
-    leader._attr_group_members = ["msx_member"]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
     member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
     member.update_state = Mock()  # type: ignore[misc,method-assign]
     member.play_media = AsyncMock()  # type: ignore[method-assign]
@@ -334,7 +334,7 @@ async def test_stop_propagates_to_group_members(provider: Any, mass_mock: Mock) 
     """stop() should propagate to group members when leader."""
     leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
     leader.update_state = Mock()  # type: ignore[misc,method-assign]
-    leader._attr_group_members = ["msx_member"]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
     member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
     member.stop = AsyncMock()  # type: ignore[method-assign]
     mass_mock.players.get = mass_mock.players.get_player = Mock(return_value=member)
@@ -360,7 +360,7 @@ async def test_propagation_skipped_when_grouping_disabled(provider: Any, mass_mo
         grouping_enabled=False,
     )
     leader.update_state = Mock()  # type: ignore[misc,method-assign]
-    leader._attr_group_members = ["msx_member"]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
     member = MSXPlayer(
         provider,
         "msx_member",
@@ -404,12 +404,12 @@ async def test_propagation_recursion_guard(provider: Any, mass_mock: Mock) -> No
     """Propagation should not recurse when member.play_media triggers propagation."""
     leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
     leader.update_state = Mock()  # type: ignore[misc,method-assign]
-    leader._attr_group_members = ["msx_member"]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
 
     # Create a member whose play_media calls back into leader's propagation
     member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
     member.update_state = Mock()  # type: ignore[misc,method-assign]
-    member._attr_group_members = ["msx_leader"]  # would cause recursion without guard
+    member._attr_group_members = ["msx_member", "msx_leader"]  # would cause recursion without guard
 
     mass_mock.players.get = mass_mock.players.get_player = Mock(
         side_effect=lambda pid: member

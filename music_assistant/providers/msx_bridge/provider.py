@@ -319,10 +319,10 @@ class MSXBridgeProvider(PlayerProvider):
         if pending_event := self._pending_unregisters.get(player_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
             await pending_event.wait()
-        existing = self.mass.players.get_player(player_id, raise_unavailable=False)  # type: ignore[attr-defined]
+        existing = self.mass.players.get_player(player_id, raise_unavailable=False)
         if existing and isinstance(existing, MSXPlayer):
             self.on_player_activity(player_id)
-            return cast("MSXPlayer", existing)
+            return existing
         output_format = cast(
             "str", self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
         )
