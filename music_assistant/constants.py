@@ -939,6 +939,9 @@ SOUNDTRACK_INDICATORS = [
     r"\boriginal.*cast.*recording\b",
 ]
 
+# how often we report the playback progress in the player_queues controller
+PLAYBACK_REPORT_INTERVAL_SECONDS = 30
+
 # List of providers that do not use HTTP streaming
 # but consume raw audio data over other protocols
 # for provider domains in this list, we won't show the default
