@@ -574,7 +574,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar track: %s", err)
         return tracks
 
-    @use_cache(60)  # Cache for only 1 minute to allow auto-refresh
+    @use_cache(600)  # Cache for 10 minutes
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations; includes My Mix (Мой Микс) as first folder.
 

@@ -29,7 +29,7 @@ QUALITY_LOSSLESS = "lossless"
 MY_MIX_MAX_TRACKS: Final[int] = 150
 MY_MIX_BATCH_SIZE: Final[int] = 3
 TRACK_BATCH_SIZE: Final[int] = 50
-DISCOVERY_INITIAL_TRACKS: Final[int] = 5
+DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
 
 # Image sizes
