@@ -64,6 +64,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
+    PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
@@ -2315,7 +2316,7 @@ class PlayerQueuesController(CoreController):
         # we do this every 30 seconds or when the state changes
         if (
             changed_keys.intersection({"state", "current_item_id"})
-            or int(queue.elapsed_time) % 30 == 0
+            or int(queue.elapsed_time) % PLAYBACK_REPORT_INTERVAL_SECONDS == 0
         ):
             self._handle_playback_progress_report(queue, prev_state, new_state)
 
