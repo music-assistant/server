@@ -300,6 +300,14 @@ class YandexMusicProvider(MusicProvider):
         )
         batch_size_config = MY_WAVE_BATCH_SIZE
 
+        # Effective limit on tracks to collect for this call:
+        # initial browse is capped to BROWSE_INITIAL_TRACKS to avoid marking
+        # extra tracks as "seen" that are never shown to the user.
+        effective_limit = min(
+            BROWSE_INITIAL_TRACKS if sub_subpath != "next" else max_tracks_config,
+            max_tracks_config,
+        )
+
         # Root my_wave: fetch up to batch_size_config batches so Play adds more tracks.
         # "Load more" always uses single next batch.
         max_batches = batch_size_config if sub_subpath != "next" else 1
@@ -320,7 +328,7 @@ class YandexMusicProvider(MusicProvider):
         total_track_count = 0
 
         for _ in range(max_batches):
-            if total_track_count >= max_tracks_config:
+            if total_track_count >= effective_limit:
                 break
 
             yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
@@ -336,7 +344,7 @@ class YandexMusicProvider(MusicProvider):
                 )
             first_track_id_this_batch = None
             for yt in yandex_tracks:
-                if total_track_count >= max_tracks_config:
+                if total_track_count >= effective_limit:
                     break
 
                 track = self._parse_my_wave_track(yt)
@@ -355,16 +363,10 @@ class YandexMusicProvider(MusicProvider):
                 first_track_id_this_batch is None
                 or not batch_id
                 or not yandex_tracks
-                or total_track_count >= max_tracks_config
+                or total_track_count >= effective_limit
             ):
                 break
             queue = first_track_id_this_batch
-
-        # Apply initial tracks limit if not in "load more" mode
-        if sub_subpath != "next":
-            initial_tracks_limit = BROWSE_INITIAL_TRACKS
-            if len(all_tracks) > initial_tracks_limit:
-                all_tracks = all_tracks[:initial_tracks_limit]
 
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
@@ -471,13 +473,15 @@ class YandexMusicProvider(MusicProvider):
         return [tag for tag in results if tag is not None]
 
     @use_cache(3600)
-    async def _get_discovered_tags(self) -> list[tuple[str, str]]:
+    async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
         """Get all available tags by combining hardcoded tags with landing discovery.
 
         Starts with all hardcoded tags from category lists, adds landing-discovered
         tags, validates each via client.tags(), and returns only those with playlists.
-        Results are cached for 1 hour.
+        Results are cached for 1 hour. The locale parameter is included in the cache
+        key so that a locale change invalidates the cached result.
 
+        :param locale: Current metadata locale (used as part of cache key).
         :return: List of (slug, title) tuples for tags that have playlists.
         """
         names = self._get_browse_names()
@@ -515,7 +519,7 @@ class YandexMusicProvider(MusicProvider):
 
         :return: Set of tag slug strings that have playlists.
         """
-        discovered = await self._get_discovered_tags()
+        discovered = await self._get_discovered_tags(self.mass.metadata.locale)
         return {slug for slug, _title in discovered}
 
     async def _browse_picks(
@@ -535,7 +539,7 @@ class YandexMusicProvider(MusicProvider):
         base = path.rstrip("/") + "/"
 
         # Get validated tags
-        discovered = await self._get_discovered_tags()
+        discovered = await self._get_discovered_tags(self.mass.metadata.locale)
 
         # Categorize valid tags
         categorized: dict[str, list[tuple[str, str]]] = {}
