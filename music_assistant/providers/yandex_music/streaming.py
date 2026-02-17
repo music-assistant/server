@@ -99,6 +99,7 @@ class YandexMusicStreamingManager:
         encrypted_url: str,
         decryption_key: str,
         item_id: str,
+        content_type: ContentType = ContentType.FLAC,
     ) -> str:
         """Download encrypted data, decrypt, and save to a temp file.
 
@@ -109,6 +110,7 @@ class YandexMusicStreamingManager:
         :param encrypted_url: URL of the encrypted file.
         :param decryption_key: Hex-encoded AES-256 decryption key.
         :param item_id: Track item ID for logging.
+        :param content_type: Container content type for file extension.
         :return: Path to the decrypted temp file.
         :raises MediaNotFoundError: If download fails.
         """
@@ -119,8 +121,9 @@ class YandexMusicStreamingManager:
         chunk_size = 65536
         timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
 
-        # Create temp file with .flac extension for proper handling
-        temp_fd, temp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=".flac")
+        # Create temp file with extension matching the container format
+        suffix = f".{content_type.value}" if content_type != ContentType.UNKNOWN else ".flac"
+        temp_fd, temp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=suffix)
 
         try:
             session = await self._get_streaming_session()
@@ -234,7 +237,7 @@ class YandexMusicStreamingManager:
                 needs_decryption = file_info.get("needs_decryption", False)
 
                 if url and codec.lower() in ("flac", "flac-mp4"):
-                    content_type = self._get_content_type(codec)
+                    content_type, codec_type = self._get_content_type(codec)
 
                     # Handle encrypted URLs from encraw transport
                     if needs_decryption and "key" in file_info:
@@ -262,7 +265,7 @@ class YandexMusicStreamingManager:
                                 )
                                 # Download, decrypt, save to temp file
                                 temp_path = await self._download_and_decrypt_to_file(
-                                    url, file_info["key"], item_id
+                                    url, file_info["key"], item_id, content_type
                                 )
                                 # Replace any previous temp file for this item_id.
                                 # Store new path first to ensure it's always tracked,
@@ -278,6 +281,7 @@ class YandexMusicStreamingManager:
                                     provider=self.provider.instance_id,
                                     audio_format=AudioFormat(
                                         content_type=content_type,
+                                        codec_type=codec_type,
                                         bit_rate=0,
                                     ),
                                     stream_type=StreamType.LOCAL_FILE,
@@ -305,6 +309,7 @@ class YandexMusicStreamingManager:
                                 provider=self.provider.instance_id,
                                 audio_format=AudioFormat(
                                     content_type=content_type,
+                                    codec_type=codec_type,
                                     bit_rate=0,  # FLAC is variable bitrate
                                 ),
                                 stream_type=StreamType.CUSTOM,
@@ -332,6 +337,7 @@ class YandexMusicStreamingManager:
                             provider=self.provider.instance_id,
                             audio_format=AudioFormat(
                                 content_type=content_type,
+                                codec_type=codec_type,
                                 bit_rate=0,  # FLAC is variable bitrate
                             ),
                             stream_type=StreamType.CUSTOM,
@@ -355,6 +361,7 @@ class YandexMusicStreamingManager:
                         provider=self.provider.instance_id,
                         audio_format=AudioFormat(
                             content_type=content_type,
+                            codec_type=codec_type,
                             bit_rate=0,
                         ),
                         stream_type=StreamType.HTTP,
@@ -390,7 +397,7 @@ class YandexMusicStreamingManager:
             getattr(selected_info, "bitrate_in_kbps", None),
         )
 
-        content_type = self._get_content_type(selected_info.codec)
+        content_type, codec_type = self._get_content_type(selected_info.codec)
         bitrate = selected_info.bitrate_in_kbps or 0
 
         return StreamDetails(
@@ -398,6 +405,7 @@ class YandexMusicStreamingManager:
             provider=self.provider.instance_id,
             audio_format=AudioFormat(
                 content_type=content_type,
+                codec_type=codec_type,
                 bit_rate=bitrate,
             ),
             stream_type=StreamType.HTTP,
@@ -498,24 +506,35 @@ class YandexMusicStreamingManager:
         # Fallback to highest available if no balanced option
         return sorted_infos[0] if sorted_infos else None
 
-    def _get_content_type(self, codec: str | None) -> ContentType:
-        """Determine content type from codec string.
+    def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
+        """Determine container and codec type from Yandex API codec string.
+
+        Yandex API returns codec strings like "flac-mp4" (FLAC in MP4 container),
+        "aac-mp4" (AAC in MP4 container), or plain "flac", "mp3", "aac".
 
         :param codec: Codec string from Yandex API.
-        :return: ContentType enum value.
+        :return: Tuple of (content_type/container, codec_type).
         """
         if not codec:
-            return ContentType.UNKNOWN
+            return ContentType.UNKNOWN, ContentType.UNKNOWN
 
         codec_lower = codec.lower()
-        if codec_lower in ("flac", "flac-mp4"):
-            return ContentType.FLAC
-        if codec_lower in ("mp3", "mpeg"):
-            return ContentType.MP3
-        if codec_lower in ("aac", "aac-mp4", "he-aac", "he-aac-mp4"):
-            return ContentType.AAC
 
-        return ContentType.UNKNOWN
+        # MP4 container variants: codec is inside an MP4 container
+        if codec_lower == "flac-mp4":
+            return ContentType.MP4, ContentType.FLAC
+        if codec_lower in ("aac-mp4", "he-aac-mp4"):
+            return ContentType.MP4, ContentType.AAC
+
+        # Plain formats: container and codec are the same
+        if codec_lower == "flac":
+            return ContentType.FLAC, ContentType.UNKNOWN
+        if codec_lower in ("mp3", "mpeg"):
+            return ContentType.MP3, ContentType.UNKNOWN
+        if codec_lower in ("aac", "he-aac"):
+            return ContentType.AAC, ContentType.UNKNOWN
+
+        return ContentType.UNKNOWN, ContentType.UNKNOWN
 
     def _prepare_cipher(self, streamdetails: StreamDetails) -> tuple[Any, str, str]:
         """Prepare AES-256-CTR cipher and return (cipher, encrypted_url, codec).
