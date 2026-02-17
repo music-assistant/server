@@ -1610,6 +1610,9 @@ class ConfigController:
         if player.state.type == PlayerType.GROUP and not is_dedicated_group_player:
             # no audio related entries for universal group players or sync group players
             default_entries = []
+        elif PlayerFeature.PLAY_MEDIA not in player.supported_features:
+            # no audio related entries for players that do not support play_media
+            default_entries = []
         else:
             # default output/audio related entries
             default_entries = [
@@ -1681,7 +1684,7 @@ class ConfigController:
                 label="Hide this player in the user interface",
                 default_value=player.hidden_by_default,
                 category="generic",
-                advanced=True,
+                advanced=False,
             ),
             # add entry to expose player to HA
             ConfigEntry(
@@ -1691,7 +1694,7 @@ class ConfigController:
                 description="Expose this player to the Home Assistant integration. \n"
                 "If disabled, this player will not be imported into Home Assistant.",
                 category="generic",
-                advanced=True,
+                advanced=False,
                 default_value=player.expose_to_ha_by_default,
             ),
         ]
@@ -1831,8 +1834,9 @@ class ConfigController:
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
 
-        # Only show config if there are multiple output options
-        if len(output_protocols) <= 1:
+        if not player.available:
+            # if player is not available, we cannot reliably determine the available protocols
+            # so we return no options to avoid confusion
             return all_entries
 
         # Build options from available output protocols, sorted by priority
