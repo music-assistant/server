@@ -100,6 +100,7 @@ FLOW_PLAYLIST_ID = "flow"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
 RADIO_PLAYLIST_PREFIX = "radio_"
+MOOD_FLOW_PREFIX = "mood_flow_"
 
 # Curated Deezer radio station IDs
 CURATED_RADIO_IDS = [
@@ -237,6 +238,34 @@ class DeezerProvider(MusicProvider):
         chart = await self.client.get_chart()
         return list(chart.tracks[:100]) if chart.tracks else []
 
+    @use_cache(3600)  # Cache for 1 hour
+    async def _get_mood_flow_tracks(self, config_id: str) -> list[dict[str, Any]]:
+        """Get cached mood/genre Flow tracks from the GW API.
+
+        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        """
+        return await self.gw_client.get_user_radio(config_id)
+
+    @use_cache(3600 * 24)  # Cache for 24 hours
+    async def _get_available_flows(self) -> list[tuple[str, str, str | None]]:
+        """Discover available mood/genre Flow variants from the Deezer home page.
+
+        Genre flows have config_ids starting with 'genre-'.
+        Returns a list of (config_id, display_name, cover_url) tuples.
+        """
+        items = await self.gw_client.get_home_flows()
+        flows: list[tuple[str, str, str | None]] = []
+        for item in items:
+            config_id = item["data"]["id"]
+            if config_id == "default":
+                continue
+            title = f"Flow: {item['title']}"
+            cover_url = None
+            if pictures := item.get("pictures"):
+                cover_url = f"https://e-cdns-images.dzcdn.net/images/misc/{pictures[0]['md5']}/264x264-000000-80-0-0.jpg"
+            flows.append((config_id, title, cover_url))
+        return flows
+
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
@@ -364,6 +393,12 @@ class DeezerProvider(MusicProvider):
             except Exception as err:
                 self.logger.warning("Failed getting radio %s: %s", radio_id, err)
                 raise MediaNotFoundError(f"Radio {prov_playlist_id} not found on Deezer") from err
+        if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            all_flows = await self._get_available_flows()
+            flow_info = {cid: (name, cover) for cid, name, cover in all_flows}
+            name, cover_url = flow_info.get(config_id, (f"Flow: {config_id}", None))
+            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover_url)
         try:
             return self.parse_playlist(
                 playlist=await self.client.get_playlist(playlist_id=int(prov_playlist_id)),
@@ -422,6 +457,11 @@ class DeezerProvider(MusicProvider):
             except Exception as err:
                 self.logger.debug("Failed to get radio tracks %s: %s", radio_id, err)
                 return []
+
+        if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            gw_tracks = await self._get_mood_flow_tracks(config_id)
+            return [await self.get_track(track["SNG_ID"]) for track in gw_tracks]
 
         # Regular Deezer playlists (cached separately)
         return await self._get_regular_playlist_tracks(prov_playlist_id)
@@ -569,32 +609,64 @@ class DeezerProvider(MusicProvider):
         )
 
         # Recommended albums
-        recommended_albums = list(await self.client.get_user_recommended_albums())
-        if recommended_albums:
-            result.append(
-                RecommendationFolder(
-                    item_id="recommended_albums",
-                    provider=self.instance_id,
-                    name="Recommended albums",
-                    items=UniqueList(
-                        [self.parse_album(album=album) for album in recommended_albums]
-                    ),
+        try:
+            recommended_albums = list(await self.client.get_user_recommended_albums())
+            if recommended_albums:
+                result.append(
+                    RecommendationFolder(
+                        item_id="recommended_albums",
+                        provider=self.instance_id,
+                        name="Recommended albums",
+                        items=UniqueList(
+                            [self.parse_album(album=album) for album in recommended_albums]
+                        ),
+                    )
                 )
-            )
+        except deezer_exceptions.DeezerErrorResponse as err:
+            self.logger.debug("Failed to get recommended albums: %s", err)
 
         # Recommended artists
-        recommended_artists = list(await self.client.get_user_recommended_artists())
-        if recommended_artists:
-            result.append(
-                RecommendationFolder(
-                    item_id="recommended_artists",
-                    provider=self.instance_id,
-                    name="Recommended artists",
-                    items=UniqueList(
-                        [self.parse_artist(artist=artist) for artist in recommended_artists]
-                    ),
+        try:
+            recommended_artists = list(await self.client.get_user_recommended_artists())
+            if recommended_artists:
+                result.append(
+                    RecommendationFolder(
+                        item_id="recommended_artists",
+                        provider=self.instance_id,
+                        name="Recommended artists",
+                        items=UniqueList(
+                            [self.parse_artist(artist=artist) for artist in recommended_artists]
+                        ),
+                    )
                 )
-            )
+        except deezer_exceptions.DeezerErrorResponse as err:
+            self.logger.debug("Failed to get recommended artists: %s", err)
+
+        # Deezer Mood and Genre Flows - personalized playlists (dynamically discovered)
+        all_flows = await self._get_available_flows()
+        mood_flows = [(c, n, img) for c, n, img in all_flows if not c.startswith("genre-")]
+        genre_flows = [(c, n, img) for c, n, img in all_flows if c.startswith("genre-")]
+        for folder_id, folder_name, flows in [
+            ("mood_flows", "Deezer Mood Flows", mood_flows),
+            ("genre_flows", "Deezer Genre Flows", genre_flows),
+        ]:
+            flow_playlists = [
+                self._create_virtual_playlist(
+                    item_id=f"{MOOD_FLOW_PREFIX}{config_id}",
+                    name=display_name,
+                    image_url=cover_url,
+                )
+                for config_id, display_name, cover_url in flows
+            ]
+            if flow_playlists:
+                result.append(
+                    RecommendationFolder(
+                        item_id=folder_id,
+                        provider=self.instance_id,
+                        name=folder_name,
+                        items=UniqueList(flow_playlists),
+                    )
+                )
 
         # Deezer Radios - curated selection (as virtual playlists in one folder)
         radio_playlists: list[Playlist] = []

@@ -202,7 +202,7 @@ class MusicController(CoreController):
     async def on_provider_unload(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
         # make sure to stop any running sync tasks first
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider.instance_id:
                 if sync_task.task:
                     sync_task.task.cancel()
@@ -1611,7 +1611,7 @@ class MusicController(CoreController):
             key = f"sync_{provider_instance_id}_{media_type.value}"
             self.mass.cancel_timer(key)
         # cancel any running sync tasks
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider_instance_id:
                 sync_task.task.cancel()
 
@@ -1813,7 +1813,7 @@ class MusicController(CoreController):
     def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance != provider.instance_id:
                 continue
             if sync_task.task.done():
