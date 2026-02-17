@@ -5,7 +5,7 @@ cookie based on the api_token.
 """
 
 import datetime
-import json as json_module
+import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
 from typing import Any, cast
@@ -145,7 +145,7 @@ class GWClient:
 
     async def get_home_flows(self) -> list[dict[str, Any]]:
         """Discover available Flow variants from the Deezer home page."""
-        gateway_input = json_module.dumps(
+        gateway_input = json.dumps(
             {
                 "PAGE": "home",
                 "VERSION": "2.5",

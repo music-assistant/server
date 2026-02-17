@@ -461,7 +461,7 @@ class DeezerProvider(MusicProvider):
         if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
             config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
             gw_tracks = await self._get_mood_flow_tracks(config_id)
-            return [self._parse_gw_track(track) for track in gw_tracks]
+            return [await self.get_track(track["SNG_ID"]) for track in gw_tracks]
 
         # Regular Deezer playlists (cached separately)
         return await self._get_regular_playlist_tracks(prov_playlist_id)
@@ -981,68 +981,6 @@ class DeezerProvider(MusicProvider):
             is_editable=False,
             owner="Deezer",
         )
-
-    def _parse_gw_track(self, gw_track: dict[str, Any]) -> Track:
-        """Parse a raw GW API track dict directly to a Music Assistant track.
-
-        :param gw_track: Raw track dict from the GW API with keys like SNG_ID, SNG_TITLE, etc.
-        """
-        track_id = str(gw_track["SNG_ID"])
-        title = gw_track.get("SNG_TITLE", "")
-        name, version = parse_title_and_version(title)
-        duration = int(gw_track.get("DURATION", 0))
-
-        artist: ItemMapping | None = None
-        if art_id := gw_track.get("ART_ID"):
-            artist = ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=str(art_id),
-                provider=self.instance_id,
-                name=gw_track.get("ART_NAME", ""),
-            )
-
-        album: ItemMapping | None = None
-        if alb_id := gw_track.get("ALB_ID"):
-            album = ItemMapping(
-                media_type=MediaType.ALBUM,
-                item_id=str(alb_id),
-                provider=self.instance_id,
-                name=gw_track.get("ALB_TITLE", ""),
-            )
-
-        # Build cover image from ALB_PICTURE md5 hash
-        images: UniqueList[MediaItemImage] = UniqueList()
-        if alb_picture := gw_track.get("ALB_PICTURE"):
-            images.append(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=f"https://e-cdns-images.dzcdn.net/images/cover/{alb_picture}/500x500-000000-80-0-0.jpg",
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            )
-
-        item = Track(
-            item_id=track_id,
-            provider=self.instance_id,
-            name=name,
-            version=version,
-            duration=duration,
-            artists=UniqueList([artist]) if artist else UniqueList(),
-            album=album,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=track_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    available=True,
-                )
-            },
-            metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
-        )
-        if isrc := gw_track.get("ISRC"):
-            item.external_ids.add((ExternalID.ISRC, isrc))
-        return item
 
     def parse_track(self, track: deezer.Track, user_country: str, position: int = 0) -> Track:
         """Parse the deezer-python track to a Music Assistant track."""
