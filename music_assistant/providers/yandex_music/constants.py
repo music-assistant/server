@@ -18,6 +18,9 @@ STREAMING_MODE_PRELOAD = "preload"
 # Preload buffer limit (MB) before switching to tempfile
 CONF_PRELOAD_BUFFER_MB: Final[str] = "preload_buffer_mb"
 
+# Buffered mode stream buffer size (MB)
+CONF_STREAM_BUFFER_MB: Final[str] = "stream_buffer_mb"
+
 # Actions
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"

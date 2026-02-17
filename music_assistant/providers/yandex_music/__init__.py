@@ -14,6 +14,7 @@ from .constants import (
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_PRELOAD_BUFFER_MB,
     CONF_QUALITY,
+    CONF_STREAM_BUFFER_MB,
     CONF_STREAMING_MODE,
     CONF_TOKEN,
     DEFAULT_BASE_URL,
@@ -142,6 +143,20 @@ async def get_config_entries(
             advanced=True,
             depends_on=CONF_STREAMING_MODE,
             depends_on_value=STREAMING_MODE_PRELOAD,
+        ),
+        ConfigEntry(
+            key=CONF_STREAM_BUFFER_MB,
+            type=ConfigEntryType.INTEGER,
+            label="Stream buffer size (MB)",
+            description="Memory buffer for Buffered streaming mode. "
+            "Larger values help with slow or unstable connections "
+            "by allowing more audio to be downloaded ahead of playback. "
+            "Default: 8 MB (~45 seconds of FLAC audio).",
+            range=(1, 32),
+            default_value=8,
+            advanced=True,
+            depends_on=CONF_STREAMING_MODE,
+            depends_on_value=STREAMING_MODE_BUFFERED,
         ),
         # My Wave maximum tracks (advanced)
         ConfigEntry(

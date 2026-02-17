@@ -21,6 +21,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from .constants import (
     CONF_PRELOAD_BUFFER_MB,
     CONF_QUALITY,
+    CONF_STREAM_BUFFER_MB,
     CONF_STREAMING_MODE,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
@@ -658,7 +659,16 @@ class YandexMusicStreamingManager:
         )
 
         chunk_size = 65536
-        queue_max = 32  # max 32 * 64KB = 2MB buffered ahead
+        buffer_mb = int(self.provider.config.get_value(CONF_STREAM_BUFFER_MB) or 8)  # type: ignore[arg-type]
+        queue_max = (buffer_mb * 1024 * 1024) // chunk_size
+
+        self.logger.debug(
+            "Buffered streaming buffer: %dMB (%d chunks x %dKB)",
+            buffer_mb,
+            queue_max,
+            chunk_size // 1024,
+        )
+
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=queue_max)
         error_holder: list[BaseException | None] = [None]
         sentinel = None
