@@ -48,6 +48,8 @@ _JOIN_PROMOTE_TOLERANCE_US = 50_000
 # Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
 # Retain committed history this far behind real-time for late-join backfill.
+# This pre-history also warms up ffmpeg's internal filter buffers so the DSP
+# output has settled by the time the member's channel goes live.
 _HISTORY_KEEP_PAST_US = 1_000_000
 
 
