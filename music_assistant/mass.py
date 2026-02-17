@@ -282,9 +282,13 @@ class MusicAssistant:
         return list(self._provider_manifests.values())
 
     @api_command("providers/manifests/get")
-    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+    def get_provider_manifest(self, instance_id_or_domain: str) -> ProviderManifest:
         """Return Provider manifests of single provider(domain)."""
-        return self._provider_manifests[domain]
+        if instance_id_or_domain in self._provider_manifests:
+            return self._provider_manifests[instance_id_or_domain]
+        if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
+            return provider.manifest
+        raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
     @api_command("providers")
     def get_providers(

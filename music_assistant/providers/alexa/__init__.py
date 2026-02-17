@@ -449,19 +449,13 @@ class AlexaPlayer(Player):
             "imageUrl": image_url,
         }
 
-        try:
-            await api_request(
-                self.provider, "/ma/push-url", method="POST", json_data=payload, timeout=10
-            )
-        except ActionUnavailable:
-            raise
-        except Exception as exc:
-            msg = (
-                "Failed to push URL to MA Alexa API: "
-                "Please verify your API connection and configuration"
-            )
-            _LOGGER.error("Failed to push URL to MA Alexa API: %s", exc)
-            raise ActionUnavailable(msg)
+        await api_request(
+            self.provider,
+            "/ma/push-url",
+            method="POST",
+            json_data=payload,
+            timeout=10,
+        )
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 

@@ -651,15 +651,18 @@ class ProtocolLinkingMixin:
             if not protocol_provider:
                 continue
 
+            # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
+            protocol_domain = protocol_provider.split("--")[0]
+
             # Get provider name for display
             provider_name = "Protocol"  # Default fallback
             for provider in self.mass.get_providers(ProviderType.PLAYER):
-                if provider.domain == protocol_provider:
+                if provider.domain == protocol_domain:
                     provider_name = provider.name
                     break
 
             # Get priority for this protocol
-            priority = PROTOCOL_PRIORITY.get(protocol_provider, 100)
+            priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
             # Check if protocol player is available (registered)
             protocol_player = self.get_player(protocol_id)
@@ -670,7 +673,7 @@ class ProtocolLinkingMixin:
                 OutputProtocol(
                     output_protocol_id=protocol_id,
                     name=provider_name,
-                    protocol_domain=protocol_provider,
+                    protocol_domain=protocol_domain,
                     priority=priority,
                     is_native=False,
                     available=is_available,
@@ -1276,16 +1279,33 @@ class ProtocolLinkingMixin:
         )
 
         # If we added members via this protocol, set it as the active output protocol
-        # This ensures playback will be restarted on the correct protocol if needed
+        # and restart playback if currently playing
         if (
             filtered_protocol_add
             and parent_player.active_output_protocol != parent_protocol_player.player_id
         ):
+            previous_protocol = parent_player.active_output_protocol
+            was_playing = parent_player.state.playback_state == PlaybackState.PLAYING
+
             self.logger.debug(
-                "Setting active output protocol to %s after grouping members",
+                "Setting active output protocol to %s after grouping members "
+                "(previous: %s, was_playing: %s)",
                 parent_protocol_player.player_id,
+                previous_protocol,
+                was_playing,
             )
             parent_player.set_active_output_protocol(parent_protocol_player.player_id)
+
+            # Restart playback on the new protocol if we were playing
+            if was_playing:
+                self.logger.info(
+                    "Restarting playback on %s via %s protocol after grouping members",
+                    parent_player.state.name,
+                    parent_protocol_player.provider.domain,
+                )
+                # Use resume to restart from current position
+                await self.mass.players.cmd_resume(parent_player.player_id)
+
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
             parent_protocol_player.state.name,
