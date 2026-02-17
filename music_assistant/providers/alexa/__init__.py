@@ -24,6 +24,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.util import lock
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -291,7 +292,7 @@ async def _request_with_session(
 
 
 async def api_request(
-    provider: Any,
+    provider: PlayerProvider,
     endpoint: str,
     method: str = "POST",
     json_data: dict[str, Any] | None = None,
@@ -308,14 +309,10 @@ async def api_request(
     if username is not None and password is not None:
         auth = BasicAuth(str(username), str(password))
 
-    api_url = provider.config.get_value(CONF_API_URL) or ""
+    api_url = str(provider.config.get_value(CONF_API_URL) or "")
     url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    mass_session = None
-    try:
-        mass_session = provider.mass.http_session
-    except Exception:
-        mass_session = None
+    mass_session = provider.mass.http_session
 
     if mass_session:
         try:
@@ -551,6 +548,7 @@ class AlexaProvider(PlayerProvider):
         except Exception:  # don't fail provider load on intent fetch issues
             _LOGGER.debug("Could not prefetch Alexa intents, will lazy-load on use.")
 
+    @lock
     async def _load_intents(self) -> None:
         """Load intents from the configured API and cache them on the provider."""
         try:
