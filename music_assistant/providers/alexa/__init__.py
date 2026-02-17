@@ -317,8 +317,6 @@ async def api_request(
     if mass_session:
         try:
             return await _request_with_session(mass_session, method, url, json_data, timeout, auth)
-        except ActionUnavailable:
-            raise
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.error("Failed API request to %s: %s", url, exc)
             raise ActionUnavailable("Failed to connect to the configured API endpoint.")
@@ -326,8 +324,6 @@ async def api_request(
     async with aiohttp.ClientSession() as session:
         try:
             return await _request_with_session(session, method, url, json_data, timeout, auth)
-        except ActionUnavailable:
-            raise
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.error("Failed API request to %s: %s", url, exc)
             raise ActionUnavailable("Failed to connect to the configured API endpoint.")
@@ -382,8 +378,6 @@ class AlexaPlayer(Player):
         try:
             utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
             await self.api.run_custom(utter)
-        except ActionUnavailable:
-            raise
         except Exception as exc:
             _LOGGER.error("Failed to run Stop intent: %s", exc)
             raise ActionUnavailable("Failed to trigger Alexa Stop intent")
@@ -398,8 +392,6 @@ class AlexaPlayer(Player):
         try:
             utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
             await self.api.run_custom(utter)
-        except ActionUnavailable:
-            raise
         except Exception as exc:
             _LOGGER.error("Failed to run Resume intent: %s", exc)
             raise ActionUnavailable("Failed to trigger Alexa Resume intent")
@@ -413,8 +405,6 @@ class AlexaPlayer(Player):
         try:
             utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
             await self.api.run_custom(utter)
-        except ActionUnavailable:
-            raise
         except Exception as exc:
             _LOGGER.error("Failed to run Pause intent: %s", exc)
             raise ActionUnavailable("Failed to trigger Alexa Pause intent")
