@@ -865,7 +865,7 @@ class MusicController(CoreController):
             if not prov_mapping.in_library:
                 continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
@@ -899,7 +899,7 @@ class MusicController(CoreController):
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue

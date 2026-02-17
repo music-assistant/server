@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerState, PlayerType
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
@@ -70,14 +70,17 @@ class SonosPlayer(Player):
         self.subscriptions: list[SubscriptionBase] = []
 
         # Set player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = set(PLAYER_FEATURES)
         self._attr_name = soco.player_name
         self._attr_device_info = DeviceInfo(
             model=soco.speaker_info["model_name"],
             manufacturer="Sonos",
         )
-        self._attr_device_info.ip_address = soco.ip_address
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, soco.uid)
+        mac_address = self._extract_mac_from_player_id()
+        if mac_address:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_needs_poll = True
         self._attr_poll_interval = 5
         self._attr_available = True
@@ -94,6 +97,33 @@ class SonosPlayer(Player):
         """Return a list of missing service subscriptions."""
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
+
+    def _extract_mac_from_player_id(self) -> str | None:
+        """Extract MAC address from Sonos player_id.
+
+        Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
+        the middle 12 hex characters represent the MAC address.
+
+        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
+        """
+        # Remove RINCON_ prefix if present
+        player_id = self.player_id
+        player_id = player_id.removeprefix("RINCON_")
+
+        # Remove the 01400 suffix (or similar) - should be last 5 chars
+        if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
+            mac_hex = player_id[:12]
+        else:
+            return None
+
+        # Validate it looks like a MAC (all hex characters)
+        try:
+            int(mac_hex, 16)
+        except ValueError:
+            return None
+
+        # Format as XX:XX:XX:XX:XX:XX
+        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -213,8 +243,9 @@ class SonosPlayer(Player):
         is_announcement = media.media_type == MediaType.ANNOUNCEMENT
         force_radio = False if is_announcement else not media.duration
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await asyncio.to_thread(
-            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=force_radio
+            self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
         )
         self.mass.call_later(2, self.poll)
 
@@ -259,13 +290,13 @@ class SonosPlayer(Player):
 
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_remove.soco.unjoin)
                     self.mass.call_later(2, player_to_remove.poll)
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
-                if player_to_add := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_add.soco.join, self.soco)
                     self.mass.call_later(2, player_to_add.poll)
 
@@ -315,7 +346,11 @@ class SonosPlayer(Player):
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
         )
-        self._attr_device_info.ip_address = ip_address
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.soco.uid)
+        mac_address = self._extract_mac_from_player_id()
+        if mac_address:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self.update_player()
 
     async def _check_availability(self) -> None:
@@ -668,7 +703,7 @@ class SonosPlayer(Player):
             group_members_ids = []
 
             for uid in group:
-                speaker = self.mass.players.get(uid)
+                speaker = self.mass.players.get_player(uid)
                 if speaker:
                     group_members_ids.append(uid)
                 else:
@@ -728,7 +763,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all(provider_filter=_provider.instance_id):
+        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 

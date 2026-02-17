@@ -172,7 +172,7 @@ class PlexRemoteControlServer:
         # Flag to prevent circular updates when we modify the queue ourselves
         self._updating_from_plex = False
 
-        self.player = self.provider.mass.players.get(self._ma_player_id)  # type: ignore[arg-type]
+        self.player = self.provider.mass.players.get_player(self._ma_player_id)  # type: ignore[arg-type]
 
         self.device_name = f"{self.player.display_name}" if self.player else "Music Assistant"
 
@@ -284,7 +284,7 @@ class PlexRemoteControlServer:
         # Get player name
         player_name = "Music Assistant"
         if self._ma_player_id:
-            player = self.provider.mass.players.get(self._ma_player_id)
+            player = self.provider.mass.players.get_player(self._ma_player_id)
             if player:
                 player_name = player.display_name
 
@@ -351,28 +351,28 @@ class PlexRemoteControlServer:
 
     async def _ungroup_player_if_needed(self, player_id: str) -> None:
         """Ungroup player before playback if it's part of a group/sync."""
-        player = self.provider.mass.players.get(player_id)
+        player = self.provider.mass.players.get_player(player_id)
         if not player or player.type == PlayerType.GROUP:
             return
 
-        if not (player.synced_to or player.group_members or player.active_group):
+        if not (player.state.synced_to or player.state.group_members or player.state.active_group):
             return
 
         LOGGER.debug("Ungrouping player %s before starting playback from Plex", player.display_name)
         # Use set_members directly on the group to bypass static member check
         if (
-            player.active_group
-            and (group := self.provider.mass.players.get(player.active_group))
+            player.state.active_group
+            and (group := self.provider.mass.players.get_player(player.state.active_group))
             and group.supports_feature(PlayerFeature.SET_MEMBERS)
         ):
             await group.set_members(player_ids_to_remove=[player_id])
         elif (
-            player.synced_to
-            and (sync_leader := self.provider.mass.players.get(player.synced_to))
+            player.state.synced_to
+            and (sync_leader := self.provider.mass.players.get_player(player.state.synced_to))
             and sync_leader.supports_feature(PlayerFeature.SET_MEMBERS)
         ):
             await sync_leader.set_members(player_ids_to_remove=[player_id])
-        elif player.group_members and player.supports_feature(PlayerFeature.SET_MEMBERS):
+        elif player.state.group_members and player.supports_feature(PlayerFeature.SET_MEMBERS):
             await player.set_members(player_ids_to_remove=player.group_members)
 
     async def handle_play_media(self, request: web.Request) -> web.Response:
@@ -1322,14 +1322,14 @@ class PlexRemoteControlServer:
         # Get player name
         player_name = "Music Assistant"
         if self._ma_player_id:
-            player = self.provider.mass.players.get(self._ma_player_id)
+            player = self.provider.mass.players.get_player(self._ma_player_id)
             if player:
                 player_name = player.display_name
 
         # Get player state
         state = "stopped"
         if self._ma_player_id:
-            player = self.provider.mass.players.get(self._ma_player_id)
+            player = self.provider.mass.players.get_player(self._ma_player_id)
             if player and player.state:
                 state_value = (
                     player.state.value if hasattr(player.state, "value") else str(player.state)
@@ -1453,7 +1453,7 @@ class PlexRemoteControlServer:
         player_id = self._ma_player_id
 
         # Get MA player and queue
-        player = self.provider.mass.players.get(player_id) if player_id else None
+        player = self.provider.mass.players.get_player(player_id) if player_id else None
         queue = self.provider.mass.player_queues.get(player_id) if player_id else None
 
         # Controllable features for music
@@ -1757,7 +1757,7 @@ class PlexRemoteControlServer:
             return
 
         try:
-            player = self.provider.mass.players.get(self._ma_player_id)
+            player = self.provider.mass.players.get_player(self._ma_player_id)
             queue = self.provider.mass.player_queues.get(self._ma_player_id)
 
             if (

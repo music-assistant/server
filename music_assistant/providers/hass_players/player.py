@@ -8,11 +8,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from hass_client.exceptions import FailedCommand
 from music_assistant_models.enums import (
+    IdentifierType,
     ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
 )
 from music_assistant_models.media_items import MediaItemImage
 
@@ -54,8 +54,6 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 class HomeAssistantPlayer(Player):
     """Home Assistant Player implementation."""
 
-    _attr_type = PlayerType.PLAYER
-
     def __init__(
         self,
         provider: PlayerProvider,
@@ -73,10 +71,16 @@ class HomeAssistantPlayer(Player):
         self._extra_data = extra_player_data
         # Set base attributes from Home Assistant state
         self._attr_available = hass_state["state"] not in UNAVAILABLE_STATES
-        self._attr_device_info = DeviceInfo.from_dict(dev_info)
+        self._attr_device_info = DeviceInfo(
+            model=dev_info.get("model", ""),
+            manufacturer=dev_info.get("manufacturer", ""),
+            software_version=dev_info.get("software_version"),
+        )
+        if mac_address := dev_info.get("mac_address"):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_playback_state = StateMap.get(hass_state["state"], PlaybackState.IDLE)
         # Work out supported features
-        self._attr_supported_features = set()
+        self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
         hass_supported_features = MediaPlayerEntityFeature(
             hass_state["attributes"]["supported_features"]
         )
@@ -263,6 +267,7 @@ class HomeAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         extra_data: dict[str, Any] = {
             # passing metadata to the player
             # so far only supported by google cast, but maybe others can follow
@@ -283,7 +288,7 @@ class HomeAssistantPlayer(Player):
             extra_data["bypass_proxy"] = True
 
         # stop the player if it is already playing
-        if self.playback_state == PlaybackState.PLAYING:
+        if self._attr_playback_state == PlaybackState.PLAYING:
             await self.stop()
 
         await self.hass.call_service(
@@ -291,7 +296,7 @@ class HomeAssistantPlayer(Player):
             service="play_media",
             target={"entity_id": self.player_id},
             service_data={
-                "media_content_id": media.uri,
+                "media_content_id": url,
                 "media_content_type": "music",
                 "enqueue": "replace",
                 "extra": extra_data,

@@ -482,4 +482,8 @@ When contributing to the webserver/auth system:
 3. Update this README if adding significant new features
 4. Test authentication flows thoroughly
 5. Consider security implications of all changes
-6. Update API documentation if adding new commands
+6. The API documentation will be auto updated if adding new commands (based on docstrings and type hints)
+
+---
+
+*This architecture document is maintained alongside the code and should be updated when significant changes are made to the provider's design or functionality.*
