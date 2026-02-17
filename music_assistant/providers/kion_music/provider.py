@@ -272,7 +272,7 @@ class KionMusicProvider(MusicProvider):
             # Only show "Load more" if we haven't reached the limit and there's more data
             if last_batch_id and len(fetched) < MY_MIX_MAX_TRACKS:
                 names = self._get_browse_names()
-                next_name = "Ещё" if names is BROWSE_NAMES_RU else "Load more"
+                next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
                 all_tracks.append(
                     BrowseFolder(
                         item_id="next",
@@ -438,21 +438,31 @@ class KionMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return parse_album(self, album)
 
-    @use_cache(3600 * 24 * 30)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details by ID.
 
         Supports composite item_id (track_id@station_id) for My Mix tracks;
-        only the track_id part is used for the API.
+        only the track_id part is used for the API. Normalizes the ID before
+        caching so that "12345" and "12345@user:onyourwave" share one cache entry.
 
         :param prov_track_id: The provider track ID (or track_id@station_id).
         :return: Track object.
         :raises MediaNotFoundError: If track not found.
         """
         track_id, _ = _parse_radio_item_id(prov_track_id)
+        return await self._get_track_cached(track_id)
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_track_cached(self, track_id: str) -> Track:
+        """Fetch and cache track details by normalized track ID.
+
+        :param track_id: Plain track ID (no station suffix).
+        :return: Track object.
+        :raises MediaNotFoundError: If track not found.
+        """
         yandex_track = await self.client.get_track(track_id)
         if not yandex_track:
-            raise MediaNotFoundError(f"Track {prov_track_id} not found")
+            raise MediaNotFoundError(f"Track {track_id} not found")
         return parse_track(self, yandex_track)
 
     @use_cache(3600 * 24 * 30)

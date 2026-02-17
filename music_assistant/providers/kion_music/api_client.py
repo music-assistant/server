@@ -506,18 +506,12 @@ class KionMusicClient:
         The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
         with quality=lossless and codecs=flac,... returns FLAC when available.
 
+        Includes retry with reconnect on transient connection errors so that a
+        momentary disconnect does not silently fall back to lossy quality.
+
         :param track_id: Track ID.
         :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
         """
-        client = self._ensure_connected()
-        sign = get_sign_request(track_id)
-        base_params = {
-            "ts": sign.timestamp,
-            "trackId": track_id,
-            "quality": "lossless",
-            "codecs": GET_FILE_INFO_CODECS,
-            "sign": sign.value,
-        }
 
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
@@ -527,42 +521,74 @@ class KionMusicClient:
                 return None
             return cast("dict[str, Any]", download_info)
 
-        url = f"{client.base_url}/get-file-info"
-        params_encraw = {**base_params, "transports": "encraw"}
-        try:
-            result = await client.request.get(url, params=params_encraw)
-            return _parse_file_info_result(result)
-        except (BadRequestError, NetworkError) as err:
-            LOGGER.debug(
-                "get-file-info lossless for track %s: %s %s",
-                track_id,
-                type(err).__name__,
-                getattr(err, "message", str(err)) or repr(err),
-            )
-            return None
-        except UnauthorizedError as err:
-            LOGGER.debug(
-                "get-file-info lossless for track %s (transports=encraw): %s %s",
-                track_id,
-                type(err).__name__,
-                getattr(err, "message", str(err)) or repr(err),
-            )
-            LOGGER.debug(
-                "If you have KION Music Plus and this track has lossless, "
-                "try a token from the web client (music.mts.ru)."
-            )
-            params_raw = {**base_params, "transports": "raw"}
+        for attempt in range(2):
+            client = self._ensure_connected()
+            sign = get_sign_request(track_id)
+            base_params = {
+                "ts": sign.timestamp,
+                "trackId": track_id,
+                "quality": "lossless",
+                "codecs": GET_FILE_INFO_CODECS,
+                "sign": sign.value,
+            }
+
+            url = f"{client.base_url}/get-file-info"
+            params_encraw = {**base_params, "transports": "encraw"}
             try:
-                result = await client.request.get(url, params=params_raw)
+                result = await client.request.get(url, params=params_encraw)
                 return _parse_file_info_result(result)
-            except (BadRequestError, NetworkError, UnauthorizedError) as retry_err:
+            except UnauthorizedError as err:
                 LOGGER.debug(
-                    "get-file-info lossless for track %s (transports=raw): %s %s",
+                    "get-file-info lossless for track %s (transports=encraw): %s %s",
                     track_id,
-                    type(retry_err).__name__,
-                    getattr(retry_err, "message", str(retry_err)) or repr(retry_err),
+                    type(err).__name__,
+                    getattr(err, "message", str(err)) or repr(err),
+                )
+                LOGGER.debug(
+                    "If you have KION Music Plus and this track has lossless, "
+                    "try a token from the web client (music.mts.ru)."
+                )
+                params_raw = {**base_params, "transports": "raw"}
+                try:
+                    result = await client.request.get(url, params=params_raw)
+                    return _parse_file_info_result(result)
+                except (BadRequestError, NetworkError, UnauthorizedError) as retry_err:
+                    LOGGER.debug(
+                        "get-file-info lossless for track %s (transports=raw): %s %s",
+                        track_id,
+                        type(retry_err).__name__,
+                        getattr(retry_err, "message", str(retry_err)) or repr(retry_err),
+                    )
+                    return None
+            except BadRequestError as err:
+                LOGGER.debug(
+                    "get-file-info lossless for track %s: %s %s",
+                    track_id,
+                    type(err).__name__,
+                    getattr(err, "message", str(err)) or repr(err),
                 )
                 return None
+            except (NetworkError, Exception) as err:
+                if attempt == 0 and self._is_connection_error(err):
+                    LOGGER.warning(
+                        "Connection error on get-file-info lossless for track %s, reconnecting: %s",
+                        track_id,
+                        err,
+                    )
+                    try:
+                        await self._reconnect()
+                    except Exception as recon_err:
+                        LOGGER.debug("Reconnect failed: %s", recon_err)
+                        return None
+                else:
+                    LOGGER.debug(
+                        "get-file-info lossless for track %s: %s %s",
+                        track_id,
+                        type(err).__name__,
+                        getattr(err, "message", str(err)) or repr(err),
+                    )
+                    return None
+        return None
 
     # Library modifications
 

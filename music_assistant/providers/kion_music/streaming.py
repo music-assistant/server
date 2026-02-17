@@ -179,7 +179,7 @@ class KionMusicStreamingManager:
             return ContentType.FLAC
         if codec_lower in ("mp3", "mpeg"):
             return ContentType.MP3
-        if codec_lower == "aac":
+        if codec_lower in ("aac", "aac-mp4", "he-aac", "he-aac-mp4"):
             return ContentType.AAC
 
         return ContentType.UNKNOWN

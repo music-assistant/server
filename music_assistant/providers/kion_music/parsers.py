@@ -35,18 +35,6 @@ if TYPE_CHECKING:
     from .provider import KionMusicProvider
 
 
-def _get_content_type(provider: KionMusicProvider) -> ContentType:
-    """Get content type based on provider quality setting.
-
-    :param provider: The KION Music provider instance.
-    :return: ContentType.UNKNOWN as actual codec is determined at stream time.
-    """
-    # Actual codec is determined when getting stream details
-    # Suppress unused argument warning
-    _ = provider
-    return ContentType.UNKNOWN
-
-
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
     """Convert cover URI to full URL.
 
@@ -141,7 +129,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.mts.ru/album/{album_id}",
                 available=available,
@@ -239,7 +227,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.mts.ru/track/{track_id}",
                 available=available,
