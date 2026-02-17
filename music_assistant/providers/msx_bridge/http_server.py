@@ -242,16 +242,13 @@ class MSXHTTPServer:
             player_rows.append(row)
         player_info = "".join(player_rows) if player_rows else ""
 
-        # Build URLs
+        # Build Sendspin URL (Sendspin server port 8927)
         host_parts = request.host.split(":")
         hostname = host_parts[0]
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
-        kiosk_html5_url = f"{base}/web?kiosk=1"
         sendspin_web_url = f"{base}/web?sendspin_url={quote(sendspin_url, safe='')}"
-        sendspin_kiosk_url = (
-            f"{base}/web?kiosk=1&sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
-        )
+        sendspin_kiosk_url = f"{sendspin_web_url}&kiosk=1"
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -286,10 +283,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 <a href="/web">http://{request.host}/web</a>
 <small>Browser-based player with library navigation (HTTP streaming)</small>
 </div>
-<div class="link-row">
-<a href="{kiosk_html5_url}">Kiosk Mode (HTML5)</a>
-<small>Fullscreen player with WebSocket push - ideal for dedicated displays</small>
-</div>
 </div>
 
 <div class="info info-sendspin">
@@ -300,11 +293,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 </div>
 <div class="link-row">
 <a href="{sendspin_kiosk_url}">Kiosk Mode (Sendspin)</a>
-<small>Fullscreen player with clock-synchronized audio</small>
+<small>Fullscreen player only - ideal for dedicated displays</small>
 </div>
 <div class="link-row" style="margin-top: 12px;">
 <strong>Custom Sendspin URL:</strong><br>
-<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
+<code>/web?sendspin_url=http://&lt;ma-server&gt;:8927&amp;kiosk=1</code>
 </div>
 </div>
 
@@ -1625,6 +1618,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 player._skip_ws_notify = True
                 self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
+        elif msg_type == "debug_info":
+            logger.debug("Device debug info from %s: %s", player_id, msg.get("data", {}))
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
 

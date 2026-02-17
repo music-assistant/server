@@ -6,19 +6,16 @@
  *
  * Audio modes:
  * - Normal mode: HTML5 streaming with WebSocket sync
- * - Kiosk mode (?kiosk=1): Fullscreen HTML5 player with WebSocket push
- * - Kiosk + Sendspin (?kiosk=1&sendspin=1): Sendspin synchronized audio
+ * - Kiosk mode (?kiosk=1): Sendspin synchronized audio (receives from MA)
  *
  * URL Parameters:
- * - kiosk: Enable kiosk mode (e.g., ?kiosk=1)
- * - sendspin: Use Sendspin SDK in kiosk mode (e.g., ?kiosk=1&sendspin=1)
+ * - kiosk: Enable kiosk mode with Sendspin (e.g., ?kiosk=1)
  * - sendspin_url: Custom Sendspin server URL (e.g., ?sendspin_url=http://ma:8927)
  */
 
 // --- URL Parameters ---
 const urlParams = new URLSearchParams(window.location.search);
 const KIOSK_MODE = urlParams.get('kiosk') === '1';
-const SENDSPIN_MODE = KIOSK_MODE && urlParams.get('sendspin') === '1';
 const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
 (function () {
@@ -40,11 +37,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     }
 
     function isSendspinMode() {
-        return SENDSPIN_MODE;
-    }
-
-    function isKioskHtml5Mode() {
-        return KIOSK_MODE && !SENDSPIN_MODE;
+        return KIOSK_MODE;
     }
 
     // --- Device ID ---
@@ -121,7 +114,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     function msxIcon(name) {
         if (!name) return '';
         var mapped = name.replace('msx-white-soft:', '').replace('msx-white:', '').replace(/-/g, '_');
-        return '<span class="material-symbols-rounded">' + mapped + '</span>';
+        return '<span class="material-symbols-rounded">' + esc(mapped) + '</span>';
     }
 
     function esc(str) {
@@ -489,14 +482,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         var track = playlist[trackIdx];
         audio.src = track.url;
         audio.play().catch(function (e) { console.warn('Autoplay blocked:', e); });
-
-        if (isKioskHtml5Mode()) {
-            updateKioskPlayer(track);
-            var seekEl = document.getElementById('kiosk-seek');
-            if (seekEl) seekEl.disabled = false;
-        } else {
-            updatePlayerBar(track);
-        }
+        updatePlayerBar(track);
         updateFullPlayer(track);
         startPosReport();
     }
@@ -584,17 +570,6 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (isSendspinMode()) return;
         var cur = audio.currentTime;
         var dur = audio.duration || 0;
-
-        if (isKioskHtml5Mode()) {
-            var kioskTime = document.getElementById('kiosk-time');
-            var kioskDur = document.getElementById('kiosk-dur');
-            var kioskSeek = document.getElementById('kiosk-seek');
-            if (kioskTime) kioskTime.textContent = fmtDur(cur);
-            if (kioskDur && dur > 0) kioskDur.textContent = fmtDur(dur);
-            if (kioskSeek && dur > 0) kioskSeek.value = (cur / dur) * 100;
-            return;
-        }
-
         document.getElementById('bar-time').textContent = fmtDur(cur);
         var fullTime = document.getElementById('full-time');
         if (fullTime) fullTime.textContent = fmtDur(cur);
@@ -612,9 +587,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (dur && isFinite(dur)) audio.currentTime = (pct / 100) * dur;
     }
 
-    // --- WebSocket ---
+    // --- WebSocket (normal mode only) ---
     function connectWS() {
         if (!window.WebSocket) return;
+        if (isSendspinMode()) return;
 
         var url = WS_URL + '?device_id=' + encodeURIComponent(deviceId) + '&source=web';
         ws = new WebSocket(url);
@@ -657,22 +633,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             case 'stop':
                 audio.pause();
                 audio.removeAttribute('src');
-                if (isKioskHtml5Mode()) {
-                    document.getElementById('kiosk-title').textContent = 'Waiting for playback...';
-                    document.getElementById('kiosk-artist').textContent = '';
-                    document.getElementById('kiosk-time').textContent = '0:00';
-                    document.getElementById('kiosk-dur').textContent = '0:00';
-                    document.getElementById('kiosk-seek').value = 0;
-                    document.getElementById('kiosk-seek').disabled = true;
-                    var artEl = document.getElementById('kiosk-art');
-                    if (artEl) artEl.style.display = 'none';
-                    var placeholder = document.getElementById('kiosk-art-placeholder');
-                    if (placeholder) placeholder.style.display = '';
-                } else {
-                    document.getElementById('player-bar').classList.remove('active');
-                }
+                document.getElementById('player-bar').classList.remove('active');
                 stopPosReport();
-                syncPlayBtn();
                 break;
             case 'pause':
                 pausedByWS = true;
@@ -744,8 +706,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     // --- Init ---
     async function init() {
-        if (SENDSPIN_MODE) {
-            // Kiosk + Sendspin mode: synchronized audio via Sendspin SDK
+        if (KIOSK_MODE) {
+            // Kiosk mode: Sendspin only, show fullscreen player
             document.body.classList.add('kiosk-mode');
             await initSendspin();
 
@@ -759,46 +721,6 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             if (kioskNext) kioskNext.addEventListener('click', nextTrack);
 
             console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
-        } else if (KIOSK_MODE) {
-            // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
-            document.body.classList.add('kiosk-mode');
-
-            // Hide sync indicator (not used in HTML5 mode)
-            var syncStatus = document.getElementById('kiosk-sync-status');
-            if (syncStatus) syncStatus.style.display = 'none';
-
-            connectWS();
-
-            // HTML5 Audio events → update kiosk UI
-            audio.addEventListener('timeupdate', updateProgress);
-            audio.addEventListener('ended', nextTrack);
-            audio.addEventListener('pause', function () {
-                syncPlayBtn();
-                if (pausedByWS) { pausedByWS = false; return; }
-                sendWS({ type: 'pause', position: audio.currentTime });
-                stopPosReport();
-            });
-            audio.addEventListener('play', function () {
-                syncPlayBtn();
-                if (resumedByWS) { resumedByWS = false; return; }
-                sendWS({ type: 'resume' });
-                startPosReport();
-            });
-
-            // Kiosk controls → HTML5 Audio
-            var kioskPlay = document.getElementById('kiosk-play');
-            var kioskPrev = document.getElementById('kiosk-prev');
-            var kioskNext = document.getElementById('kiosk-next');
-            var kioskSeek = document.getElementById('kiosk-seek');
-
-            if (kioskPlay) kioskPlay.addEventListener('click', togglePlay);
-            if (kioskPrev) kioskPrev.addEventListener('click', prevTrack);
-            if (kioskNext) kioskNext.addEventListener('click', nextTrack);
-            if (kioskSeek) {
-                kioskSeek.addEventListener('input', function (e) { seekTo(e.target.value); });
-            }
-
-            console.log('[WebPlayer] Kiosk mode initialized with HTML5 streaming');
         } else {
             // Normal mode: HTML5 streaming with WebSocket
             connectWS();
