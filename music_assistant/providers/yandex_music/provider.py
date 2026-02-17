@@ -391,7 +391,9 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _validate_tag(self, tag_slug: str) -> bool:
-        """Check if a tag has playlists by calling client.tags().
+        """Check if a tag has playlists by fetching tag playlist data.
+
+        Results are cached for 1 hour to minimize API calls.
 
         :param tag_slug: Tag identifier (e.g. 'chill', '80s').
         :return: True if the tag has at least one playlist.
@@ -924,7 +926,7 @@ class YandexMusicProvider(MusicProvider):
         track_shorts = await self.client.get_liked_tracks()
         self.logger.debug("Got %s liked tracks from API", len(track_shorts))
         if not track_shorts:
-            self.logger.warning("No liked tracks found!")
+            self.logger.debug("No liked tracks found!")
             return []
 
         # Apply max tracks limit

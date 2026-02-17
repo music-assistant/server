@@ -166,7 +166,11 @@ class YandexMusicClient:
                 track_ids.append(str(tid))
         if not track_ids:
             return ([], result.batch_id if result else None)
-        full_tracks = await self.get_tracks(track_ids)
+        try:
+            full_tracks = await self.get_tracks(track_ids)
+        except ResourceTemporarilyUnavailable as err:
+            LOGGER.warning("Error fetching rotor station track details: %s", err)
+            return ([], result.batch_id if result else None)
         order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
         ordered = [order_map[tid] for tid in track_ids if tid in order_map]
         return (ordered, result.batch_id if result else None)
