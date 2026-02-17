@@ -1,0 +1,16 @@
+{
+  "type": "player",
+  "domain": "dashie_kiosk",
+  "stage": "beta",
+  "name": "Dashie Kiosk",
+  "description": "Play audio directly on Dashie Kiosk Android tablets, bypassing the Home Assistant media player for lower latency.",
+  "codeowners": ["@jwlerch78"],
+  "credits": [
+    "[Dashie Kiosk](https://dashieapp.com/dashie-kiosk)"
+  ],
+  "requirements": [],
+  "documentation": "https://dashieapp.com/guides/music-assistant-setup",
+  "depends_on": "hass",
+  "multi_instance": false,
+  "builtin": false
+}
