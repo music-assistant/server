@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -344,9 +345,7 @@ class SoundcloudMusicProvider(MusicProvider):
         tracks: list[Track] = []
 
         # Try multiple fallback mechanisms to get tracks collection
-        collection = None
-        if tracks_obj:
-            collection = tracks_obj.get("collection") or tracks_obj.get("items")
+        collection = self._extract_collection(tracks_obj)
 
         # If still no collection, try getting popular tracks
         if not collection:
@@ -354,11 +353,8 @@ class SoundcloudMusicProvider(MusicProvider):
                 popular_tracks_obj = await self._soundcloud.get_popular_tracks_user(
                     prov_artist_id, 100
                 )
-                if popular_tracks_obj:
-                    collection = popular_tracks_obj.get("collection") or popular_tracks_obj.get(
-                        "items"
-                    )
-            except Exception as error:
+                collection = self._extract_collection(popular_tracks_obj)
+            except ClientError as error:
                 self.logger.debug("Failed to get popular tracks: %s", error)
 
         # If no collection found, log warning and return empty list
@@ -379,12 +375,28 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return tracks
 
+    def _extract_collection(
+        self, api_response: dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Extract collection or items from SoundCloud API response."""
+        if not api_response:
+            return None
+        return api_response.get("collection") or api_response.get("items")
+
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
-        tracks = []
-        for item in tracks_obj["collection"]:
+        tracks: list[Track] = []
+
+        # Check if we have a valid response with tracks collection
+        collection = self._extract_collection(tracks_obj)
+
+        if not collection:
+            self.logger.warning("No similar tracks found for track %s", prov_track_id)
+            return tracks
+
+        for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
