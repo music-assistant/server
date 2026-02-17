@@ -430,7 +430,7 @@ class YandexMusicClient:
                 return None, False
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
-            is_synced = bool(re.match(r"\[\d{2}:\d{2}", lyrics_text.strip()))
+            is_synced = bool(re.match(r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text.strip()))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -618,12 +618,19 @@ class YandexMusicClient:
                 "codecs": GET_FILE_INFO_CODECS,
                 "transports": "encraw",
             }
-            param_string = "".join(str(v) for v in params.values()).replace(",", "")
+            # Build sign string explicitly matching Yandex API specification.
+            # The codecs value contains commas that must be stripped for signing,
+            # so we construct the string explicitly rather than joining all values.
+            codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
+            param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
             hmac_sign = hmac.new(
                 DEFAULT_SIGN_KEY.encode(),
                 param_string.encode(),
                 hashlib.sha256,
             )
+            # SHA-256 (32 bytes) -> base64 = 44 chars with "==" padding.
+            # Yandex API expects exactly 43 chars (one "=" removed).
+            # Matches yandex-music-downloader-realflac reference implementation.
             params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params

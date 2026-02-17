@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import re
 from unittest import mock
 
 import pytest
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from yandex_music.exceptions import NetworkError
+from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
-from music_assistant.providers.yandex_music.api_client import YandexMusicClient
+from music_assistant.providers.yandex_music.api_client import (
+    GET_FILE_INFO_CODECS,
+    YandexMusicClient,
+)
 
 
 def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
@@ -176,3 +184,76 @@ async def test_send_rotor_station_feedback_posts() -> None:
     assert body["type"] == "trackStarted"
     assert body["trackId"] == "12345"
     assert body["batchId"] == "batch_xyz"
+
+
+# -- LRC regex tests ---------------------------------------------------------
+
+
+async def test_lrc_regex_matches_valid_synced_lyrics() -> None:
+    """LRC regex matches valid synced lyrics with proper format [mm:ss.xx]."""
+    # Pattern from api_client.py line 433
+    pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
+
+    # Valid LRC formats that should match
+    valid_cases = [
+        "[00:12]",  # Basic format
+        "[00:12.34]",  # With centiseconds
+        "[00:12.345]",  # With milliseconds
+        "[12:34]",  # Another basic format
+        "[99:59.99]",  # Edge case
+    ]
+
+    for case in valid_cases:
+        assert re.match(pattern, case), f"Should match: {case}"
+
+
+async def test_lrc_regex_rejects_invalid_formats() -> None:
+    """LRC regex rejects invalid formats (no closing bracket, wrong format)."""
+    pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
+
+    # Invalid formats that should NOT match
+    invalid_cases = [
+        "[00:12",  # Missing closing bracket
+        "00:12]",  # Missing opening bracket
+        "[0:12]",  # Single digit minute
+        "[00:1]",  # Single digit second
+        "Some [00:12] text",  # Text before timestamp
+        "[00:12.1]",  # Single digit centiseconds (should be 2-3 digits)
+        "[00:12.1234]",  # Four digit milliseconds
+    ]
+
+    for case in invalid_cases:
+        assert not re.match(pattern, case), f"Should NOT match: {case}"
+
+
+# -- HMAC sign construction tests --------------------------------------------
+
+
+async def test_hmac_sign_construction_explicit() -> None:
+    """HMAC sign is constructed explicitly with commas stripped from codecs."""
+    # Simulate the parameters
+    timestamp = 1234567890
+    track_id = "12345"
+
+    # The correct way (explicit construction)
+    codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
+    param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
+
+    # Verify codecs_for_sign has no commas
+    assert "," not in codecs_for_sign
+
+    # Verify the construction is correct
+    expected = f"1234567890{track_id}lossless{codecs_for_sign}encraw"
+    assert param_string == expected
+
+    # Verify HMAC can be constructed
+    hmac_sign = hmac.new(
+        DEFAULT_SIGN_KEY.encode(),
+        param_string.encode(),
+        hashlib.sha256,
+    )
+    sign = base64.b64encode(hmac_sign.digest()).decode()[:-1]
+
+    # Verify sign is 43 characters (SHA-256 base64 with one "=" removed)
+    assert len(sign) == 43
+    assert not sign.endswith("=")

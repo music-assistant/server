@@ -264,11 +264,14 @@ class YandexMusicStreamingManager:
                                 temp_path = await self._download_and_decrypt_to_file(
                                     url, file_info["key"], item_id
                                 )
-                                # Clean up any previous temp file for this item_id
-                                if item_id in self._temp_files:
-                                    self.cleanup_temp_file(item_id)
-                                # Track for cleanup
+                                # Replace any previous temp file for this item_id.
+                                # Store new path first to ensure it's always tracked,
+                                # then clean up the old file.
+                                old_temp_path = self._temp_files.get(item_id)
                                 self._temp_files[item_id] = temp_path
+                                if old_temp_path:
+                                    with contextlib.suppress(OSError):
+                                        Path(old_temp_path).unlink(missing_ok=True)
 
                                 return StreamDetails(
                                     item_id=item_id,
