@@ -55,7 +55,7 @@ def test_map_tracks_to_msx_playlist_basic() -> None:
     assert item0.action is not None
     assert item0.action.startswith("audio:")
     assert "library%3A%2F%2Ftrack%2F2" in item0.action
-    assert "/msx/audio/msx_1.mp3?" in item0.action
+    assert "/msx/audio/msx_1?" in item0.action
     assert "&from_playlist=1" in item0.action
     assert item0.player_label == "Track 2"
     assert item0.duration == 200

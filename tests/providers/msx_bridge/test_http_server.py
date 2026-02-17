@@ -90,7 +90,7 @@ async def test_stream_no_media(provider: MSXBridgeProvider, mass_mock: Mock) -> 
     """GET /stream/{id} should return 404 when player has no current media."""
     mock_player = Mock(spec=MSXPlayer)
     mock_player.current_media = None
-    mass_mock.players.get.return_value = mock_player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -108,7 +108,7 @@ async def test_stream_not_msx_player(provider: MSXBridgeProvider, mass_mock: Moc
     """GET /stream/{id} should return 400 for a non-MSX player."""
     # Return a plain Mock (not spec=MSXPlayer)
     non_msx_player = Mock()
-    mass_mock.players.get.return_value = non_msx_player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = non_msx_player
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -132,7 +132,7 @@ async def test_stream_success(provider: MSXBridgeProvider, mass_mock: Mock) -> N
     mock_media.queue_item_id = None
     mock_player.current_media = mock_media
     mock_player.output_format = "mp3"
-    mass_mock.players.get.return_value = mock_player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = mock_player
 
     # Mock get_stream to return an async generator
     mass_mock.streams = Mock()
@@ -553,7 +553,7 @@ async def test_msx_audio_missing_uri(http_client: TestClient[Any, Any]) -> None:
     resp = await http_client.get("/msx/audio/msx_default")
     assert resp.status == 400
     body = await resp.text()
-    assert "Invalid uri" in body
+    assert "uri" in body.lower()  # "Missing uri" or "Invalid uri parameter"
 
 
 async def test_msx_audio_player_not_found(http_client: TestClient[Any, Any]) -> None:
@@ -565,7 +565,7 @@ async def test_msx_audio_player_not_found(http_client: TestClient[Any, Any]) -> 
 async def test_msx_audio_not_msx_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """GET /msx/audio/{id}?uri=x should return 400 for non-MSX player."""
     non_msx_player = Mock()
-    mass_mock.players.get.return_value = non_msx_player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = non_msx_player
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -598,7 +598,7 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
         )
         player.current_media = media
         player.wait_for_media = AsyncMock(return_value=media)
-        mass_mock.players.get.return_value = player
+        mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -641,7 +641,7 @@ async def test_msx_audio_from_playlist_skips_ws(
         )
         player.current_media = media
         player.wait_for_media = AsyncMock(return_value=media)
-        mass_mock.players.get.return_value = player
+        mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -876,7 +876,7 @@ async def test_ws_position_message(provider: MSXBridgeProvider, mass_mock: Mock)
     player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
     player.update_state = Mock()  # type: ignore[misc,method-assign]
     player._attr_playback_state = PlaybackState.PLAYING
-    mass_mock.players.get.return_value = player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
     provider.http_server = MSXHTTPServer(provider, 0)
 
     server_obj = provider.http_server
@@ -890,7 +890,7 @@ async def test_ws_position_message_unknown_player(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """WS position message for unknown player should not crash."""
-    mass_mock.players.get.return_value = None
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = None
     provider.http_server = MSXHTTPServer(provider, 0)
 
     # Should not raise
@@ -910,7 +910,7 @@ async def test_ws_pause_message(provider: MSXBridgeProvider, mass_mock: Mock) ->
     player.update_state = Mock()  # type: ignore[misc,method-assign]
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 10.0
-    mass_mock.players.get.return_value = player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
     provider.http_server = MSXHTTPServer(provider, 0)
 
     provider.http_server._handle_ws_message("msx_test", '{"type": "pause", "position": 30.5}')
@@ -924,7 +924,7 @@ async def test_ws_resume_message(provider: MSXBridgeProvider, mass_mock: Mock) -
     player = MSXPlayer(provider, "msx_test", name="Test TV", output_format="mp3")
     player.update_state = Mock()  # type: ignore[misc,method-assign]
     player._attr_playback_state = PlaybackState.PAUSED
-    mass_mock.players.get.return_value = player
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
     provider.http_server = MSXHTTPServer(provider, 0)
 
     provider.http_server._handle_ws_message("msx_test", '{"type": "resume"}')
@@ -937,6 +937,27 @@ async def test_ws_unknown_message_type(provider: MSXBridgeProvider) -> None:
     provider.http_server = MSXHTTPServer(provider, 0)
     # Should not raise
     provider.http_server._handle_ws_message("msx_test", '{"type": "unknown_cmd"}')
+
+
+# --- Removed kiosk/sendspin routes ---
+
+
+async def test_removed_kiosk_and_sendspin_routes_404(
+    http_client: TestClient[Any, Any],
+) -> None:
+    """Removed kiosk and sendspin routes should return 404."""
+    for path in [
+        "/msx/kiosk-plugin.html",
+        "/msx/kiosk.html",
+        "/msx/kiosk-content.json",
+        "/msx/kiosk-page.json",
+        "/msx/kiosk-album.json",
+        "/msx/sendspin-plugin.html",
+        "/msx/sendspin-standalone.html",
+        "/msx/sendspin-bundle.js",
+    ]:
+        resp = await http_client.get(path)
+        assert resp.status == 404, f"Expected 404 for {path}, got {resp.status}"
 
 
 class _AsyncCtx:

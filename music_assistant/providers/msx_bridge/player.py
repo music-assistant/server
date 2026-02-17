@@ -197,7 +197,7 @@ class MSXPlayer(Player):
         try:
             tasks: list[asyncio.Task[None]] = []
             for member_id in self._get_group_member_ids():
-                member = self.mass.players.get(member_id)
+                member = self.mass.players.get_player(member_id)
                 if not member or not isinstance(member, MSXPlayer) or not member.available:
                     continue
                 tasks.append(asyncio.create_task(self._propagate_single(member, command, **kwargs)))
@@ -240,7 +240,7 @@ class MSXPlayer(Player):
                 self._attr_group_members.remove(pid)
         for pid in player_ids_to_add or []:
             if pid != self.player_id and pid not in self._attr_group_members:
-                other = self.mass.players.get(pid)
+                other = self.mass.players.get_player(pid)
                 if other and isinstance(other, MSXPlayer):
                     self._attr_group_members.append(pid)
         self.update_state()

@@ -18,6 +18,7 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -60,11 +61,19 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
 
+PLAYER_DEVICE_TYPES = {
+    # list of device types that are considered real hardware players
+    "squeezebox",
+    "squeezebox2",
+    "transporter",
+    "receiver",
+    "controller",
+    "boom",
+}
+
 
 class SqueezelitePlayer(Player):
     """Squeezelite Player implementation."""
-
-    _attr_type = PlayerType.PLAYER
 
     def __init__(
         self,
@@ -78,6 +87,7 @@ class SqueezelitePlayer(Player):
         self._provider: SqueezelitePlayerProvider = provider
         # Set static player attributes
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
@@ -233,9 +243,10 @@ class SqueezelitePlayer(Player):
 
         if not self.group_members:
             # Simple, single-player playback
+            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await self._handle_play_url_for_slimplayer(
                 self.client,
-                url=media.uri,
+                url=stream_url,
                 media=media,
                 send_flush=True,
                 auto_play=False,
@@ -325,7 +336,7 @@ class SqueezelitePlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player = cast("SqueezelitePlayer | None", self.mass.players.get(player_id))
+            child_player = cast("SqueezelitePlayer | None", self.mass.players.get_player(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -340,8 +351,8 @@ class SqueezelitePlayer(Player):
 
         if (
             (players_added or player_ids_to_remove)
-            and self.current_media
-            and self.playback_state == PlaybackState.PLAYING
+            and self.state.current_media
+            and self._attr_playback_state == PlaybackState.PLAYING
         ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
@@ -368,6 +379,11 @@ class SqueezelitePlayer(Player):
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
         # Update player state from slim player
+        self._attr_type = (
+            PlayerType.PLAYER
+            if self.client.device_type in PLAYER_DEVICE_TYPES
+            else PlayerType.PROTOCOL
+        )
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
         self._attr_powered = self.client.powered
@@ -379,8 +395,9 @@ class SqueezelitePlayer(Player):
             model=self.client.device_model,
             manufacturer=self.client.device_type,
         )
-        self._attr_device_info.ip_address = self.client.device_address
-        self._attr_device_info.mac_address = self.client.player_id
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.client.device_address)
+        # player_id is the MAC address in slimproto
+        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.client.player_id)
         if (
             old_state != PlaybackState.PLAYING
             and self._attr_playback_state == PlaybackState.PLAYING
@@ -471,7 +488,7 @@ class SqueezelitePlayer(Player):
 
     def _handle_player_heartbeat(self) -> None:
         """Process SlimClient elapsed_time update."""
-        if self.playback_state != PlaybackState.PLAYING:
+        if self._attr_playback_state != PlaybackState.PLAYING:
             # ignore server heartbeats when not playing
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)

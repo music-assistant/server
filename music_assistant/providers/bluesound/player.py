@@ -6,7 +6,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
@@ -61,14 +62,15 @@ class BluesoundPlayer(Player):
         self.dynamic_poll_count: int = 0
         self._listen_task: asyncio.Task | None = None
         # Set base player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
         self._attr_name = name
         self._attr_device_info = DeviceInfo(
             model=discovery_info.get("model", "BluOS Device"),
             manufacturer="BluOS",
         )
-        self._attr_device_info.ip_address = ip_address
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        if mac_address := discovery_info.get("mac"):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_available = True
         self._attr_source_list = []
         self._attr_needs_poll = True
@@ -179,7 +181,8 @@ class BluesoundPlayer(Player):
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         self.logger.debug("Play_media called")
         self.logger.debug(media)
-        play_state = await self.client.play_url(media.uri, timeout=1)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        play_state = await self.client.play_url(url, timeout=1)
 
         # Enable dynamic polling
         if play_state == "stream":
@@ -209,7 +212,7 @@ class BluesoundPlayer(Player):
             return
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
-            client = self.mass.players.get(player_id, raise_unavailable=True)
+            client = self.mass.players.get_player(player_id, raise_unavailable=True)
             return PairedPlayer(client.ip_address, client.port)
 
         if player_ids_to_remove:
@@ -222,7 +225,7 @@ class BluesoundPlayer(Player):
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
                     self.logger.debug(f"Could not remove players: {err!s}")
                     continue
-                removed_player = self.mass.players.get(player_id)
+                removed_player = self.mass.players.get_player(player_id)
                 if removed_player:
                     removed_player._set_polling_dynamic()
                     removed_player._attr_current_media = None
@@ -237,7 +240,7 @@ class BluesoundPlayer(Player):
                     self.logger.debug(f"Could not add player {paired_player}: {err!s}")
                     continue
                 self._attr_group_members.append(player_id)
-                added_player = self.mass.players.get(player_id)
+                added_player = self.mass.players.get_player(player_id)
                 if added_player:
                     added_player._set_polling_dynamic()
                     added_player.update_state()
@@ -249,7 +252,7 @@ class BluesoundPlayer(Player):
         """Handle UNGROUP command for BluOS player."""
         leader = self.client.leader
         leader_player_id = self.client.provider.player_map((leader.ip, leader.port))
-        await self.mass.player.get(leader_player_id).set_members(None, [self.player_id])
+        await self.mass.players.get_player(leader_player_id).set_members(None, [self.player_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""

@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.media_items import Album, Track
 
-from music_assistant.providers.msx_bridge.mappers import map_album_to_msx, map_track_to_msx
+from music_assistant.providers.msx_bridge.mappers import (
+    map_album_to_msx,
+    map_track_to_msx,
+)
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
@@ -57,7 +60,10 @@ async def test_map_album_to_msx() -> None:
     album.image = "album_image"
 
     item = await map_album_to_msx(
-        album=album, prefix="http://localhost", provider=prov, device_param="device_id=abc"
+        album=album,
+        prefix="http://localhost",
+        provider=prov,
+        device_param="device_id=abc",
     )
 
     assert item.title == "Test Album"
