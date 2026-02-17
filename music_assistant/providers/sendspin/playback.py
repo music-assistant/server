@@ -40,7 +40,7 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000
 # Backpressure threshold: push stream sleeps when buffered audio exceeds this.
-_PRODUCER_BUFFER_LIMIT_US = 7_000_000
+_PRODUCER_BUFFER_LIMIT_US = 30_000_000
 # Start join promotion once catchup processor lag is within this window of the history tail.
 _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 # Accept catchup output within this margin of the promotion target.
