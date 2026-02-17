@@ -288,10 +288,14 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         /* =============================================
-           KIOSK MODE - MSX Style
+           KIOSK MODE — Immersive Full-Screen
            ============================================= */
         body.kiosk-mode {
             background: #000;
+            cursor: none;
+        }
+        body.kiosk-mode.controls-visible {
+            cursor: default;
         }
 
         body.kiosk-mode #app {
@@ -306,25 +310,81 @@
             display: none !important;
         }
 
-        /* Kiosk player container */
+        /* Kiosk player container — full-screen layered */
         #kiosk-player {
             display: none;
             position: fixed;
             inset: 0;
+            overflow: hidden;
             background: #000;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 40px;
         }
 
         body.kiosk-mode #kiosk-player {
-            display: flex;
+            display: block;
         }
 
-        /* Sync indicator (top right) */
-        .sync-indicator {
-            position: fixed;
+        /* Layer 1: Full-bleed background */
+        #kiosk-bg {
+            position: absolute;
+            inset: 0;
+        }
+
+        #kiosk-bg-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scale(1.05);
+            filter: blur(12px) brightness(0.55);
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+
+        /* Vignette overlay: dark top + stronger dark bottom for text readability */
+        #kiosk-bg::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(
+                to bottom,
+                rgba(0,0,0,0.35) 0%,
+                transparent 35%,
+                transparent 55%,
+                rgba(0,0,0,0.70) 100%
+            );
+            pointer-events: none;
+        }
+
+        /* Layer 2: Idle state */
+        #kiosk-idle {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            opacity: 1;
+            transition: opacity 0.4s ease;
+            pointer-events: none;
+        }
+        #kiosk-idle .material-symbols-rounded {
+            font-size: 96px;
+            color: rgba(255,255,255,0.15);
+        }
+        #kiosk-idle-label {
+            font-size: 1rem;
+            color: rgba(255,255,255,0.35);
+            letter-spacing: 0.05em;
+        }
+
+        /* Hide idle when playing */
+        #kiosk-player.playing #kiosk-idle {
+            opacity: 0;
+        }
+
+        /* Layer 3: Sync indicator (top-right) */
+        #kiosk-sync-status {
+            position: absolute;
             top: 20px;
             right: 20px;
             padding: 6px 14px;
@@ -333,7 +393,7 @@
             font-weight: 500;
             color: #fff;
             background: rgba(255, 152, 0, 0.9);
-            z-index: 100;
+            z-index: 10;
         }
         .sync-indicator.synced {
             background: rgba(76, 175, 80, 0.9);
@@ -351,70 +411,73 @@
             50% { opacity: 0.6; }
         }
 
-        /* Album art */
-        #kiosk-art {
-            width: min(50vw, 50vh);
-            height: min(50vw, 50vh);
-            border-radius: 8px;
-            object-fit: cover;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.8);
-            margin-bottom: 32px;
+        /* Layer 4: Always-visible track info (top-left) */
+        #kiosk-info-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 32px 40px 0;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            pointer-events: none;
+            z-index: 5;
+        }
+        #kiosk-player.playing #kiosk-info-overlay {
+            opacity: 1;
         }
 
-        #kiosk-art-placeholder {
-            width: min(50vw, 50vh);
-            height: min(50vw, 50vh);
-            border-radius: 8px;
-            background: #1a1a1a;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 32px;
-        }
-        #kiosk-art-placeholder .material-symbols-rounded {
-            font-size: 80px;
-            color: #333;
-        }
-
-        /* Track info */
         #kiosk-title {
-            font-size: 1.8rem;
+            font-size: 1.6rem;
             font-weight: 600;
             color: #fff;
-            text-align: center;
-            max-width: 80%;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            text-shadow: 0 2px 12px rgba(0,0,0,0.6);
         }
-
         #kiosk-artist {
-            font-size: 1.1rem;
-            color: rgba(255,255,255,0.6);
-            text-align: center;
-            margin-top: 8px;
+            font-size: 1rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 6px;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
         }
 
-        /* Progress bar */
-        .kiosk-progress {
+        /* Layer 5: Auto-hiding controls panel (bottom) */
+        #kiosk-controls-panel {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 28px 40px 36px;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
+            transform: translateY(0);
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 5;
+        }
+        #kiosk-player.controls-hidden #kiosk-controls-panel {
+            transform: translateY(100%);
+        }
+
+        /* Seek row */
+        .kiosk-seek-row {
             display: flex;
             align-items: center;
             gap: 16px;
-            margin-top: 32px;
-            width: min(60vw, 500px);
+            margin-bottom: 20px;
         }
-
-        .kiosk-progress .time {
-            font-size: 0.85rem;
-            color: rgba(255,255,255,0.5);
+        .kiosk-seek-row .time {
+            font-size: 0.82rem;
+            color: rgba(255,255,255,0.6);
             font-variant-numeric: tabular-nums;
-            min-width: 45px;
+            min-width: 40px;
         }
-
         #kiosk-seek {
             flex: 1;
             height: 4px;
-            background: rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.2);
             border-radius: 2px;
         }
         #kiosk-seek::-webkit-slider-thumb {
@@ -422,21 +485,20 @@
             height: 14px;
         }
 
-        /* Controls */
+        /* Controls row */
         .kiosk-controls {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 24px;
-            margin-top: 28px;
         }
-
         .kiosk-controls .ctrl {
             width: 56px;
             height: 56px;
             border-radius: 50%;
             border: none;
             background: transparent;
-            color: rgba(255,255,255,0.8);
+            color: rgba(255,255,255,0.85);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -444,33 +506,27 @@
             transition: background 0.15s, color 0.15s, transform 0.15s;
         }
         .kiosk-controls .ctrl:hover {
-            background: rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.12);
             color: #fff;
         }
         .kiosk-controls .ctrl:active {
-            transform: scale(0.95);
+            transform: scale(0.92);
         }
         .kiosk-controls .ctrl .material-symbols-rounded {
             font-size: 32px;
         }
-
         .kiosk-controls .ctrl--primary {
             width: 72px;
             height: 72px;
-            background: #fff;
+            background: rgba(255,255,255,0.95);
             color: #000;
         }
         .kiosk-controls .ctrl--primary:hover {
-            background: #e0e0e0;
+            background: #fff;
             color: #000;
         }
         .kiosk-controls .ctrl--primary .material-symbols-rounded {
             font-size: 40px;
-        }
-
-        /* Hide controls if not enabled */
-        body.kiosk-mode.no-controls .kiosk-controls {
-            display: none;
         }
 
         /* --- Responsive --- */
@@ -483,17 +539,10 @@
             #content { padding: 12px; }
             .progress { display: none; }
 
-            #kiosk-art {
-                width: min(70vw, 40vh);
-                height: min(70vw, 40vh);
-            }
-            #kiosk-art-placeholder {
-                width: min(70vw, 40vh);
-                height: min(70vw, 40vh);
-            }
-            #kiosk-title { font-size: 1.3rem; }
-            #kiosk-artist { font-size: 0.95rem; }
-            .kiosk-progress { width: 85vw; }
+            #kiosk-info-overlay { padding: 20px 20px 0; }
+            #kiosk-title { font-size: 1.2rem; }
+            #kiosk-artist { font-size: 0.9rem; }
+            #kiosk-controls-panel { padding: 20px 20px 28px; }
             .kiosk-controls .ctrl { width: 48px; height: 48px; }
             .kiosk-controls .ctrl--primary { width: 60px; height: 60px; }
         }
@@ -553,26 +602,38 @@
 
         <!-- Kiosk player (kiosk mode only) -->
         <div id="kiosk-player">
+            <!-- Layer 1: Full-bleed background -->
+            <div id="kiosk-bg">
+                <img id="kiosk-bg-img" src="" alt="" aria-hidden="true">
+            </div>
+
+            <!-- Layer 2: Idle state (nothing playing) -->
+            <div id="kiosk-idle">
+                <span class="material-symbols-rounded">music_note</span>
+                <div id="kiosk-idle-label">Waiting for playback...</div>
+            </div>
+
+            <!-- Layer 3: Sync indicator (Sendspin, top-right) -->
             <div id="kiosk-sync-status" class="sync-indicator">CONNECTING...</div>
 
-            <img id="kiosk-art" src="" alt="" style="display: none;">
-            <div id="kiosk-art-placeholder">
-                <span class="material-symbols-rounded">music_note</span>
+            <!-- Layer 4: Always-visible track info overlay (top-left) -->
+            <div id="kiosk-info-overlay">
+                <div id="kiosk-title"></div>
+                <div id="kiosk-artist"></div>
             </div>
 
-            <div id="kiosk-title">Waiting for playback...</div>
-            <div id="kiosk-artist"></div>
-
-            <div class="kiosk-progress">
-                <span id="kiosk-time" class="time">0:00</span>
-                <input type="range" id="kiosk-seek" min="0" max="100" value="0" step="0.1" disabled>
-                <span id="kiosk-dur" class="time">0:00</span>
-            </div>
-
-            <div class="kiosk-controls">
-                <button id="kiosk-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
-                <button id="kiosk-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
-                <button id="kiosk-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+            <!-- Layer 5: Auto-hiding controls panel (bottom) -->
+            <div id="kiosk-controls-panel">
+                <div class="kiosk-seek-row">
+                    <span id="kiosk-time" class="time">0:00</span>
+                    <input type="range" id="kiosk-seek" min="0" max="100" value="0" step="0.1" disabled>
+                    <span id="kiosk-dur" class="time">0:00</span>
+                </div>
+                <div class="kiosk-controls">
+                    <button id="kiosk-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
+                    <button id="kiosk-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
+                    <button id="kiosk-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+                </div>
             </div>
         </div>
 

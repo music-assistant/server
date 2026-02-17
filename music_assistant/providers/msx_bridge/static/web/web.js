@@ -6,16 +6,19 @@
  *
  * Audio modes:
  * - Normal mode: HTML5 streaming with WebSocket sync
- * - Kiosk mode (?kiosk=1): Sendspin synchronized audio (receives from MA)
+ * - Kiosk mode (?kiosk=1): Fullscreen HTML5 player with WebSocket push
+ * - Kiosk + Sendspin (?kiosk=1&sendspin=1): Sendspin synchronized audio
  *
  * URL Parameters:
- * - kiosk: Enable kiosk mode with Sendspin (e.g., ?kiosk=1)
+ * - kiosk: Enable kiosk mode (e.g., ?kiosk=1)
+ * - sendspin: Use Sendspin SDK in kiosk mode (e.g., ?kiosk=1&sendspin=1)
  * - sendspin_url: Custom Sendspin server URL (e.g., ?sendspin_url=http://ma:8927)
  */
 
 // --- URL Parameters ---
 const urlParams = new URLSearchParams(window.location.search);
 const KIOSK_MODE = urlParams.get('kiosk') === '1';
+const SENDSPIN_MODE = KIOSK_MODE && urlParams.get('sendspin') === '1';
 const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
 (function () {
@@ -37,7 +40,11 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     }
 
     function isSendspinMode() {
-        return KIOSK_MODE;
+        return SENDSPIN_MODE;
+    }
+
+    function isKioskHtml5Mode() {
+        return KIOSK_MODE && !SENDSPIN_MODE;
     }
 
     // --- Device ID ---
@@ -81,6 +88,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     var sendspinReady = false;
     var progressInterval = null;
 
+    // Kiosk auto-hide state
+    var kioskHideTimer = null;
+    var KIOSK_HIDE_DELAY = 3500;
+
     // --- DOM ---
     var audio = document.getElementById('audio');
 
@@ -114,7 +125,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     function msxIcon(name) {
         if (!name) return '';
         var mapped = name.replace('msx-white-soft:', '').replace('msx-white:', '').replace(/-/g, '_');
-        return '<span class="material-symbols-rounded">' + esc(mapped) + '</span>';
+        return '<span class="material-symbols-rounded">' + mapped + '</span>';
     }
 
     function esc(str) {
@@ -220,22 +231,25 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     }
 
     function updateKioskPlayer(track) {
-        var artEl = document.getElementById('kiosk-art');
+        var bgImg = document.getElementById('kiosk-bg-img');
         var titleEl = document.getElementById('kiosk-title');
         var artistEl = document.getElementById('kiosk-artist');
         var durEl = document.getElementById('kiosk-dur');
 
-        if (artEl) {
+        if (bgImg) {
             if (track.image) {
-                artEl.src = track.image;
-                artEl.style.display = '';
+                bgImg.src = track.image;
+                bgImg.style.opacity = '1';
             } else {
-                artEl.style.display = 'none';
+                bgImg.style.opacity = '0';
             }
         }
-        if (titleEl) titleEl.textContent = track.title || 'No track playing';
+        if (titleEl) titleEl.textContent = track.title || '';
         if (artistEl) artistEl.textContent = track.artist || '';
         if (durEl) durEl.textContent = track.duration ? fmtDur(track.duration) : '';
+
+        setKioskPlaying(true);
+        resetKioskHideTimer();
 
         // Also update full player
         updateFullPlayer(track);
@@ -482,7 +496,14 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         var track = playlist[trackIdx];
         audio.src = track.url;
         audio.play().catch(function (e) { console.warn('Autoplay blocked:', e); });
-        updatePlayerBar(track);
+
+        if (isKioskHtml5Mode()) {
+            updateKioskPlayer(track);
+            var seekEl = document.getElementById('kiosk-seek');
+            if (seekEl) seekEl.disabled = false;
+        } else {
+            updatePlayerBar(track);
+        }
         updateFullPlayer(track);
         startPosReport();
     }
@@ -570,6 +591,17 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (isSendspinMode()) return;
         var cur = audio.currentTime;
         var dur = audio.duration || 0;
+
+        if (isKioskHtml5Mode()) {
+            var kioskTime = document.getElementById('kiosk-time');
+            var kioskDur = document.getElementById('kiosk-dur');
+            var kioskSeek = document.getElementById('kiosk-seek');
+            if (kioskTime) kioskTime.textContent = fmtDur(cur);
+            if (kioskDur && dur > 0) kioskDur.textContent = fmtDur(dur);
+            if (kioskSeek && dur > 0) kioskSeek.value = (cur / dur) * 100;
+            return;
+        }
+
         document.getElementById('bar-time').textContent = fmtDur(cur);
         var fullTime = document.getElementById('full-time');
         if (fullTime) fullTime.textContent = fmtDur(cur);
@@ -587,10 +619,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (dur && isFinite(dur)) audio.currentTime = (pct / 100) * dur;
     }
 
-    // --- WebSocket (normal mode only) ---
+    // --- WebSocket ---
     function connectWS() {
         if (!window.WebSocket) return;
-        if (isSendspinMode()) return;
 
         var url = WS_URL + '?device_id=' + encodeURIComponent(deviceId) + '&source=web';
         ws = new WebSocket(url);
@@ -633,8 +664,23 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             case 'stop':
                 audio.pause();
                 audio.removeAttribute('src');
-                document.getElementById('player-bar').classList.remove('active');
+                if (isKioskHtml5Mode()) {
+                    document.getElementById('kiosk-title').textContent = '';
+                    document.getElementById('kiosk-artist').textContent = '';
+                    document.getElementById('kiosk-time').textContent = '0:00';
+                    document.getElementById('kiosk-dur').textContent = '0:00';
+                    document.getElementById('kiosk-seek').value = 0;
+                    document.getElementById('kiosk-seek').disabled = true;
+                    var bgImg = document.getElementById('kiosk-bg-img');
+                    if (bgImg) bgImg.style.opacity = '0';
+                    setKioskPlaying(false);
+                    cancelKioskHideTimer();
+                    hideKioskControls();
+                } else {
+                    document.getElementById('player-bar').classList.remove('active');
+                }
                 stopPosReport();
+                syncPlayBtn();
                 break;
             case 'pause':
                 pausedByWS = true;
@@ -695,6 +741,28 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         loadContent('/msx/search-input.json?q=' + encodeURIComponent(q), 'Search: ' + q, false);
     }
 
+    // --- Kiosk Auto-Hide Controls ---
+    function showKioskControls() {
+        document.getElementById('kiosk-player')?.classList.remove('controls-hidden');
+        document.body.classList.add('controls-visible');
+    }
+    function hideKioskControls() {
+        document.getElementById('kiosk-player')?.classList.add('controls-hidden');
+        document.body.classList.remove('controls-visible');
+    }
+    function resetKioskHideTimer() {
+        showKioskControls();
+        clearTimeout(kioskHideTimer);
+        kioskHideTimer = setTimeout(hideKioskControls, KIOSK_HIDE_DELAY);
+    }
+    function cancelKioskHideTimer() {
+        clearTimeout(kioskHideTimer);
+        kioskHideTimer = null;
+    }
+    function setKioskPlaying(on) {
+        document.getElementById('kiosk-player')?.classList.toggle('playing', on);
+    }
+
     // --- Player Mode ---
     function toggleMode() {
         document.getElementById('player-full').classList.toggle('active');
@@ -706,8 +774,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     // --- Init ---
     async function init() {
-        if (KIOSK_MODE) {
-            // Kiosk mode: Sendspin only, show fullscreen player
+        if (SENDSPIN_MODE) {
+            // Kiosk + Sendspin mode: synchronized audio via Sendspin SDK
             document.body.classList.add('kiosk-mode');
             await initSendspin();
 
@@ -721,6 +789,55 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             if (kioskNext) kioskNext.addEventListener('click', nextTrack);
 
             console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
+        } else if (KIOSK_MODE) {
+            // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
+            document.body.classList.add('kiosk-mode');
+
+            // Hide sync indicator (not used in HTML5 mode)
+            var syncStatus = document.getElementById('kiosk-sync-status');
+            if (syncStatus) syncStatus.style.display = 'none';
+
+            connectWS();
+
+            // HTML5 Audio events → update kiosk UI
+            audio.addEventListener('timeupdate', updateProgress);
+            audio.addEventListener('ended', nextTrack);
+            audio.addEventListener('pause', function () {
+                syncPlayBtn();
+                if (pausedByWS) { pausedByWS = false; return; }
+                sendWS({ type: 'pause', position: audio.currentTime });
+                stopPosReport();
+            });
+            audio.addEventListener('play', function () {
+                syncPlayBtn();
+                if (resumedByWS) { resumedByWS = false; return; }
+                sendWS({ type: 'resume' });
+                startPosReport();
+            });
+
+            // Kiosk controls → HTML5 Audio
+            var kioskPlay = document.getElementById('kiosk-play');
+            var kioskPrev = document.getElementById('kiosk-prev');
+            var kioskNext = document.getElementById('kiosk-next');
+            var kioskSeek = document.getElementById('kiosk-seek');
+
+            if (kioskPlay) kioskPlay.addEventListener('click', togglePlay);
+            if (kioskPrev) kioskPrev.addEventListener('click', prevTrack);
+            if (kioskNext) kioskNext.addEventListener('click', nextTrack);
+            if (kioskSeek) {
+                kioskSeek.addEventListener('input', function (e) { seekTo(e.target.value); });
+            }
+
+            // Auto-hide controls on inactivity
+            var kc = document.getElementById('kiosk-player');
+            if (kc) {
+                kc.addEventListener('mousemove', resetKioskHideTimer);
+                kc.addEventListener('touchstart', resetKioskHideTimer, { passive: true });
+                kc.addEventListener('click', resetKioskHideTimer);
+            }
+            hideKioskControls(); // start in hidden state
+
+            console.log('[WebPlayer] Kiosk mode initialized with HTML5 streaming');
         } else {
             // Normal mode: HTML5 streaming with WebSocket
             connectWS();
