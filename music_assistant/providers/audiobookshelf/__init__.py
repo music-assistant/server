@@ -822,8 +822,6 @@ for more details.
             # newest-episodes
             # etc
             name = f"{shelf_id.capitalize().replace('-', ' ')}"
-            if ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id):
-                name = ""  # use translation key if available
             folders.append(
                 RecommendationFolder(
                     item_id=f"{shelf_id}",
@@ -862,7 +860,7 @@ for more details.
         folders.append(
             RecommendationFolder(
                 item_id="browse",
-                name="",  # use translation key
+                name="Libraries",
                 icon="mdi-bookshelf",
                 translation_key=translation_key,
                 items=UniqueList(browse_items),

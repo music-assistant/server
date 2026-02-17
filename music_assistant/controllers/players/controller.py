@@ -191,7 +191,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         current_sendspin_player = get_sendspin_player_id()
         return [
             player
-            for player in self._players.values()
+            for player in list(self._players.values())
             if (player.state.available or return_unavailable)
             and (player.state.enabled or return_disabled)
             and (provider_filter is None or player.provider.instance_id == provider_filter)
@@ -303,7 +303,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         name_normalized = name.strip().lower()
         matches: list[Player] = []
 
-        for player in self._players.values():
+        for player in list(self._players.values()):
             if player.state.name.strip().lower() == name_normalized:
                 matches.append(player)
 
@@ -1653,7 +1653,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if self.mass.closing:
             return
         # update all players that are using this control
-        for player in self._players.values():
+        for player in list(self._players.values()):
             if control_id in (
                 player.state.power_control,
                 player.state.volume_control,
