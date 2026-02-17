@@ -683,7 +683,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Search
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 24 * 14)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:

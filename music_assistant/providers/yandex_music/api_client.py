@@ -602,33 +602,31 @@ class YandexMusicClient:
         with quality=lossless and codecs=flac,... returns FLAC when available.
 
         Uses manual sign calculation matching yandex-music-downloader-realflac.
+        Uses _call_with_retry for automatic reconnection on transient failures.
 
         :param track_id: Track ID.
         :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
         """
-        client = await self._ensure_connected()
 
-        # Build params (timestamp must be current)
-        timestamp = int(time.time())
-        base_params = {
-            "ts": timestamp,
-            "trackId": track_id,
-            "quality": "lossless",
-            "codecs": GET_FILE_INFO_CODECS,
-            "transports": "encraw",  # Will be replaced per attempt
-        }
-
-        # Calculate sign manually (matching yandex-music-downloader-realflac)
-        # Join all param values, remove commas, then HMAC-SHA256
-        param_string = "".join(str(v) for v in base_params.values()).replace(",", "")
-        hmac_sign = hmac.new(
-            DEFAULT_SIGN_KEY.encode(),
-            param_string.encode(),
-            hashlib.sha256,
-        )
-        # Base64 encode and remove last character (critical!)
-        sign = base64.b64encode(hmac_sign.digest()).decode()[:-1]
-        base_params["sign"] = sign
+        def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
+            """Build URL and signed params using current client and timestamp."""
+            timestamp = int(time.time())
+            params = {
+                "ts": timestamp,
+                "trackId": track_id,
+                "quality": "lossless",
+                "codecs": GET_FILE_INFO_CODECS,
+                "transports": "encraw",
+            }
+            param_string = "".join(str(v) for v in params.values()).replace(",", "")
+            hmac_sign = hmac.new(
+                DEFAULT_SIGN_KEY.encode(),
+                param_string.encode(),
+                hashlib.sha256,
+            )
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
+            url = f"{client.base_url}/get-file-info"
+            return url, params
 
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
@@ -637,10 +635,8 @@ class YandexMusicClient:
             if not download_info or not download_info.get("url"):
                 return None
 
-            # Include encryption key if present
             result = cast("dict[str, Any]", download_info)
 
-            # Check if response has encryption key (encraw transport)
             if "key" in download_info:
                 result["needs_decryption"] = True
                 LOGGER.debug(
@@ -652,12 +648,12 @@ class YandexMusicClient:
 
             return result
 
-        # Use yandex-music library's client.request.get() like working implementation
-        url = f"{client.base_url}/get-file-info"
+        async def _do_request(c: ClientAsync) -> dict[str, Any] | None:
+            url, params = _build_signed_params(c)
+            return await c._request.get(url, params=params)  # type: ignore[no-any-return]
 
-        # Try encraw transport (returns encrypted URLs that need decryption)
         try:
-            result = await client._request.get(url, params=base_params)
+            result = await self._call_with_retry(_do_request)
             parsed = _parse_file_info_result(result)
             if parsed:
                 LOGGER.debug(

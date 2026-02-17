@@ -9,6 +9,8 @@ from music_assistant_models.enums import ContentType
 
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_SUPERB,
 )
 from music_assistant.providers.yandex_music.streaming import YandexMusicStreamingManager
@@ -155,3 +157,119 @@ def test_get_content_type_aac_variants_return_aac(
     assert streaming_manager._get_content_type("HE-AAC") == ContentType.AAC
     assert streaming_manager._get_content_type("he-aac-mp4") == ContentType.AAC
     assert streaming_manager._get_content_type("HE-AAC-MP4") == ContentType.AAC
+
+
+# --- Efficient quality tests ---
+
+
+def test_select_best_quality_efficient_prefers_lowest_aac(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Efficient quality prefers lowest bitrate AAC over higher bitrate options."""
+    mp3_320 = _make_download_info("mp3", 320)
+    aac_64 = _make_download_info("aac", 64)
+    aac_192 = _make_download_info("aac", 192)
+
+    result = streaming_manager._select_best_quality([mp3_320, aac_64, aac_192], QUALITY_EFFICIENT)
+
+    assert result is not None
+    assert result.codec == "aac"
+    assert result.bitrate_in_kbps == 64
+
+
+def test_select_best_quality_efficient_aac_mp4_variant(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Efficient quality recognizes aac-mp4 container variant."""
+    mp3_320 = _make_download_info("mp3", 320)
+    aac_mp4_64 = _make_download_info("aac-mp4", 64)
+
+    result = streaming_manager._select_best_quality([mp3_320, aac_mp4_64], QUALITY_EFFICIENT)
+
+    assert result is not None
+    assert result.codec == "aac-mp4"
+    assert result.bitrate_in_kbps == 64
+
+
+def test_select_best_quality_efficient_fallback_to_mp3(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Efficient quality falls back to MP3 when no AAC available."""
+    mp3_128 = _make_download_info("mp3", 128)
+    flac = _make_download_info("flac", 0)
+
+    result = streaming_manager._select_best_quality([mp3_128, flac], QUALITY_EFFICIENT)
+
+    assert result is not None
+    assert result.codec == "mp3"
+
+
+def test_select_best_quality_efficient_fallback_to_lowest(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Efficient quality falls back to lowest bitrate when no AAC/MP3."""
+    flac = _make_download_info("flac", 1411)
+
+    result = streaming_manager._select_best_quality([flac], QUALITY_EFFICIENT)
+
+    assert result is not None
+    assert result.codec == "flac"
+
+
+# --- High quality tests ---
+
+
+def test_select_best_quality_high_prefers_mp3_320(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """High quality prefers MP3 with bitrate >= 256kbps."""
+    mp3_320 = _make_download_info("mp3", 320)
+    mp3_128 = _make_download_info("mp3", 128)
+    aac_192 = _make_download_info("aac", 192)
+    flac = _make_download_info("flac", 1411)
+
+    result = streaming_manager._select_best_quality([mp3_320, mp3_128, aac_192, flac], QUALITY_HIGH)
+
+    assert result is not None
+    assert result.codec == "mp3"
+    assert result.bitrate_in_kbps == 320
+
+
+def test_select_best_quality_high_fallback_to_any_mp3(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """High quality falls back to any MP3 when no high-bitrate MP3 available."""
+    mp3_128 = _make_download_info("mp3", 128)
+    aac_192 = _make_download_info("aac", 192)
+
+    result = streaming_manager._select_best_quality([mp3_128, aac_192], QUALITY_HIGH)
+
+    assert result is not None
+    assert result.codec == "mp3"
+    assert result.bitrate_in_kbps == 128
+
+
+def test_select_best_quality_high_no_mp3_uses_non_flac(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """High quality uses highest non-FLAC when no MP3 available."""
+    aac_192 = _make_download_info("aac", 192)
+    flac = _make_download_info("flac", 1411)
+
+    result = streaming_manager._select_best_quality([aac_192, flac], QUALITY_HIGH)
+
+    assert result is not None
+    assert result.codec == "aac"
+    assert result.bitrate_in_kbps == 192
+
+
+def test_select_best_quality_high_only_flac_returns_flac(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """High quality returns FLAC as last resort when nothing else available."""
+    flac = _make_download_info("flac", 1411)
+
+    result = streaming_manager._select_best_quality([flac], QUALITY_HIGH)
+
+    assert result is not None
+    assert result.codec == "flac"
