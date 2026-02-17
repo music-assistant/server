@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable
-from contextlib import asynccontextmanager, suppress
+from collections.abc import Iterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .player import SendspinPlayer
 
 
+# Same sample format expressed in both MA and Sendspin type systems.
 _PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=48000,
@@ -36,11 +37,17 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     bit_depth=16,
     channels=2,
 )
+# Max PCM slice fed to the producer per iteration.
+_PRODUCER_SLICE_US = 100_000
+# Backpressure threshold: push stream sleeps when buffered audio exceeds this.
 _PRODUCER_BUFFER_LIMIT_US = 7_000_000
+# Start join promotion once catchup processor lag is within this window of the history tail.
 _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
+# Accept catchup output within this margin of the promotion target.
 _JOIN_PROMOTE_TOLERANCE_US = 50_000
+# Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
-_OP_TIMEOUT_S = 5.0
+# Retain committed history this far behind real-time for late-join backfill.
 _HISTORY_KEEP_PAST_US = 1_000_000
 
 
@@ -51,9 +58,10 @@ class _BufferedFfmpegProcessor:
         self._ffmpeg = ffmpeg
         self._output_buffer = bytearray()
         bytes_per_sample = max(1, int(audio_format.bit_depth // 8))
-        self._bytes_per_second = (
-            int(audio_format.sample_rate) * bytes_per_sample * int(audio_format.channels)
-        )
+        self._sample_rate = int(audio_format.sample_rate)
+        self._frame_size = bytes_per_sample * int(audio_format.channels)
+        self._bytes_per_second = self._sample_rate * self._frame_size
+        # ~25ms worth of audio per read syscall.
         self._read_quantum_bytes = max(1, int(self._bytes_per_second * 0.025))
         self._produced_output_us = 0
 
@@ -73,7 +81,7 @@ class _BufferedFfmpegProcessor:
 
     async def read_duration_us(self, duration_us: int) -> bytes:
         """Block-read exactly `duration_us` worth of processed PCM from ffmpeg."""
-        target_bytes = max(0, round((duration_us / 1_000_000) * self._bytes_per_second))
+        target_bytes = self._target_bytes_for_duration_us(duration_us)
         if target_bytes == 0:
             return b""
 
@@ -94,6 +102,7 @@ class _BufferedFfmpegProcessor:
         """
         while True:
             try:
+                # 1ms timeout: non-blocking check for available data.
                 chunk = await asyncio.wait_for(
                     self._ffmpeg.read(self._read_quantum_bytes),
                     timeout=0.001,
@@ -119,7 +128,7 @@ class _BufferedFfmpegProcessor:
 
     def pop_duration_us(self, duration_us: int) -> bytes | None:
         """Pop exactly `duration_us` from already buffered output, or None if insufficient."""
-        target_bytes = max(0, round((duration_us / 1_000_000) * self._bytes_per_second))
+        target_bytes = self._target_bytes_for_duration_us(duration_us)
         if target_bytes == 0:
             return b""
         if len(self._output_buffer) < target_bytes:
@@ -134,7 +143,7 @@ class _BufferedFfmpegProcessor:
 
     def pop_duration_us_or_pad(self, duration_us: int, pad_tolerance_us: int) -> bytes | None:
         """Pop target duration; if short within tolerance, pad tail with silence."""
-        target_bytes = max(0, round((duration_us / 1_000_000) * self._bytes_per_second))
+        target_bytes = self._target_bytes_for_duration_us(duration_us)
         if target_bytes == 0:
             return b""
         available = len(self._output_buffer)
@@ -151,9 +160,19 @@ class _BufferedFfmpegProcessor:
         return out + (b"\x00" * short_bytes)
 
     def _duration_us_for_bytes(self, byte_count: int) -> int:
-        if byte_count <= 0 or self._bytes_per_second <= 0:
+        if byte_count <= 0 or self._sample_rate <= 0 or self._frame_size <= 0:
             return 0
-        return int((byte_count / self._bytes_per_second) * 1_000_000)
+        frames = byte_count // self._frame_size
+        if frames <= 0:
+            return 0
+        return int((frames * 1_000_000) / self._sample_rate)
+
+    def _target_bytes_for_duration_us(self, duration_us: int) -> int:
+        """Convert duration to frame-aligned PCM byte count."""
+        if duration_us <= 0 or self._sample_rate <= 0 or self._frame_size <= 0:
+            return 0
+        samples = max(0, int((duration_us * self._sample_rate + 500_000) / 1_000_000))
+        return samples * self._frame_size
 
 
 @dataclass(slots=True)
@@ -171,15 +190,28 @@ class _PendingChunk:
 
 @dataclass(slots=True)
 class _JoinCatchupState:
+    """Per-member state for a join-catchup processor replaying history through DSP.
+
+    The processor is fed historical + live PCM via ``input_queue``.  Once its
+    output catches up to the live stream (within tolerance), it is promoted to
+    the member's live pipeline.  See ``_inject_ready_join_historical`` for the
+    full promotion lifecycle.
+    """
+
     processor: _BufferedFfmpegProcessor
     input_queue: asyncio.Queue[bytes | None]
     writer_task: asyncio.Task[None]
     drainer_task: asyncio.Task[None]
     snapshot_task: asyncio.Task[None] | None = None
+    # Timeline position of the first history chunk fed into the processor.
     first_history_start_us: int | None = None
+    # Timeline position up to which PCM has been enqueued into the processor.
     fed_until_us: int | None = None
+    # End of the history snapshot taken when catchup started.
     history_end_us: int | None = None
+    # Locked target: once set, promotion fires when output reaches this point.
     promotion_target_end_us: int | None = None
+    # Monotonic time when promotion was armed, used for timeout detection.
     promotion_armed_monotonic_s: float | None = None
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -207,8 +239,24 @@ class _MemberPipeline:
 class SendspinPlaybackSession:
     """Coordinates playback for a Sendspin player group leader.
 
-    Owns all playback-pipeline runtime state: push-stream context, per-member DSP
-    channels, pending join bookkeeping, and history for late-join backfill.
+    The push stream supports multi-channel audio: members that need per-player
+    DSP (EQ, channel mixing, output routing) each get a dedicated ffmpeg
+    processor and a separate channel. Members without DSP share MAIN_CHANNEL
+    and receive the raw PCM directly.
+
+    Playback runs as two concurrent coroutines inside ``_run_playback``:
+
+    * **Producer** -- reads PCM from the MA stream, slices it into fixed-size
+      chunks, queues them, and writes each slice into per-member ffmpeg
+      processors (transform push) in parallel.
+    * **Consumer** -- dequeues chunks, reads the corresponding transformed
+      output from each processor (transform read), prepares all channels on
+      the push stream, commits audio, and applies backpressure via
+      ``sleep_to_limit_buffer``.
+
+    When a new member joins mid-playback, a *join-catchup* processor replays
+    committed history through the member's DSP chain so it can be promoted
+    to the live pipeline without an audible gap.
     """
 
     def __init__(self, player: SendspinPlayer) -> None:
@@ -230,24 +278,7 @@ class SendspinPlaybackSession:
         self._preassigned_channels: dict[str, UUID] = {}
         self._mapping_dirty = True
 
-    # -- Lock helpers ----------------------------------------------------------
-
-    @asynccontextmanager
-    async def _timed_lock(self, lock: asyncio.Lock, op: str) -> AsyncIterator[None]:
-        """Acquire `lock` with a timeout; release on exit."""
-        await self._await_with_timeout(lock.acquire(), op)
-        try:
-            yield
-        finally:
-            lock.release()
-
-    async def _await_with_timeout(self, awaitable: Awaitable[Any], op: str) -> Any:
-        """Await operation with a hard timeout."""
-        try:
-            return await asyncio.wait_for(awaitable, timeout=_OP_TIMEOUT_S)
-        except TimeoutError as err:
-            self.player.logger.error("Timeout after %.1fs in %s", _OP_TIMEOUT_S, op)
-            raise RuntimeError(f"Timeout in {op}") from err
+    # -- Helpers ---------------------------------------------------------------
 
     def _attach_task_exception_logger(self, task: asyncio.Task[Any], name: str) -> None:
         """Log unhandled exception from background task when it finishes."""
@@ -278,7 +309,7 @@ class SendspinPlaybackSession:
         self,
     ) -> tuple[set[str], tuple[tuple[str, _MemberPipeline], ...]]:
         """Return (join_pending_ids, active_pipelines) under lock."""
-        async with self._timed_lock(self._state_lock, "snapshot_active_pipelines"):
+        async with self._state_lock:
             members = self._members
             return set(self._join_catchup), tuple(
                 (mid, p) for mid, p in self._member_pipelines.items() if mid in members
@@ -298,7 +329,7 @@ class SendspinPlaybackSession:
         self.player.logger.debug("Cancelling playback task (%s)", reason)
         task.cancel()
         with suppress(asyncio.CancelledError, Exception):
-            await self._await_with_timeout(task, f"cancel_playback_task:{reason}")
+            await task
         if self.playback_task is task:
             self.playback_task = None
 
@@ -334,25 +365,18 @@ class SendspinPlaybackSession:
             if player_id in self._members:
                 self.pending_join_members.discard(player_id)
                 return
+            # Force a fresh channel identity for every new join cycle.
+            self._preassigned_channels[player_id] = uuid4()
         self.pending_join_members.add(player_id)
         try:
-            await self._await_with_timeout(
-                self._start_join_catchup(player_id),
-                f"start_join_catchup:{player_id}",
-            )
+            await self._start_join_catchup(player_id)
             member = cast("SendspinPlayer", self.player.mass.players.get(player_id, True))
-            await self._await_with_timeout(
-                self.player.api.group.add_client(member.api),
-                f"group_add_client:{player_id}",
-            )
+            await self.player.api.group.add_client(member.api)
             async with self._state_lock:
                 self._members.add(player_id)
                 self._mapping_dirty = True
         except Exception:
-            await self._await_with_timeout(
-                self._release_player_channel(player_id),
-                f"release_player_channel_after_add_fail:{player_id}",
-            )
+            await self._release_player_channel(player_id)
             raise
         finally:
             self.pending_join_members.discard(player_id)
@@ -360,24 +384,15 @@ class SendspinPlaybackSession:
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
         member = cast("SendspinPlayer", self.player.mass.players.get(player_id, True))
-        await self._await_with_timeout(
-            self.player.api.group.remove_client(member.api),
-            f"group_remove_client:{player_id}",
-        )
+        await self.player.api.group.remove_client(member.api)
         self.pending_join_members.discard(player_id)
         async with self._state_lock:
             self._members.discard(player_id)
             self._mapping_dirty = True
             self._pipeline_config_cache.pop(player_id, None)
             self._preassigned_channels.pop(player_id, None)
-        await self._await_with_timeout(
-            self._stop_join_catchup(player_id),
-            f"stop_join_catchup_on_remove:{player_id}",
-        )
-        await self._await_with_timeout(
-            self._release_player_channel(player_id),
-            f"release_player_channel_on_remove:{player_id}",
-        )
+        await self._stop_join_catchup(player_id)
+        await self._release_player_channel(player_id)
 
     # -- Join catchup ----------------------------------------------------------
 
@@ -388,29 +403,22 @@ class SendspinPlaybackSession:
         if not playback_active:
             return
 
-        pipeline = await self._await_with_timeout(
-            self._sync_member_pipeline(player_id),
-            f"sync_member_pipeline_for_join:{player_id}",
-        )
+        pipeline = await self._sync_member_pipeline(player_id)
         if not pipeline.config.requires_transform:
             return
 
-        await self._await_with_timeout(
-            self._stop_join_catchup(player_id),
-            f"stop_existing_join_catchup:{player_id}",
-        )
+        await self._stop_join_catchup(player_id)
 
         ffmpeg_obj = self._create_member_ffmpeg(pipeline.config.filter_params)
         processor = _BufferedFfmpegProcessor(ffmpeg_obj, _PCM_FORMAT)
-        await self._await_with_timeout(processor.start(), f"start_join_processor:{player_id}")
+        await processor.start()
+        # Bounded queue between history feeder and ffmpeg writer.
         input_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
 
         async with self._state_lock:
             history_snapshot = list(self._history)
         if not history_snapshot:
-            await self._await_with_timeout(
-                processor.close(), f"close_join_processor_no_history:{player_id}"
-            )
+            await processor.close()
             return
         history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
 
@@ -419,9 +427,7 @@ class SendspinPlaybackSession:
                 chunk = await input_queue.get()
                 if chunk is None:
                     return
-                await self._await_with_timeout(
-                    processor.push(chunk), f"join_writer_push:{player_id}"
-                )
+                await processor.push(chunk)
 
         async def _drainer() -> None:
             await processor.drain_forever()
@@ -458,19 +464,17 @@ class SendspinPlaybackSession:
         history_snapshot: list[_HistoryChunk],
     ) -> None:
         """Feed historical PCM into a join-catchup processor."""
-        async with self._timed_lock(self._state_lock, f"join_history_state_lock:{player_id}"):
+        async with self._state_lock:
             state = self._join_catchup.get(player_id)
         if state is None or state.processor is not processor:
             return
-        async with self._timed_lock(state.write_lock, f"join_history_write_lock:{player_id}"):
+        async with state.write_lock:
             first_history_start_us: int | None = None
             previous_end_us: int | None = None
             for hist_chunk in history_snapshot:
                 if first_history_start_us is None:
                     first_history_start_us = hist_chunk.start_time_us
-                    async with self._timed_lock(
-                        self._state_lock, f"join_history_first:{player_id}"
-                    ):
+                    async with self._state_lock:
                         current = self._join_catchup.get(player_id)
                         if current is not None and current.processor is processor:
                             current.first_history_start_us = first_history_start_us
@@ -479,14 +483,10 @@ class SendspinPlaybackSession:
                     gap_us = hist_chunk.start_time_us - previous_end_us
                     silence = self._silence_for_duration_us(gap_us)
                     if silence:
-                        await self._enqueue_join_pcm(
-                            state, player_id, silence, "join_snapshot_queue_silence"
-                        )
-                await self._enqueue_join_pcm(
-                    state, player_id, hist_chunk.pcm, "join_snapshot_queue_pcm"
-                )
+                        await self._enqueue_join_pcm(state, silence)
+                await self._enqueue_join_pcm(state, hist_chunk.pcm)
                 previous_end_us = hist_chunk.start_time_us + hist_chunk.duration_us
-                async with self._timed_lock(self._state_lock, f"join_history_update:{player_id}"):
+                async with self._state_lock:
                     current = self._join_catchup.get(player_id)
                     if current is not None and current.processor is processor:
                         current.fed_until_us = previous_end_us
@@ -532,9 +532,7 @@ class SendspinPlaybackSession:
         with suppress(Exception):
             state.input_queue.put_nowait(None)
         with suppress(asyncio.CancelledError, Exception):
-            await self._await_with_timeout(
-                state.writer_task, f"promote_join_wait_writer_flush:{player_id}"
-            )
+            await state.writer_task
         state.drainer_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await state.drainer_task
@@ -568,7 +566,7 @@ class SendspinPlaybackSession:
         membership changes and late-join historical backfill while running.
         """
         push_stream = self._create_push_stream()
-        async with self._timed_lock(self._state_lock, "run_playback_init"):
+        async with self._state_lock:
             self._push_stream = push_stream
             self._playback_running = True
             self._history.clear()
@@ -576,20 +574,9 @@ class SendspinPlaybackSession:
             self._timeline_start_us = None
             self._first_commit_monotonic_us = None
             self._mapping_dirty = True
+        # Bounded queue between producer (stream reader) and consumer (committer).
         pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(maxsize=64)
         pending_duration_us = 0
-
-        async def _estimate_future_audio_us() -> int:
-            async with self._timed_lock(self._state_lock, "estimate_future_audio"):
-                if self._history:
-                    history_tail_end_us = (
-                        self._history[-1].start_time_us + self._history[-1].duration_us
-                    )
-                else:
-                    history_tail_end_us = 0
-            now_monotonic_us = int(time.monotonic_ns() / 1000)
-            future_from_history_us = max(0, history_tail_end_us - now_monotonic_us)
-            return future_from_history_us + pending_duration_us
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -597,60 +584,76 @@ class SendspinPlaybackSession:
             async for chunk in audio_source:
                 if not chunk:
                     continue
-                duration_us = self._duration_us(chunk, _PCM_FORMAT)
-                if duration_us <= 0:
-                    continue
-                while True:
-                    future_audio_us = await _estimate_future_audio_us()
-                    if future_audio_us + duration_us <= _PRODUCER_BUFFER_LIMIT_US:
-                        break
-                    sleep_s = min(
-                        0.25,
-                        (future_audio_us + duration_us - _PRODUCER_BUFFER_LIMIT_US) / 1_000_000,
+                for slice_chunk in self._iter_pcm_slices(chunk, _PCM_FORMAT, _PRODUCER_SLICE_US):
+                    if not slice_chunk:
+                        continue
+                    duration_us = self._duration_us(slice_chunk, _PCM_FORMAT)
+                    if duration_us <= 0:
+                        continue
+                    await self._refresh_member_mappings()
+                    await pending_chunks.put(
+                        _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
                     )
-                    await asyncio.sleep(max(0.01, sleep_s))
-                await self._await_with_timeout(
-                    self._refresh_member_mappings(), "refresh_member_mappings"
-                )
-                join_pending_ids, pipelines = await self._snapshot_active_pipelines()
-                for member_id, pipeline in pipelines:
-                    if not pipeline.config.requires_transform:
-                        continue
-                    if member_id in join_pending_ids:
-                        continue
-                    await self._transform_member_chunk(pipeline, chunk)
-                await self._await_with_timeout(
-                    pending_chunks.put(_PendingChunk(pcm=chunk, duration_us=duration_us)),
-                    "producer_pending_chunks_put",
-                )
-                pending_duration_us += duration_us
+                    pending_duration_us += duration_us
+                    join_pending_ids, pipelines = await self._snapshot_active_pipelines()
+                    transform_pipelines: list[_MemberPipeline] = []
+                    for member_id, pipeline in pipelines:
+                        if not pipeline.config.requires_transform:
+                            continue
+                        if member_id in join_pending_ids:
+                            continue
+                        transform_pipelines.append(pipeline)
+                    results = await asyncio.gather(
+                        *(
+                            self._transform_member_chunk(pipeline, slice_chunk)
+                            for pipeline in transform_pipelines
+                        ),
+                        return_exceptions=True,
+                    )
+                    for pipeline, result in zip(transform_pipelines, results, strict=False):
+                        if isinstance(result, BaseException):
+                            self.player.logger.warning(
+                                "Transform push failed for channel %s: %s",
+                                pipeline.channel_id,
+                                result,
+                            )
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us
             while True:
-                try:
-                    pending = await self._await_with_timeout(
-                        pending_chunks.get(), "commit_pending_chunks_get"
-                    )
-                except RuntimeError:
-                    continue
+                pending = await pending_chunks.get()
                 if pending is None:
                     break
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
-                await self._await_with_timeout(
-                    self._inject_ready_join_historical(push_stream, pending_chunks, pending.pcm),
-                    "inject_ready_join_historical",
-                )
+                await self._inject_ready_join_historical(push_stream, pending_chunks, pending.pcm)
                 push_stream.prepare_audio(
                     pending.pcm, _SENDSPIN_PCM_FORMAT, channel_id=MAIN_CHANNEL
                 )
                 join_pending_ids, pipelines = await self._snapshot_active_pipelines()
+                transform_pipelines: list[_MemberPipeline] = []
                 for member_id, pipeline in pipelines:
                     if not pipeline.config.requires_transform:
                         continue
                     if member_id in join_pending_ids:
                         continue
-                    transformed_chunk = await self._read_member_chunk(pipeline, pending.duration_us)
+                    transform_pipelines.append(pipeline)
+                transformed_chunks = await asyncio.gather(
+                    *(
+                        self._read_member_chunk(pipeline, pending.duration_us)
+                        for pipeline in transform_pipelines
+                    ),
+                    return_exceptions=True,
+                )
+                for pipeline, transformed_chunk in zip(
+                    transform_pipelines, transformed_chunks, strict=False
+                ):
+                    if isinstance(transformed_chunk, BaseException):
+                        self.player.logger.warning(
+                            "Transform read failed for channel %s: %s",
+                            pipeline.channel_id,
+                            transformed_chunk,
+                        )
+                        continue
                     if transformed_chunk is None:
                         continue
                     push_stream.prepare_audio(
@@ -658,16 +661,15 @@ class SendspinPlaybackSession:
                         _SENDSPIN_PCM_FORMAT,
                         channel_id=pipeline.channel_id,
                     )
-                commit_start_us = await self._await_with_timeout(
-                    push_stream.commit_audio(), "push_stream.commit_audio"
-                )
+                commit_start_us = await push_stream.commit_audio()
+                await push_stream.sleep_to_limit_buffer(_PRODUCER_BUFFER_LIMIT_US)
                 commit_now_us = int(time.monotonic_ns() / 1000)
                 committed_history_chunk = _HistoryChunk(
                     start_time_us=int(commit_start_us),
                     duration_us=pending.duration_us,
                     pcm=pending.pcm,
                 )
-                async with self._timed_lock(self._state_lock, "commit_history_update"):
+                async with self._state_lock:
                     if self._timeline_start_us is None:
                         self._timeline_start_us = int(commit_start_us)
                     if self._first_commit_monotonic_us is None:
@@ -675,10 +677,7 @@ class SendspinPlaybackSession:
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                await self._await_with_timeout(
-                    self._fanout_history_chunk_to_join_processors(committed_history_chunk),
-                    "fanout_history_chunk",
-                )
+                await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
@@ -688,7 +687,9 @@ class SendspinPlaybackSession:
             producer_stopped_cleanly = True
         finally:
             if producer_stopped_cleanly and not commit_task.done():
-                # Producer finished normally; try graceful drain.
+                # Producer finished normally; send a None sentinel so the
+                # consumer exits cleanly.  The queue may be full, so retry
+                # with a deadline before falling back to cancellation.
                 sentinel_sent = False
                 deadline = time.monotonic() + 1.0
                 while not sentinel_sent and not commit_task.done():
@@ -714,7 +715,7 @@ class SendspinPlaybackSession:
                 self._stop_push_stream()
             await self._clear_join_catchup()
             await self._clear_member_pipelines()
-            async with self._timed_lock(self._state_lock, "run_playback_reset"):
+            async with self._state_lock:
                 self._push_stream = None
                 self._playback_running = False
                 self._timeline_start_us = None
@@ -730,13 +731,22 @@ class SendspinPlaybackSession:
         pending_chunks: asyncio.Queue[_PendingChunk | None],
         current_pcm: bytes,
     ) -> bool:
-        """Inject join-catchup historical audio once processor output reaches history end."""
+        """Inject join-catchup historical audio once processor output reaches history end.
+
+        Join promotion lifecycle:
+        1. A catchup processor is fed historical PCM and new commits in parallel.
+        2. Once the processor's output lag falls within _JOIN_PROMOTE_ARM_WINDOW_US
+           of the history tail, promotion is "armed" and a target end timestamp is locked.
+        3. Once output reaches the target (within _JOIN_PROMOTE_TOLERANCE_US), the
+           catchup processor is promoted to the member's live DSP pipeline.
+        4. If promotion doesn't complete within _JOIN_PROMOTION_TIMEOUT_S, it's aborted.
+        """
         injected_any = False
-        async with self._timed_lock(self._state_lock, "inject_join_items"):
+        async with self._state_lock:
             items = list(self._join_catchup.items())
         for player_id, state in items:
             produced_output_us = state.processor.produced_output_us
-            async with self._timed_lock(self._state_lock, f"inject_join_get:{player_id}"):
+            async with self._state_lock:
                 current = self._join_catchup.get(player_id)
                 if current is None or current.processor is not state.processor:
                     continue
@@ -755,7 +765,7 @@ class SendspinPlaybackSession:
                 lag_to_tail_us = history_end_us - max_ready_end_us
                 if lag_to_tail_us > _JOIN_PROMOTE_ARM_WINDOW_US:
                     continue
-                async with self._timed_lock(self._state_lock, f"inject_join_arm:{player_id}"):
+                async with self._state_lock:
                     current = self._join_catchup.get(player_id)
                     if current is None or current.processor is not state.processor:
                         continue
@@ -774,10 +784,7 @@ class SendspinPlaybackSession:
                     player_id,
                     _JOIN_PROMOTION_TIMEOUT_S,
                 )
-                await self._await_with_timeout(
-                    self._stop_join_catchup(player_id),
-                    f"stop_join_catchup_after_promotion_timeout:{player_id}",
-                )
+                await self._stop_join_catchup(player_id)
                 continue
             if max_ready_end_us + _JOIN_PROMOTE_TOLERANCE_US < target_end_us:
                 continue
@@ -787,48 +794,45 @@ class SendspinPlaybackSession:
             )
             if transformed_history is None:
                 continue
-            pipeline = await self._await_with_timeout(
-                self._sync_member_pipeline(player_id),
-                f"sync_member_pipeline_for_join_injection:{player_id}",
-            )
+            pipeline = await self._sync_member_pipeline(player_id)
             push_stream.prepare_historical_audio(
                 transformed_history,
                 _SENDSPIN_PCM_FORMAT,
                 channel_id=pipeline.channel_id,
                 start_time_us=first_history_start_us,
             )
-            await self._prefeed_pending_backlog_for_join(
-                state, player_id, current_pcm, pending_chunks
-            )
-            await self._await_with_timeout(
-                self._promote_join_catchup_processor(player_id, pipeline, target_end_us),
-                f"promote_join_catchup_processor:{player_id}",
-            )
+            await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_chunks)
+            await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
             injected_any = True
         return injected_any
 
     async def _prefeed_pending_backlog_for_join(
         self,
         state: _JoinCatchupState,
-        player_id: str,
         current_pcm: bytes,
         pending_chunks: asyncio.Queue[_PendingChunk | None],
     ) -> None:
-        """Push current chunk + queued pending chunks into join processor before promotion."""
-        await self._enqueue_join_pcm(state, player_id, current_pcm, "join_prefeed_current")
-        # Uses asyncio.Queue internal deque for ordered snapshot in the same event loop.
+        """Push current chunk + queued pending chunks into join processor before promotion.
+
+        Between the last committed chunk and the next commit, there may be
+        chunks already queued by the producer that the catchup processor hasn't
+        seen yet.  Feeding them now avoids a gap in transformed audio after
+        promotion.
+        """
+        await self._enqueue_join_pcm(state, current_pcm)
+        # Read-only snapshot of the internal deque; safe in a single event loop.
         pending_items = [item for item in pending_chunks._queue if isinstance(item, _PendingChunk)]  # type: ignore[attr-defined]
         for item in pending_items:
-            await self._enqueue_join_pcm(state, player_id, item.pcm, "join_prefeed_queue_pcm")
+            await self._enqueue_join_pcm(state, item.pcm)
 
     async def _fanout_history_chunk_to_join_processors(self, hist_chunk: _HistoryChunk) -> None:
         """Feed newly committed history chunk into all active join-catchup processors."""
-        async with self._timed_lock(self._state_lock, "join_fanout_items"):
+        async with self._state_lock:
             items = list(self._join_catchup.items())
         for player_id, state in items:
-            async with self._timed_lock(state.write_lock, f"join_fanout_write:{player_id}"):
+            async with state.write_lock:
                 # Read current state under lock.
-                async with self._timed_lock(self._state_lock, f"join_fanout_read:{player_id}"):
+                async with self._state_lock:
                     current = self._join_catchup.get(player_id)
                     if current is None or current.processor is not state.processor:
                         continue
@@ -843,15 +847,11 @@ class SendspinPlaybackSession:
                     gap_us = hist_chunk.start_time_us - previous_end_us
                     silence = self._silence_for_duration_us(gap_us)
                     if silence:
-                        await self._enqueue_join_pcm(
-                            state, player_id, silence, "join_fanout_queue_silence"
-                        )
-                await self._enqueue_join_pcm(
-                    state, player_id, hist_chunk.pcm, "join_fanout_queue_pcm"
-                )
+                        await self._enqueue_join_pcm(state, silence)
+                await self._enqueue_join_pcm(state, hist_chunk.pcm)
                 # Write updated state back under lock.
                 new_end_us = hist_chunk.start_time_us + hist_chunk.duration_us
-                async with self._timed_lock(self._state_lock, f"join_fanout_update:{player_id}"):
+                async with self._state_lock:
                     current = self._join_catchup.get(player_id)
                     if current is not None and current.processor is state.processor:
                         if current.first_history_start_us is None:
@@ -864,9 +864,7 @@ class SendspinPlaybackSession:
     async def _enqueue_join_pcm(
         self,
         state: _JoinCatchupState,
-        player_id: str,
         pcm: bytes,
-        op: str,
     ) -> None:
         """Enqueue PCM into a joining member writer queue.
 
@@ -880,7 +878,7 @@ class SendspinPlaybackSession:
         except asyncio.QueueFull:
             if state.writer_task.done():
                 return
-            await self._await_with_timeout(state.input_queue.put(pcm), f"{op}:{player_id}")
+            await state.input_queue.put(pcm)
 
     # -- Member pipeline management --------------------------------------------
 
@@ -1010,10 +1008,8 @@ class SendspinPlaybackSession:
         processor = pipeline.processor
         if processor is None:
             return
-        with suppress(Exception):
-            await self._await_with_timeout(
-                processor.push(chunk), f"member_transform_push:{pipeline.channel_id}"
-            )
+        # Short timeout: drop data for a slow member rather than block the producer.
+        await asyncio.wait_for(processor.push(chunk), timeout=0.05)
 
     async def _read_member_chunk(
         self,
@@ -1024,13 +1020,7 @@ class SendspinPlaybackSession:
         processor = pipeline.processor
         if processor is None or duration_us <= 0:
             return b""
-        try:
-            transformed = await self._await_with_timeout(
-                processor.read_duration_us(duration_us),
-                f"member_transform_read:{pipeline.channel_id}",
-            )
-        except Exception:
-            return None
+        transformed = await processor.read_duration_us(duration_us)
         if not transformed:
             return None
         pipeline.ready = True
@@ -1065,8 +1055,8 @@ class SendspinPlaybackSession:
         pipeline = self._member_pipelines.get(player_id)
         if pipeline is not None:
             return pipeline.channel_id
-        # For pending joiners, resolve against fresh config so add_client's
-        # immediate late-join catchup uses the correct channel on first try.
+        # Pending joiners get a fresh config read so the very first channel
+        # resolution (triggered by add_client) uses up-to-date DSP settings.
         if player_id in self.pending_join_members:
             config = self._get_pipeline_config_cached(player_id, force_refresh=True)
         elif player_id in self._members:
@@ -1103,6 +1093,34 @@ class SendspinPlaybackSession:
         if bytes_per_second <= 0:
             return 0
         return int((len(audio) / bytes_per_second) * 1_000_000)
+
+    @staticmethod
+    def _iter_pcm_slices(
+        audio: bytes, audio_format: AudioFormat, target_duration_us: int
+    ) -> Iterator[bytes]:
+        """Yield frame-aligned PCM slices up to target duration."""
+        if not audio:
+            return
+        bytes_per_sample = max(1, int(audio_format.bit_depth // 8))
+        frame_size = bytes_per_sample * int(audio_format.channels)
+        if frame_size <= 0:
+            yield audio
+            return
+        samples_per_slice = max(
+            1, round((target_duration_us / 1_000_000) * int(audio_format.sample_rate))
+        )
+        slice_size = max(frame_size, samples_per_slice * frame_size)
+        offset = 0
+        audio_len = len(audio)
+        while offset < audio_len:
+            end = min(audio_len, offset + slice_size)
+            if end < audio_len:
+                aligned_end = end - (end % frame_size)
+                if aligned_end <= offset:
+                    aligned_end = min(audio_len, offset + frame_size)
+                end = aligned_end
+            yield audio[offset:end]
+            offset = end
 
     @staticmethod
     def _silence_for_duration_us(duration_us: int) -> bytes:
