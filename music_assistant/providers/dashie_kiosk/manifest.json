@@ -3,7 +3,7 @@
   "domain": "dashie_kiosk",
   "stage": "beta",
   "name": "Dashie Kiosk",
-  "description": "Play audio directly on Dashie Kiosk Android tablets, bypassing the Home Assistant media player for lower latency.",
+  "description": "Play audio directly on Dashie Kiosk Android tablets via their REST API.",
   "codeowners": ["@jwlerch78"],
   "credits": [
     "[Dashie Kiosk](https://dashieapp.com/dashie-kiosk)"

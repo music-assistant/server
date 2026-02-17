@@ -1,8 +1,7 @@
 """
 Dashie Kiosk Player provider for Music Assistant.
 
-Plays audio directly on Dashie Kiosk tablets via their REST API,
-bypassing the HA media player for lower latency.
+Plays audio directly on Dashie Kiosk tablets via their REST API.
 Requires the Home Assistant Plugin and the Dashie HA integration.
 """
 
