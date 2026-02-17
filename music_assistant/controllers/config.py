@@ -1870,6 +1870,7 @@ class ConfigController:
                 options=options,
                 category="protocol_general",
                 requires_reload=False,
+                hidden=len(output_protocols) <= 1,
             )
         )
 
