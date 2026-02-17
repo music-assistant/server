@@ -280,9 +280,12 @@ def test_select_best_quality_high_only_flac_returns_flac(
 
 def test_temp_file_replacement_order() -> None:
     """New temp file is tracked before old file is deleted to prevent file leaks."""
+
     # Create a minimal streaming manager stub
     class MinimalProvider:
         def __init__(self) -> None:
+            self.client = None
+            self.mass = None
             self.logger = type(
                 "Logger",
                 (),
