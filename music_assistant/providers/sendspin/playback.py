@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -39,6 +39,8 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
 )
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000
+# Max pending chunks between producer and committer before the producer blocks.
+_PRODUCER_BACKLOG_SIZE = 64
 # Backpressure threshold: push stream sleeps when buffered audio exceeds this.
 _PRODUCER_BUFFER_LIMIT_US = 30_000_000
 # Start join promotion once catchup processor lag is within this window of the history tail.
@@ -372,8 +374,6 @@ class SendspinPlaybackSession:
         self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
-            member = cast("SendspinPlayer", self.player.mass.players.get_player(player_id, True))
-            await self.player.api.group.add_client(member.api)
             async with self._state_lock:
                 self._members.add(player_id)
                 self._mapping_dirty = True
@@ -385,8 +385,6 @@ class SendspinPlaybackSession:
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
-        member = cast("SendspinPlayer", self.player.mass.players.get_player(player_id, True))
-        await self.player.api.group.remove_client(member.api)
         self.pending_join_members.discard(player_id)
         async with self._state_lock:
             self._members.discard(player_id)
@@ -395,6 +393,15 @@ class SendspinPlaybackSession:
             self._preassigned_channels.pop(player_id, None)
         await self._stop_join_catchup(player_id)
         await self._release_player_channel(player_id)
+
+    async def sync_members(self, member_ids: set[str]) -> None:
+        """Reconcile session members to exactly the provided set."""
+        async with self._state_lock:
+            current_members = set(self._members)
+        for player_id in current_members - member_ids:
+            await self.remove_member(player_id)
+        for player_id in member_ids - current_members:
+            await self.add_member(player_id)
 
     # -- Join catchup ----------------------------------------------------------
 
@@ -414,8 +421,9 @@ class SendspinPlaybackSession:
         ffmpeg_obj = self._create_member_ffmpeg(pipeline.config.filter_params)
         processor = _BufferedFfmpegProcessor(ffmpeg_obj, _PCM_FORMAT)
         await processor.start()
-        # Bounded queue between history feeder and ffmpeg writer.
-        input_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
+        # Bounded queue sized to hold the full buffer duration with some headroom.
+        queue_size = (_PRODUCER_BUFFER_LIMIT_US // _PRODUCER_SLICE_US) + _PRODUCER_BACKLOG_SIZE
+        input_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=queue_size)
 
         async with self._state_lock:
             history_snapshot = list(self._history)
@@ -530,9 +538,11 @@ class SendspinPlaybackSession:
             state.snapshot_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await state.snapshot_task
-        # Let writer flush queued PCM before handoff; do not cancel first.
-        with suppress(Exception):
+        # Let writer flush queued PCM before handoff; cancel if queue is full.
+        try:
             state.input_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            state.writer_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await state.writer_task
         state.drainer_task.cancel()
@@ -577,7 +587,11 @@ class SendspinPlaybackSession:
             self._first_commit_monotonic_us = None
             self._mapping_dirty = True
         # Bounded queue between producer (stream reader) and consumer (committer).
-        pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(maxsize=64)
+        pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(
+            maxsize=_PRODUCER_BACKLOG_SIZE
+        )
+        # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
+        pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
 
         async def _produce_pending_chunks() -> None:
@@ -593,9 +607,9 @@ class SendspinPlaybackSession:
                     if duration_us <= 0:
                         continue
                     await self._refresh_member_mappings()
-                    await pending_chunks.put(
-                        _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
-                    )
+                    pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
+                    await pending_chunks.put(pending)
+                    pending_backlog.append(pending)
                     pending_duration_us += duration_us
                     join_pending_ids, pipelines = await self._snapshot_active_pipelines()
                     transform_pipelines: list[_MemberPipeline] = []
@@ -612,7 +626,7 @@ class SendspinPlaybackSession:
                         ),
                         return_exceptions=True,
                     )
-                    for pipeline, result in zip(transform_pipelines, results, strict=False):
+                    for pipeline, result in zip(transform_pipelines, results, strict=True):
                         if isinstance(result, BaseException):
                             self.player.logger.warning(
                                 "Transform push failed for channel %s: %s",
@@ -626,8 +640,9 @@ class SendspinPlaybackSession:
                 pending = await pending_chunks.get()
                 if pending is None:
                     break
+                pending_backlog.popleft()
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
-                await self._inject_ready_join_historical(push_stream, pending_chunks, pending.pcm)
+                await self._inject_ready_join_historical(push_stream, pending_backlog, pending.pcm)
                 push_stream.prepare_audio(
                     pending.pcm, _SENDSPIN_PCM_FORMAT, channel_id=MAIN_CHANNEL
                 )
@@ -647,7 +662,7 @@ class SendspinPlaybackSession:
                     return_exceptions=True,
                 )
                 for pipeline, transformed_chunk in zip(
-                    transform_pipelines, transformed_chunks, strict=False
+                    transform_pipelines, transformed_chunks, strict=True
                 ):
                     if isinstance(transformed_chunk, BaseException):
                         self.player.logger.warning(
@@ -730,7 +745,7 @@ class SendspinPlaybackSession:
     async def _inject_ready_join_historical(
         self,
         push_stream: PushStream,
-        pending_chunks: asyncio.Queue[_PendingChunk | None],
+        pending_backlog: deque[_PendingChunk],
         current_pcm: bytes,
     ) -> bool:
         """Inject join-catchup historical audio once processor output reaches history end.
@@ -810,7 +825,7 @@ class SendspinPlaybackSession:
                     channel_id=pipeline.channel_id,
                     start_time_us=first_history_start_us if offset == 0 else None,
                 )
-            await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_chunks)
+            await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_backlog)
             await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
             injected_any = True
         return injected_any
@@ -819,7 +834,7 @@ class SendspinPlaybackSession:
         self,
         state: _JoinCatchupState,
         current_pcm: bytes,
-        pending_chunks: asyncio.Queue[_PendingChunk | None],
+        pending_backlog: deque[_PendingChunk],
     ) -> None:
         """Push current chunk + queued pending chunks into join processor before promotion.
 
@@ -829,9 +844,7 @@ class SendspinPlaybackSession:
         promotion.
         """
         await self._enqueue_join_pcm(state, current_pcm)
-        # Read-only snapshot of the internal deque; safe in a single event loop.
-        pending_items = [item for item in pending_chunks._queue if isinstance(item, _PendingChunk)]  # type: ignore[attr-defined]
-        for item in pending_items:
+        for item in list(pending_backlog):
             await self._enqueue_join_pcm(state, item.pcm)
 
     async def _fanout_history_chunk_to_join_processors(self, hist_chunk: _HistoryChunk) -> None:
@@ -1063,14 +1076,14 @@ class SendspinPlaybackSession:
         pipeline = self._member_pipelines.get(player_id)
         if pipeline is not None:
             return pipeline.channel_id
-        # Pending joiners get a fresh config read so the very first channel
-        # resolution (triggered by add_client) uses up-to-date DSP settings.
-        if player_id in self.pending_join_members:
-            config = self._get_pipeline_config_cached(player_id, force_refresh=True)
-        elif player_id in self._members:
-            config = self._get_pipeline_config_cached(player_id)
-        else:
+        # The leader always receives MAIN_CHANNEL audio directly from the
+        # commit loop; only group members get per-player DSP channels.
+        if player_id == self.player.player_id:
             return MAIN_CHANNEL
+        # Force a fresh config read for pending/unknown joiners so the very
+        # first resolution (triggered by add_client) uses up-to-date DSP settings.
+        force = player_id not in self._members
+        config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
             return MAIN_CHANNEL
         return self._get_or_create_preassigned_channel(player_id)

@@ -83,6 +83,8 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register(player)
         except AlreadyRegisteredError:
             self.logger.debug("Client %s already registered while handling add event", client_id)
+            player.unsub_event_cb()
+            player.unsub_group_event_cb()
 
     async def _handle_client_removed(self, client_id: str) -> None:
         """Handle a client disconnection asynchronously."""

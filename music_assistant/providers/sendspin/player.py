@@ -263,6 +263,26 @@ class SendspinPlayer(Player):
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
 
+    async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
+        """Sync MA/player + playback session membership from authoritative group state."""
+        # Ignore stale events from a group we no longer belong to.
+        if group is not self.api.group:
+            return
+        group_client_ids = [client.client_id for client in group.clients]
+        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
+        desired_group_members = group_client_ids if is_leader else []
+        desired_session_members = group_client_ids[1:] if is_leader else []
+        if self._attr_group_members != desired_group_members:
+            self._attr_group_members = desired_group_members
+            self.update_state()
+        # Only use STOP when we actually lead other members.
+        self.api.disconnect_behaviour = (
+            DisconnectBehaviour.STOP
+            if is_leader and len(desired_session_members) > 0
+            else DisconnectBehaviour.UNGROUP
+        )
+        await self.playback_session.sync_members(set(desired_session_members))
+
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
@@ -290,11 +310,7 @@ class SendspinPlayer(Player):
                 # Update in case this is a newly created group
                 # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
                 # so group members are already up to date at this point
-                if self.synced_to is None:
-                    # We are the leader, stop on disconnect
-                    self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-                else:
-                    self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
+                self.mass.create_task(self._sync_membership_from_group(new_group))
                 self.update_state()
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
@@ -320,11 +336,22 @@ class SendspinPlayer(Player):
                             self.mass.create_task(self.playback_session.cancel("group stopped"))
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
+                is_group_leader = (
+                    bool(group.clients) and group.clients[0].client_id == self.player_id
+                )
+                if is_group_leader and (
+                    not self._attr_group_members or self._attr_group_members[0] != self.player_id
+                ):
+                    self._attr_group_members = [self.player_id, *self._attr_group_members]
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
                     self.update_state()
+                self.mass.create_task(self.playback_session.add_member(client_id))
+                self.mass.create_task(self._sync_membership_from_group(group))
             case GroupMemberRemovedEvent(client_id=client_id):
+                self.mass.create_task(self.playback_session.remove_member(client_id))
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
+                self.mass.create_task(self._sync_membership_from_group(group))
             case GroupDeletedEvent():
                 pass
             case ControllerEvent() as controller_event:
@@ -334,23 +361,12 @@ class SendspinPlayer(Player):
     async def _handle_group_member_removed(self, group: SendspinGroup, client_id: str) -> None:
         """Handle a group member being removed asynchronously."""
         if client_id == self.player_id:
-            if len(self._attr_group_members) > 0:
+            if len(group.clients) > 0:
                 # We were just removed as a leader:
                 # 1. stop playback on the old group
                 await group.stop()
-                # 2. clear our members (since we are now alone)
-                group_members = [
-                    member for member in self._attr_group_members if member != client_id
-                ]
+                # 2. clear our members (since we are now alone in a new group)
                 self._attr_group_members = []
-                # 3. assign new leader if there are members left
-                if len(group_members) > 0 and (
-                    new_leader := self.mass.players.get_player(group_members[0])
-                ):
-                    new_leader = cast("SendspinPlayer", new_leader)
-                    new_leader._attr_group_members = group_members[1:]
-                    new_leader.api.disconnect_behaviour = DisconnectBehaviour.STOP
-                    new_leader.update_state()
             self.update_state()
         elif client_id in self._attr_group_members:
             # Someone else left our group
@@ -373,17 +389,13 @@ class SendspinPlayer(Player):
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
         self.mark_stop_called()
+        self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
         await self.playback_session.cancel("stop command")
         await self.api.group.stop()
-        self._attr_current_media = None
-        self._attr_playback_state = PlaybackState.IDLE
-        self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = time.time()
-        self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
@@ -618,7 +630,7 @@ class SendspinPlayer(Player):
                         type=ConfigEntryType.STRING,
                         label="Preferred audio format",
                         description="Select the audio format to use for playback on this player.",
-                        category="audio",
+                        category="protocol_generic",
                         default_value=SENDSPIN_FORMAT_AUTOMATIC,
                         options=format_options,
                         advanced=True,
