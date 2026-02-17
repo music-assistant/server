@@ -30,12 +30,9 @@ from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
 
 # TODO: AirPlay provider
-# - Implement authentication for Apple TV
-# - Implement volume control for Apple devices using pyatv
-# - Implement metadata for Apple Apple devices using pyatv
-# - Use pyatv for communicating with original Apple devices (and use cliraop for actual streaming)
-# - Implement AirPlay 2 support
-# - Implement late joining to existing stream (instead of restarting it)
+# Implement Companion protocol for communicating with original Apple (TV) devices
+# This allows for getting state/metadata changes from the device,
+# even if we are not actively streaming to it.
 
 
 class AirPlayProvider(PlayerProvider):

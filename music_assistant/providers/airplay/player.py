@@ -21,6 +21,8 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
+    BASE_PLAYER_FEATURES,
+    BROKEN_AIRPLAY_WARN,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
     CONF_ACTION_RESET_PAIRING,
@@ -54,19 +56,6 @@ if TYPE_CHECKING:
     from .protocols.airplay2 import AirPlay2Stream
     from .protocols.raop import RaopStream
     from .provider import AirPlayProvider
-
-
-BROKEN_AIRPLAY_WARN = ConfigEntry(
-    key="BROKEN_AIRPLAY",
-    type=ConfigEntryType.ALERT,
-    default_value=None,
-    required=False,
-    label="This player is known to have broken AirPlay support. "
-    "Playback may fail or simply be silent. "
-    "There is no workaround for this issue at the moment. \n"
-    "If you already enforced AirPlay 2 on the player and it remains silent, "
-    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
-)
 
 
 class AirPlayPlayer(Player):
@@ -104,13 +93,6 @@ class AirPlayPlayer(Player):
         )
         self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
-        self._attr_supported_features = {
-            PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.PAUSE,
-            PlayerFeature.SET_MEMBERS,
-            PlayerFeature.MULTI_DEVICE_DSP,
-            PlayerFeature.VOLUME_SET,
-        }
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
@@ -143,6 +125,18 @@ class AirPlayPlayer(Player):
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of this player."""
+        features = set(BASE_PLAYER_FEATURES)
+        if not (self.group_members or self.synced_to):
+            # we only support pause when the player is not synced,
+            # because we don't want to deal with the complexity of pausing a group of players
+            # so in this case stop will be used to pause the stream instead of pausing it,
+            # which is a common approach for AirPlay players
+            features.add(PlayerFeature.PAUSE)
+        return features
 
     async def get_config_entries(
         self,
@@ -502,8 +496,7 @@ class AirPlayPlayer(Player):
         if self.stream and self.stream.running and self.stream.session:
             # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
             self._transitioning = True
-            # Force stop the session (to speed up stopping)
-            await self.stream.session.stop(force=True)
+            await self.stream.session.stop()
             self.stream = None
 
         # select audio source
