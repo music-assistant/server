@@ -53,11 +53,6 @@
 
         #menu { list-style: none; flex: 1; padding: 0 8px; overflow-y: auto; }
 
-        #sidebar-footer {
-            padding: 12px;
-            border-top: 1px solid rgba(255,255,255,0.06);
-        }
-
         .menu-item {
             display: flex; align-items: center; gap: 12px;
             padding: 10px 14px; margin: 2px 0;
@@ -211,7 +206,7 @@
             border-radius: 50%; background: #fff; border: none;
         }
 
-        /* --- Full player --- */
+        /* --- Full player (normal mode) --- */
         #player-full {
             position: fixed; inset: 0; z-index: 30;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -292,108 +287,191 @@
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* --- Sendspin Status --- */
-        #sendspin-status {
+        /* =============================================
+           KIOSK MODE - MSX Style
+           ============================================= */
+        body.kiosk-mode {
+            background: #000;
+        }
+
+        body.kiosk-mode #app {
+            display: block;
+        }
+
+        body.kiosk-mode #sidebar,
+        body.kiosk-mode #main,
+        body.kiosk-mode #player-bar,
+        body.kiosk-mode #player-full,
+        body.kiosk-mode #search-overlay {
+            display: none !important;
+        }
+
+        /* Kiosk player container */
+        #kiosk-player {
             display: none;
-            align-items: center; gap: 8px;
-            padding: 6px 12px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: var(--text-dim);
+            position: fixed;
+            inset: 0;
+            background: #000;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
         }
-        body.sendspin-mode #sendspin-status { display: flex; }
 
-        .status-dot {
-            width: 8px; height: 8px;
-            border-radius: 50%;
-            background: #666;
+        body.kiosk-mode #kiosk-player {
+            display: flex;
         }
-        .status-dot.synced { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
-        .status-dot.syncing { background: #f59e0b; animation: pulse 1s infinite; }
-        .status-dot.disconnected { background: #ef4444; }
-        .status-dot.error { background: #ef4444; }
 
-        .sync-error { color: #f59e0b; font-size: 0.7rem; }
+        /* Sync indicator (top right) */
+        .sync-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #fff;
+            background: rgba(255, 152, 0, 0.9);
+            z-index: 100;
+        }
+        .sync-indicator.synced {
+            background: rgba(76, 175, 80, 0.9);
+        }
+        .sync-indicator.syncing {
+            background: rgba(255, 152, 0, 0.9);
+            animation: pulse 1.5s infinite;
+        }
+        .sync-indicator.error {
+            background: rgba(244, 67, 54, 0.9);
+        }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+            50% { opacity: 0.6; }
         }
 
-        /* --- Volume Control (Sendspin) --- */
-        #volume-control {
-            display: none;
-            align-items: center; gap: 8px;
+        /* Album art */
+        #kiosk-art {
+            width: min(50vw, 50vh);
+            height: min(50vw, 50vh);
+            border-radius: 8px;
+            object-fit: cover;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+            margin-bottom: 32px;
         }
-        body.sendspin-mode #volume-control { display: flex; }
 
-        #volume-slider {
-            width: 80px;
-        }
-
-        /* --- Audio Mode Toggle --- */
-        #audio-mode-toggle {
+        #kiosk-art-placeholder {
+            width: min(50vw, 50vh);
+            height: min(50vw, 50vh);
+            border-radius: 8px;
+            background: #1a1a1a;
             display: flex;
-            align-items: center; gap: 8px;
-            padding: 6px 12px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: var(--text-dim);
-            cursor: pointer;
-            transition: background 0.15s;
-            user-select: none;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 32px;
         }
-        #audio-mode-toggle:hover { background: rgba(255,255,255,0.1); }
+        #kiosk-art-placeholder .material-symbols-rounded {
+            font-size: 80px;
+            color: #333;
+        }
 
-        .mode-switch {
-            position: relative;
-            width: 36px; height: 18px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 9px;
-            transition: background 0.2s;
+        /* Track info */
+        #kiosk-title {
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #fff;
+            text-align: center;
+            max-width: 80%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        .mode-switch::after {
-            content: '';
-            position: absolute;
-            top: 2px; left: 2px;
-            width: 14px; height: 14px;
-            background: #fff;
+
+        #kiosk-artist {
+            font-size: 1.1rem;
+            color: rgba(255,255,255,0.6);
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        /* Progress bar */
+        .kiosk-progress {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-top: 32px;
+            width: min(60vw, 500px);
+        }
+
+        .kiosk-progress .time {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.5);
+            font-variant-numeric: tabular-nums;
+            min-width: 45px;
+        }
+
+        #kiosk-seek {
+            flex: 1;
+            height: 4px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 2px;
+        }
+        #kiosk-seek::-webkit-slider-thumb {
+            width: 14px;
+            height: 14px;
+        }
+
+        /* Controls */
+        .kiosk-controls {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            margin-top: 28px;
+        }
+
+        .kiosk-controls .ctrl {
+            width: 56px;
+            height: 56px;
             border-radius: 50%;
-            transition: transform 0.2s;
+            border: none;
+            background: transparent;
+            color: rgba(255,255,255,0.8);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s, color 0.15s, transform 0.15s;
         }
-        .mode-switch.active { background: #22c55e; }
-        .mode-switch.active::after { transform: translateX(18px); }
-
-        #mode-label { min-width: 60px; }
-
-        /* --- Kiosk Mode --- */
-        body.kiosk-mode #sidebar { display: none; }
-        body.kiosk-mode #main { width: 100%; }
-        body.kiosk-mode #content-header { display: none !important; }
-        body.kiosk-mode #content { display: none; }
-        body.kiosk-mode #player-bar { display: none !important; }
-        body.kiosk-mode #player-full {
-            opacity: 1; pointer-events: auto;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        .kiosk-controls .ctrl:hover {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
         }
-        body.kiosk-mode #full-browse { display: none; }
-        body.kiosk-mode #full-art {
-            width: min(60vw, 60vh); height: min(60vw, 60vh);
+        .kiosk-controls .ctrl:active {
+            transform: scale(0.95);
         }
-        body.kiosk-mode #full-title { font-size: 1.5rem; max-width: 80%; }
-        body.kiosk-mode #full-artist { font-size: 1.1rem; }
+        .kiosk-controls .ctrl .material-symbols-rounded {
+            font-size: 32px;
+        }
 
-        /* Kiosk status bar */
-        #kiosk-status {
-            position: fixed;
-            top: 20px; right: 20px;
+        .kiosk-controls .ctrl--primary {
+            width: 72px;
+            height: 72px;
+            background: #fff;
+            color: #000;
+        }
+        .kiosk-controls .ctrl--primary:hover {
+            background: #e0e0e0;
+            color: #000;
+        }
+        .kiosk-controls .ctrl--primary .material-symbols-rounded {
+            font-size: 40px;
+        }
+
+        /* Hide controls if not enabled */
+        body.kiosk-mode.no-controls .kiosk-controls {
             display: none;
-            align-items: center; gap: 12px;
-            z-index: 35;
         }
-        body.kiosk-mode #kiosk-status { display: flex; }
 
         /* --- Responsive --- */
         @media (max-width: 900px) {
@@ -404,40 +482,38 @@
             .content-grid { --cols: 2 !important; gap: 10px; }
             #content { padding: 12px; }
             .progress { display: none; }
-            body.kiosk-mode #full-art {
-                width: min(80vw, 40vh); height: min(80vw, 40vh);
+
+            #kiosk-art {
+                width: min(70vw, 40vh);
+                height: min(70vw, 40vh);
             }
+            #kiosk-art-placeholder {
+                width: min(70vw, 40vh);
+                height: min(70vw, 40vh);
+            }
+            #kiosk-title { font-size: 1.3rem; }
+            #kiosk-artist { font-size: 0.95rem; }
+            .kiosk-progress { width: 85vw; }
+            .kiosk-controls .ctrl { width: 48px; height: 48px; }
+            .kiosk-controls .ctrl--primary { width: 60px; height: 60px; }
         }
     </style>
 </head>
 <body>
     <div id="app">
-        <!-- Sidebar -->
+        <!-- Sidebar (normal mode only) -->
         <nav id="sidebar">
             <div id="sidebar-header">Music Assistant</div>
             <ul id="menu"></ul>
-            <!-- Audio mode toggle -->
-            <div id="sidebar-footer">
-                <div id="audio-mode-toggle" title="Switch between HTML5 and Sendspin audio">
-                    <span class="material-symbols-rounded" style="font-size: 16px;">sync</span>
-                    <div class="mode-switch" id="mode-switch"></div>
-                    <span id="mode-label">HTML5</span>
-                </div>
-            </div>
         </nav>
 
-        <!-- Right panel -->
+        <!-- Right panel (normal mode only) -->
         <div id="main">
-            <!-- Content sub-header (back + title for drill-down pages) -->
             <div id="content-header">
                 <button id="btn-back"><span class="material-symbols-rounded">arrow_back</span></button>
                 <div id="content-title"></div>
             </div>
-
-            <!-- Content area -->
             <div id="content"></div>
-
-            <!-- Player bar -->
             <footer id="player-bar">
                 <img id="player-art" src="" alt="">
                 <div id="bar-info">
@@ -457,7 +533,7 @@
             </footer>
         </div>
 
-        <!-- Full-screen player -->
+        <!-- Full-screen player (normal mode only) -->
         <div id="player-full">
             <img id="full-art" src="" alt="">
             <div id="full-title"></div>
@@ -472,20 +548,31 @@
                 <button id="full-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
                 <button id="full-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
             </div>
-            <div id="volume-control">
-                <button id="btn-volume" class="ctrl"><span class="material-symbols-rounded">volume_up</span></button>
-                <input type="range" id="volume-slider" min="0" max="100" value="80">
-            </div>
             <button id="full-browse">Browse Library</button>
         </div>
 
-        <!-- Kiosk status bar (top right) -->
-        <div id="kiosk-status">
-            <div id="sendspin-status"></div>
-            <div id="audio-mode-toggle" title="Switch between HTML5 and Sendspin audio">
-                <span class="material-symbols-rounded" style="font-size: 16px;">sync</span>
-                <div class="mode-switch" id="mode-switch-kiosk"></div>
-                <span id="mode-label-kiosk">HTML5</span>
+        <!-- Kiosk player (kiosk mode only) -->
+        <div id="kiosk-player">
+            <div id="kiosk-sync-status" class="sync-indicator">CONNECTING...</div>
+
+            <img id="kiosk-art" src="" alt="" style="display: none;">
+            <div id="kiosk-art-placeholder">
+                <span class="material-symbols-rounded">music_note</span>
+            </div>
+
+            <div id="kiosk-title">Waiting for playback...</div>
+            <div id="kiosk-artist"></div>
+
+            <div class="kiosk-progress">
+                <span id="kiosk-time" class="time">0:00</span>
+                <input type="range" id="kiosk-seek" min="0" max="100" value="0" step="0.1" disabled>
+                <span id="kiosk-dur" class="time">0:00</span>
+            </div>
+
+            <div class="kiosk-controls">
+                <button id="kiosk-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
+                <button id="kiosk-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
+                <button id="kiosk-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
             </div>
         </div>
 
@@ -502,12 +589,8 @@
 
     <audio id="audio" preload="none"></audio>
     <script>
-        // Detect modes from URL params and add body classes
         (function() {
             var params = new URLSearchParams(window.location.search);
-            if (params.get('sendspin_url')) {
-                document.body.classList.add('sendspin-mode');
-            }
             if (params.get('kiosk') === '1') {
                 document.body.classList.add('kiosk-mode');
             }

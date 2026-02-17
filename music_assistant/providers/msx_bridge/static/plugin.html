@@ -120,8 +120,6 @@
                     resumedByServer = true;
                     tvx.InteractionPlugin.executeAction("player:play");
                 } else if (msg.type === "play" && msg.path && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    // Force .mp3 extension for better compatibility with TV players
-                    var audioUrl = BRIDGE + msg.path + ".mp3";
                     var playerLabel = msg.title || "Music Assistant";
                     var labelParts = [];
                     if (msg.artist) labelParts.push(msg.artist);
@@ -135,7 +133,10 @@
                     if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
                     startPositionTimer(0);
-                    tvx.InteractionPlugin.executeAction("audio:" + audioUrl, data);
+
+                    var audioUrl = BRIDGE + msg.path + ".mp3";
+                    var audioAction = "audio:" + audioUrl;
+                    tvx.InteractionPlugin.executeAction(audioAction, data);
                 } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
                     startPositionTimer(0);
@@ -405,18 +406,18 @@
 
     MAHandler.prototype.handleRequest = function(dataId, data, callback) {
         if (dataId === "init") {
-            var self = this;
-
             var respond = function(deviceId) {
                 // Priority: MSX provided ID > sync methods > localStorage fallback
                 var finalDeviceId = deviceId || getMsxDeviceId() || getOrCreateLocalDeviceId();
                 console.log("MSX Bridge final device_id:", finalDeviceId);
+
                 callback({
                     name: "Music Assistant",
                     version: "1.0.0",
                     headline: "Music Assistant",
                     menu: buildMenu(finalDeviceId)
                 });
+
                 var ws = connectPushWebSocket(finalDeviceId);
                 // Send debug info after connection opens
                 if (ws) {

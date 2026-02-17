@@ -180,16 +180,16 @@ class SharedGroupStream:
 
             # Phase 2: Live stream
             while True:
-                live_chunk: bytes | None = await q.get()
-                if live_chunk is None:
+                next_chunk = await q.get()
+                if next_chunk is None:
                     logger.debug(
                         "[SharedStream:%s] EOF received for subscriber %s",
                         self.group_id,
                         player_id,
                     )
                     break
-                yield live_chunk
-                bytes_sent += len(live_chunk)
+                yield next_chunk
+                bytes_sent += len(next_chunk)
                 chunks_sent += 1
 
         finally:
@@ -521,7 +521,14 @@ class MSXBridgeProvider(PlayerProvider):
         return self.group_stream_mode == GROUP_STREAM_MODE_SHARED
 
     def is_redirect_stream_mode(self) -> bool:
-        """Check if MA redirect stream mode is enabled."""
+        """Check if MA redirect stream mode is enabled.
+
+        NOTE: Redirect mode is a scaffold for future MA Streamserver integration
+        (MA 2.6+). It is NOT exposed in the provider config UI — users cannot
+        select it. The constant GROUP_STREAM_MODE_REDIRECT exists so the code
+        path compiles and can be activated once MA exposes a public stream URL
+        endpoint. See also ``get_ma_stream_url()``.
+        """
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
 
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
@@ -613,6 +620,12 @@ class MSXBridgeProvider(PlayerProvider):
     ) -> str | None:
         """Get direct stream URL from MA Streamserver for redirect mode.
 
+        NOTE: This is a scaffold for future MA Streamserver integration. The
+        ``/api/streams/single/...`` route does not exist in current MA versions.
+        This method is only reachable if ``group_stream_mode`` is set to
+        ``redirect``, which is NOT exposed in the provider config UI.
+        It will be activated once MA exposes a public streaming endpoint.
+
         Args:
             media: PlayerMedia with queue_item_id and source_id
             output_format: Audio format (mp3, aac, flac)
@@ -647,7 +660,7 @@ class MSXBridgeProvider(PlayerProvider):
             base_url = getattr(self.mass.streams, "base_url", None)
             if not base_url:
                 # Fallback: use webserver base_url
-                base_url = getattr(self.mass.webserver, "base_url", None)
+                base_url = self.mass.webserver.base_url
 
             stream_url = (
                 f"{base_url}/api/streams/single/{source_id}/queue/{queue_item_id}.{output_format}"

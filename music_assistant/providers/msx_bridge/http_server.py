@@ -242,13 +242,16 @@ class MSXHTTPServer:
             player_rows.append(row)
         player_info = "".join(player_rows) if player_rows else ""
 
-        # Build Sendspin URL (MA server, typically port 8095)
+        # Build URLs
         host_parts = request.host.split(":")
         hostname = host_parts[0]
-        ma_port = "8095"
-        sendspin_url = f"http://{hostname}:{ma_port}"
+        sendspin_port = "8927"
+        sendspin_url = f"http://{hostname}:{sendspin_port}"
+        kiosk_html5_url = f"{base}/web?kiosk=1"
         sendspin_web_url = f"{base}/web?sendspin_url={quote(sendspin_url, safe='')}"
-        sendspin_kiosk_url = f"{sendspin_web_url}&kiosk=1"
+        sendspin_kiosk_url = (
+            f"{base}/web?kiosk=1&sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
+        )
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -283,6 +286,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 <a href="/web">http://{request.host}/web</a>
 <small>Browser-based player with library navigation (HTTP streaming)</small>
 </div>
+<div class="link-row">
+<a href="{kiosk_html5_url}">Kiosk Mode (HTML5)</a>
+<small>Fullscreen player with WebSocket push - ideal for dedicated displays</small>
+</div>
 </div>
 
 <div class="info info-sendspin">
@@ -293,11 +300,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 </div>
 <div class="link-row">
 <a href="{sendspin_kiosk_url}">Kiosk Mode (Sendspin)</a>
-<small>Fullscreen player only - ideal for dedicated displays</small>
+<small>Fullscreen player with clock-synchronized audio</small>
 </div>
 <div class="link-row" style="margin-top: 12px;">
 <strong>Custom Sendspin URL:</strong><br>
-<code>/web?sendspin_url=http://&lt;ma-server&gt;:8095&amp;kiosk=1</code>
+<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
 </div>
 </div>
 
@@ -311,15 +318,14 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_start_json(self, request: web.Request) -> web.Response:
         """Return MSX start configuration."""
-        host = request.host
-        prefix = f"http://{host}"
-        # Version in URL forces MSX to refetch plugin after menu changes (avoids cache)
-        start_config = {
-            "name": "Music Assistant",
-            "version": "1.0.5",
-            "parameter": f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=7",
-        }
-        return web.json_response(start_config)
+        prefix = f"http://{request.host}"
+        return web.json_response(
+            {
+                "name": "Music Assistant",
+                "version": "1.0.6",
+                "parameter": f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=8",
+            }
+        )
 
     def _serve_static(self, filename: str) -> Any:
         """Create a handler that serves a static file from the static directory."""
@@ -330,14 +336,19 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         return handler
 
-    async def _handle_msx_plugin_html(self, request: web.Request) -> web.Response:
-        """Serve plugin.html with no-cache so MSX always gets latest menu order."""
+    async def _handle_msx_plugin_html(self, _request: web.Request) -> web.Response:
+        """Serve plugin.html with cache-busting headers."""
         path = STATIC_DIR / "plugin.html"
-        response = cast("web.Response", web.FileResponse(path))
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
+        content = path.read_text(encoding="utf-8")
+        return web.Response(
+            text=content,
+            content_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     async def _handle_msx_input_html(self, request: web.Request) -> web.FileResponse:
         """Serve input.html and ensure player is registered when Search is opened."""
@@ -345,7 +356,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         return web.FileResponse(STATIC_DIR / "input.html")
 
     async def _handle_web_app(self, request: web.Request) -> web.Response:
-        """Serve the kiosk web player SPA (browser-based, no MSX app needed)."""
+        """Serve the web player SPA (browser-based, no MSX app needed)."""
         response = cast("web.Response", web.FileResponse(STATIC_DIR / "web" / "index.html"))
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
@@ -570,7 +581,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
         limit = _int_param(request.query, "limit", 20)
-        items = await self._build_search_items(query, limit, player_id, device_param, prefix)
+        items = await self._build_search_items(
+            query,
+            limit,
+            player_id,
+            device_param,
+            prefix,
+        )
 
         content = MsxContent(
             headline=f'{{ico:search}} "{query}"',
@@ -598,7 +615,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             )
 
         limit = _int_param(request.query, "limit", 20)
-        items = await self._build_search_items(query, limit, player_id, device_param, prefix)
+        items = await self._build_search_items(
+            query,
+            limit,
+            player_id,
+            device_param,
+            prefix,
+        )
 
         content = MsxContent(
             headline=f"Search: {query}",
@@ -768,7 +791,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             logger.exception("Failed to fetch tracks for album playlist %s", item_id)
             tracks = []
         playlist = map_tracks_to_msx_playlist(
-            tracks, start, prefix, player_id, self.provider, device_param
+            tracks,
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -786,7 +814,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             logger.exception("Failed to fetch tracks for playlist playlist %s", item_id)
             tracks = []
         playlist = map_tracks_to_msx_playlist(
-            tracks, start, prefix, player_id, self.provider, device_param
+            tracks,
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -799,7 +832,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
         playlist = map_tracks_to_msx_playlist(
-            list(tracks), start, prefix, player_id, self.provider, device_param
+            list(tracks),
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -812,7 +850,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             limit=50, order_by="last_played"
         )
         playlist = map_tracks_to_msx_playlist(
-            list(tracks), start, prefix, player_id, self.provider, device_param
+            list(tracks),
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -829,7 +872,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         limit = _int_param(request.query, "limit", 20)
         results = await self.provider.mass.music.search(query, limit=limit)
         playlist = map_tracks_to_msx_playlist(
-            list(results.tracks), start, prefix, player_id, self.provider, device_param
+            list(results.tracks),
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -864,7 +912,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             )
 
         playlist = map_tracks_to_msx_playlist(
-            tracks, start, prefix, player_id, self.provider, device_param
+            tracks,
+            start,
+            prefix,
+            player_id,
+            self.provider,
+            device_param,
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1896,7 +1949,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             or request.remote
             or None
         )
-        # Web kiosk clients pass source=web to distinguish from MSX TV players
+        # Web player clients pass source=web to distinguish from MSX TV players
         display_name: str | None = None
         prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"
         display_name = self.provider._player_display_name_from_id(
