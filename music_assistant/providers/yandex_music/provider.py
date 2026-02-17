@@ -65,8 +65,6 @@ from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant_models.streamdetails import StreamDetails
 
 
@@ -371,7 +369,7 @@ class YandexMusicProvider(MusicProvider):
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
             names = self._get_browse_names()
-            next_name = "Ещё" if names is BROWSE_NAMES_RU else "Load more"
+            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
