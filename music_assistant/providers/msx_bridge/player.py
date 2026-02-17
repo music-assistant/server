@@ -43,6 +43,7 @@ class MSXPlayer(Player):
         self._attr_name = name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.PAUSE,
             PlayerFeature.VOLUME_SET,
         }

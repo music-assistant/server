@@ -92,6 +92,13 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     var kioskHideTimer = null;
     var KIOSK_HIDE_DELAY = 3500;
 
+    // Karaoke / lyrics state
+    var lrcLines = [];          // [{time: float, text: string}]
+    var currentLyricIdx = -1;
+    var lyricsMode = 'none';    // 'none' | 'lrc' | 'plain'
+    var lyricsFetchTimer = null;
+    var currentPlayerId = '';   // player_id from last WS play/playlist message
+
     // --- DOM ---
     var audio = document.getElementById('audio');
 
@@ -232,6 +239,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function updateKioskPlayer(track) {
         var bgImg = document.getElementById('kiosk-bg-img');
+        var artCenter = document.getElementById('kiosk-art-center');
         var titleEl = document.getElementById('kiosk-title');
         var artistEl = document.getElementById('kiosk-artist');
         var durEl = document.getElementById('kiosk-dur');
@@ -244,12 +252,21 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 bgImg.style.opacity = '0';
             }
         }
+        if (artCenter) {
+            artCenter.src = track.image || '';
+        }
         if (titleEl) titleEl.textContent = track.title || '';
         if (artistEl) artistEl.textContent = track.artist || '';
         if (durEl) durEl.textContent = track.duration ? fmtDur(track.duration) : '';
 
         setKioskPlaying(true);
         resetKioskHideTimer();
+
+        // Fetch lyrics for kiosk HTML5/Sendspin modes
+        var pid = track.player_id || currentPlayerId;
+        if ((isKioskHtml5Mode() || isSendspinMode()) && pid) {
+            fetchLyrics(pid);
+        }
 
         // Also update full player
         updateFullPlayer(track);
@@ -495,7 +512,19 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (trackIdx < 0 || trackIdx >= playlist.length) return;
         var track = playlist[trackIdx];
         audio.src = track.url;
-        audio.play().catch(function (e) { console.warn('Autoplay blocked:', e); });
+        // Muted autoplay is always allowed; unmute immediately after play starts.
+        // This bypasses browser autoplay restrictions without requiring user interaction.
+        audio.muted = true;
+        audio.play().then(function () {
+            audio.muted = false;
+        }).catch(function (e) {
+            console.warn('Autoplay blocked even when muted:', e);
+            audio.muted = false;
+            if (isKioskHtml5Mode()) {
+                showKioskControls();
+                cancelKioskHideTimer();
+            }
+        });
 
         if (isKioskHtml5Mode()) {
             updateKioskPlayer(track);
@@ -649,12 +678,14 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         switch (msg.type) {
             case 'play':
                 if (msg.path) {
+                    if (msg.player_id) currentPlayerId = msg.player_id;
                     var track = {
                         url: BASE + msg.path + '.mp3',
                         title: msg.title || '',
                         artist: msg.artist || '',
                         image: msg.image_url || '',
-                        duration: msg.duration || 0
+                        duration: msg.duration || 0,
+                        player_id: msg.player_id || ''
                     };
                     playlist = [track];
                     trackIdx = 0;
@@ -673,6 +704,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                     document.getElementById('kiosk-seek').disabled = true;
                     var bgImg = document.getElementById('kiosk-bg-img');
                     if (bgImg) bgImg.style.opacity = '0';
+                    var artCenter = document.getElementById('kiosk-art-center');
+                    if (artCenter) artCenter.src = '';
+                    clearLyrics();
                     setKioskPlaying(false);
                     cancelKioskHideTimer();
                     hideKioskControls();
@@ -691,7 +725,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 audio.play();
                 break;
             case 'playlist':
-                if (msg.url) loadPlaylist(msg.url);
+                if (msg.url) {
+                    if (msg.player_id) currentPlayerId = msg.player_id;
+                    loadPlaylist(msg.url);
+                }
                 break;
             case 'goto_index':
                 if (msg.index != null && msg.index < playlist.length) {
@@ -763,6 +800,111 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         document.getElementById('kiosk-player')?.classList.toggle('playing', on);
     }
 
+    // --- Karaoke Lyrics ---
+    function parseLrc(text) {
+        var lines = text.split('\n');
+        var result = [];
+        lines.forEach(function(line) {
+            var m = line.match(/^\[(\d{1,2}):(\d{2}(?:\.\d+)?)\](.*)/);
+            if (m) {
+                var t = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+                var txt = m[3].trim();
+                if (txt) result.push({ time: t, text: txt });
+            }
+        });
+        return result.sort(function(a, b) { return a.time - b.time; });
+    }
+
+    function renderLyrics(data) {
+        var inner = document.getElementById('kiosk-lyrics-inner');
+        var kp = document.getElementById('kiosk-player');
+        if (!inner || !kp) return;
+
+        inner.innerHTML = '';
+        inner.style.transform = '';
+        lrcLines = [];
+        currentLyricIdx = -1;
+
+        if (data.lrc_lyrics) {
+            lyricsMode = 'lrc';
+            lrcLines = parseLrc(data.lrc_lyrics);
+            lrcLines.forEach(function(l) {
+                var div = document.createElement('div');
+                div.className = 'lyric-line';
+                div.textContent = l.text;
+                inner.appendChild(div);
+            });
+            kp.classList.add('has-lyrics');
+            kp.classList.remove('plain-lyrics');
+        } else if (data.lyrics) {
+            lyricsMode = 'plain';
+            data.lyrics.split('\n').forEach(function(l) {
+                var div = document.createElement('div');
+                div.className = 'lyric-line';
+                div.textContent = l;
+                inner.appendChild(div);
+            });
+            kp.classList.add('has-lyrics', 'plain-lyrics');
+        } else {
+            lyricsMode = 'none';
+            kp.classList.remove('has-lyrics', 'plain-lyrics');
+        }
+    }
+
+    function syncLyrics(currentTime) {
+        if (lyricsMode !== 'lrc' || !lrcLines.length) return;
+
+        var idx = -1;
+        for (var i = 0; i < lrcLines.length; i++) {
+            if (lrcLines[i].time <= currentTime) idx = i;
+            else break;
+        }
+        if (idx === currentLyricIdx) return;
+        currentLyricIdx = idx;
+
+        var inner = document.getElementById('kiosk-lyrics-inner');
+        var scroll = document.getElementById('kiosk-lyrics-scroll');
+        if (!inner || !scroll) return;
+
+        var lines = inner.querySelectorAll('.lyric-line');
+        lines.forEach(function(el, i) {
+            el.classList.remove('active', 'lp1', 'ln1');
+            if (i === idx) el.classList.add('active');
+            else if (i === idx - 1) el.classList.add('lp1');
+            else if (i === idx + 1) el.classList.add('ln1');
+        });
+
+        if (idx >= 0 && lines[idx]) {
+            var lineTop = lines[idx].offsetTop;
+            var lineHeight = lines[idx].offsetHeight;
+            var scrollH = scroll.offsetHeight;
+            var target = lineTop - (scrollH / 2) + (lineHeight / 2);
+            inner.style.transform = 'translateY(' + (-target) + 'px)';
+        }
+    }
+
+    function clearLyrics() {
+        clearTimeout(lyricsFetchTimer);
+        lyricsFetchTimer = null;
+        lrcLines = [];
+        currentLyricIdx = -1;
+        lyricsMode = 'none';
+        var inner = document.getElementById('kiosk-lyrics-inner');
+        if (inner) { inner.innerHTML = ''; inner.style.transform = ''; }
+        var kp = document.getElementById('kiosk-player');
+        if (kp) kp.classList.remove('has-lyrics', 'plain-lyrics');
+    }
+
+    function fetchLyrics(playerId) {
+        clearTimeout(lyricsFetchTimer);
+        lyricsFetchTimer = setTimeout(function() {
+            fetch('/api/lyrics/' + encodeURIComponent(playerId))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { renderLyrics(data); })
+                .catch(function() { /* no lyrics available */ });
+        }, 400);
+    }
+
     // --- Player Mode ---
     function toggleMode() {
         document.getElementById('player-full').classList.toggle('active');
@@ -800,7 +942,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             connectWS();
 
             // HTML5 Audio events → update kiosk UI
-            audio.addEventListener('timeupdate', updateProgress);
+            audio.addEventListener('timeupdate', function() {
+                updateProgress();
+                syncLyrics(audio.currentTime);
+            });
             audio.addEventListener('ended', nextTrack);
             audio.addEventListener('pause', function () {
                 syncPlayBtn();

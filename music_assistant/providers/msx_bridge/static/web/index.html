@@ -332,9 +332,8 @@
         #kiosk-bg-img {
             width: 100%;
             height: 100%;
-            object-fit: cover;
-            transform: scale(1.05);
-            filter: blur(12px) brightness(0.55);
+            object-fit: contain;
+            filter: blur(20px) brightness(0.50) saturate(1.3);
             opacity: 0;
             transition: opacity 0.6s ease;
         }
@@ -352,6 +351,28 @@
                 rgba(0,0,0,0.70) 100%
             );
             pointer-events: none;
+        }
+
+        /* Layer 1.5: Full album art centered, no crop */
+        #kiosk-art-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 82vw;
+            max-height: 72vh;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 10px;
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.65);
+            opacity: 0;
+            transition: opacity 0.6s ease;
+            z-index: 2;
+            pointer-events: none;
+        }
+        #kiosk-player.playing #kiosk-art-center {
+            opacity: 1;
         }
 
         /* Layer 2: Idle state */
@@ -441,6 +462,73 @@
             color: rgba(255,255,255,0.7);
             margin-top: 6px;
             text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        }
+
+        /* Layer 6: Karaoke lyrics */
+        #kiosk-lyrics {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 110px 60px 170px;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            pointer-events: none;
+            z-index: 4;
+        }
+        #kiosk-player.has-lyrics #kiosk-lyrics {
+            opacity: 1;
+        }
+
+        #kiosk-lyrics-scroll {
+            width: 100%;
+            max-width: 760px;
+            max-height: 100%;
+            overflow: hidden;
+            -webkit-mask-image: linear-gradient(transparent 0%, black 18%, black 82%, transparent 100%);
+            mask-image: linear-gradient(transparent 0%, black 18%, black 82%, transparent 100%);
+            position: relative;
+        }
+
+        #kiosk-lyrics-inner {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            transition: transform 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: transform;
+        }
+
+        .lyric-line {
+            font-size: 1.35rem;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.38);
+            text-align: center;
+            text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9), 0 0 40px rgba(0, 0, 0, 0.7);
+            transition: color 0.35s ease, font-size 0.35s ease, font-weight 0.35s ease;
+            line-height: 1.5;
+            max-width: 100%;
+            word-break: break-word;
+        }
+        .lyric-line.lp1 { color: rgba(255, 255, 255, 0.60); font-size: 1.45rem; }
+        .lyric-line.active {
+            color: #ffffff;
+            font-size: 1.75rem;
+            font-weight: 700;
+            text-shadow: 0 2px 16px rgba(0, 0, 0, 0.95), 0 0 60px rgba(0, 0, 0, 0.6);
+        }
+        .lyric-line.ln1 { color: rgba(255, 255, 255, 0.55); font-size: 1.45rem; }
+
+        /* Plain text (no LRC): static, full opacity */
+        #kiosk-player.has-lyrics.plain-lyrics #kiosk-lyrics-inner {
+            transition: none;
+        }
+        #kiosk-player.has-lyrics.plain-lyrics .lyric-line {
+            color: rgba(255, 255, 255, 0.80);
+            font-size: 1.1rem;
+            font-weight: 400;
+            gap: 10px;
         }
 
         /* Layer 5: Auto-hiding controls panel (bottom) */
@@ -545,6 +633,10 @@
             #kiosk-controls-panel { padding: 20px 20px 28px; }
             .kiosk-controls .ctrl { width: 48px; height: 48px; }
             .kiosk-controls .ctrl--primary { width: 60px; height: 60px; }
+            #kiosk-lyrics { padding: 90px 24px 150px; }
+            .lyric-line { font-size: 1.1rem; }
+            .lyric-line.active { font-size: 1.4rem; }
+            .lyric-line.lp1, .lyric-line.ln1 { font-size: 1.2rem; }
         }
     </style>
 </head>
@@ -607,6 +699,9 @@
                 <img id="kiosk-bg-img" src="" alt="" aria-hidden="true">
             </div>
 
+            <!-- Layer 1.5: Centered album art (full, no crop) -->
+            <img id="kiosk-art-center" src="" alt="" aria-hidden="true">
+
             <!-- Layer 2: Idle state (nothing playing) -->
             <div id="kiosk-idle">
                 <span class="material-symbols-rounded">music_note</span>
@@ -620,6 +715,13 @@
             <div id="kiosk-info-overlay">
                 <div id="kiosk-title"></div>
                 <div id="kiosk-artist"></div>
+            </div>
+
+            <!-- Layer 6: Karaoke lyrics (center, synced to playback) -->
+            <div id="kiosk-lyrics">
+                <div id="kiosk-lyrics-scroll">
+                    <div id="kiosk-lyrics-inner"></div>
+                </div>
             </div>
 
             <!-- Layer 5: Auto-hiding controls panel (bottom) -->
@@ -657,6 +759,6 @@
             }
         })();
     </script>
-    <script type="module" src="/web/web.js"></script>
+    <script type="module" src="/web/web.js?v=4"></script>
 </body>
 </html>
