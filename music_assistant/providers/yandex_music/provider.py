@@ -50,8 +50,9 @@ from .constants import (
     PLAYLIST_ID_SPLITTER,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
-    TAG_BLACKLIST,
     TAG_CATEGORY_ACTIVITY,
+    TAG_CATEGORY_ERA,
+    TAG_CATEGORY_GENRES,
     TAG_CATEGORY_MOOD,
     TAG_CATEGORY_ORDER,
     TAG_MIXES,
@@ -303,7 +304,7 @@ class YandexMusicProvider(MusicProvider):
         # "picks/category/tag" is lost and only the tag slug arrives as subpath)
         if subpath:
             discovered_tags = await self._get_discovered_tag_slugs()
-            if subpath in discovered_tags and subpath not in TAG_BLACKLIST:
+            if subpath in discovered_tags:
                 return await self._get_tag_playlists_as_browse(subpath)
 
         if subpath:
@@ -389,26 +390,95 @@ class YandexMusicProvider(MusicProvider):
         return folders
 
     @use_cache(3600)
-    async def _get_discovered_tags(self) -> list[tuple[str, str]]:
-        """Discover available tags from Landing API.
+    async def _validate_tag(self, tag_slug: str) -> bool:
+        """Check if a tag has playlists by calling client.tags().
 
-        Calls the landing("mixes") API to discover actual tag slugs that Yandex Music
-        supports. Results are cached for 1 hour. Falls back to empty list on failure.
-
-        :return: List of (slug, title) tuples discovered from the API.
+        :param tag_slug: Tag identifier (e.g. 'chill', '80s').
+        :return: True if the tag has at least one playlist.
         """
         try:
-            tags = await self.client.get_landing_tags()
+            playlists = await self.client.get_tag_playlists(tag_slug)
+            return len(playlists) > 0
+        except Exception as err:
+            self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
+            return False
+
+    @use_cache(3600)
+    async def _get_valid_tags_for_category(self, category: str) -> list[str]:
+        """Get validated tags for a category (only those with playlists).
+
+        Combines hardcoded tags from the category lists with any landing-discovered
+        tags, validates each by calling client.tags(), and returns only those with
+        playlists.
+
+        :param category: Category name ('mood', 'activity', 'era', 'genres').
+        :return: List of valid tag slugs.
+        """
+        category_lists: dict[str, list[str]] = {
+            "mood": list(TAG_CATEGORY_MOOD),
+            "activity": list(TAG_CATEGORY_ACTIVITY),
+            "era": list(TAG_CATEGORY_ERA),
+            "genres": list(TAG_CATEGORY_GENRES),
+        }
+        tags = category_lists.get(category, [])
+
+        # Add landing-discovered tags for this category
+        try:
+            landing_tags = await self.client.get_landing_tags()
+            for slug, _title in landing_tags:
+                cat = TAG_SLUG_CATEGORY.get(slug, "mood")
+                if cat == category and slug not in tags:
+                    tags.append(slug)
+        except Exception as err:
+            self.logger.debug("Landing tag discovery failed: %s", err)
+
+        # Validate each tag
+        valid_tags = []
+        for tag in tags:
+            if await self._validate_tag(tag):
+                valid_tags.append(tag)
+
+        return valid_tags
+
+    @use_cache(3600)
+    async def _get_discovered_tags(self) -> list[tuple[str, str]]:
+        """Get all available tags by combining hardcoded tags with landing discovery.
+
+        Starts with all hardcoded tags from category lists, adds landing-discovered
+        tags, validates each via client.tags(), and returns only those with playlists.
+        Results are cached for 1 hour.
+
+        :return: List of (slug, title) tuples for tags that have playlists.
+        """
+        names = self._get_browse_names()
+
+        # Collect all hardcoded tags (non-seasonal)
+        all_tags: dict[str, str] = {}
+        for slug, cat in TAG_SLUG_CATEGORY.items():
+            if cat != "seasonal":
+                all_tags[slug] = names.get(slug, slug.title())
+
+        # Add landing-discovered tags
+        try:
+            landing_tags = await self.client.get_landing_tags()
+            for slug, title in landing_tags:
+                if slug not in all_tags:
+                    all_tags[slug] = title
         except Exception as err:
             self.logger.debug("Failed to discover tags from landing API: %s", err)
-            tags = []
 
-        return tags
+        # Validate each tag
+        valid_tags: list[tuple[str, str]] = []
+        for slug, title in all_tags.items():
+            if await self._validate_tag(slug):
+                valid_tags.append((slug, title))
+
+        return valid_tags
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
-        """Get set of all discovered tag slugs (cached).
+        """Get set of all valid tag slugs (cached).
 
-        :return: Set of tag slug strings discovered from Landing API.
+        :return: Set of tag slug strings that have playlists.
         """
         discovered = await self._get_discovered_tags()
         return {slug for slug, _title in discovered}
@@ -416,11 +486,11 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse picks folder using dynamically discovered tags.
+        """Browse picks folder using hardcoded tags validated against the API.
 
-        Tags are discovered via Landing API and categorized using TAG_SLUG_CATEGORY.
-        Only categories with at least one discovered tag are shown.
-        Blacklisted tags are filtered out.
+        Tags are sourced from hardcoded category lists and landing API discovery,
+        then validated via client.tags() to ensure they have playlists.
+        Only categories with at least one valid tag are shown.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -429,11 +499,10 @@ class YandexMusicProvider(MusicProvider):
         names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
-        # Get discovered tags, filter blacklisted
+        # Get validated tags
         discovered = await self._get_discovered_tags()
-        discovered = [(slug, title) for slug, title in discovered if slug not in TAG_BLACKLIST]
 
-        # Categorize discovered tags
+        # Categorize valid tags
         categorized: dict[str, list[tuple[str, str]]] = {}
         for slug, title in discovered:
             cat = TAG_SLUG_CATEGORY.get(slug, "mood")
@@ -448,7 +517,7 @@ class YandexMusicProvider(MusicProvider):
             order_map = {s: i for i, s in enumerate(order)}
             cat_tags.sort(key=lambda t: order_map.get(t[0], len(order)))
 
-        # picks/ - show category folders (only those with discovered tags)
+        # picks/ - show category folders (only those with valid tags)
         if len(path_parts) == 1:
             category_display_order = ["mood", "activity", "era", "genres"]
             folders: list[BrowseFolder] = []
@@ -487,7 +556,7 @@ class YandexMusicProvider(MusicProvider):
             tag,
         )
 
-        # picks/category/ - show discovered tag folders for this category
+        # picks/category/ - show valid tag folders for this category
         if category and not tag:
             category_tags = categorized.get(category, [])
             folders = []
@@ -506,7 +575,6 @@ class YandexMusicProvider(MusicProvider):
 
         # picks/category/tag - show playlists for the tag
         if tag:
-            # Verify tag is actually discovered
             discovered_slugs = {slug for slug, _ in discovered}
             if tag in discovered_slugs:
                 self.logger.debug("Fetching playlists for tag: %s", tag)
@@ -518,9 +586,10 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_mixes(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse mixes folder (seasonal collections) using discovered tags.
+        """Browse mixes folder (seasonal collections) using hardcoded tags.
 
-        Only shows seasonal tags that are actually available via the Landing API.
+        Uses TAG_MIXES directly and validates each tag via client.tags()
+        to check if it has playlists. Does not depend on landing API discovery.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -529,11 +598,10 @@ class YandexMusicProvider(MusicProvider):
         names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
-        # Get discovered tags, filter to only seasonal ones from TAG_MIXES
-        discovered_slugs = await self._get_discovered_tag_slugs()
-        available_mixes = [t for t in TAG_MIXES if t in discovered_slugs]
+        # Validate seasonal tags directly (no landing dependency)
+        available_mixes = [t for t in TAG_MIXES if await self._validate_tag(t)]
 
-        # mixes/ - show seasonal folders (only discovered ones)
+        # mixes/ - show seasonal folders (only valid ones)
         if len(path_parts) == 1:
             folders = []
             for t in available_mixes:
@@ -550,7 +618,7 @@ class YandexMusicProvider(MusicProvider):
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
-        if tag and tag in discovered_slugs:
+        if tag and tag in TAG_MIXES:
             return await self._get_tag_playlists_as_browse(tag)
 
         return []
@@ -1227,10 +1295,14 @@ class YandexMusicProvider(MusicProvider):
     async def _get_mood_mix_recommendations(self) -> RecommendationFolder | None:
         """Get Mood Mix recommendation folder (rotating mood tags).
 
+        Uses pre-validated tags to avoid picking empty tags like 'chill' or 'workout'.
+
         :return: RecommendationFolder with mood playlists, or None if unavailable.
         """
-        # Rotate through mood tags
-        mood_tag = random.choice(TAG_CATEGORY_MOOD)
+        valid_tags = await self._get_valid_tags_for_category("mood")
+        if not valid_tags:
+            return None
+        mood_tag = random.choice(valid_tags)
         playlists = await self.client.get_tag_playlists(mood_tag)
         if not playlists:
             return None
@@ -1256,10 +1328,14 @@ class YandexMusicProvider(MusicProvider):
     async def _get_activity_mix_recommendations(self) -> RecommendationFolder | None:
         """Get Activity Mix recommendation folder (rotating activity tags).
 
+        Uses pre-validated tags to avoid picking empty tags like 'workout' or 'focus'.
+
         :return: RecommendationFolder with activity playlists, or None if unavailable.
         """
-        # Rotate through activity tags
-        activity_tag = random.choice(TAG_CATEGORY_ACTIVITY)
+        valid_tags = await self._get_valid_tags_for_category("activity")
+        if not valid_tags:
+            return None
+        activity_tag = random.choice(valid_tags)
         playlists = await self.client.get_tag_playlists(activity_tag)
         if not playlists:
             return None

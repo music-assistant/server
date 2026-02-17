@@ -832,8 +832,9 @@ class YandexMusicClient:
 
         Uses the landing("mixes") API which returns MixLink entities
         containing tag URLs (e.g., /tag/chill/) and display titles.
+        Filters out editorial post entries (/post/ URLs) which have no playlists.
 
-        :return: List of (tag_slug, title) tuples.
+        :return: List of (tag_slug, title) tuples for real tag entries only.
         """
         try:
             landing: Landing | None = await self._call_with_retry(lambda c: c.landing("mixes"))
@@ -849,7 +850,10 @@ class YandexMusicClient:
                 continue
             for entity in block.entities:
                 if entity.type == "mix-link" and isinstance(entity.data, MixLink):
-                    url = entity.data.url  # e.g., "/tag/chill/"
+                    url = entity.data.url  # e.g., "/tag/chill/" or "/post/..."
+                    # Filter out editorial posts — only include /tag/ URLs
+                    if not url.startswith("/tag/"):
+                        continue
                     slug = url.strip("/").split("/")[-1]
                     if slug:
                         tags.append((slug, entity.data.title))

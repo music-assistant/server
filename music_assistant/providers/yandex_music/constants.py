@@ -110,6 +110,11 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "electronic": "Электроника",
     "rnb": "R&B",
     "hiphop": "Хип-хоп",
+    "top": "Топ",
+    "newbies": "По жанру",
+    # Landing-discovered tags
+    "in the mood": "В настроение",  # noqa: RUF001
+    "background": "Послушать фоном",
     # Seasonal tags
     "winter": "Зима",
     "summer": "Лето",
@@ -162,6 +167,11 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "electronic": "Electronic",
     "rnb": "R&B",
     "hiphop": "Hip-Hop",
+    "top": "Top",
+    "newbies": "By Genre",
+    # Landing-discovered tags
+    "in the mood": "In the Mood",
+    "background": "Background",
     # Seasonal tags
     "winter": "Winter",
     "summer": "Summer",
@@ -174,11 +184,35 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "seasonal_mix": "Seasonal",
 }
 
-# Tag categories for Picks (kept for recommendations; browse uses TAG_SLUG_CATEGORY)
-TAG_CATEGORY_MOOD: Final[list[str]] = ["chill", "sad", "romantic", "party", "relax"]
-TAG_CATEGORY_ACTIVITY: Final[list[str]] = ["workout", "focus", "morning", "evening", "driving"]
+# Tag categories for Picks and Recommendations
+# Used by _get_valid_tags_for_category to validate tags at runtime.
+TAG_CATEGORY_MOOD: Final[list[str]] = [
+    "chill",
+    "sad",
+    "romantic",
+    "party",
+    "relax",
+    "in the mood",
+]
+TAG_CATEGORY_ACTIVITY: Final[list[str]] = [
+    "workout",
+    "focus",
+    "morning",
+    "evening",
+    "driving",
+    "background",
+]
 TAG_CATEGORY_ERA: Final[list[str]] = ["80s", "90s", "2000s", "retro"]
-TAG_CATEGORY_GENRES: Final[list[str]] = ["rock", "jazz", "classical", "electronic", "rnb", "hiphop"]
+TAG_CATEGORY_GENRES: Final[list[str]] = [
+    "rock",
+    "jazz",
+    "classical",
+    "electronic",
+    "rnb",
+    "hiphop",
+    "top",
+    "newbies",
+]
 
 # Tag slug -> display category mapping
 # Used to categorize dynamically discovered tags into browse folders.
@@ -190,12 +224,14 @@ TAG_SLUG_CATEGORY: Final[dict[str, str]] = {
     "romantic": "mood",
     "party": "mood",
     "relax": "mood",
+    "in the mood": "mood",
     # Activity
     "workout": "activity",
     "focus": "activity",
     "morning": "activity",
     "evening": "activity",
     "driving": "activity",
+    "background": "activity",
     # Era
     "80s": "era",
     "90s": "era",
@@ -208,6 +244,8 @@ TAG_SLUG_CATEGORY: Final[dict[str, str]] = {
     "electronic": "genres",
     "rnb": "genres",
     "hiphop": "genres",
+    "top": "genres",
+    "newbies": "genres",
     # Seasonal (for mixes)
     "winter": "seasonal",
     "summer": "seasonal",
@@ -215,15 +253,12 @@ TAG_SLUG_CATEGORY: Final[dict[str, str]] = {
     "newyear": "seasonal",
 }
 
-# Tags to exclude from browse (not useful for music browsing)
-TAG_BLACKLIST: Final[set[str]] = {"albomy-s-videoshotami"}
-
 # Preferred tag order within categories (discovered tags sorted by this)
 TAG_CATEGORY_ORDER: Final[dict[str, list[str]]] = {
-    "mood": ["chill", "sad", "romantic", "party", "relax"],
-    "activity": ["workout", "focus", "morning", "evening", "driving"],
+    "mood": ["chill", "sad", "romantic", "party", "relax", "in the mood"],
+    "activity": ["workout", "focus", "morning", "evening", "driving", "background"],
     "era": ["80s", "90s", "2000s", "retro"],
-    "genres": ["rock", "jazz", "classical", "electronic", "rnb", "hiphop"],
+    "genres": ["rock", "jazz", "classical", "electronic", "rnb", "hiphop", "top", "newbies"],
 }
 
 # Seasonal tags mapped to months (month number -> tag)
