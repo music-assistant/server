@@ -12,7 +12,7 @@ aiomusiccast==0.15.0
 aiortc>=1.6.0
 aiorun==2025.1.1
 aiosendspin==3.0.0
-aioslimproto==3.1.4
+aioslimproto==3.1.5
 aiosonos==0.1.9
 aiosqlite==0.22.1
 aiovban>=0.6.3
