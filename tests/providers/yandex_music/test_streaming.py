@@ -284,6 +284,44 @@ def test_select_best_quality_high_only_flac_returns_flac(
 def test_temp_file_replacement_order() -> None:
     """New temp file is tracked before old file is deleted to prevent file leaks."""
 
+
+# --- Audio params tests ---
+
+
+def test_get_audio_params_flac_mp4(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """flac-mp4 returns 48kHz/24bit."""
+    assert streaming_manager._get_audio_params("flac-mp4") == (48000, 24)
+
+
+def test_get_audio_params_flac_mp4_case_insensitive(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """flac-mp4 matching is case-insensitive."""
+    assert streaming_manager._get_audio_params("FLAC-MP4") == (48000, 24)
+
+
+def test_get_audio_params_flac(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Plain FLAC returns CD-quality defaults."""
+    assert streaming_manager._get_audio_params("flac") == (44100, 16)
+
+
+def test_get_audio_params_mp3(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """MP3 returns CD-quality defaults."""
+    assert streaming_manager._get_audio_params("mp3") == (44100, 16)
+
+
+def test_get_audio_params_none(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """None codec returns CD-quality defaults."""
+    assert streaming_manager._get_audio_params(None) == (44100, 16)
+
     # Create a minimal streaming manager stub
     class MinimalProvider:
         def __init__(self) -> None:

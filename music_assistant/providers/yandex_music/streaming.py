@@ -237,7 +237,8 @@ class YandexMusicStreamingManager:
                 needs_decryption = file_info.get("needs_decryption", False)
 
                 if url and codec.lower() in ("flac", "flac-mp4"):
-                    content_type, codec_type = self._get_content_type(codec)
+                    audio_format = self._build_audio_format(codec)
+                    content_type = audio_format.content_type
 
                     # Handle encrypted URLs from encraw transport
                     if needs_decryption and "key" in file_info:
@@ -279,11 +280,7 @@ class YandexMusicStreamingManager:
                                 return StreamDetails(
                                     item_id=item_id,
                                     provider=self.provider.instance_id,
-                                    audio_format=AudioFormat(
-                                        content_type=content_type,
-                                        codec_type=codec_type,
-                                        bit_rate=0,
-                                    ),
+                                    audio_format=audio_format,
                                     stream_type=StreamType.LOCAL_FILE,
                                     duration=track.duration,
                                     path=temp_path,
@@ -307,11 +304,7 @@ class YandexMusicStreamingManager:
                             return StreamDetails(
                                 item_id=item_id,
                                 provider=self.provider.instance_id,
-                                audio_format=AudioFormat(
-                                    content_type=content_type,
-                                    codec_type=codec_type,
-                                    bit_rate=0,  # FLAC is variable bitrate
-                                ),
+                                audio_format=audio_format,
                                 stream_type=StreamType.CUSTOM,
                                 duration=track.duration,
                                 data={
@@ -334,11 +327,7 @@ class YandexMusicStreamingManager:
                         return StreamDetails(
                             item_id=item_id,
                             provider=self.provider.instance_id,
-                            audio_format=AudioFormat(
-                                content_type=content_type,
-                                codec_type=codec_type,
-                                bit_rate=0,  # FLAC is variable bitrate
-                            ),
+                            audio_format=audio_format,
                             stream_type=StreamType.CUSTOM,
                             duration=track.duration,
                             data={
@@ -358,11 +347,7 @@ class YandexMusicStreamingManager:
                     return StreamDetails(
                         item_id=item_id,
                         provider=self.provider.instance_id,
-                        audio_format=AudioFormat(
-                            content_type=content_type,
-                            codec_type=codec_type,
-                            bit_rate=0,
-                        ),
+                        audio_format=audio_format,
                         stream_type=StreamType.HTTP,
                         duration=track.duration,
                         path=url,
@@ -396,17 +381,12 @@ class YandexMusicStreamingManager:
             getattr(selected_info, "bitrate_in_kbps", None),
         )
 
-        content_type, codec_type = self._get_content_type(selected_info.codec)
         bitrate = selected_info.bitrate_in_kbps or 0
 
         return StreamDetails(
             item_id=item_id,
             provider=self.provider.instance_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-                codec_type=codec_type,
-                bit_rate=bitrate,
-            ),
+            audio_format=self._build_audio_format(selected_info.codec, bit_rate=bitrate),
             stream_type=StreamType.HTTP,
             duration=track.duration,
             path=selected_info.direct_link,
@@ -536,6 +516,38 @@ class YandexMusicStreamingManager:
             return ContentType.AAC, ContentType.UNKNOWN
 
         return ContentType.UNKNOWN, ContentType.UNKNOWN
+
+    def _get_audio_params(self, codec: str | None) -> tuple[int, int]:
+        """Return (sample_rate, bit_depth) defaults based on codec string.
+
+        The Yandex get-file-info API does not return sample rate or bit depth,
+        so we use codec-based defaults. These values help the core select the
+        correct PCM output format and avoid unnecessary resampling.
+
+        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "flac", "mp3").
+        :return: Tuple of (sample_rate, bit_depth).
+        """
+        if codec and codec.lower() == "flac-mp4":
+            return 48000, 24
+        # CD-quality defaults for all other codecs
+        return 44100, 16
+
+    def _build_audio_format(self, codec: str | None, bit_rate: int = 0) -> AudioFormat:
+        """Build AudioFormat with content type and codec-based audio params.
+
+        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "flac", "mp3").
+        :param bit_rate: Bitrate in kbps (0 for variable/unknown).
+        :return: Configured AudioFormat instance.
+        """
+        content_type, codec_type = self._get_content_type(codec)
+        sample_rate, bit_depth = self._get_audio_params(codec)
+        return AudioFormat(
+            content_type=content_type,
+            codec_type=codec_type,
+            bit_rate=bit_rate,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+        )
 
     def _prepare_cipher(self, streamdetails: StreamDetails) -> tuple[Any, str, str]:
         """Prepare AES-256-CTR cipher and return (cipher, encrypted_url, codec).
