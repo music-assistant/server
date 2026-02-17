@@ -35,18 +35,6 @@ if TYPE_CHECKING:
     from .provider import KionMusicProvider
 
 
-def _get_content_type(provider: KionMusicProvider) -> ContentType:
-    """Get content type based on provider quality setting.
-
-    :param provider: The KION Music provider instance.
-    :return: ContentType.UNKNOWN as actual codec is determined at stream time.
-    """
-    # Actual codec is determined when getting stream details
-    # Suppress unused argument warning
-    _ = provider
-    return ContentType.UNKNOWN
-
-
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
     """Convert cover URI to full URL.
 
@@ -62,10 +50,10 @@ def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str |
 
 
 def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artist:
-    """Parse KION artist object to MA Artist model.
+    """Parse a KION Music artist object to MA Artist model.
 
     :param provider: The KION Music provider instance.
-    :param artist_obj: KION artist object.
+    :param artist_obj: API artist object.
     :return: Music Assistant Artist model.
     """
     artist_id = str(artist_obj.id)
@@ -115,10 +103,10 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
 
 
 def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
-    """Parse KION album object to MA Album model.
+    """Parse a KION Music album object to MA Album model.
 
     :param provider: The KION Music provider instance.
-    :param album_obj: KION album object.
+    :param album_obj: API album object.
     :return: Music Assistant Album model.
     """
     name, version = parse_title_and_version(
@@ -141,7 +129,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.mts.ru/album/{album_id}",
                 available=available,
@@ -209,10 +197,10 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
 
 
 def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
-    """Parse KION track object to MA Track model.
+    """Parse a KION Music track object to MA Track model.
 
     :param provider: The KION Music provider instance.
-    :param track_obj: KION track object.
+    :param track_obj: API track object.
     :return: Music Assistant Track model.
     """
     name, version = parse_title_and_version(
@@ -224,7 +212,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
     # Determine availability
     available = track_obj.available or False
 
-    # Duration is in milliseconds
+    # Duration is in milliseconds in KION API
     duration = (track_obj.duration_ms or 0) // 1000
 
     track = Track(
@@ -239,7 +227,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.mts.ru/track/{track_id}",
                 available=available,
@@ -287,10 +275,10 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
 def parse_playlist(
     provider: KionMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
 ) -> Playlist:
-    """Parse KION playlist object to MA Playlist model.
+    """Parse a KION Music playlist object to MA Playlist model.
 
     :param provider: The KION Music provider instance.
-    :param playlist_obj: KION playlist object.
+    :param playlist_obj: API playlist object.
     :param owner_name: Optional owner name override.
     :return: Music Assistant Playlist model.
     """

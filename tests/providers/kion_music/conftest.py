@@ -80,7 +80,23 @@ class TrackingLogger:
         self._error_count += 1
 
 
-# Minimal client-like object for yandex_music de_json (library requires client, not None)
+class StreamingProviderStubWithTracking:
+    """Provider stub with tracking logger for assertions.
+
+    Use this when you need to verify logging behavior.
+    """
+
+    domain = "kion_music"
+    instance_id = "kion_music_instance"
+
+    def __init__(self) -> None:
+        """Initialize stub with tracking logger."""
+        self.client = type("ClientStub", (), {"user_id": 12345})()
+        self.mass = type("MassStub", (), {})()
+        self.logger = TrackingLogger()
+
+
+# Minimal client-like object for kion_music de_json (library requires client, not None)
 DE_JSON_CLIENT = type("ClientStub", (), {"report_unknown_fields": False})()
 
 
@@ -94,3 +110,9 @@ def provider_stub() -> ProviderStub:
 def streaming_provider_stub() -> StreamingProviderStub:
     """Return a streaming provider stub (no Mock)."""
     return StreamingProviderStub()
+
+
+@pytest.fixture
+def streaming_provider_stub_with_tracking() -> StreamingProviderStubWithTracking:
+    """Return a streaming provider stub with tracking logger."""
+    return StreamingProviderStubWithTracking()
