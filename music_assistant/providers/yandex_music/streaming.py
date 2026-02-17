@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from .provider import YandexMusicProvider
 
 # Temp file prefix for easy identification and cleanup
-TEMP_FILE_PREFIX = "yandex_flac_"
+TEMP_FILE_PREFIX = "yandex_audio_"
 
 
 class YandexMusicStreamingManager:
@@ -257,8 +257,8 @@ class YandexMusicStreamingManager:
                             content_length = await self._get_content_length(url)
                             if content_length and content_length <= max_size_bytes:
                                 self.logger.info(
-                                    "Preloading encrypted FLAC for track %s "
-                                    "(size=%dMB, limit=%dMB)",
+                                    "Preloading encrypted %s for track %s (size=%dMB, limit=%dMB)",
+                                    codec,
                                     track_id,
                                     content_length // (1024 * 1024),
                                     max_size_mb,
@@ -325,10 +325,9 @@ class YandexMusicStreamingManager:
                             )
 
                         self.logger.info(
-                            "Streaming encrypted FLAC for track %s (codec=%s) - "
-                            "will decrypt on-the-fly",
-                            track_id,
+                            "Streaming encrypted %s for track %s - will decrypt on-the-fly",
                             codec,
+                            track_id,
                         )
                         # Return StreamType.CUSTOM for streaming decryption
                         # Store encrypted URL and decryption key in data for get_audio_stream
@@ -438,6 +437,8 @@ class YandexMusicStreamingManager:
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
         if preferred_normalized == QUALITY_SUPERB or "lossless" in preferred_normalized:
+            # Note: flac-mp4 typically comes from get-file-info API, not download-info,
+            # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
                 for info in sorted_infos:
                     if info.codec and info.codec.lower() == codec:
