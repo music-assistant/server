@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 import pywiim
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pywiim.upnp.eventer import UpnpEventer
 
@@ -36,6 +36,7 @@ class WiimPlayer(Player):
         self._attr_name = name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
@@ -75,6 +76,20 @@ class WiimPlayer(Player):
             software_version=self.wiim_player.firmware if self.wiim_player.firmware else "",
         )
 
+        if self.wiim_player.device_info:
+            if self.wiim_player.device_info.ip is not None:
+                self._attr_device_info.add_identifier(
+                    IdentifierType.IP_ADDRESS, self.wiim_player.device_info.ip
+                )
+
+            if self.wiim_player.device_info.mac is not None:
+                self._attr_device_info.add_identifier(
+                    IdentifierType.MAC_ADDRESS, self.wiim_player.device_info.mac
+                )
+
+        if self.wiim_player.uuid:
+            self._attr_device_info.add_identifier(IdentifierType.UUID, self.wiim_player.uuid)
+
         for source in self.wiim_player.source_catalog:
             self._attr_source_list.append(
                 PlayerSource(
@@ -87,6 +102,8 @@ class WiimPlayer(Player):
                     and source.get("supports_previous_track", False),
                 )
             )
+
+        await self.mass.players.register_or_update(self)
 
     @property
     def needs_poll(self) -> bool:
@@ -140,8 +157,9 @@ class WiimPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        await self.wiim_player.play_url(media.uri)
-        self.current_uri = media.uri
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self.wiim_player.play_url(url)
+        self.current_uri = url
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -151,6 +169,8 @@ class WiimPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        await self.wiim_eventer.async_unsubscribe()
         await self.wiim_upnp_client.close()
         await self.wiim_client.close()
 
@@ -162,12 +182,12 @@ class WiimPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if player_ids_to_add:
             for i in player_ids_to_add:
-                child_player = cast("WiimPlayer", self.mass.players.get(i))
+                child_player = cast("WiimPlayer", self.mass.players.get_player(i))
                 await child_player.wiim_player.join_group(self.wiim_player)
 
         if player_ids_to_remove:
             for i in player_ids_to_remove:
-                child_player = cast("WiimPlayer", self.mass.players.get(i))
+                child_player = cast("WiimPlayer", self.mass.players.get_player(i))
                 await child_player.wiim_player.leave_group()
 
     def update_ma_state(self) -> None:
