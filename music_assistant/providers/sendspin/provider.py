@@ -63,7 +63,7 @@ class SendspinProvider(PlayerProvider):
         if self.server_api.get_client(client_id) is None:
             self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
             return
-        if self.mass.players.get(client_id) is not None:
+        if self.mass.players.get_player(client_id) is not None:
             self.logger.debug(
                 "Client %s already registered, skipping duplicate add event", client_id
             )

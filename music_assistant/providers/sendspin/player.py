@@ -138,6 +138,8 @@ if TYPE_CHECKING:
 class SendspinPlayer(Player):
     """A sendspin audio player in Music Assistant."""
 
+    _attr_type = PlayerType.PROTOCOL
+
     api: SendspinClient
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
@@ -168,8 +170,8 @@ class SendspinPlayer(Player):
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
         self._attr_name = sendspin_client.name
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -343,7 +345,7 @@ class SendspinPlayer(Player):
                 self._attr_group_members = []
                 # 3. assign new leader if there are members left
                 if len(group_members) > 0 and (
-                    new_leader := self.mass.players.get(group_members[0])
+                    new_leader := self.mass.players.get_player(group_members[0])
                 ):
                     new_leader = cast("SendspinPlayer", new_leader)
                     new_leader._attr_group_members = group_members[1:]
@@ -444,9 +446,13 @@ class SendspinPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         for player_id in player_ids_to_remove or []:
-            await self.playback_session.remove_member(player_id)
+            player = self.mass.players.get_player(player_id, True)
+            player = cast("SendspinPlayer", player)  # For type checking
+            await self.api.group.remove_client(player.api)
         for player_id in player_ids_to_add or []:
-            await self.playback_session.add_member(player_id)
+            player = self.mass.players.get_player(player_id, True)
+            player = cast("SendspinPlayer", player)  # For type checking
+            await self.api.group.add_client(player.api)
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
@@ -516,7 +522,7 @@ class SendspinPlayer(Player):
             # Only leader sends metadata
             return
 
-        if self.current_media is None:
+        if self.state.current_media is None:
             # Clear metadata when no media loaded
             if (metadata_role := self._metadata_role) is not None:
                 metadata_role.set_metadata(Metadata())
@@ -527,7 +533,7 @@ class SendspinPlayer(Player):
         """Send the current media metadata to the sendspin group."""
         if not self.available:
             return
-        current_media = self.current_media
+        current_media = self.state.current_media
         if current_media is None:
             return
         # check if we are playing a MA queue item

@@ -372,7 +372,7 @@ class SendspinPlaybackSession:
         self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
-            member = cast("SendspinPlayer", self.player.mass.players.get(player_id, True))
+            member = cast("SendspinPlayer", self.player.mass.players.get_player(player_id, True))
             await self.player.api.group.add_client(member.api)
             async with self._state_lock:
                 self._members.add(player_id)
@@ -385,7 +385,7 @@ class SendspinPlaybackSession:
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
-        member = cast("SendspinPlayer", self.player.mass.players.get(player_id, True))
+        member = cast("SendspinPlayer", self.player.mass.players.get_player(player_id, True))
         await self.player.api.group.remove_client(member.api)
         self.pending_join_members.discard(player_id)
         async with self._state_lock:

@@ -85,7 +85,7 @@ class HeosPlayerProvider(PlayerProvider):
         self.logger.debug("Controller event received: %s", event)
 
         if event == const.EVENT_GROUPS_CHANGED:
-            for player in self.mass.players.all(provider_filter=self.instance_id):
+            for player in self.mass.players.all_players(provider_filter=self.instance_id):
                 assert isinstance(player, HeosPlayer)  # for type checking
                 await player.build_group_list()
 
@@ -144,7 +144,7 @@ class HeosPlayerProvider(PlayerProvider):
             devices = await self._heos.get_players()
             for device in devices.values():
                 player_id = str(device.player_id)
-                if player := cast("HeosPlayer", self.mass.players.get(player_id)):
+                if player := cast("HeosPlayer", self.mass.players.get_player(player_id)):
                     self.logger.debug(
                         "Updating existing HEOS player: %s (%s)", device.name, player_id
                     )
