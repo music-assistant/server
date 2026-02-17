@@ -37,9 +37,13 @@ class WiimProvider(PlayerProvider):
 
         discovered_devices = await discover_devices()
 
-        device_ip_addresses: list[str] = cast(
-            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
-        )
+        device_ip_addresses: list[str] = [
+            ip_address.strip()
+            for ip_address in cast(
+                "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+            )
+            if len(ip_address.strip()) > 0
+        ]
 
         # Remove duplicates (by IP)
         for device in discovered_devices:
@@ -47,9 +51,7 @@ class WiimProvider(PlayerProvider):
                 device_ip_addresses.append(device.ip)
 
         for ip_address in device_ip_addresses:
-            stripped_ip_address = ip_address.strip()
-
-            client = WiiMClient(stripped_ip_address, session=self.mass.http_session)
+            client = WiiMClient(ip_address, session=self.mass.http_session)
 
             # Get device info for UUID
             device_info = await client.get_device_info_model()
@@ -58,8 +60,8 @@ class WiimProvider(PlayerProvider):
                 continue
 
             # Create UPnP client (required for events and queue management)
-            description_url = f"http://{stripped_ip_address}:49152/description.xml"
-            upnp_client = await UpnpClient.create(stripped_ip_address, description_url)
+            description_url = f"http://{ip_address}:49152/description.xml"
+            upnp_client = await UpnpClient.create(ip_address, description_url)
 
             player = WiimPlayer(
                 provider=self,
