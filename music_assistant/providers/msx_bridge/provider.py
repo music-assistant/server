@@ -164,7 +164,8 @@ class SharedGroupStream:
                 return
 
             # Phase 1: Catch-up from buffer (for late joiners)
-            buffer_snapshot = list(self.buffer)
+            async with self._lock:
+                buffer_snapshot = list(self.buffer)
             buffer_bytes = sum(len(c) for c in buffer_snapshot)
             logger.debug(
                 "[SharedStream:%s] Sending %d catch-up chunks (%d bytes) to %s",

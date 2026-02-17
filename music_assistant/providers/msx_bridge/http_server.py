@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 from music_assistant_models.enums import ContentType
-from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
@@ -101,7 +101,7 @@ class MSXHTTPServer:
         self._setup_api_routes()
 
     def _setup_msx_routes(self) -> None:
-        """Register MSX bootstrap, content, playlist, and audio routes."""
+        """Register MSX bootstrap, content, and playback routes."""
         # MSX bootstrap
         self.app.router.add_get("/", self._handle_root)
         self.app.router.add_get("/msx/start.json", self._handle_start_json)
@@ -170,7 +170,7 @@ class MSXHTTPServer:
         self.app.router.add_get("/stream/{player_id}.mp3", self._handle_stream)
 
     def _setup_api_routes(self) -> None:
-        """Register library and playback control API routes."""
+        """Register Library and Playback API routes."""
         # Library API
         self.app.router.add_get("/api/albums", self._handle_albums)
         self.app.router.add_get("/api/albums/{item_id}/tracks", self._handle_album_tracks)
@@ -964,13 +964,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             if from_playlist:
                 player._skip_ws_notify = True
 
-            await self.provider.mass.player_queues.play_media(
-                player_id, uri, username=await self.provider.get_owner_username()
-            )
-
-            # Reset skip flag after play_media
-            if from_playlist:
-                player._skip_ws_notify = False
+            try:
+                await self.provider.mass.player_queues.play_media(
+                    player_id, uri, username=await self.provider.get_owner_username()
+                )
+            finally:
+                if from_playlist:
+                    player._skip_ws_notify = False
 
             # Wait for play_media() to signal media is ready (replaces 10s polling loop)
             media = await player.wait_for_media(timeout=10.0)
@@ -1857,10 +1857,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             return empty
 
         track = queue_item.media_item
-        if not isinstance(track, Track):
-            return empty
         try:
-            lyrics, lrc_lyrics = await self.provider.mass.metadata.get_track_lyrics(track)
+            lyrics, lrc_lyrics = await self.provider.mass.metadata.get_track_lyrics(track)  # type: ignore[arg-type]
         except Exception:
             lyrics, lrc_lyrics = None, None
 

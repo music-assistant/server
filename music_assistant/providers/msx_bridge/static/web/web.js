@@ -135,7 +135,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     function msxIcon(name) {
         if (!name) return '';
         var mapped = name.replace('msx-white-soft:', '').replace('msx-white:', '').replace(/-/g, '_');
-        return '<span class="material-symbols-rounded">' + mapped + '</span>';
+        return '<span class="material-symbols-rounded">' + esc(mapped) + '</span>';
     }
 
     function esc(str) {
@@ -685,7 +685,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 if (msg.path) {
                     if (msg.player_id) currentPlayerId = msg.player_id;
                     var track = {
-                        url: BASE + msg.path + '.mp3',
+                        url: BASE + msg.path,
                         title: msg.title || '',
                         artist: msg.artist || '',
                         image: msg.image_url || '',

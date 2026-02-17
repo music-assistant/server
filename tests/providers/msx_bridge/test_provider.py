@@ -41,7 +41,7 @@ async def test_handle_async_init_default_port(mass_mock: Mock, manifest_mock: Mo
 
         await prov.handle_async_init()
 
-        # cast(int, None) returns None but DEFAULT_HTTP_PORT is the default
+        # config.get_value() returns DEFAULT_HTTP_PORT when the key has a default_value
         mock_server_cls.assert_called_once()
         mock_server.start.assert_awaited_once()
 

@@ -1,6 +1,12 @@
 /******************************************************************************/
-//Input Interaction Plugin v0.0.20
-//(c) 2025 Benjamin Zachey
+// Input Interaction Plugin v0.0.20
+// (c) 2025 Benjamin Zachey
+// Source: https://msx.benzac.de/interaction/input.js
+// License: MIT (Media Station X SDK)
+// Bundled copy — served locally to avoid external CDN dependency.
+/******************************************************************************/
+
+/******************************************************************************/
 //Action syntax examples:
 //- "content:request:interaction:http://link.to.input.handler?input={INPUT}@http://msx.benzac.de/interaction/input.html"
 //- "content:request:interaction:http://link.to.input.handler?input={INPUT}|secret@http://msx.benzac.de/interaction/input.html"

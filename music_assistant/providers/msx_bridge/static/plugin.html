@@ -134,7 +134,7 @@
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
                     startPositionTimer(0);
 
-                    var audioUrl = BRIDGE + msg.path + ".mp3";
+                    var audioUrl = BRIDGE + msg.path;
                     var audioAction = "audio:" + audioUrl;
                     tvx.InteractionPlugin.executeAction(audioAction, data);
                 } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {

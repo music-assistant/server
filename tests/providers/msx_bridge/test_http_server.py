@@ -960,6 +960,79 @@ async def test_removed_kiosk_and_sendspin_routes_404(
         assert resp.status == 404, f"Expected 404 for {path}, got {resp.status}"
 
 
+# --- Queue API ---
+
+
+async def test_queue_unknown_player(http_client: TestClient[Any, Any]) -> None:
+    """GET /api/queue/{player_id} for unknown player returns empty items."""
+    resp = await http_client.get("/api/queue/unknown_player")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["items"] == []
+    assert data["current_index"] == -1
+
+
+async def test_queue_with_items(
+    http_client: TestClient[Any, Any],
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+) -> None:
+    """GET /api/queue/{player_id} returns queue items with current_index."""
+    # Create and register a player
+    player = MSXPlayer(provider, "msx_queue_test", name="Queue TV", output_format="mp3")
+    player.update_state = Mock()  # type: ignore[misc,method-assign]
+
+    # Set current media
+    media = MagicMock(spec=PlayerMedia)
+    media.source_id = "msx_queue_test"
+    media.queue_item_id = "qi_2"
+    player._attr_current_media = media
+
+    # Mock get_player to return our player
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda pid, **_kw: player if pid == "msx_queue_test" else None
+    )
+
+    # Create mock queue items
+    qi1 = Mock()
+    qi1.name = "Track 1"
+    qi1.duration = 180
+    qi1.image = None
+    mi1 = Mock()
+    mi1.name = "Track 1"
+    mi1.uri = "library://track/1"
+    mi1.artist_str = "Artist A"
+    mi1.duration = 180
+    qi1.media_item = mi1
+
+    qi2 = Mock()
+    qi2.name = "Track 2"
+    qi2.duration = 240
+    qi2.image = None
+    mi2 = Mock()
+    mi2.name = "Track 2"
+    mi2.uri = "library://track/2"
+    mi2.artist_str = "Artist B"
+    mi2.duration = 240
+    qi2.media_item = mi2
+
+    mass_mock.player_queues.items = Mock(return_value=[qi1, qi2])
+
+    # Mock get_item to resolve current track
+    current_qi = Mock()
+    current_qi.media_item = mi2
+    mass_mock.player_queues.get_item = Mock(return_value=current_qi)
+
+    resp = await http_client.get("/api/queue/msx_queue_test")
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["items"]) == 2
+    assert data["items"][0]["title"] == "Track 1"
+    assert data["items"][0]["artist"] == "Artist A"
+    assert data["items"][1]["title"] == "Track 2"
+    assert data["current_index"] == 1  # Track 2 is current
+
+
 class _AsyncCtx:
     """Async context manager helper for mocking session.get()."""
 
