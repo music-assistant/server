@@ -99,6 +99,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     var lyricsFetchTimer = null;
     var currentPlayerId = '';   // player_id from last WS play/playlist message
 
+    // Kiosk queue state
+    var kioskQueueTimer = null;
+
     // --- DOM ---
     var audio = document.getElementById('audio');
 
@@ -266,6 +269,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         var pid = track.player_id || currentPlayerId;
         if ((isKioskHtml5Mode() || isSendspinMode()) && pid) {
             fetchLyrics(pid);
+            fetchKioskQueue(pid);
         }
 
         // Also update full player
@@ -535,6 +539,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         }
         updateFullPlayer(track);
         startPosReport();
+        refreshQueueIfVisible();
     }
 
     function updatePlayerBar(track) {
@@ -710,6 +715,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                     setKioskPlaying(false);
                     cancelKioskHideTimer();
                     hideKioskControls();
+                    // Clear kiosk queue
+                    var kql = document.getElementById('kiosk-queue-list');
+                    if (kql) kql.innerHTML = '<div class="kiosk-queue-empty">No tracks in queue</div>';
                 } else {
                     document.getElementById('player-bar').classList.remove('active');
                 }
@@ -905,9 +913,171 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         }, 400);
     }
 
+    // --- CSS Text Equalizer ---
+    function buildEqualizer() {
+        var container = document.getElementById('eq-bars');
+        if (!container || container.children.length > 0) return;
+        var BAR_COUNT = 32;
+        for (var i = 0; i < BAR_COUNT; i++) {
+            var bar = document.createElement('div');
+            bar.className = 'eq-bar';
+            // Randomize animation parameters for organic look
+            var dur = (0.6 + Math.random() * 0.9).toFixed(2);
+            var delay = (Math.random() * 0.8).toFixed(2);
+            var minH = (4 + Math.random() * 8).toFixed(0);
+            var maxH = (40 + Math.random() * 160).toFixed(0);
+            bar.style.setProperty('--eq-dur', dur + 's');
+            bar.style.setProperty('--eq-delay', delay + 's');
+            bar.style.setProperty('--eq-min', minH + 'px');
+            bar.style.setProperty('--eq-max', maxH + 'px');
+            container.appendChild(bar);
+        }
+    }
+
+    // --- Kiosk Queue ---
+    function fetchKioskQueue(playerId) {
+        clearTimeout(kioskQueueTimer);
+        kioskQueueTimer = setTimeout(function() {
+            fetch('/api/queue/' + encodeURIComponent(playerId))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { renderKioskQueue(data); })
+                .catch(function(e) { console.warn('Kiosk queue fetch failed:', e); });
+        }, 250);
+    }
+
+    function renderKioskQueue(data) {
+        var container = document.getElementById('kiosk-queue-list');
+        if (!container) return;
+        container.innerHTML = '';
+
+        if (!data.items || !data.items.length) {
+            container.innerHTML = '<div class="kiosk-queue-empty">No tracks in queue</div>';
+            return;
+        }
+
+        var currentIdx = data.current_index;
+
+        data.items.forEach(function(item, i) {
+            var row = document.createElement('div');
+            row.className = 'kiosk-queue-item' + (i === currentIdx ? ' active' : '');
+
+            var numEl = '<div class="kiosk-queue-num">';
+            if (i === currentIdx) {
+                numEl += '<span class="material-symbols-rounded" style="font-size:14px">play_arrow</span>';
+            } else {
+                numEl += (i + 1);
+            }
+            numEl += '</div>';
+
+            var imgHtml = item.image
+                ? '<img src="' + esc(item.image) + '" alt="" class="kiosk-queue-art" loading="lazy">'
+                : '<div class="kiosk-queue-art--empty"><span class="material-symbols-rounded" style="font-size:16px">audiotrack</span></div>';
+
+            var durStr = item.duration ? fmtDur(item.duration) : '';
+
+            row.innerHTML =
+                numEl +
+                imgHtml +
+                '<div class="kiosk-queue-info">' +
+                    '<div class="kiosk-queue-title">' + esc(item.title || '') + '</div>' +
+                    '<div class="kiosk-queue-sub">' + esc(item.artist || '') + '</div>' +
+                '</div>' +
+                '<div class="kiosk-queue-dur">' + durStr + '</div>';
+
+            container.appendChild(row);
+        });
+
+        // Scroll current track into view
+        if (currentIdx >= 0) {
+            var activeEl = container.querySelector('.kiosk-queue-item.active');
+            if (activeEl) {
+                activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+        }
+    }
+
     // --- Player Mode ---
     function toggleMode() {
-        document.getElementById('player-full').classList.toggle('active');
+        var full = document.getElementById('player-full');
+        full.classList.toggle('active');
+        if (full.classList.contains('active') && currentPlayerId) {
+            fetchQueue(currentPlayerId);
+        }
+    }
+
+    // --- Queue Panel ---
+    var queueFetchTimer = null;
+
+    function fetchQueue(playerId) {
+        clearTimeout(queueFetchTimer);
+        queueFetchTimer = setTimeout(function() {
+            fetch('/api/queue/' + encodeURIComponent(playerId))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { renderQueue(data); })
+                .catch(function(e) { console.warn('Queue fetch failed:', e); });
+        }, 200);
+    }
+
+    function renderQueue(data) {
+        var container = document.getElementById('queue-list');
+        if (!container) return;
+        container.innerHTML = '';
+
+        if (!data.items || !data.items.length) {
+            container.innerHTML = '<div class="queue-empty">No tracks in queue</div>';
+            return;
+        }
+
+        var currentIdx = data.current_index;
+
+        data.items.forEach(function(item, i) {
+            var row = document.createElement('div');
+            row.className = 'queue-item' + (i === currentIdx ? ' active' : '');
+
+            var numEl = '<div class="queue-item-num">';
+            if (i === currentIdx) {
+                numEl += '<span class="material-symbols-rounded" style="font-size:16px">play_arrow</span>';
+            } else {
+                numEl += (i + 1);
+            }
+            numEl += '</div>';
+
+            var imgHtml = item.image
+                ? '<img src="' + esc(item.image) + '" alt="" class="queue-item-art" loading="lazy">'
+                : '<div class="queue-item-art--empty"><span class="material-symbols-rounded" style="font-size:18px">audiotrack</span></div>';
+
+            var durStr = item.duration ? fmtDur(item.duration) : '';
+
+            row.innerHTML =
+                numEl +
+                imgHtml +
+                '<div class="queue-item-info">' +
+                    '<div class="queue-item-title">' + esc(item.title || '') + '</div>' +
+                    '<div class="queue-item-sub">' + esc(item.artist || '') + '</div>' +
+                '</div>' +
+                '<div class="queue-item-dur">' + durStr + '</div>';
+
+            container.appendChild(row);
+        });
+
+        // Scroll current track into view
+        if (currentIdx >= 0) {
+            var activeEl = container.querySelector('.queue-item.active');
+            if (activeEl) {
+                activeEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+        }
+    }
+
+    function refreshQueueIfVisible() {
+        var full = document.getElementById('player-full');
+        if (full && full.classList.contains('active') && currentPlayerId) {
+            fetchQueue(currentPlayerId);
+        }
+        // Also refresh kiosk queue if in kiosk mode
+        if (KIOSK_MODE && currentPlayerId) {
+            fetchKioskQueue(currentPlayerId);
+        }
     }
 
     // --- UI Helpers ---
@@ -919,6 +1089,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (SENDSPIN_MODE) {
             // Kiosk + Sendspin mode: synchronized audio via Sendspin SDK
             document.body.classList.add('kiosk-mode');
+
+            // Build CSS equalizer bars
+            buildEqualizer();
+
             await initSendspin();
 
             // Setup kiosk controls
@@ -934,6 +1108,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         } else if (KIOSK_MODE) {
             // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
             document.body.classList.add('kiosk-mode');
+
+            // Build CSS equalizer bars
+            buildEqualizer();
 
             // Hide sync indicator (not used in HTML5 mode)
             var syncStatus = document.getElementById('kiosk-sync-status');

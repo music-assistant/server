@@ -209,21 +209,30 @@
         /* --- Full player (normal mode) --- */
         #player-full {
             position: fixed; inset: 0; z-index: 30;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            display: flex;
             background: #111;
             opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
         }
         #player-full.active { opacity: 1; pointer-events: auto; }
 
+        /* Left panel: album art + track info + controls */
+        .full-left {
+            flex: 0 0 50%;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 40px;
+            position: relative;
+        }
+
         #full-art {
-            width: min(45vw, 45vh); height: min(45vw, 45vh);
+            width: min(38vw, 38vh); height: min(38vw, 38vh);
             border-radius: 8px; object-fit: cover;
             box-shadow: 0 16px 48px rgba(0,0,0,0.5); margin-bottom: 24px;
         }
-        #full-title { font-size: 1.2rem; font-weight: 600; text-align: center; max-width: 70%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #full-title { font-size: 1.2rem; font-weight: 600; text-align: center; max-width: 80%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #full-artist { color: var(--text-dim); font-size: 0.9rem; margin-top: 4px; text-align: center; }
 
-        .full-progress { display: flex; align-items: center; gap: 12px; margin-top: 24px; width: min(50vw, 420px); }
+        .full-progress { display: flex; align-items: center; gap: 12px; margin-top: 24px; width: min(40vw, 380px); }
         .full-progress input[type="range"] { flex: 1; height: 4px; }
         .full-progress .time { font-size: 0.8rem; min-width: 38px; }
 
@@ -241,6 +250,77 @@
             transition: border-color 0.2s, color 0.2s;
         }
         #full-browse:hover { border-color: #fff; color: #fff; }
+
+        /* Right panel: queue */
+        .full-right {
+            flex: 0 0 50%;
+            display: flex; flex-direction: column;
+            background: rgba(255,255,255,0.03);
+            border-left: 1px solid rgba(255,255,255,0.06);
+        }
+
+        .queue-header {
+            padding: 24px 24px 16px;
+            font-size: 0.85rem; font-weight: 600;
+            color: var(--text-dim);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+
+        .queue-list {
+            flex: 1; overflow-y: auto; padding: 8px 12px;
+        }
+        .queue-list::-webkit-scrollbar { width: 5px; }
+        .queue-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+        .queue-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 8px 12px; border-radius: 6px;
+            cursor: pointer; transition: background 0.12s;
+        }
+        .queue-item:hover { background: rgba(255,255,255,0.06); }
+        .queue-item.active { background: rgba(255,255,255,0.08); }
+
+        .queue-item-num {
+            width: 24px; text-align: center;
+            font-size: 0.78rem; color: var(--text-dim);
+            font-variant-numeric: tabular-nums; flex-shrink: 0;
+        }
+        .queue-item.active .queue-item-num {
+            color: #4caf50;
+        }
+
+        .queue-item-art {
+            width: 40px; height: 40px; border-radius: 4px;
+            object-fit: cover; background: #333; flex-shrink: 0;
+        }
+        .queue-item-art--empty {
+            width: 40px; height: 40px; border-radius: 4px;
+            background: #333; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: var(--text-dim); font-size: 1rem;
+        }
+
+        .queue-item-info { flex: 1; min-width: 0; }
+        .queue-item-title {
+            font-size: 0.85rem; font-weight: 500;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .queue-item.active .queue-item-title { color: #4caf50; }
+        .queue-item-sub {
+            color: var(--text-dim); font-size: 0.75rem; margin-top: 1px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .queue-item-dur {
+            font-size: 0.75rem; color: var(--text-dim);
+            font-variant-numeric: tabular-nums; flex-shrink: 0;
+        }
+
+        .queue-empty {
+            padding: 40px 20px; text-align: center;
+            color: var(--text-dim); font-size: 0.9rem;
+        }
 
         /* --- Search overlay --- */
         #search-overlay {
@@ -310,7 +390,7 @@
             display: none !important;
         }
 
-        /* Kiosk player container — full-screen layered */
+        /* Kiosk player container — full-screen three-column layout */
         #kiosk-player {
             display: none;
             position: fixed;
@@ -320,13 +400,14 @@
         }
 
         body.kiosk-mode #kiosk-player {
-            display: block;
+            display: flex;
         }
 
-        /* Layer 1: Full-bleed background */
+        /* Layer 1: Full-bleed background (behind columns) */
         #kiosk-bg {
             position: absolute;
             inset: 0;
+            z-index: 0;
         }
 
         #kiosk-bg-img {
@@ -338,7 +419,7 @@
             transition: opacity 0.6s ease;
         }
 
-        /* Vignette overlay: dark top + stronger dark bottom for text readability */
+        /* Vignette overlay */
         #kiosk-bg::after {
             content: '';
             position: absolute;
@@ -353,14 +434,44 @@
             pointer-events: none;
         }
 
-        /* Layer 1.5: Full album art centered, no crop */
+        /* === Three-Column Layout === */
+        .kiosk-col-left,
+        .kiosk-col-center,
+        .kiosk-col-right {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Left column: album art */
+        .kiosk-col-left {
+            flex: 0 0 30%;
+            padding: 80px 20px 160px;
+        }
+
+        /* Center column: lyrics or equalizer */
+        .kiosk-col-center {
+            flex: 1;
+            padding: 10px 10px 160px;
+            min-width: 0;
+            justify-content: center;
+        }
+
+        /* Right column: queue */
+        .kiosk-col-right {
+            flex: 0 0 28%;
+            padding: 24px 0 160px;
+            justify-content: flex-start;
+            align-items: stretch;
+        }
+
+        /* Album art in left column */
         #kiosk-art-center {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            max-width: 82vw;
-            max-height: 72vh;
+            max-width: 90%;
+            max-height: 50vh;
             width: auto;
             height: auto;
             object-fit: contain;
@@ -368,11 +479,38 @@
             box-shadow: 0 12px 48px rgba(0, 0, 0, 0.65);
             opacity: 0;
             transition: opacity 0.6s ease;
-            z-index: 2;
             pointer-events: none;
         }
         #kiosk-player.playing #kiosk-art-center {
             opacity: 1;
+        }
+
+        /* Track info under album art */
+        .kiosk-track-info {
+            margin-top: 24px;
+            text-align: center;
+            max-width: 90%;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+        #kiosk-player.playing .kiosk-track-info {
+            opacity: 1;
+        }
+
+        #kiosk-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-shadow: 0 2px 12px rgba(0,0,0,0.6);
+        }
+        #kiosk-artist {
+            font-size: 0.95rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 6px;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
         }
 
         /* Layer 2: Idle state */
@@ -387,6 +525,7 @@
             opacity: 1;
             transition: opacity 0.4s ease;
             pointer-events: none;
+            z-index: 3;
         }
         #kiosk-idle .material-symbols-rounded {
             font-size: 96px;
@@ -432,50 +571,17 @@
             50% { opacity: 0.6; }
         }
 
-        /* Layer 4: Always-visible track info (top-left) */
-        #kiosk-info-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            padding: 32px 40px 0;
-            opacity: 0;
-            transition: opacity 0.5s ease;
-            pointer-events: none;
-            z-index: 5;
-        }
-        #kiosk-player.playing #kiosk-info-overlay {
-            opacity: 1;
-        }
-
-        #kiosk-title {
-            font-size: 1.6rem;
-            font-weight: 600;
-            color: #fff;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            text-shadow: 0 2px 12px rgba(0,0,0,0.6);
-        }
-        #kiosk-artist {
-            font-size: 1rem;
-            color: rgba(255,255,255,0.7);
-            margin-top: 6px;
-            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
-        }
-
-        /* Layer 6: Karaoke lyrics */
+        /* === Karaoke lyrics (center column) === */
         #kiosk-lyrics {
-            position: absolute;
-            inset: 0;
+            width: 100%;
+            height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 110px 60px 170px;
+            padding-top: 10vh;
             opacity: 0;
             transition: opacity 0.5s ease;
             pointer-events: none;
-            z-index: 4;
         }
         #kiosk-player.has-lyrics #kiosk-lyrics {
             opacity: 1;
@@ -483,11 +589,11 @@
 
         #kiosk-lyrics-scroll {
             width: 100%;
-            max-width: 760px;
+            max-width: 700px;
             max-height: 100%;
             overflow: hidden;
-            -webkit-mask-image: linear-gradient(transparent 0%, black 18%, black 82%, transparent 100%);
-            mask-image: linear-gradient(transparent 0%, black 18%, black 82%, transparent 100%);
+            -webkit-mask-image: linear-gradient(transparent 0%, black 10%, black 85%, transparent 100%);
+            mask-image: linear-gradient(transparent 0%, black 10%, black 85%, transparent 100%);
             position: relative;
         }
 
@@ -520,7 +626,7 @@
         }
         .lyric-line.ln1 { color: rgba(255, 255, 255, 0.55); font-size: 1.45rem; }
 
-        /* Plain text (no LRC): static, full opacity */
+        /* Plain text (no LRC): static */
         #kiosk-player.has-lyrics.plain-lyrics #kiosk-lyrics-inner {
             transition: none;
         }
@@ -529,6 +635,134 @@
             font-size: 1.1rem;
             font-weight: 400;
             gap: 10px;
+        }
+
+        /* === CSS Text Equalizer (center column, when no lyrics) === */
+        #kiosk-equalizer {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            pointer-events: none;
+        }
+        #kiosk-player.playing:not(.has-lyrics) #kiosk-equalizer {
+            opacity: 1;
+        }
+
+        .eq-container {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 6px;
+            height: 50vh;
+            max-height: 400px;
+            padding: 20px;
+        }
+
+        .eq-bar {
+            width: 8px;
+            border-radius: 4px;
+            background: linear-gradient(to top, rgba(76,175,80,0.9), rgba(129,199,132,0.7), rgba(200,230,201,0.5));
+            animation: eqBounce var(--eq-dur, 1s) var(--eq-delay, 0s) ease-in-out infinite alternate;
+            will-change: height;
+            min-height: 8px;
+        }
+
+        @keyframes eqBounce {
+            0%   { height: var(--eq-min, 8px); opacity: 0.5; }
+            100% { height: var(--eq-max, 100px); opacity: 1; }
+        }
+
+        /* Pause equalizer animation when not playing */
+        #kiosk-player:not(.playing) .eq-bar {
+            animation-play-state: paused;
+        }
+
+        /* === Kiosk Queue (right column) === */
+        .kiosk-queue-header {
+            padding: 20px 20px 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+
+        #kiosk-queue-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px 8px;
+        }
+        #kiosk-queue-list::-webkit-scrollbar { width: 4px; }
+        #kiosk-queue-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+        .kiosk-queue-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 10px;
+            border-radius: 6px;
+            transition: background 0.12s;
+        }
+        .kiosk-queue-item:hover { background: rgba(255,255,255,0.06); }
+        .kiosk-queue-item.active { background: rgba(255,255,255,0.08); }
+
+        .kiosk-queue-num {
+            width: 22px;
+            text-align: center;
+            font-size: 0.72rem;
+            color: rgba(255,255,255,0.4);
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+        .kiosk-queue-item.active .kiosk-queue-num { color: #4caf50; }
+
+        .kiosk-queue-art {
+            width: 36px; height: 36px;
+            border-radius: 4px;
+            object-fit: cover;
+            background: rgba(255,255,255,0.05);
+            flex-shrink: 0;
+        }
+        .kiosk-queue-art--empty {
+            width: 36px; height: 36px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.05);
+            flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: rgba(255,255,255,0.3);
+        }
+
+        .kiosk-queue-info { flex: 1; min-width: 0; }
+        .kiosk-queue-title {
+            font-size: 0.82rem;
+            font-weight: 500;
+            color: rgba(255,255,255,0.85);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .kiosk-queue-item.active .kiosk-queue-title { color: #4caf50; }
+        .kiosk-queue-sub {
+            color: rgba(255,255,255,0.4);
+            font-size: 0.72rem;
+            margin-top: 1px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .kiosk-queue-dur {
+            font-size: 0.72rem;
+            color: rgba(255,255,255,0.35);
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+
+        .kiosk-queue-empty {
+            padding: 40px 16px;
+            text-align: center;
+            color: rgba(255,255,255,0.3);
+            font-size: 0.85rem;
         }
 
         /* Layer 5: Auto-hiding controls panel (bottom) */
@@ -620,20 +854,38 @@
         /* --- Responsive --- */
         @media (max-width: 900px) {
             .content-grid { --cols: 3 !important; }
+            #player-full { flex-direction: column; }
+            .full-left { flex: 0 0 auto; padding: 24px; }
+            .full-right { flex: 1; min-height: 0; border-left: none; border-top: 1px solid rgba(255,255,255,0.06); }
+            #full-art { width: min(35vw, 200px); height: min(35vw, 200px); margin-bottom: 16px; }
+            .full-progress { width: 80%; }
+
+            /* Kiosk: hide queue column on narrow screens */
+            .kiosk-col-right { display: none; }
+            .kiosk-col-left { flex: 0 0 35%; }
+            .kiosk-col-center { flex: 1; }
         }
         @media (max-width: 640px) {
             :root { --sidebar-w: 180px; }
             .content-grid { --cols: 2 !important; gap: 10px; }
             #content { padding: 12px; }
             .progress { display: none; }
+            .full-left { padding: 16px; }
+            #full-art { width: min(30vw, 160px); height: min(30vw, 160px); margin-bottom: 12px; }
+            #full-title { font-size: 1rem; }
+            .full-controls { gap: 12px; margin-top: 12px; }
+            .full-progress { margin-top: 16px; }
+            #full-browse { margin-top: 16px; }
 
-            #kiosk-info-overlay { padding: 20px 20px 0; }
-            #kiosk-title { font-size: 1.2rem; }
-            #kiosk-artist { font-size: 0.9rem; }
+            /* Kiosk: single column on mobile */
+            .kiosk-col-left { flex: 0 0 100%; }
+            .kiosk-col-center { display: none; }
+            .kiosk-col-right { display: none; }
+            #kiosk-title { font-size: 1.1rem; }
+            #kiosk-artist { font-size: 0.85rem; }
             #kiosk-controls-panel { padding: 20px 20px 28px; }
             .kiosk-controls .ctrl { width: 48px; height: 48px; }
             .kiosk-controls .ctrl--primary { width: 60px; height: 60px; }
-            #kiosk-lyrics { padding: 90px 24px 150px; }
             .lyric-line { font-size: 1.1rem; }
             .lyric-line.active { font-size: 1.4rem; }
             .lyric-line.lp1, .lyric-line.ln1 { font-size: 1.2rem; }
@@ -676,55 +928,80 @@
 
         <!-- Full-screen player (normal mode only) -->
         <div id="player-full">
-            <img id="full-art" src="" alt="">
-            <div id="full-title"></div>
-            <div id="full-artist"></div>
-            <div class="full-progress">
-                <span id="full-time" class="time">0:00</span>
-                <input type="range" id="full-seek" min="0" max="100" value="0" step="0.1">
-                <span id="full-dur" class="time">0:00</span>
+            <!-- Left: album art + info + controls -->
+            <div class="full-left">
+                <img id="full-art" src="" alt="">
+                <div id="full-title"></div>
+                <div id="full-artist"></div>
+                <div class="full-progress">
+                    <span id="full-time" class="time">0:00</span>
+                    <input type="range" id="full-seek" min="0" max="100" value="0" step="0.1">
+                    <span id="full-dur" class="time">0:00</span>
+                </div>
+                <div class="full-controls">
+                    <button id="full-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
+                    <button id="full-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
+                    <button id="full-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+                </div>
+                <button id="full-browse">Browse Library</button>
             </div>
-            <div class="full-controls">
-                <button id="full-prev" class="ctrl"><span class="material-symbols-rounded">skip_previous</span></button>
-                <button id="full-play" class="ctrl ctrl--primary"><span class="material-symbols-rounded">play_arrow</span></button>
-                <button id="full-next" class="ctrl"><span class="material-symbols-rounded">skip_next</span></button>
+            <!-- Right: playback queue -->
+            <div class="full-right">
+                <div class="queue-header">Queue</div>
+                <div id="queue-list" class="queue-list">
+                    <div class="queue-empty">No tracks in queue</div>
+                </div>
             </div>
-            <button id="full-browse">Browse Library</button>
         </div>
 
-        <!-- Kiosk player (kiosk mode only) -->
+        <!-- Kiosk player (kiosk mode only) — three-column layout -->
         <div id="kiosk-player">
-            <!-- Layer 1: Full-bleed background -->
+            <!-- Background layer (behind columns) -->
             <div id="kiosk-bg">
                 <img id="kiosk-bg-img" src="" alt="" aria-hidden="true">
             </div>
 
-            <!-- Layer 1.5: Centered album art (full, no crop) -->
-            <img id="kiosk-art-center" src="" alt="" aria-hidden="true">
-
-            <!-- Layer 2: Idle state (nothing playing) -->
+            <!-- Idle state overlay (nothing playing) -->
             <div id="kiosk-idle">
                 <span class="material-symbols-rounded">music_note</span>
                 <div id="kiosk-idle-label">Waiting for playback...</div>
             </div>
 
-            <!-- Layer 3: Sync indicator (Sendspin, top-right) -->
+            <!-- Sync indicator (Sendspin, top-right) -->
             <div id="kiosk-sync-status" class="sync-indicator">CONNECTING...</div>
 
-            <!-- Layer 4: Always-visible track info overlay (top-left) -->
-            <div id="kiosk-info-overlay">
-                <div id="kiosk-title"></div>
-                <div id="kiosk-artist"></div>
-            </div>
-
-            <!-- Layer 6: Karaoke lyrics (center, synced to playback) -->
-            <div id="kiosk-lyrics">
-                <div id="kiosk-lyrics-scroll">
-                    <div id="kiosk-lyrics-inner"></div>
+            <!-- Left column: album art + track info -->
+            <div class="kiosk-col-left">
+                <img id="kiosk-art-center" src="" alt="" aria-hidden="true">
+                <div class="kiosk-track-info">
+                    <div id="kiosk-title"></div>
+                    <div id="kiosk-artist"></div>
                 </div>
             </div>
 
-            <!-- Layer 5: Auto-hiding controls panel (bottom) -->
+            <!-- Center column: lyrics or CSS equalizer -->
+            <div class="kiosk-col-center">
+                <!-- Karaoke lyrics -->
+                <div id="kiosk-lyrics">
+                    <div id="kiosk-lyrics-scroll">
+                        <div id="kiosk-lyrics-inner"></div>
+                    </div>
+                </div>
+                <!-- CSS text equalizer (shown when no lyrics) -->
+                <div id="kiosk-equalizer">
+                    <div class="eq-container" id="eq-bars"></div>
+                </div>
+            </div>
+
+            <!-- Right column: playback queue -->
+            <div class="kiosk-col-right">
+                <div class="kiosk-queue-header">Queue</div>
+                <div id="kiosk-queue-list">
+                    <div class="kiosk-queue-empty">No tracks in queue</div>
+                </div>
+            </div>
+
+            <!-- Auto-hiding controls panel (bottom, overlays all columns) -->
             <div id="kiosk-controls-panel">
                 <div class="kiosk-seek-row">
                     <span id="kiosk-time" class="time">0:00</span>
@@ -759,6 +1036,6 @@
             }
         })();
     </script>
-    <script type="module" src="/web/web.js?v=4"></script>
+    <script type="module" src="/web/web.js?v=7"></script>
 </body>
 </html>
