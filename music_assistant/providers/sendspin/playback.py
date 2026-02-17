@@ -797,12 +797,19 @@ class SendspinPlaybackSession:
             if transformed_history is None:
                 continue
             pipeline = await self._sync_member_pipeline(player_id)
-            push_stream.prepare_historical_audio(
-                transformed_history,
-                _SENDSPIN_PCM_FORMAT,
-                channel_id=pipeline.channel_id,
-                start_time_us=first_history_start_us,
+            # Split the blob into slices so push_stream can yield between encodes.
+            frame_stride = (_SENDSPIN_PCM_FORMAT.bit_depth // 8) * _SENDSPIN_PCM_FORMAT.channels
+            slice_bytes = (
+                int(_SENDSPIN_PCM_FORMAT.sample_rate * _PRODUCER_SLICE_US / 1_000_000)
+                * frame_stride
             )
+            for offset in range(0, len(transformed_history), slice_bytes):
+                push_stream.prepare_historical_audio(
+                    transformed_history[offset : offset + slice_bytes],
+                    _SENDSPIN_PCM_FORMAT,
+                    channel_id=pipeline.channel_id,
+                    start_time_us=first_history_start_us if offset == 0 else None,
+                )
             await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_chunks)
             await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
             injected_any = True
