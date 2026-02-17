@@ -1010,8 +1010,7 @@ class SendspinPlaybackSession:
         processor = pipeline.processor
         if processor is None:
             return
-        # Short timeout: drop data for a slow member rather than block the producer.
-        await asyncio.wait_for(processor.push(chunk), timeout=0.05)
+        await processor.push(chunk)
 
     async def _read_member_chunk(
         self,
