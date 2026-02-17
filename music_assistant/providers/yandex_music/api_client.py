@@ -6,13 +6,12 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-import aiohttp
-from Crypto.Cipher import AES
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -430,8 +429,8 @@ class YandexMusicClient:
             if not lyrics_text:
                 return None, False
 
-            # Check if it's LRC format (synced lyrics start with timestamp like [00:12.34])
-            is_synced = bool(lyrics_text.strip().startswith("["))
+            # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
+            is_synced = bool(re.match(r"\[\d{2}:\d{2}", lyrics_text.strip()))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -595,47 +594,6 @@ class YandexMusicClient:
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
-
-    async def _decrypt_track_url(self, encrypted_url: str, key_hex: str) -> bytes:
-        """Decrypt encrypted track data using AES-256 CTR mode.
-
-        The Yandex Music API returns encrypted URLs when using transports=encraw.
-        This matches the decryption implementation from yandex-music-downloader-realflac.
-
-        :param encrypted_url: The encrypted download URL.
-        :param key_hex: HEX-encoded AES-256 decryption key.
-        :return: Decrypted audio data bytes.
-        """
-        # Download encrypted data using direct HTTP request
-        LOGGER.debug("Downloading encrypted data from %s", encrypted_url[:100])
-
-        async with aiohttp.ClientSession() as session, session.get(encrypted_url) as response:
-            if response.status != 200:
-                msg = f"Failed to download encrypted track: HTTP {response.status}"
-                raise ProviderUnavailableError(msg)
-
-            encrypted_data = await response.read()
-            LOGGER.debug("Downloaded %d bytes of encrypted data", len(encrypted_data))
-
-        # Decrypt using AES CTR with 12-byte null nonce
-        # Note: key is HEX-encoded in the API response
-        key_bytes = bytes.fromhex(key_hex)
-        nonce = bytes(12)  # 12-byte null nonce as per working implementation
-
-        LOGGER.debug(
-            "Decrypting with key length=%d bytes, nonce=%d bytes", len(key_bytes), len(nonce)
-        )
-
-        # Use PyCrypto's AES (supports 12-byte nonce for CTR)
-        aes = AES.new(
-            key=key_bytes,
-            nonce=nonce,
-            mode=AES.MODE_CTR,
-        )
-        decrypted_data = aes.decrypt(encrypted_data)
-
-        LOGGER.debug("Decrypted %d bytes", len(decrypted_data))
-        return decrypted_data
 
     async def get_track_file_info_lossless(self, track_id: str) -> dict[str, Any] | None:
         """Request lossless stream via get-file-info (quality=lossless).

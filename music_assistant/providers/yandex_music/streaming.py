@@ -54,6 +54,20 @@ class YandexMusicStreamingManager:
         self.logger = provider.logger
         # Track temp files for cleanup: item_id -> temp_file_path
         self._temp_files: dict[str, str] = {}
+        # Shared aiohttp session for streaming downloads (reuses TCP connections to CDN)
+        self._streaming_session: aiohttp.ClientSession | None = None
+
+    async def _get_streaming_session(self) -> aiohttp.ClientSession:
+        """Get or create the shared streaming aiohttp session."""
+        if self._streaming_session is None or self._streaming_session.closed:
+            self._streaming_session = aiohttp.ClientSession()
+        return self._streaming_session
+
+    async def close(self) -> None:
+        """Close the streaming session and clean up resources."""
+        if self._streaming_session and not self._streaming_session.closed:
+            await self._streaming_session.close()
+            self._streaming_session = None
 
     def _track_id_from_item_id(self, item_id: str) -> str:
         """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
@@ -88,9 +102,9 @@ class YandexMusicStreamingManager:
     ) -> str:
         """Download encrypted data, decrypt, and save to a temp file.
 
-        Uses a dedicated aiohttp session (not self.mass.http_session) because
-        long-lived downloads from Yandex CDN should not occupy the shared
-        session's connection pool or be affected by its TLS/proxy settings.
+        Uses a shared streaming aiohttp session (not self.mass.http_session)
+        to reuse TCP connections to Yandex CDN while keeping streaming traffic
+        isolated from the shared session's connection pool.
 
         :param encrypted_url: URL of the encrypted file.
         :param decryption_key: Hex-encoded AES-256 decryption key.
@@ -109,10 +123,8 @@ class YandexMusicStreamingManager:
         temp_fd, temp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=".flac")
 
         try:
-            async with (
-                aiohttp.ClientSession() as session,
-                session.get(encrypted_url, timeout=timeout) as response,
-            ):
+            session = await self._get_streaming_session()
+            async with session.get(encrypted_url, timeout=timeout) as response:
                 if response.status != 200:
                     msg = f"Failed to download encrypted track: HTTP {response.status}"
                     self.logger.error(msg)
@@ -159,10 +171,10 @@ class YandexMusicStreamingManager:
             except Exception as err:
                 self.logger.warning("Failed to clean up temp file %s: %s", temp_path, err)
 
-    def cleanup_stale_temp_files(self, max_age_seconds: int = 1800) -> None:
+    def cleanup_stale_temp_files(self, max_age_seconds: int = 600) -> None:
         """Clean up temp files older than max_age_seconds.
 
-        :param max_age_seconds: Maximum age in seconds (default: 1800 = 30 minutes).
+        :param max_age_seconds: Maximum age in seconds (default: 600 = 10 minutes).
         """
         now = time.time()
         for item_id in list(self._temp_files.keys()):
@@ -550,10 +562,6 @@ class YandexMusicStreamingManager:
         Download and decryption are coupled — each chunk is decrypted as it arrives.
         Best for fast networks and powerful CPUs.
 
-        Uses a dedicated aiohttp session (not self.mass.http_session) because
-        long-lived streaming connections to Yandex CDN should not occupy the
-        shared session's connection pool or be affected by its TLS/proxy settings.
-
         :param streamdetails: Stream details containing encrypted URL and key.
         """
         cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
@@ -569,10 +577,8 @@ class YandexMusicStreamingManager:
         timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
 
         try:
-            async with (
-                aiohttp.ClientSession() as session,
-                session.get(encrypted_url, timeout=timeout) as response,
-            ):
+            session = await self._get_streaming_session()
+            async with session.get(encrypted_url, timeout=timeout) as response:
                 if response.status != 200:
                     msg = f"Failed to stream encrypted track: HTTP {response.status}"
                     self.logger.error(msg)
@@ -606,10 +612,6 @@ class YandexMusicStreamingManager:
         The consumer yields from the queue at its own pace. Backpressure is handled
         by the queue's maxsize — download blocks when the queue is full.
 
-        Uses a dedicated aiohttp session (not self.mass.http_session) because
-        long-lived streaming connections to Yandex CDN should not occupy the
-        shared session's connection pool or be affected by its TLS/proxy settings.
-
         :param streamdetails: Stream details containing encrypted URL and key.
         """
         cipher, encrypted_url, codec = self._prepare_cipher(streamdetails)
@@ -629,10 +631,8 @@ class YandexMusicStreamingManager:
 
         async def _download_and_decrypt() -> None:
             try:
-                async with (
-                    aiohttp.ClientSession() as session,
-                    session.get(encrypted_url, timeout=timeout) as response,
-                ):
+                session = await self._get_streaming_session()
+                async with session.get(encrypted_url, timeout=timeout) as response:
                     if response.status != 200:
                         msg = f"Failed to stream encrypted track: HTTP {response.status}"
                         error_holder[0] = MediaNotFoundError(msg)

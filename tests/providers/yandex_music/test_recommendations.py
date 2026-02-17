@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -11,6 +12,8 @@ from music_assistant_models.media_items import Album, Playlist, RecommendationFo
 from music_assistant.providers.yandex_music.constants import (
     BROWSE_NAMES_EN,
     MY_WAVE_PLAYLIST_ID,
+    RADIO_TRACK_ID_SEP,
+    ROTOR_STATION_MY_WAVE,
 )
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
@@ -56,17 +59,14 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
     # Mock get_my_wave_tracks to return tracks
     provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
 
-    # Mock parse_track to return a Track object
+    # Mock _parse_my_wave_track to return a Track object with composite item_id
     mock_parsed_track = Mock(spec=Track)
-    mock_parsed_track.item_id = "12345"
+    mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
     mock_parsed_track.provider_mappings = []
+    provider_mock._parse_my_wave_track = Mock(return_value=mock_parsed_track)
 
-    with patch(
-        "music_assistant.providers.yandex_music.provider.parse_track",
-        return_value=mock_parsed_track,
-    ):
-        result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
+    result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
 
     assert result is not None
     assert isinstance(result, RecommendationFolder)
@@ -108,15 +108,14 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
     )
 
     mock_parsed_track = Mock(spec=Track)
-    mock_parsed_track.item_id = "12345"
+    mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
     mock_parsed_track.provider_mappings = []
 
-    with patch(
-        "music_assistant.providers.yandex_music.provider.parse_track",
-        return_value=mock_parsed_track,
-    ):
-        result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
+    # _parse_my_wave_track returns track on first call, None on duplicate
+    provider_mock._parse_my_wave_track = Mock(side_effect=[mock_parsed_track, None])
+
+    result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
 
     assert result is not None
     # Should only have 1 track despite 2 API calls (duplicate filtered)
@@ -132,17 +131,13 @@ async def test_get_my_wave_recommendations_invalid_data_error(provider_mock: Moc
 
     provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
 
-    # parse_track raises InvalidDataError
-    with patch(
-        "music_assistant.providers.yandex_music.provider.parse_track",
-        side_effect=InvalidDataError("Parse error"),
-    ):
-        result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
+    # _parse_my_wave_track returns None (simulates parse error handled internally)
+    provider_mock._parse_my_wave_track = Mock(return_value=None)
+
+    result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
 
     # Should return None as no valid tracks were parsed
     assert result is None
-    # Should log the error
-    provider_mock.logger.debug.assert_called()
 
 
 @pytest.mark.asyncio
@@ -532,15 +527,12 @@ async def test_get_mood_mix_recommendations_success(provider_mock: Mock) -> None
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Chill Playlist"
 
-    # Patch random.choice to return deterministic value
-    with (
-        patch("random.choice", return_value="chill"),
-        patch(
-            "music_assistant.providers.yandex_music.provider.parse_playlist",
-            return_value=mock_parsed_playlist,
-        ),
+    # No need to patch random.choice - tag is now passed as argument
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_playlist",
+        return_value=mock_parsed_playlist,
     ):
-        result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock)
+        result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock, "chill")
 
     assert result is not None
     assert isinstance(result, RecommendationFolder)
@@ -559,8 +551,7 @@ async def test_get_mood_mix_recommendations_empty(provider_mock: Mock) -> None:
     """Test _get_mood_mix_recommendations returns None when API returns empty."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[])
 
-    with patch("random.choice", return_value="sad"):
-        result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock)
+    result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock, "sad")
 
     assert result is None
 
@@ -570,14 +561,11 @@ async def test_get_mood_mix_recommendations_invalid_data_error(provider_mock: Mo
     """Test _get_mood_mix_recommendations handles InvalidDataError gracefully."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[Mock()])
 
-    with (
-        patch("random.choice", return_value="romantic"),
-        patch(
-            "music_assistant.providers.yandex_music.provider.parse_playlist",
-            side_effect=InvalidDataError("Parse error"),
-        ),
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_playlist",
+        side_effect=InvalidDataError("Parse error"),
     ):
-        result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock)
+        result = await YandexMusicProvider._get_mood_mix_recommendations(provider_mock, "romantic")
 
     assert result is None
     provider_mock.logger.debug.assert_called()
@@ -594,15 +582,14 @@ async def test_get_activity_mix_recommendations_success(provider_mock: Mock) -> 
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Workout Playlist"
 
-    # Patch random.choice to return deterministic value
-    with (
-        patch("random.choice", return_value="workout"),
-        patch(
-            "music_assistant.providers.yandex_music.provider.parse_playlist",
-            return_value=mock_parsed_playlist,
-        ),
+    # No need to patch random.choice - tag is now passed as argument
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_playlist",
+        return_value=mock_parsed_playlist,
     ):
-        result = await YandexMusicProvider._get_activity_mix_recommendations(provider_mock)
+        result = await YandexMusicProvider._get_activity_mix_recommendations(
+            provider_mock, "workout"
+        )
 
     assert result is not None
     assert isinstance(result, RecommendationFolder)
@@ -621,8 +608,7 @@ async def test_get_activity_mix_recommendations_empty(provider_mock: Mock) -> No
     """Test _get_activity_mix_recommendations returns None when API returns empty."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[])
 
-    with patch("random.choice", return_value="focus"):
-        result = await YandexMusicProvider._get_activity_mix_recommendations(provider_mock)
+    result = await YandexMusicProvider._get_activity_mix_recommendations(provider_mock, "focus")
 
     assert result is None
 
@@ -632,14 +618,13 @@ async def test_get_activity_mix_recommendations_invalid_data_error(provider_mock
     """Test _get_activity_mix_recommendations handles InvalidDataError gracefully."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[Mock()])
 
-    with (
-        patch("random.choice", return_value="morning"),
-        patch(
-            "music_assistant.providers.yandex_music.provider.parse_playlist",
-            side_effect=InvalidDataError("Parse error"),
-        ),
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_playlist",
+        side_effect=InvalidDataError("Parse error"),
     ):
-        result = await YandexMusicProvider._get_activity_mix_recommendations(provider_mock)
+        result = await YandexMusicProvider._get_activity_mix_recommendations(
+            provider_mock, "morning"
+        )
 
     assert result is None
     provider_mock.logger.debug.assert_called()
@@ -723,6 +708,9 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
     mock_datetime = Mock()
     mock_datetime.now.return_value.month = 3
 
+    # _validate_tag returns False for spring, triggering fallback to autumn
+    provider_mock._validate_tag = AsyncMock(return_value=False)
+
     with (
         patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
         patch(
@@ -780,8 +768,11 @@ async def test_recommendations_aggregates_all_folders(provider_mock: Mock) -> No
     mock_folder.item_id = "test_folder"
     mock_folder.name = "Test Folder"
 
-    async def return_folder() -> RecommendationFolder:
+    async def return_folder(*_args: Any, **_kwargs: Any) -> RecommendationFolder:
         return mock_folder
+
+    async def return_tag(_category: str) -> str:
+        return "test_tag"
 
     # Set the methods directly on the provider mock instance
     provider_mock._get_my_wave_recommendations = return_folder
@@ -793,6 +784,7 @@ async def test_recommendations_aggregates_all_folders(provider_mock: Mock) -> No
     provider_mock._get_mood_mix_recommendations = return_folder
     provider_mock._get_activity_mix_recommendations = return_folder
     provider_mock._get_seasonal_mix_recommendations = return_folder
+    provider_mock._pick_random_tag_for_category = return_tag
 
     result = await YandexMusicProvider.recommendations(provider_mock)
 
@@ -807,11 +799,14 @@ async def test_recommendations_filters_none_folders(provider_mock: Mock) -> None
     mock_folder.name = "Test Folder"
 
     # Create async functions that return the desired values
-    async def return_folder() -> RecommendationFolder:
+    async def return_folder(*_args: Any, **_kwargs: Any) -> RecommendationFolder:
         return mock_folder
 
-    async def return_none() -> None:
+    async def return_none(*_args: Any, **_kwargs: Any) -> None:
         return None
+
+    async def return_tag(_category: str) -> str:
+        return "test_tag"
 
     # Set the methods directly on the provider mock instance
     provider_mock._get_my_wave_recommendations = return_folder
@@ -823,6 +818,7 @@ async def test_recommendations_filters_none_folders(provider_mock: Mock) -> None
     provider_mock._get_mood_mix_recommendations = return_folder
     provider_mock._get_activity_mix_recommendations = return_none
     provider_mock._get_seasonal_mix_recommendations = return_folder
+    provider_mock._pick_random_tag_for_category = return_tag
 
     result = await YandexMusicProvider.recommendations(provider_mock)
 
@@ -834,7 +830,10 @@ async def test_recommendations_filters_none_folders(provider_mock: Mock) -> None
 async def test_recommendations_returns_empty_list_when_all_none(provider_mock: Mock) -> None:
     """Test recommendations() returns empty list when all methods return None."""
 
-    async def return_none() -> None:
+    async def return_none(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def return_no_tag(_category: str) -> None:
         return None
 
     # Set the methods directly on the provider mock instance
@@ -847,6 +846,7 @@ async def test_recommendations_returns_empty_list_when_all_none(provider_mock: M
     provider_mock._get_mood_mix_recommendations = return_none
     provider_mock._get_activity_mix_recommendations = return_none
     provider_mock._get_seasonal_mix_recommendations = return_none
+    provider_mock._pick_random_tag_for_category = return_no_tag
 
     result = await YandexMusicProvider.recommendations(provider_mock)
 

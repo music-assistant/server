@@ -35,18 +35,6 @@ if TYPE_CHECKING:
     from .provider import YandexMusicProvider
 
 
-def _get_content_type(provider: YandexMusicProvider) -> ContentType:
-    """Get content type based on provider quality setting.
-
-    :param provider: The Yandex Music provider instance.
-    :return: ContentType.UNKNOWN as actual codec is determined at stream time.
-    """
-    # Actual codec is determined when getting stream details
-    # Suppress unused argument warning
-    _ = provider
-    return ContentType.UNKNOWN
-
-
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
     """Convert Yandex cover URI to full URL.
 
@@ -141,7 +129,7 @@ def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.yandex.ru/album/{album_id}",
                 available=available,
@@ -246,7 +234,7 @@ def parse_track(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
-                    content_type=_get_content_type(provider),
+                    content_type=ContentType.UNKNOWN,
                 ),
                 url=f"https://music.yandex.ru/track/{track_id}",
                 available=available,
