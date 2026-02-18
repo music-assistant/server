@@ -332,6 +332,7 @@ class ProtocolLinkingMixin:
         the same physical device.
         """
         matching = [protocol_player]
+        protocol_domain = protocol_player.provider.domain
 
         for other_player in self.all_players(return_protocol_players=True):
             if other_player.player_id == protocol_player.player_id:
@@ -339,6 +340,10 @@ class ProtocolLinkingMixin:
             if other_player.state.type != PlayerType.PROTOCOL:
                 continue
             if other_player.protocol_parent_id:
+                continue
+            # Skip players from the same protocol domain
+            # Multiple instances of the same protocol on one host are separate players
+            if other_player.provider.domain == protocol_domain:
                 continue
             if self._identifiers_match(protocol_player, other_player):
                 matching.append(other_player)
