@@ -361,9 +361,11 @@ class AriaCastBridge(PluginProvider):
         await self._send_api_command("pause")
 
     async def _cmd_next(self) -> None:
+        """Send next-track command."""
         await self._send_api_command("next")
 
     async def _cmd_previous(self) -> None:
+        """Send previous-track command."""
         await self._send_api_command("previous")
 
     async def _send_api_command(self, action: str) -> None:
