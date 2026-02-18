@@ -105,6 +105,7 @@ class MSXHTTPServer:
         # MSX bootstrap
         self.app.router.add_get("/", self._handle_root)
         self.app.router.add_get("/msx/start.json", self._handle_start_json)
+        self.app.router.add_get("/msx/launcher.json", self._handle_launcher_json)
         self.app.router.add_get("/msx/plugin.html", self._handle_msx_plugin_html)
         self.app.router.add_get(
             "/msx/tvx-plugin-module.min.js",
@@ -334,15 +335,41 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         return web.Response(text=html, content_type="text/html")
 
     async def _handle_start_json(self, request: web.Request) -> web.Response:
-        """Return MSX start configuration."""
+        """Return MSX start configuration pointing to the launcher menu."""
         prefix = f"http://{request.host}"
         return web.json_response(
             {
                 "name": "Music Assistant",
-                "version": "1.0.6",
-                "parameter": f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=8",
+                "version": "1.0.7",
+                "parameter": f"content:{prefix}/msx/launcher.json",
             }
         )
+
+    async def _handle_launcher_json(self, request: web.Request) -> web.Response:
+        """Return MSX launcher page with MSX Player and Web Kiosk options."""
+        prefix = f"http://{request.host}"
+        content = MsxContent(
+            headline="Music Assistant",
+            template=MsxTemplate(
+                type="separate",
+                layout="0,0,2,4",
+                icon="msx-white-soft:music-note",
+                action="content:{context:content}",
+            ),
+            items=[
+                MsxItem(
+                    label="MSX Player",
+                    icon="msx-white-soft:tv",
+                    action=f"menu:request:interaction:init@{prefix}/msx/plugin.html?v=8",
+                ),
+                MsxItem(
+                    label="Web Kiosk",
+                    icon="msx-white-soft:open-in-browser",
+                    action=f"link:{prefix}/web?kiosk=1",
+                ),
+            ],
+        )
+        return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
     def _serve_static(self, filename: str) -> Any:
         """Create a handler that serves a static file from the static directory."""
