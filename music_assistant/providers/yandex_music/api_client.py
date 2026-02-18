@@ -609,7 +609,11 @@ class YandexMusicClient:
         """
 
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
-            """Build URL and signed params using current client and timestamp."""
+            """Build URL and signed params using current client and timestamp.
+
+            Called on each attempt by _call_with_retry, so the HMAC signature
+            is recomputed with a fresh timestamp on every retry.
+            """
             timestamp = int(time.time())
             params = {
                 "ts": timestamp,

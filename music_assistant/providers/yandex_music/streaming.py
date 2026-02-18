@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import threading
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -55,14 +56,19 @@ class YandexMusicStreamingManager:
         self.logger = provider.logger
         # Track temp files for cleanup: item_id -> temp_file_path
         self._temp_files: dict[str, str] = {}
+        self._temp_files_lock = threading.Lock()
         # Shared aiohttp session for streaming downloads (reuses TCP connections to CDN)
         self._streaming_session: aiohttp.ClientSession | None = None
+        self._streaming_session_lock = asyncio.Lock()
 
     async def _get_streaming_session(self) -> aiohttp.ClientSession:
         """Get or create the shared streaming aiohttp session."""
-        if self._streaming_session is None or self._streaming_session.closed:
-            self._streaming_session = aiohttp.ClientSession()
-        return self._streaming_session
+        if self._streaming_session is not None and not self._streaming_session.closed:
+            return self._streaming_session
+        async with self._streaming_session_lock:
+            if self._streaming_session is None or self._streaming_session.closed:
+                self._streaming_session = aiohttp.ClientSession()
+            return self._streaming_session
 
     async def close(self) -> None:
         """Close the streaming session and clean up resources."""
@@ -162,12 +168,26 @@ class YandexMusicStreamingManager:
                 os.unlink(temp_path)  # noqa: PTH108
             raise
 
+    def _replace_temp_file(self, item_id: str, new_path: str) -> None:
+        """Atomically replace the tracked temp file for an item, deleting the old one.
+
+        :param item_id: Track item ID.
+        :param new_path: Path to the new temp file.
+        """
+        with self._temp_files_lock:
+            old_path = self._temp_files.pop(item_id, None)
+            self._temp_files[item_id] = new_path
+        if old_path:
+            with contextlib.suppress(OSError):
+                Path(old_path).unlink(missing_ok=True)
+
     def cleanup_temp_file(self, item_id: str) -> None:
         """Clean up temp file for a track after playback.
 
         :param item_id: Track item ID.
         """
-        temp_path = self._temp_files.pop(item_id, None)
+        with self._temp_files_lock:
+            temp_path = self._temp_files.pop(item_id, None)
         if temp_path:
             try:
                 Path(temp_path).unlink(missing_ok=True)
@@ -181,25 +201,24 @@ class YandexMusicStreamingManager:
         :param max_age_seconds: Maximum age in seconds (default: 600 = 10 minutes).
         """
         now = time.time()
-        for item_id in list(self._temp_files.keys()):
-            temp_path = self._temp_files.get(item_id)
-            if temp_path:
-                try:
-                    file_age = now - Path(temp_path).stat().st_mtime
-                    if file_age > max_age_seconds:
-                        self.cleanup_temp_file(item_id)
-                        self.logger.debug(
-                            "Cleaned up stale temp file for %s (age=%ds)",
-                            item_id,
-                            int(file_age),
-                        )
-                except OSError:
-                    # File already gone, just remove from tracking
-                    self._temp_files.pop(item_id, None)
+        with self._temp_files_lock:
+            snapshot = dict(self._temp_files)
+        stale_ids: list[str] = []
+        for item_id, temp_path in snapshot.items():
+            try:
+                file_age = now - Path(temp_path).stat().st_mtime
+                if file_age > max_age_seconds:
+                    stale_ids.append(item_id)
+            except OSError:
+                stale_ids.append(item_id)
+        for item_id in stale_ids:
+            self.cleanup_temp_file(item_id)
 
     def cleanup_all_temp_files(self) -> None:
         """Clean up all tracked temp files (called on provider unload)."""
-        for item_id in list(self._temp_files.keys()):
+        with self._temp_files_lock:
+            item_ids = list(self._temp_files.keys())
+        for item_id in item_ids:
             self.cleanup_temp_file(item_id)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -269,14 +288,7 @@ class YandexMusicStreamingManager:
                                 temp_path = await self._download_and_decrypt_to_file(
                                     url, file_info["key"], item_id, content_type
                                 )
-                                # Replace any previous temp file for this item_id.
-                                # Store new path first to ensure it's always tracked,
-                                # then clean up the old file.
-                                old_temp_path = self._temp_files.get(item_id)
-                                self._temp_files[item_id] = temp_path
-                                if old_temp_path:
-                                    with contextlib.suppress(OSError):
-                                        Path(old_temp_path).unlink(missing_ok=True)
+                                self._replace_temp_file(item_id, temp_path)
 
                                 return StreamDetails(
                                     item_id=item_id,
@@ -552,6 +564,10 @@ class YandexMusicStreamingManager:
 
     def _prepare_cipher(self, streamdetails: StreamDetails) -> tuple[Any, str, str]:
         """Prepare AES-256-CTR cipher and return (cipher, encrypted_url, codec).
+
+        A fresh cipher is created per streaming call. CTR mode requires the counter
+        to start from zero for each complete download — this is safe because retries
+        restart the full HTTP request (and thus the ciphertext) from the beginning.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :return: Tuple of (cipher, encrypted_url, codec).

@@ -165,6 +165,7 @@ async def get_config_entries(
             label="My Wave maximum tracks",
             description="Maximum number of tracks to fetch for My Wave playlist. "
             "Lower values load faster but provide fewer tracks. Default: 150.",
+            range=(10, 1000),
             default_value=150,
             required=False,
             advanced=True,
@@ -176,6 +177,7 @@ async def get_config_entries(
             label="Liked Tracks maximum tracks",
             description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
             "Lower values load faster. Default: 500.",
+            range=(50, 5000),
             default_value=500,
             required=False,
             advanced=True,
