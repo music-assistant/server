@@ -54,6 +54,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
+FULLY_PLAYED_THRESHOLD = 0.9
+SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
+
 BROWSE_FOLDER_ICONS: dict[str, str] = {
     "up_next": (
         "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIH"
@@ -472,7 +475,9 @@ class PocketCastsProvider(MusicProvider):
 
                         # Consider played if > 90% complete
                         if duration > 0:
-                            episode_item.fully_played = (played_up_to / duration) > 0.9
+                            episode_item.fully_played = (
+                                played_up_to / duration
+                            ) > FULLY_PLAYED_THRESHOLD
 
                         LOGGER.debug(
                             "Episode %s in-progress: %d/%d seconds (%.1f%%)",
@@ -611,7 +616,7 @@ class PocketCastsProvider(MusicProvider):
                 LOGGER.exception("Error browsing podcasts: %s", err)
                 return []
 
-        elif item_path in ("up_next", "new_releases", "in_progress", "starred", "history"):
+        elif item_path in SPECIAL_FOLDERS:
             # Special folder - show episodes from appropriate API endpoint
             LOGGER.debug("Fetching episodes for special folder: %s", item_path)
             try:
@@ -656,7 +661,9 @@ class PocketCastsProvider(MusicProvider):
 
                             # Consider played if > 90% complete
                             if duration > 0:
-                                episode_item.fully_played = (played_up_to / duration) > 0.9
+                                episode_item.fully_played = (
+                                    played_up_to / duration
+                                ) > FULLY_PLAYED_THRESHOLD
 
                         # If in history but not in-progress, likely fully played
                         elif episode_uuid in history_set:
@@ -786,7 +793,7 @@ class PocketCastsProvider(MusicProvider):
                     episode_item.fully_played = True
                 elif playing_status == 2 and duration > 0:
                     # In progress - check if > 90% complete
-                    episode_item.fully_played = (played_up_to / duration) > 0.9
+                    episode_item.fully_played = (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
 
                 LOGGER.debug(
                     "Episode %s: duration=%d, status=%d, position=%d ms",
@@ -840,7 +847,9 @@ class PocketCastsProvider(MusicProvider):
                     duration = int(ep.get("duration", 0))
 
                     # Consider fully played if > 90%
-                    fully_played = duration > 0 and (played_up_to / duration) > 0.9
+                    fully_played = (
+                        duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
+                    )
 
                     LOGGER.debug(
                         "Resume position for %s: %d seconds / %d ms (fully_played=%s)",
