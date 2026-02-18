@@ -173,7 +173,11 @@ def map_tracks_to_msx_playlist(
         duration = getattr(track, "duration", 0) or 0
         duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
         artist = getattr(track, "artist_str", "")
-        label = f"{artist} · {duration_str}" if artist and duration_str else artist or duration_str
+        label = (
+            f"{artist} · {duration_str}"
+            if artist and duration_str
+            else (artist or duration_str or None)
+        )
         image_url = get_image_url(track, provider)
 
         action = _build_audio_action(
