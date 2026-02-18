@@ -558,7 +558,7 @@ class PlexRemoteControlServer:
 
             # Use plexapi to fetch the play queue
             def fetch_queue() -> PlayQueue:
-                return PlayQueue.get(self.provider._plex_server, playQueueID=queue_id)
+                return PlayQueue.get(self.provider._plex_server, playQueueID=queue_id, window=500)
 
             playqueue = await asyncio.to_thread(fetch_queue)
 
@@ -888,7 +888,9 @@ class PlexRemoteControlServer:
 
             # Use plexapi to fetch the updated play queue
             def fetch_queue() -> PlayQueue:
-                return PlayQueue.get(self.provider._plex_server, playQueueID=play_queue_id)
+                return PlayQueue.get(
+                    self.provider._plex_server, playQueueID=play_queue_id, window=500
+                )
 
             playqueue = await asyncio.to_thread(fetch_queue)
 
