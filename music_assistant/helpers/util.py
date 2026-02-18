@@ -972,6 +972,7 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             *args,
             task_id=task_id,
             abort_existing=False,
+            eager_start=True,
             **kwargs,
         )
         return await task
