@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0&display=swap" rel="stylesheet">
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -22,6 +22,7 @@
             --menu-active: #e0e0e0;
             --sidebar-w: 220px;
             --font: 'Outfit', -apple-system, 'Segoe UI', sans-serif;
+            --lyrics-bottom-offset: 140px;
         }
 
         html, body {
@@ -208,7 +209,7 @@
 
         /* --- Full player (normal mode) --- */
         #player-full {
-            position: fixed; inset: 0; z-index: 30;
+            position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 30;
             display: flex;
             background: #111;
             opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
@@ -324,7 +325,7 @@
 
         /* --- Search overlay --- */
         #search-overlay {
-            position: fixed; inset: 0; z-index: 40;
+            position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 40;
             background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
             display: flex; align-items: flex-start; justify-content: center;
             padding-top: 12vh;
@@ -350,7 +351,7 @@
 
         /* --- Loading --- */
         #loading {
-            position: fixed; inset: 0; z-index: 50;
+            position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50;
             display: flex; align-items: center; justify-content: center;
             background: rgba(26,26,26,0.5);
             opacity: 0; pointer-events: none; transition: opacity 0.15s;
@@ -394,7 +395,7 @@
         #kiosk-player {
             display: none;
             position: fixed;
-            inset: 0;
+            top: 0; right: 0; bottom: 0; left: 0;
             overflow: hidden;
             background: #000;
         }
@@ -406,7 +407,7 @@
         /* Layer 1: Full-bleed background (behind columns) */
         #kiosk-bg {
             position: absolute;
-            inset: 0;
+            top: 0; right: 0; bottom: 0; left: 0;
             z-index: 0;
         }
 
@@ -423,7 +424,7 @@
         #kiosk-bg::after {
             content: '';
             position: absolute;
-            inset: 0;
+            top: 0; right: 0; bottom: 0; left: 0;
             background: linear-gradient(
                 to bottom,
                 rgba(0,0,0,0.35) 0%,
@@ -458,6 +459,7 @@
             padding: 10px 10px 160px;
             min-width: 0;
             justify-content: center;
+            position: relative;
         }
 
         /* Right column: queue */
@@ -516,7 +518,7 @@
         /* Layer 2: Idle state */
         #kiosk-idle {
             position: absolute;
-            inset: 0;
+            top: 0; right: 0; bottom: 0; left: 0;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -573,12 +575,12 @@
 
         /* === Karaoke lyrics (center column) === */
         #kiosk-lyrics {
-            width: 100%;
-            height: 100%;
+            position: absolute;
+            top: 0; right: 0; bottom: 0; left: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding-top: 10vh;
+            padding-bottom: var(--lyrics-bottom-offset);
             opacity: 0;
             transition: opacity 0.5s ease;
             pointer-events: none;
@@ -590,7 +592,7 @@
         #kiosk-lyrics-scroll {
             width: 100%;
             max-width: 700px;
-            max-height: 100%;
+            max-height: calc(100% - var(--lyrics-bottom-offset));
             overflow: hidden;
             -webkit-mask-image: linear-gradient(transparent 0%, black 10%, black 85%, transparent 100%);
             mask-image: linear-gradient(transparent 0%, black 10%, black 85%, transparent 100%);
@@ -639,8 +641,8 @@
 
         /* === CSS Text Equalizer (center column, when no lyrics) === */
         #kiosk-equalizer {
-            width: 100%;
-            height: 100%;
+            position: absolute;
+            top: 0; right: 0; bottom: 0; left: 0;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -774,6 +776,7 @@
             padding: 28px 40px 36px;
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
+            background: rgba(0, 0, 0, 0.75);
             background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
             transform: translateY(0);
             transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -889,6 +892,16 @@
             .lyric-line { font-size: 1.1rem; }
             .lyric-line.active { font-size: 1.4rem; }
             .lyric-line.lp1, .lyric-line.ln1 { font-size: 1.2rem; }
+        }
+        @media (min-width: 1920px) {
+            html, body { font-size: 20px; }
+            .lyric-line { font-size: 1.8rem; }
+            .lyric-line.active { font-size: 2.2rem; }
+            #kiosk-title { font-size: 1.7rem; }
+            #kiosk-artist { font-size: 1.2rem; }
+            .kiosk-queue-title { font-size: 1rem; }
+            .kiosk-controls .ctrl { width: 72px; height: 72px; }
+            .kiosk-controls .ctrl--primary { width: 90px; height: 90px; }
         }
     </style>
 </head>

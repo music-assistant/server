@@ -47,6 +47,14 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         return KIOSK_MODE && !SENDSPIN_MODE;
     }
 
+    // --- Storage helpers (guard against SecurityError in private browsing / TV environments) ---
+    function storageGet(key, fallback) {
+        try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; }
+    }
+    function storageSet(key, val) {
+        try { localStorage.setItem(key, val); } catch (e) {}
+    }
+
     // --- Device ID ---
     function generateUUID() {
         if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -63,10 +71,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         });
     }
 
-    var deviceId = localStorage.getItem(DEVICE_KEY);
+    var deviceId = storageGet(DEVICE_KEY, '');
     if (!deviceId) {
         deviceId = generateUUID();
-        localStorage.setItem(DEVICE_KEY, deviceId);
+        storageSet(DEVICE_KEY, deviceId);
     }
     var deviceParam = 'device_id=' + encodeURIComponent(deviceId) + '&source=web';
 
@@ -786,14 +794,25 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         loadContent('/msx/search-input.json?q=' + encodeURIComponent(q), 'Search: ' + q, false);
     }
 
+    // --- Lyrics offset: keep lyrics above the controls panel using measured panel height ---
+    function updateLyricsOffset() {
+        var panel = document.getElementById('kiosk-controls-panel');
+        var panelH = panel ? panel.offsetHeight : 140;
+        document.documentElement.style.setProperty('--lyrics-bottom-offset', panelH + 'px');
+    }
+
     // --- Kiosk Auto-Hide Controls ---
     function showKioskControls() {
-        document.getElementById('kiosk-player')?.classList.remove('controls-hidden');
+        var kp = document.getElementById('kiosk-player');
+        if (kp) kp.classList.remove('controls-hidden');
         document.body.classList.add('controls-visible');
+        updateLyricsOffset();
     }
     function hideKioskControls() {
-        document.getElementById('kiosk-player')?.classList.add('controls-hidden');
+        var kp = document.getElementById('kiosk-player');
+        if (kp) kp.classList.add('controls-hidden');
         document.body.classList.remove('controls-visible');
+        updateLyricsOffset();
     }
     function resetKioskHideTimer() {
         showKioskControls();
@@ -805,7 +824,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         kioskHideTimer = null;
     }
     function setKioskPlaying(on) {
-        document.getElementById('kiosk-player')?.classList.toggle('playing', on);
+        var kp = document.getElementById('kiosk-player');
+        if (kp) kp.classList.toggle('playing', on);
     }
 
     // --- Karaoke Lyrics ---
@@ -1104,6 +1124,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             if (kioskPrev) kioskPrev.addEventListener('click', prevTrack);
             if (kioskNext) kioskNext.addEventListener('click', nextTrack);
 
+            updateLyricsOffset();
+            window.addEventListener('resize', updateLyricsOffset);
+
             console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
         } else if (KIOSK_MODE) {
             // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
@@ -1158,6 +1181,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 kc.addEventListener('click', resetKioskHideTimer);
             }
             hideKioskControls(); // start in hidden state
+            updateLyricsOffset();
+            window.addEventListener('resize', updateLyricsOffset);
 
             console.log('[WebPlayer] Kiosk mode initialized with HTML5 streaming');
         } else {
