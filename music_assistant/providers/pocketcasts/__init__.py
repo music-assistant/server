@@ -321,6 +321,43 @@ class PocketCastsProvider(MusicProvider):
             LOGGER.debug("Error converting episode: %s", err)
             return None
 
+    def _enrich_episode_with_status(
+        self,
+        episode_item: PodcastEpisode,
+        episode_data: dict[str, Any],
+        in_progress_map: dict[str | None, dict[str, Any]],
+        history_set: set[str | None],
+    ) -> None:
+        """Apply in-progress and history playback status to a PodcastEpisode.
+
+        :param episode_item: The episode object to enrich in place.
+        :param episode_data: Raw episode data dict from the API.
+        :param in_progress_map: UUID-keyed map of in-progress episode data.
+        :param history_set: Set of UUIDs for episodes in listen history.
+        """
+        episode_uuid = episode_data.get("uuid")
+
+        if episode_uuid in in_progress_map:
+            ip_data = in_progress_map[episode_uuid]
+            played_up_to = ip_data.get("playedUpTo", 0)
+            duration = ip_data.get("duration", episode_data.get("duration", 0))
+
+            episode_item.resume_position_ms = played_up_to * 1000
+
+            if duration > 0:
+                episode_item.fully_played = (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
+
+            LOGGER.debug(
+                "Episode %s in-progress: %d/%d seconds (%.1f%%)",
+                episode_uuid,
+                played_up_to,
+                duration,
+                (played_up_to / duration * 100) if duration > 0 else 0,
+            )
+        elif episode_uuid in history_set:
+            episode_item.fully_played = True
+            LOGGER.debug("Episode %s in history, marking as played", episode_uuid)
+
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Get all podcasts from user's library."""
         if not self._client:
@@ -463,35 +500,9 @@ class PocketCastsProvider(MusicProvider):
             for episode_data in episodes:
                 episode_item = self._convert_episode(episode_data, prov_podcast_id)
                 if episode_item:
-                    episode_uuid = episode_data.get("uuid")
-
-                    # Check in-progress status
-                    if episode_uuid in in_progress_map:
-                        ip_data = in_progress_map[episode_uuid]
-                        played_up_to = ip_data.get("playedUpTo", 0)
-                        duration = ip_data.get("duration", episode_data.get("duration", 0))
-
-                        episode_item.resume_position_ms = played_up_to * 1000
-
-                        # Consider played if > 90% complete
-                        if duration > 0:
-                            episode_item.fully_played = (
-                                played_up_to / duration
-                            ) > FULLY_PLAYED_THRESHOLD
-
-                        LOGGER.debug(
-                            "Episode %s in-progress: %d/%d seconds (%.1f%%)",
-                            episode_uuid,
-                            played_up_to,
-                            duration,
-                            (played_up_to / duration * 100) if duration > 0 else 0,
-                        )
-
-                    # If in history but not in-progress, likely fully played
-                    elif episode_uuid in history_set:
-                        episode_item.fully_played = True
-                        LOGGER.debug("Episode %s in history, marking as played", episode_uuid)
-
+                    self._enrich_episode_with_status(
+                        episode_item, episode_data, in_progress_map, history_set
+                    )
                     yield episode_item
         except Exception as err:
             LOGGER.error("Error getting episodes for podcast %s: %s", prov_podcast_id, err)
@@ -649,26 +660,9 @@ class PocketCastsProvider(MusicProvider):
                 for episode_data in episodes:
                     episode_item = self._convert_episode(episode_data, item_path)
                     if episode_item:
-                        episode_uuid = episode_data.get("uuid")
-
-                        # Check in-progress status
-                        if episode_uuid in in_progress_map:
-                            ip_data = in_progress_map[episode_uuid]
-                            played_up_to = ip_data.get("playedUpTo", 0)
-                            duration = ip_data.get("duration", episode_data.get("duration", 0))
-
-                            episode_item.resume_position_ms = played_up_to * 1000
-
-                            # Consider played if > 90% complete
-                            if duration > 0:
-                                episode_item.fully_played = (
-                                    played_up_to / duration
-                                ) > FULLY_PLAYED_THRESHOLD
-
-                        # If in history but not in-progress, likely fully played
-                        elif episode_uuid in history_set:
-                            episode_item.fully_played = True
-
+                        self._enrich_episode_with_status(
+                            episode_item, episode_data, in_progress_map, history_set
+                        )
                         items.append(episode_item)
 
                 LOGGER.debug("Converted %d episodes successfully", len(items))
