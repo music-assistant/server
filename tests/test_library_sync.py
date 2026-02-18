@@ -712,19 +712,6 @@ async def test_library_items_default_filters_in_library_only() -> None:
     assert call_kwargs["in_library_only"] is True
 
 
-async def test_library_items_can_disable_in_library_filter() -> None:
-    """Test that library_items can pass in_library_only=False."""
-    ctrl = Mock(spec=MediaControllerBase)
-    ctrl._ensure_provider_filter = Mock(return_value=None)
-    ctrl.get_library_items_by_query = AsyncMock(return_value=[])
-    ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
-
-    await ctrl.library_items(library_items_only=False)
-
-    call_kwargs = ctrl.get_library_items_by_query.call_args[1]
-    assert call_kwargs["in_library_only"] is False
-
-
 async def test_get_library_item_does_not_filter_in_library() -> None:
     """Test that get_library_item always passes in_library_only=False.
 

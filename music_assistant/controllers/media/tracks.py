@@ -168,7 +168,6 @@ class TracksController(MediaControllerBase[Track]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        library_items_only: bool = True,
         **kwargs: Any,
     ) -> list[Track]:
         """Get in-database tracks.
@@ -179,7 +178,6 @@ class TracksController(MediaControllerBase[Track]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param library_items_only: Only return items that are marked as in-library.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -209,7 +207,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
-            in_library_only=library_items_only,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -230,7 +228,7 @@ class TracksController(MediaControllerBase[Track]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
-                in_library_only=library_items_only,
+                in_library_only=True,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:

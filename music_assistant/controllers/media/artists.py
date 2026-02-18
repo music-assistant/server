@@ -72,7 +72,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        library_items_only: bool = True,
         album_artists_only: bool = False,
         **kwargs: Any,
     ) -> list[Artist]:
@@ -84,7 +83,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param library_items_only: Only return items that are marked as in-library.
         :param album_artists_only: Only return artists that have albums.
         """
         extra_query_params: dict[str, Any] = {}
@@ -103,7 +101,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            in_library_only=library_items_only,
+            in_library_only=True,
         )
 
     async def tracks(

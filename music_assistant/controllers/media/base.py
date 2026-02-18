@@ -250,7 +250,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        library_items_only: bool = True,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -262,7 +261,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param library_items_only: Only return items that are marked as in-library.
         """
         return await self.get_library_items_by_query(
             favorite=favorite,
@@ -271,7 +269,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            in_library_only=library_items_only,
+            in_library_only=True,
         )
 
     async def iter_library_items(
