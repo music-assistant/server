@@ -380,22 +380,30 @@ class BuiltinProvider(MusicProvider):
                 media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
                 media_controller = self.mass.music.get_controller(media_type)
                 # prefer item already in the db
-                track = await media_controller.get_library_item_by_prov_id(
+                media_item: (
+                    MediaItemType | None
+                ) = await media_controller.get_library_item_by_prov_id(
                     item_id, provider_instance_id_or_domain
                 )
-                if track is None:
-                    # get the provider item and not the full track from a regular 'get' call
-                    # as we only need basic track info here
-                    track = await media_controller.get_provider_item(
-                        item_id, provider_instance_id_or_domain
-                    )
-                if isinstance(track, get_args(PlaylistPlayableItem)):
-                    playlist_item = cast("PlaylistPlayableItem", track)
+                if media_item is None:
+                    # Call provider.get_item directly with the correct media_type.
+                    # Using media_controller.get_provider_item would pass the
+                    # controller's own media_type, which is wrong for podcast
+                    # episodes (controller has PODCAST, not PODCAST_EPISODE).
+                    item_prov = self.mass.get_provider(provider_instance_id_or_domain)
+                    if item_prov:
+                        media_item = await cast("MusicProvider", item_prov).get_item(
+                            media_type, item_id
+                        )
+                if isinstance(media_item, get_args(PlaylistPlayableItem)):
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
                     playlist_item.position = index
                     result.append(playlist_item)
                 else:
                     self.logger.warning(
-                        "Unsupported media type in playlist %s: %s", prov_playlist_id, type(track)
+                        "Unsupported media type in playlist %s: %s",
+                        prov_playlist_id,
+                        type(media_item),
                     )
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
