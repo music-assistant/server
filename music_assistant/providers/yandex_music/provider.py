@@ -336,12 +336,13 @@ class YandexMusicProvider(MusicProvider):
                 self._my_wave_batch_id = batch_id
                 last_batch_id = batch_id
             if not self._my_wave_radio_started_sent and yandex_tracks:
-                self._my_wave_radio_started_sent = True
-                await self.client.send_rotor_station_feedback(
+                sent = await self.client.send_rotor_station_feedback(
                     ROTOR_STATION_MY_WAVE,
                     "radioStarted",
                     batch_id=batch_id,
                 )
+                if sent:
+                    self._my_wave_radio_started_sent = True
             first_track_id_this_batch = None
             for yt in yandex_tracks:
                 if total_track_count >= effective_limit:
@@ -882,6 +883,9 @@ class YandexMusicProvider(MusicProvider):
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """Get My Wave tracks for virtual playlist (uncached; uses cursor for page > 0).
 
+        Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
+        the number of round-trips when the player controller paginates through pages.
+
         :param page: Page number (0 = first batch, 1+ = next batches via queue cursor).
         :return: List of Track objects for this page.
         """
@@ -904,37 +908,52 @@ class YandexMusicProvider(MusicProvider):
             if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                 return []
 
-            yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
-            if batch_id:
-                self._my_wave_batch_id = batch_id
-            if not self._my_wave_radio_started_sent and yandex_tracks:
-                self._my_wave_radio_started_sent = True
-                await self.client.send_rotor_station_feedback(
-                    ROTOR_STATION_MY_WAVE,
-                    "radioStarted",
-                    batch_id=batch_id,
-                )
-            first_track_id_this_batch = None
-            tracks = []
-            for yt in yandex_tracks:
+            tracks: list[Track] = []
+            next_cursor: str | None = None
+
+            # Fetch MY_WAVE_BATCH_SIZE Rotor API batches per page to reduce API round-trips
+            for _ in range(MY_WAVE_BATCH_SIZE):
                 if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                     break
 
-                track = self._parse_my_wave_track(yt)
-                if track is None:
-                    continue
+                yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+                if batch_id:
+                    self._my_wave_batch_id = batch_id
+                if not self._my_wave_radio_started_sent and yandex_tracks:
+                    sent = await self.client.send_rotor_station_feedback(
+                        ROTOR_STATION_MY_WAVE,
+                        "radioStarted",
+                        batch_id=batch_id,
+                    )
+                    if sent:
+                        self._my_wave_radio_started_sent = True
 
-                tracks.append(track)
-                track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
-                if first_track_id_this_batch is None:
-                    first_track_id_this_batch = track_id
+                if not yandex_tracks:
+                    break
 
-            if first_track_id_this_batch is not None:
-                self._my_wave_playlist_next_cursor = first_track_id_this_batch
-            else:
-                # All tracks in this batch were duplicates or failed to parse;
-                # clear cursor so the next page call returns [] instead of re-fetching
-                self._my_wave_playlist_next_cursor = None
+                first_track_id_this_batch = None
+                for yt in yandex_tracks:
+                    if len(self._my_wave_seen_track_ids) >= max_tracks_config:
+                        break
+
+                    track = self._parse_my_wave_track(yt)
+                    if track is None:
+                        continue
+
+                    tracks.append(track)
+                    track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+                    if first_track_id_this_batch is None:
+                        first_track_id_this_batch = track_id
+
+                if first_track_id_this_batch is not None:
+                    next_cursor = first_track_id_this_batch
+                    queue = first_track_id_this_batch
+                else:
+                    # All tracks in this batch were duplicates or failed to parse
+                    break
+
+            # Store cursor for next page call (None clears pagination so next call returns [])
+            self._my_wave_playlist_next_cursor = next_cursor
             return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:

@@ -225,12 +225,19 @@ class YandexMusicClient:
             return True
 
         try:
-            return await self._call_with_retry(_post)
+            result = await self._call_with_retry(_post)
+            LOGGER.info(
+                "Rotor feedback %s track_id=%s total_played_seconds=%s",
+                feedback_type,
+                track_id,
+                total_played_seconds,
+            )
+            return result
         except BadRequestError as err:
-            LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
+            LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
+            LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
 
     # Library methods

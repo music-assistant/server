@@ -325,8 +325,8 @@ class YandexMusicStreamingManager:
                                     "codec": codec,
                                     "streaming_mode_override": STREAMING_MODE_BUFFERED,
                                 },
-                                can_seek=False,  # Seeking not supported in streaming mode
-                                allow_seek=False,
+                                can_seek=False,
+                                allow_seek=True,
                             )
 
                         self.logger.info(
@@ -347,8 +347,8 @@ class YandexMusicStreamingManager:
                                 "decryption_key": file_info["key"],
                                 "codec": codec,
                             },
-                            can_seek=False,  # Seeking not supported in streaming mode
-                            allow_seek=False,
+                            can_seek=False,
+                            allow_seek=True,
                         )
                     # Unencrypted URL, use directly
                     self.logger.debug(
