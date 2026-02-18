@@ -152,7 +152,7 @@ async def get_config_entries(
             "Larger values help with slow or unstable connections "
             "by allowing more audio to be downloaded ahead of playback. "
             "Default: 8 MB (~45 seconds of FLAC audio).",
-            range=(1, 32),
+            range=(1, 64),
             default_value=8,
             advanced=True,
             depends_on=CONF_STREAMING_MODE,
