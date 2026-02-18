@@ -91,6 +91,8 @@ class PocketCastsClient:
             f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
             allow_redirects=True,
         ) as response:
+            if response.status in (401, 403):
+                raise LoginError(f"Authentication failed with status {response.status}")
             if response.status != 200:
                 raise PocketCastsAPIError(
                     f"Failed to get episodes for {podcast_uuid}: {response.status}"
