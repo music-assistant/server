@@ -283,6 +283,29 @@ def test_select_best_quality_high_only_flac_returns_flac(
 
 def test_temp_file_replacement_order() -> None:
     """New temp file is tracked before old file is deleted to prevent file leaks."""
+    temp_files: dict[str, str] = {}
+    item_id = "item-1"
+    old_path = "/cache/old-file"
+    new_path = "/cache/new-file"
+    temp_files[item_id] = old_path
+
+    removed_paths: list[str] = []
+
+    def fake_remove(path: str) -> None:
+        # At deletion time the new path must already be stored
+        assert temp_files[item_id] == new_path
+        removed_paths.append(path)
+
+    def replace_temp_file(item: str, path: str) -> None:
+        previous = temp_files.get(item)
+        temp_files[item] = path
+        if previous is not None and previous != path:
+            fake_remove(previous)
+
+    replace_temp_file(item_id, new_path)
+
+    assert temp_files[item_id] == new_path
+    assert removed_paths == [old_path]
 
 
 # --- Audio params tests ---
@@ -321,37 +344,3 @@ def test_get_audio_params_none(
 ) -> None:
     """None codec returns CD-quality defaults."""
     assert streaming_manager._get_audio_params(None) == (44100, 16)
-
-    # Create a minimal streaming manager stub
-    class MinimalProvider:
-        def __init__(self) -> None:
-            self.client = None
-            self.mass = None
-            self.logger = type(
-                "Logger",
-                (),
-                {
-                    "debug": lambda *_args: None,
-                    "warning": lambda *_args: None,
-                },
-            )()
-
-    provider = MinimalProvider()
-    manager = YandexMusicStreamingManager(provider)  # type: ignore[arg-type]
-
-    # Simulate storing a temp file
-    item_id = "track123"
-    old_path = "old_file.tmp"
-    new_path = "new_file.tmp"
-
-    manager._temp_files[item_id] = old_path
-
-    # Simulate the new logic: store new path first, then cleanup old
-    old_temp_path = manager._temp_files.get(item_id)
-    manager._temp_files[item_id] = new_path
-
-    # Verify new path is stored even before old file cleanup
-    assert manager._temp_files[item_id] == new_path
-
-    # Verify we captured the old path for cleanup
-    assert old_temp_path == old_path

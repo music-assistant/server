@@ -251,6 +251,7 @@ TAG_SLUG_CATEGORY: Final[dict[str, str]] = {
     "newbies": "genres",
     # Seasonal (for mixes)
     "winter": "seasonal",
+    "spring": "seasonal",
     "summer": "seasonal",
     "autumn": "seasonal",
     "newyear": "seasonal",
@@ -281,4 +282,4 @@ TAG_SEASONAL_MAP: Final[dict[int, str]] = {
 }
 
 # Tags for Mixes (seasonal collections)
-TAG_MIXES: Final[list[str]] = ["winter", "summer", "autumn", "newyear"]
+TAG_MIXES: Final[list[str]] = ["winter", "spring", "summer", "autumn", "newyear"]
