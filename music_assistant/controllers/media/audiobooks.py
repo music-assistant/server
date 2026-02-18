@@ -69,6 +69,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        **kwargs: Any,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -90,6 +91,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -105,6 +107,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -305,12 +308,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "provider": "library",
             },
         )
-        seconds_played = int(media_item.resume_position_ms or 0 / 1000)
+        seconds_played = int((media_item.resume_position_ms or 0) / 1000)
         # abort if nothing changed
         if (
             cur_entry
             and cur_entry["fully_played"] == media_item.fully_played
-            and abs((cur_entry["seconds_played"] or 0) - seconds_played) > 2
+            and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
         ):
             return
         await self.mass.music.database.insert(

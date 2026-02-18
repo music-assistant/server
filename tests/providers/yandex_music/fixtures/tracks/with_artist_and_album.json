@@ -1,0 +1,19 @@
+{
+  "id": 500,
+  "title": "Track With Album",
+  "available": true,
+  "duration_ms": 240000,
+  "artists": [
+    {
+      "id": 10,
+      "name": "Track Artist"
+    }
+  ],
+  "albums": [
+    {
+      "id": 20,
+      "title": "Track Album",
+      "cover_uri": "avatars.yandex.net/get-music-content/aaa/bbb/%%"
+    }
+  ]
+}

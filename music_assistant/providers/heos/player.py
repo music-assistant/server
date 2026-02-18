@@ -30,6 +30,7 @@ PLAYER_FEATURES = {
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
+    PlayerFeature.PLAY_MEDIA,
 }
 
 
@@ -56,30 +57,31 @@ class HeosPlayer(Player):
         # Keep internal reference so we don't need to check None on each call
         self._heos = self._device.heos
 
+        self._attr_type = PlayerType.PLAYER
+        self._attr_supported_features = PLAYER_FEATURES
+        self._attr_can_group_with = {self.provider.instance_id}
+
     async def setup(self) -> None:
         """Set up the player."""
-        self.set_static_attributes()
+        self.set_device_info()
         self.set_dynamic_attributes()
 
         await self.mass.players.register_or_update(self)
 
-        if self.enabled:
-            self._on_unload_callbacks.append(
-                self._device.add_on_player_event(self._player_event_received)
-            )
+        self._on_unload_callbacks.append(
+            self._device.add_on_player_event(self._player_event_received)
+        )
 
-            await self.build_group_list()
-            await self.build_source_list()
+        await self.build_group_list()
+        await self.build_source_list()
 
-    def set_static_attributes(self) -> None:
-        """Set all player static attributes."""
+    def set_device_info(self) -> None:
+        """Set all device info attributes."""
         # Extract manufacturer and model from device model string, if available
         model_parts = self._device.model.split(maxsplit=1)
         manufacturer = model_parts[0] if len(model_parts) == 2 else "HEOS"
         model = model_parts[1] if len(model_parts) == 2 else self._device.model
 
-        self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = PLAYER_FEATURES
         _device_info = DeviceInfo(
             model=model,
             software_version=self._device.version,
@@ -87,7 +89,6 @@ class HeosPlayer(Player):
         )
         _device_info.ip_address = self._device.ip_address
         self._attr_device_info = _device_info
-        self._attr_can_group_with = {self.provider.instance_id}
         self._attr_available = self._device.available
         self._attr_name = self._device.name
 
@@ -254,7 +255,8 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        await self._device.play_url(media.uri)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self._device.play_url(url)
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id

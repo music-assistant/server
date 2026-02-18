@@ -112,6 +112,7 @@ CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
+MAX_ARTWORK_DIMENSION = 1000
 
 
 async def setup(
@@ -415,8 +416,8 @@ class AppleMusicProvider(MusicProvider):
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
-        # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
-        max_limit = 200
+        # Obtain catalog info per 150 songs, the documented limit of 300 results in a 504 timeout
+        max_limit = 150
         for i in range(0, len(song_catalog_ids), max_limit):
             catalog_ids = song_catalog_ids[i : i + max_limit]
             catalog_endpoint = f"catalog/{self._storefront}/songs"
@@ -731,7 +732,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -811,7 +815,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -906,7 +913,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -945,7 +955,10 @@ class AppleMusicProvider(MusicProvider):
         if artwork := attributes.get("artwork"):
             url = artwork["url"]
             if artwork["width"] and artwork["height"]:
-                url = url.format(w=artwork["width"], h=artwork["height"])
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             playlist.metadata.add_image(
                 MediaItemImage(
                     provider=self.instance_id,
@@ -1128,7 +1141,7 @@ class AppleMusicProvider(MusicProvider):
         """Check a library ID matches known format."""
         if not isinstance(library_id, str):
             return False
-        valid = re.findall(r"^(?:[a|i|l|p]{1}\.|pl\.u\-)[a-zA-Z0-9]+$", library_id)
+        valid = re.findall(r"^(?:[ailp]\.)[a-zA-Z0-9]+$", library_id)
         return bool(valid)
 
     def _is_catalog_id(self, catalog_id: str) -> bool:

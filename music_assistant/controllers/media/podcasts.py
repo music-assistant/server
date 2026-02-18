@@ -51,6 +51,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        **kwargs: Any,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -68,6 +69,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -85,6 +87,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 

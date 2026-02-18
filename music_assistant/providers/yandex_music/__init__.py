@@ -36,6 +36,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.BROWSE,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 

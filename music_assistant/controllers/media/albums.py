@@ -114,6 +114,7 @@ class AlbumsController(MediaControllerBase[Album]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         album_types: list[AlbumType] | None = None,
+        **kwargs: Any,
     ) -> list[Album]:
         """Get in-database albums.
 
@@ -168,6 +169,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=True,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -195,6 +197,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=True,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:
