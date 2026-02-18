@@ -129,6 +129,7 @@ class WiimPlayer(Player):
         player._attr_device_info = DeviceInfo(
             model=player.wiim_player.model if player.wiim_player.model else "",
             software_version=player.wiim_player.firmware if player.wiim_player.firmware else "",
+            manufacturer=player.wiim_player.client.capabilities.get("vendor", "Unknown"),
         )
 
         if player.wiim_player.device_info:

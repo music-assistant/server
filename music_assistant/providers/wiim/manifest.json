@@ -5,6 +5,6 @@
   "stage": "beta",
   "description": "Stream music to WiiM devices.",
   "codeowners": ["@davidanthoff"],
-  "requirements": ["pywiim==2.1.83", "async-upnp-client==0.46.2"],
+  "requirements": ["pywiim==2.1.84", "async-upnp-client==0.46.2"],
   "documentation": "https://music-assistant.io/player-support/wiim/"
 }
