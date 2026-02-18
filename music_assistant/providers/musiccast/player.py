@@ -36,6 +36,7 @@ from music_assistant_models.player import (
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,
@@ -139,7 +140,9 @@ class MusicCastPlayer(Player):
             # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
             if len(device_id) == 12:
                 mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
-                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+                if is_valid_mac_address(mac):
+                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
 
         # polling
         self._attr_needs_poll = True
