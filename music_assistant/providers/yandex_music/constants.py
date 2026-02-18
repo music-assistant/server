@@ -275,7 +275,7 @@ TAG_CATEGORY_ORDER: Final[dict[str, list[str]]] = {
 TAG_SEASONAL_MAP: Final[dict[int, str]] = {
     1: "winter",  # January
     2: "winter",  # February
-    3: "spring",  # March (fallback to autumn if spring doesn't exist)
+    3: "spring",  # March (validated at runtime; falls back to autumn if unavailable)
     4: "spring",  # April
     5: "spring",  # May
     6: "summer",  # June

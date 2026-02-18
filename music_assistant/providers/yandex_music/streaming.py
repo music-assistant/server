@@ -141,14 +141,13 @@ class YandexMusicStreamingManager:
                     raise MediaNotFoundError(msg)
 
                 total_bytes = 0
-                with os.fdopen(temp_fd, "wb") as f:
+                fd = temp_fd
+                temp_fd = -1  # fdopen takes ownership; prevent double-close on error
+                with os.fdopen(fd, "wb") as f:
                     async for encrypted_chunk in response.content.iter_chunked(chunk_size):
                         decrypted_chunk = cipher.decrypt(encrypted_chunk)
                         f.write(decrypted_chunk)
                         total_bytes += len(decrypted_chunk)
-
-                # temp_fd is now closed by os.fdopen context manager
-                temp_fd = -1  # Mark as closed
 
                 self.logger.info(
                     "Preloaded and decrypted track %s to %s (%d bytes)",
