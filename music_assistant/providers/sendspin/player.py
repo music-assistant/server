@@ -45,6 +45,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     ImageType,
     PlaybackState,
     PlayerFeature,
@@ -59,6 +60,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     CONF_ENTRY_SAMPLE_RATES,
 )
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.sendspin.playback import (
     SendspinPlaybackSession,
@@ -187,6 +189,10 @@ class SendspinPlayer(Player):
             )
         else:
             self._attr_device_info = DeviceInfo()
+        # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
+        # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
+        if is_valid_mac_address(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
