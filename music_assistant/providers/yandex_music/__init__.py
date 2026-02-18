@@ -148,7 +148,8 @@ async def get_config_entries(
             key=CONF_STREAM_BUFFER_MB,
             type=ConfigEntryType.INTEGER,
             label="Stream buffer size (MB)",
-            description="Memory buffer for Buffered streaming mode. "
+            description="Memory buffer for Buffered streaming mode "
+            "(also applies when Preload mode falls back to Buffered for oversized tracks). "
             "Larger values help with slow or unstable connections "
             "by allowing more audio to be downloaded ahead of playback. "
             "Default: 8 MB (~45 seconds of FLAC audio).",

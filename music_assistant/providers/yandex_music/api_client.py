@@ -629,9 +629,10 @@ class YandexMusicClient:
                 "codecs": GET_FILE_INFO_CODECS,
                 "transports": "encraw",
             }
-            # Build sign string explicitly matching Yandex API specification.
-            # The codecs value contains commas that must be stripped for signing,
-            # so we construct the string explicitly rather than joining all values.
+            # Build sign string explicitly matching Yandex API specification:
+            # concatenate ts + trackId + quality + codecs (commas stripped) + transports.
+            # Comma stripping matches yandex-music-downloader-realflac reference implementation
+            # (see get_file_info signing in that project).
             codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
             param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
             hmac_sign = hmac.new(

@@ -196,9 +196,9 @@ async def test_lrc_regex_matches_valid_synced_lyrics() -> None:
 
     # Valid LRC formats that should match
     valid_cases = [
-        "[00:12]",  # Basic format
-        "[00:12.34]",  # With centiseconds
-        "[00:12.345]",  # With milliseconds
+        "[00:12]",  # Basic format (no fractional part)
+        "[00:12.34]",  # With centiseconds (2-digit fractional part — lower bound of \d{2,3})
+        "[00:12.345]",  # With milliseconds (3-digit fractional part — upper bound of \d{2,3})
         "[12:34]",  # Another basic format
         "[99:59.99]",  # Edge case
     ]
