@@ -22,7 +22,7 @@ class WiimProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.logger.info("Initializing WiimProvider with config: %s", self.config)
+        self.logger.debug("Initializing WiimProvider with config: %s", self.config)
 
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pywiim").setLevel(logging.DEBUG)
