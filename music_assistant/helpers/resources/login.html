@@ -272,7 +272,11 @@
 
                 if (data.success && data.access_token) {
                     // Redirect with the token
-                    const redirectUrl = returnUrl || '/';
+                    let redirectUrl = '/';
+                    // Only allow same-origin relative paths (e.g. "/path"), not external URLs
+                    if (typeof returnUrl === 'string' && returnUrl.startsWith('/') && !returnUrl.startsWith('//')) {
+                        redirectUrl = returnUrl;
+                    }
                     const separator = redirectUrl.includes('?') ? '&' : '?';
                     window.location.href = `${redirectUrl}${separator}code=${encodeURIComponent(data.access_token)}`;
                     return true;
