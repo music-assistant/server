@@ -266,7 +266,7 @@ class MSXHTTPServer:
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
-        sendspin_web_url = f"{base}/web?sendspin_url={quote(sendspin_url, safe='')}"
+        sendspin_web_url = f"{base}/web?sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
         sendspin_kiosk_url = (
             f"{base}/web?kiosk=1&sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
         )
