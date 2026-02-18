@@ -1665,14 +1665,12 @@ class AuthenticationManager:
         :return: Number of codes revoked.
         """
         if user_id:
-            # Count codes first
-            rows = await self.database.get_rows("join_codes", {"user_id": user_id})
-            count = len(list(rows))
+            # Count codes first using a dedicated COUNT query (no row limit)
+            count = await self.database.get_count("join_codes", {"user_id": user_id})
             await self.database.delete("join_codes", {"user_id": user_id})
         else:
             # Revoke all join codes
-            rows = await self.database.get_rows("join_codes")
-            count = len(list(rows))
+            count = await self.database.get_count("join_codes")
             await self.database.execute("DELETE FROM join_codes")
 
         await self.database.commit()
