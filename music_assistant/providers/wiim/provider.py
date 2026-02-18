@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 
-from pywiim import WiiMClient, discover_devices
-from pywiim.upnp.client import UpnpClient
+from pywiim import discover_devices
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
@@ -50,30 +50,12 @@ class WiimProvider(PlayerProvider):
             if device.ip not in device_ip_addresses:
                 device_ip_addresses.append(device.ip)
 
-        for ip_address in device_ip_addresses:
-            client = WiiMClient(ip_address, session=self.mass.http_session)
-
-            # Get device info for UUID
-            device_info = await client.get_device_info_model()
-
-            if device_info.uuid is None or device_info.name is None:
-                continue
-
-            # Create UPnP client (required for events and queue management)
-            description_url = f"http://{ip_address}:49152/description.xml"
-            upnp_client = await UpnpClient.create(ip_address, description_url)
-
-            player = WiimPlayer(
-                provider=self,
-                player_id=device_info.uuid,
-                name=device_info.name,
-                client=client,
-                upnp_client=upnp_client,
-            )
-
-            await player.setup()
-
-            await self.mass.players.register(player)
+        # Run the rest of each player setup in parallel, so we don't have to wait for each player
+        # to be setup before starting the next one.
+        setup_coroutines = [
+            WiimPlayer.setup(ip_address, self) for ip_address in device_ip_addresses
+        ]
+        await asyncio.gather(*setup_coroutines)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
