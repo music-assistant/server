@@ -71,7 +71,7 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
                 ),
             ],
@@ -528,15 +528,15 @@ class AriaCastBridge(PluginProvider):
     def _get_target_player_id(self) -> str | None:
         """Find the best player to use."""
         if self._active_player_id:
-            if self.mass.players.get(self._active_player_id):
+            if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             self._active_player_id = None
 
         if self._default_player_id == PLAYER_ID_AUTO:
-            for player in self.mass.players.all(False, False):
+            for player in self.mass.players.all_players(False, False):
                 if player.state.playback_state == PlaybackState.PLAYING:
                     return player.player_id
-            players = list(self.mass.players.all(False, False))
+            players = list(self.mass.players.all_players(False, False))
             return players[0].player_id if players else None
 
         return str(self._default_player_id)
