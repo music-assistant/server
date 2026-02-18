@@ -75,6 +75,11 @@ class WiimPlayer(Player):
             await client.close()
             return
 
+        if not provider.mass.config.get_raw_player_config_value(device_info.uuid, "enabled", True):
+            provider.logger.debug("Ignoring %s in discovery as it is disabled.", device_info.name)
+            await client.close()
+            return
+
         # Create UPnP client (required for events and queue management)
         description_url = f"http://{ip_address}:49152/description.xml"
         try:
