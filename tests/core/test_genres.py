@@ -7,7 +7,8 @@ MusicAssistant instance with a real SQLite database in a temporary directory.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import logging
+from collections.abc import AsyncGenerator
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -28,17 +29,31 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
 )
 from music_assistant.controllers.media.genres import GenreController
-
-if TYPE_CHECKING:
-    from music_assistant import MusicAssistant
-
+from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
+async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant, None]:
+    """Class-scoped MusicAssistant instance (one per test class)."""
+    tmp_path = tmp_path_factory.mktemp("genre_tests")
+    storage_path = tmp_path / "data"
+    cache_path = tmp_path / "cache"
+    storage_path.mkdir(parents=True)
+    cache_path.mkdir(parents=True)
+    logging.getLogger("aiosqlite").level = logging.INFO
+    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
+    await mass_instance.start()
+    try:
+        yield mass_instance
+    finally:
+        await mass_instance.stop()
+
+
+@pytest.fixture(scope="class")
 async def genre_ctrl(mass: MusicAssistant) -> GenreController:
     """Get the genre controller from a running MusicAssistant instance."""
     return mass.music.genres
@@ -309,17 +324,17 @@ class TestAliasCRUD:
     async def test_alias_library_items(self, genre_ctrl: GenreController) -> None:
         """Returns all aliases."""
         await genre_ctrl.add_alias_to_library(_make_alias("Darkwave"))
-        await genre_ctrl.add_alias_to_library(_make_alias("Synthpop"))
+        await genre_ctrl.add_alias_to_library(_make_alias("Chillout"))
         items = await genre_ctrl.alias_library_items()
         names = {a.name for a in items}
-        assert {"Darkwave", "Synthpop"}.issubset(names)
+        assert {"Darkwave", "Chillout"}.issubset(names)
 
     async def test_alias_library_items_search(self, genre_ctrl: GenreController) -> None:
         """Search filters correctly."""
-        await genre_ctrl.add_alias_to_library(_make_alias("Darkwave"))
-        await genre_ctrl.add_alias_to_library(_make_alias("Synthwave"))
-        items = await genre_ctrl.alias_library_items(search="dark")
-        assert all("dark" in a.name.lower() for a in items)
+        await genre_ctrl.add_alias_to_library(_make_alias("Darkambient"))
+        await genre_ctrl.add_alias_to_library(_make_alias("Brightnoise"))
+        items = await genre_ctrl.alias_library_items(search="darkambient")
+        assert all("darkambient" in a.name.lower() for a in items)
 
 
 # ===================================================================

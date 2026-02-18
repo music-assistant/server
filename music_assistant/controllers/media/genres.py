@@ -53,7 +53,6 @@ class GenreController(MediaControllerBase[Genre]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self._db_add_lock = asyncio.Lock()
         # Background scanner state tracking
         self._scanner_running: bool = False
         self._last_scan_time: float = 0
@@ -172,7 +171,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "timestamp_added": UNSET,
             },
         )
-        await self._ensure_self_alias(db_id, item.name)
+        await self._ensure_alias_for_genre(db_id, item.name)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -214,7 +213,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "timestamp_added": UNSET,
             },
         )
-        await self._ensure_self_alias(db_id, name)
+        await self._ensure_alias_for_genre(db_id, name)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def library_items(
@@ -427,7 +426,7 @@ class GenreController(MediaControllerBase[Genre]):
                     DB_TABLE_GENRES, {"search_name": search_name}
                 ):
                     genre_id = int(db_row["item_id"])
-                    await self._ensure_self_alias(genre_id, name_value)
+                    await self._ensure_alias_for_genre(genre_id, name_value)
                     for alias_name in entry.get("aliases", []):
                         await self._ensure_alias_for_genre(genre_id, alias_name)
                 continue
@@ -449,7 +448,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "search_sort_name": search_sort_name,
                 },
             )
-            await self._ensure_self_alias(genre_id, name_value)
+            await self._ensure_alias_for_genre(genre_id, name_value)
             for alias_name in entry.get("aliases", []):
                 await self._ensure_alias_for_genre(genre_id, alias_name)
             created_ids.append(genre_id)
@@ -987,41 +986,6 @@ class GenreController(MediaControllerBase[Genre]):
             )
 
         return genre_id, alias_id
-
-    async def _ensure_self_alias(self, genre_id: int, name: str) -> None:
-        """Ensure a self-alias exists for a genre with the genre's own name.
-
-        Creates an alias matching the genre's name and maps it to the genre.
-        Used when adding default genres to ensure they have at least one alias.
-
-        :param genre_id: Database ID of the genre.
-        :param name: Name to use for the alias (typically the genre's name).
-        """
-        normalized = self._normalize_genre_name(name)
-        if not normalized:
-            return
-        alias_id = await self._get_alias_id_by_name(name)
-        if not alias_id:
-            name_value, sort_name, search_name, search_sort_name = normalized
-            alias_id = await self.mass.music.database.insert(
-                DB_TABLE_ALIASES,
-                {
-                    "name": name_value,
-                    "sort_name": sort_name,
-                    "favorite": 0,
-                    "metadata": serialize_to_json({}),
-                    "external_ids": serialize_to_json(set()),
-                    "play_count": 0,
-                    "last_played": 0,
-                    "search_name": search_name,
-                    "search_sort_name": search_sort_name,
-                },
-            )
-        await self.mass.music.database.insert(
-            DB_TABLE_GENRE_ALIAS_MAPPING,
-            {"genre_id": genre_id, "alias_id": alias_id},
-            allow_replace=True,
-        )
 
     async def _ensure_alias_for_genre(self, genre_id: int, name: str) -> None:
         """Ensure an alias exists for a genre and map them together.
