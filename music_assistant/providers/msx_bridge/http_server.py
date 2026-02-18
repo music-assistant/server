@@ -196,7 +196,13 @@ class MSXHTTPServer:
 
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        """Add CORS headers to all responses."""
+        """Add CORS headers to all responses.
+
+        Wildcard CORS is intentional: this server runs on LAN (default port 8099).
+        The web player (/web) and MSX plugin (/msx/plugin.html) are served from the
+        same origin, so browser playback-control POSTs are always same-origin.
+        MSX TV app only makes GET requests. This matches MA's own webserver pattern.
+        """
         if request.method == "OPTIONS":
             return web.Response(
                 headers={
@@ -213,7 +219,9 @@ class MSXHTTPServer:
         """Start the HTTP server."""
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        # reuse_address + reuse_port allow fast restart after reload
+        # reuse_address + reuse_port allow fast restart after reload.
+        # 0.0.0.0 is required: MSX TVs on LAN must reach this server by host IP;
+        # binding to 127.0.0.1 would prevent TV connections.
         site = web.TCPSite(
             self._runner,
             "0.0.0.0",
@@ -2009,13 +2017,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         or "" if using IP fallback.
         """
         device_id = request.query.get("device_id")
-        # Try to get real IP from proxy headers first, then fall back to remote
-        remote_ip = (
-            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or request.headers.get("X-Real-IP", "")
-            or request.remote
-            or "unknown"
-        )
+        remote_ip = request.remote or "unknown"
 
         if device_id:
             sanitized = PLAYER_ID_SANITIZE_RE.sub("_", device_id).strip("_") or "device"
@@ -2053,13 +2055,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
-        # Get remote IP for display name
-        remote_ip = (
-            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or request.headers.get("X-Real-IP", "")
-            or request.remote
-            or None
-        )
+        remote_ip = request.remote
         # Web player clients pass source=web to distinguish from MSX TV players
         display_name: str | None = None
         prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"

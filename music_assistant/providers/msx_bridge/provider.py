@@ -80,7 +80,8 @@ class SharedGroupStream:
             async for chunk in audio_chunks:
                 chunk_count += 1
                 self._total_bytes += len(chunk)
-                self.buffer.append(chunk)
+                async with self._lock:
+                    self.buffer.append(chunk)
 
                 if not self.started.is_set():
                     # Signal that stream has started (first chunk received)
