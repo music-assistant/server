@@ -2397,14 +2397,23 @@ class MusicController(CoreController):
                 unique_raw_names = [row[0] for row in await cursor.fetchall() if row[0]]
             print(f"Genre migration - discovered {len(unique_raw_names)} unique genre names")  # noqa: T201
 
-            # 2b: Create genre + alias for each unique name (Python, bounded count)
+            # 2b: Create genre + alias for each unique name (Python, bounded count).
+            # Names that already exist as aliases from Phase 1 (e.g. "Classic Rock"
+            # is an alias of "Rock") must not create a duplicate genre — just reuse
+            # the existing alias for the media-item mapping in Phase 2c.
+            phase1_aliases = set(alias_cache.keys())
             raw_name_to_alias_id: dict[str, int] = {}
             ga_mappings: list[tuple[int, int]] = []
             for raw_name in unique_raw_names:
                 alias_id = await _get_or_create_alias(raw_name)
+                if not alias_id:
+                    continue
+                raw_name_to_alias_id[raw_name] = alias_id
+                search_name = create_safe_string(raw_name.strip(), True, True)
+                if search_name in phase1_aliases:
+                    continue
                 genre_id = await _get_or_create_genre(raw_name)
-                if alias_id and genre_id:
-                    raw_name_to_alias_id[raw_name] = alias_id
+                if genre_id:
                     ga_mappings.append((genre_id, alias_id))
 
             if ga_mappings:
