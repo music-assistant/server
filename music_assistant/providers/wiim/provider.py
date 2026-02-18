@@ -53,7 +53,11 @@ class WiimProvider(PlayerProvider):
         setup_coroutines = [
             WiimPlayer.setup(ip_address, self) for ip_address in device_ip_addresses
         ]
-        await asyncio.gather(*setup_coroutines)
+        results = await asyncio.gather(*setup_coroutines, return_exceptions=True)
+        for ip_address, result in zip(device_ip_addresses, results, strict=True):
+            if isinstance(result, Exception):
+                # Log per-device failures without aborting setup of other devices.
+                self.logger.error("Failed to set up WiiM player at %s: %s", ip_address, result)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
