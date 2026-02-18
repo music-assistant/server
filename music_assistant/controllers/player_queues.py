@@ -1620,14 +1620,19 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
-        """Return tracks for given genre, based on alias mappings."""
+        """Return tracks for given genre, based on alias mappings.
+
+        Limits results to avoid loading thousands of tracks for broad genres.
+        Directly mapped tracks are fetched with random ordering, then supplemented
+        with tracks from a limited set of mapped albums and artists.
+        """
         result: list[Track] = []
         start_item_found = False
         self.logger.info(
             "Fetching tracks to play for genre %s",
             genre.name,
         )
-        tracks, albums, artists = await self.mass.music.genres.mapped_media(genre)
+        tracks, albums, artists = await self.mass.music.genres.mapped_media(genre, limit=50)
 
         for genre_track in tracks:
             if not genre_track.available:
