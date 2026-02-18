@@ -913,6 +913,11 @@ class GenreController(MediaControllerBase[Genre]):
         return None
 
     async def _get_genre_id_by_alias(self, alias_id: int) -> int | None:
+        """Get genre ID that an alias is mapped to.
+
+        :param alias_id: Database ID of the alias.
+        :return: Genre ID if a mapping exists, None otherwise.
+        """
         if db_row := await self.mass.music.database.get_row(
             DB_TABLE_GENRE_ALIAS_MAPPING, {"alias_id": alias_id}
         ):
@@ -1149,16 +1154,17 @@ class GenreController(MediaControllerBase[Genre]):
 
         mapped_count = 0
         page_size = 500
-        offset = 0
         while True:
+            # Always query at offset=0: successfully mapped items are excluded
+            # by the NOT IN filter, so they disappear from the result set.
             items = await controller.get_library_items_by_query(
                 limit=page_size,
-                offset=offset,
                 extra_query_parts=[query],
             )
             if not items:
                 break
 
+            batch_mapped = 0
             for item in items:
                 try:
                     genre_names = set(item.metadata.genres or [])
@@ -1171,6 +1177,7 @@ class GenreController(MediaControllerBase[Genre]):
                         genre_names,
                     )
                     mapped_count += 1
+                    batch_mapped += 1
 
                     # Yield to event loop periodically
                     if mapped_count % GENRE_MAPPING_BATCH_SIZE == 0:
@@ -1186,9 +1193,10 @@ class GenreController(MediaControllerBase[Genre]):
                     )
                     continue
 
-            if len(items) < page_size:
+            # If no items were mapped this batch, all remaining items are
+            # unmappable (errors or empty genres) — stop to avoid infinite loop.
+            if batch_mapped == 0:
                 break
-            offset += page_size
 
         return mapped_count
 
@@ -1203,7 +1211,6 @@ class GenreController(MediaControllerBase[Genre]):
                 "message": "Genre mapping scanner is already running",
             }
 
-        # Trigger scan immediately (cancel any pending scheduled scan)
         self.mass.create_task(self._scan_genre_mappings())
 
         return {
