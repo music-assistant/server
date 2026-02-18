@@ -43,6 +43,9 @@ class WiimProvider(PlayerProvider):
             if len(ip_address.strip()) > 0
         ]
 
+        # De-duplicate manual IPs while preserving order
+        device_ip_addresses = list(dict.fromkeys(device_ip_addresses))
+
         # Remove duplicates (by IP)
         for device in discovered_devices:
             if device.ip not in device_ip_addresses:
