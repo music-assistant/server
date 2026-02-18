@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import errno
+import logging
 import os
 import re
 from dataclasses import dataclass
 
 from music_assistant.helpers.compare import compare_strings
+
+logger = logging.getLogger(__name__)
 
 IGNORE_DIRS = ("recycle", "Recently-Snaphot", "#recycle", "System Volume Information", "lost+found")
 
@@ -186,10 +190,10 @@ def get_album_dir(track_dir: str, album_name: str) -> str | None:
             if _dir_contains_album_name(album_name, dirname):
                 return parentdir
 
-        if compare_strings(album_name.split("(")[0], dirname, False):
+        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname, False):
             # account for AlbumName (Version) format in the album name
             return parentdir
-        if compare_strings(album_name.split("(")[0], dirname.split(" - ")[-1], False):
+        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname.split(" - ")[-1], False):
             # account for ArtistName - AlbumName (Version) format
             return parentdir
         if len(album_name) > 8 and album_name in dirname:
@@ -230,19 +234,44 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
 
     if base_path not in sub_path:
         sub_path = os.path.join(base_path, sub_path)
-    items = []
-    for entry in os.scandir(sub_path):
-        # filter out invalid dirs and hidden files
-        if not (entry.is_dir(follow_symlinks=False) or entry.is_file(follow_symlinks=False)):
-            continue
-        if entry.name in IGNORE_DIRS or entry.name.startswith("."):
-            continue
-        try:
-            items.append(FileSystemItem.from_dir_entry(entry, base_path))
-        except OSError:
-            # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
-            # This typically happens with emoji or special unicode characters
-            continue
+    items: list[FileSystemItem] = []
+    try:
+        entries = os.scandir(sub_path)
+    except OSError as err:
+        if err.errno == errno.EINVAL:
+            logger.warning(
+                "Skipping directory '%s' - unsupported characters in path",
+                sub_path,
+            )
+            return items
+        raise
+    with entries:
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    logger.warning(
+                        "Skipping '%s' - unsupported characters in name",
+                        entry.name,
+                    )
+                continue
+            if not (is_dir or is_file):
+                continue
+            if entry.name in IGNORE_DIRS or entry.name.startswith("."):
+                continue
+            try:
+                items.append(FileSystemItem.from_dir_entry(entry, base_path))
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    logger.warning(
+                        "Skipping '%s' - unsupported characters in name",
+                        entry.name,
+                    )
+                else:
+                    logger.debug("Skipping '%s' due to OS error: %s", entry.name, err)
+                continue
 
     if sort:
         return sorted(

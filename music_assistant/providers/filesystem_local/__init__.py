@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import os.path
@@ -353,30 +354,53 @@ class LocalFileSystemProvider(MusicProvider):
         # in a single executor thread to save the overhead of having to spin up tons of tasks
         def listdir(path: str) -> Iterator[FileSystemItem]:
             """Recursively traverse directory entries."""
-            for item in os.scandir(path):
-                # ignore invalid filenames
-                if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
-                    continue
-                if item.is_dir(follow_symlinks=False):
-                    yield from listdir(item.path)
-                elif item.is_file(follow_symlinks=False):
-                    # skip files without extension
-                    if "." not in item.name:
-                        continue
-                    ext = item.name.rsplit(".", 1)[1].lower()
-                    if ext not in SUPPORTED_EXTENSIONS:
-                        # skip unsupported file extension
+            try:
+                scan_iter = os.scandir(path)
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    self.logger.warning(
+                        "Skipping directory '%s' - unsupported characters in path",
+                        path,
+                    )
+                else:
+                    self.logger.warning("Unable to scan directory %s: %s", path, err)
+                return
+            with scan_iter:
+                for item in scan_iter:
+                    if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                         continue
                     try:
-                        yield FileSystemItem.from_dir_entry(item, self.base_path)
+                        is_dir = item.is_dir(follow_symlinks=False)
+                        is_file = item.is_file(follow_symlinks=False)
                     except OSError as err:
-                        # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
-                        # This typically happens with emoji or special unicode characters
-                        self.logger.debug(
-                            "Skipping file %s due to stat error: %s",
-                            item.path,
-                            str(err),
-                        )
+                        if err.errno == errno.EINVAL:
+                            self.logger.warning(
+                                "Skipping '%s' - unsupported characters in name",
+                                item.name,
+                            )
+                        continue
+                    if is_dir:
+                        yield from listdir(item.path)
+                    elif is_file:
+                        if "." not in item.name:
+                            continue
+                        ext = item.name.rsplit(".", 1)[1].lower()
+                        if ext not in SUPPORTED_EXTENSIONS:
+                            continue
+                        try:
+                            yield FileSystemItem.from_dir_entry(item, self.base_path)
+                        except OSError as err:
+                            if err.errno == errno.EINVAL:
+                                self.logger.warning(
+                                    "Skipping '%s' - unsupported characters in name",
+                                    item.name,
+                                )
+                            else:
+                                self.logger.debug(
+                                    "Skipping file %s due to OS error: %s",
+                                    item.path,
+                                    str(err),
+                                )
 
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""
