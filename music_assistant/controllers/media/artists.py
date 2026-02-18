@@ -72,7 +72,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        genre_ids: int | list[int] | None = None,
+        genre: int | list[int] | None = None,
         album_artists_only: bool = False,
         **kwargs: Any,
     ) -> list[Artist]:
@@ -85,7 +85,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param album_artists_only: Only return artists that have albums.
-        :param genre_ids: Filter by genre id(s).
+        :param genre: Filter by genre id(s).
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -97,7 +97,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
-            genre_ids=genre_ids,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,

@@ -55,6 +55,7 @@ JSON_KEYS = (
     "external_ids",
     "narrators",
     "authors",
+    "genre_aliases",
 )
 
 SORT_KEYS = {
@@ -256,7 +257,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        genre_ids: int | list[int] | None = None,
+        genre: int | list[int] | None = None,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -268,7 +269,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param genre_ids: Filter by genre id(s).
+        :param genre: Filter by genre id(s).
         """
         return await self.get_library_items_by_query(
             favorite=favorite,
@@ -277,7 +278,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            genre_ids=genre_ids,
+            genre_ids=genre,
             in_library_only=True,
         )
 
@@ -287,7 +288,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        genre_ids: int | list[int] | None = None,
+        genre: int | list[int] | None = None,
         library_items_only: bool = True,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all in-database items."""
@@ -301,7 +302,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             next_items = await self.get_library_items_by_query(
                 favorite=favorite,
                 search=search,
-                genre_ids=genre_ids,
+                genre_ids=genre,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
@@ -1014,11 +1015,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["genre_ids"] = genre_ids
             query_params["genre_media_type"] = self.media_type.value
             query_parts.append(
-                f"{self.db_table}.item_id IN ("
-                f"SELECT media_id FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
-                "WHERE media_type = :genre_media_type AND alias_id IN ("
-                f"SELECT alias_id FROM {DB_TABLE_GENRE_ALIAS_MAPPING} "
-                "WHERE genre_id IN :genre_ids))"
+                f"EXISTS("
+                f"SELECT 1 FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} ami "
+                f"INNER JOIN {DB_TABLE_GENRE_ALIAS_MAPPING} gam "
+                f"ON gam.alias_id = ami.alias_id "
+                f"WHERE ami.media_id = {self.db_table}.item_id "
+                "AND ami.media_type = :genre_media_type "
+                "AND gam.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
         if provider_filter:
