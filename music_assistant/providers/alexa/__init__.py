@@ -267,6 +267,7 @@ class AlexaPlayer(Player):
         super().__init__(provider, player_id)
         self.device = device
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
@@ -320,12 +321,14 @@ class AlexaPlayer(Player):
         if username is not None and password is not None:
             auth = BasicAuth(str(username), str(password))
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
                     f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
                     json={
-                        "streamUrl": media.uri,
+                        "streamUrl": stream_url,
                         "title": media.title,
                         "artist": media.artist,
                         "album": media.album,

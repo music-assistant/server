@@ -9,8 +9,10 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
+    CONF_BASE_URL,
     CONF_QUALITY,
     CONF_TOKEN,
+    DEFAULT_BASE_URL,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
@@ -36,6 +38,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.BROWSE,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -92,5 +96,16 @@ async def get_config_entries(
                 ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
             ],
             default_value=QUALITY_HIGH,
+        ),
+        ConfigEntry(
+            key=CONF_BASE_URL,
+            type=ConfigEntryType.STRING,
+            label="API Base URL",
+            description="API endpoint base URL. "
+            "Only change if KION Music changes their API endpoint. "
+            "Default: https://music.mts.ru/ya_proxy_api",
+            default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
         ),
     )
