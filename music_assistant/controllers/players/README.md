@@ -244,7 +244,16 @@ When implementing a new protocol provider:
 
 1. Set `_attr_type = PlayerType.PROTOCOL` for generic devices (non-vendor devices)
 2. Set `_attr_type = PlayerType.PLAYER` for devices with native support (vendor's own devices)
-3. Populate `device_info.identifiers` with MAC, UUID, etc. (see below)
+3. **Populate `device_info.identifiers`** with validated identifiers:
+   ```python
+   from music_assistant.helpers.util import is_valid_mac_address
+
+   # IMPORTANT: Validate MAC addresses before adding them
+   if is_valid_mac_address(mac_address):
+       self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+   self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+   self._attr_device_info.add_identifier(IdentifierType.UUID, uuid)
+   ```
 4. Filter out devices that should only be handled by native providers (e.g., passive satellites)
 5. The Player Controller handles linking automatically
 
@@ -255,12 +264,16 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
 1. Set `_attr_type = PlayerType.PLAYER` (or the property 'type') for all devices
 2. **Populate device identifiers** - This is critical for protocol linking:
    ```python
+   from music_assistant.helpers.util import is_valid_mac_address
+
    self._attr_device_info = DeviceInfo(
        model="Device Model",
        manufacturer="Manufacturer Name",
    )
    # Add identifiers in order of preference (MAC is most reliable)
-   self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+   # IMPORTANT: Validate MAC addresses before adding them
+   if is_valid_mac_address(mac_address):
+       self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
    self._attr_device_info.add_identifier(IdentifierType.UUID, "device-uuid-here")
    ```
 3. The controller will automatically:
@@ -274,7 +287,12 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
 - `UUID` - Universally unique identifier
 - `player_id` - Fallback when no identifiers available
 
-**Note:** `IP_ADDRESS` is NOT used for matching as it can change with DHCP.
+**Important Notes:**
+- **Always validate MAC addresses** using `is_valid_mac_address()` before adding them
+  - Rejects invalid MACs like `00:00:00:00:00:00` or `ff:ff:ff:ff:ff:ff`
+  - Prevents false matches between unrelated devices
+  - The controller will attempt ARP lookup to resolve real MACs automatically
+- `IP_ADDRESS` is NOT used for matching as it can change with DHCP
 
 ### Testing Protocol Linking
 

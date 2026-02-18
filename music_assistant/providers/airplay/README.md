@@ -258,10 +258,13 @@ The provider supports synchronized multi-room audio by:
 
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
-1. **Calculate offset**: Determine how much audio has already been sent
-2. **Adjusted start time**: Start new player at `original_start_time + offset`
-3. **Receive same stream**: New player receives the same audio chunks as existing players
-4. **Automatic synchronization**: NTP timestamps keep all players in sync
+1. **Ring buffer**: Session maintains ~8 seconds of recent audio chunks in memory
+2. **Immediate buffered feed**: Late joiner receives buffered chunks immediately to prime the ffmpeg/CLI pipeline
+3. **Compensated start time**: NTP timestamp accounts for buffer duration: `start_time + (seconds_streamed - buffer_duration)`
+4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
+5. **Seamless sync**: Joins live stream perfectly synchronized with other players
+
+This approach significantly reduces the delay when adding players to an active session, as the late joiner receives audio data immediately instead of waiting for new chunks.
 
 **Config option**: `enable_late_join` (default: `True`)
 - If disabled: Session restarts with all players when members change
@@ -482,4 +485,3 @@ Enable verbose logging in Music Assistant to see:
 
 - **Companion protocol**: Implement idle state monitoring for Apple devices
 - **AirPlay 2 volume feedback**: Add DACP volume support for AirPlay 2
-- **Better late-join handling**: Reduce time to start a late joiner

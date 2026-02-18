@@ -36,6 +36,7 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
     PLAYBACK_STATE_MAP,
@@ -140,7 +141,8 @@ class SonosPlayer(Player):
         # Extract MAC address from Sonos player_id (RINCON_XXXXXXXXXXXX01400)
         # The middle part contains the MAC address (last 6 bytes in hex)
         mac_address = self._extract_mac_from_player_id()
-        if mac_address:
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+        if mac_address and is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:

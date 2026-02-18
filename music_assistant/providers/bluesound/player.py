@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
@@ -69,8 +70,10 @@ class BluesoundPlayer(Player):
             manufacturer="BluOS",
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
         if mac_address := discovery_info.get("mac"):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+            if is_valid_mac_address(mac_address):
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_available = True
         self._attr_source_list = []
         self._attr_needs_poll = True

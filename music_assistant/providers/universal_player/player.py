@@ -61,6 +61,28 @@ class UniversalPlayer(Player):
         # it delegates to protocol players
         self._attr_supported_features = set()
 
+    @property
+    def hidden_by_default(self) -> bool:
+        """Return if the player should be hidden in the UI by default."""
+        if len(self.linked_output_protocols) == 0:
+            # If we have no linked protocols, hide by default
+            return True
+        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
+            # hide web players by default
+            return True
+        return False
+
+    @property
+    def expose_to_ha_by_default(self) -> bool:
+        """Return if the player should be exposed to Home Assistant by default."""
+        if len(self.linked_output_protocols) == 0:
+            # If we have no linked protocols, hide by default
+            return False
+        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
+            # hide web players by default
+            return False
+        return True
+
     def _get_control_target(
         self, required_feature: PlayerFeature, require_active: bool = False
     ) -> Player | None:

@@ -19,6 +19,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
@@ -148,7 +149,8 @@ class DLNAPlayer(Player):
                 # Many UPnP devices embed MAC in the last 12 chars of UUID
                 # e.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
                 mac_address = self._extract_mac_from_uuid(uuid_value)
-                if mac_address:
+                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+                if mac_address and is_valid_mac_address(mac_address):
                     self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
                 # Try to extract just the IP from the URL for matching
                 ip_address = self.device.device.presentation_url or self.description_url
