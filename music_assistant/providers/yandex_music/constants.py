@@ -122,7 +122,10 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "winter": "Зима",
     "summer": "Лето",
     "autumn": "Осень",
+    "spring": "Весна",
     "newyear": "Новый год",
+    # Liked Tracks
+    "liked_tracks": "Мне нравится",
     # Discovery
     "top_picks": "Топ подборки",
     "mood_mix": "Настроение",
@@ -179,7 +182,10 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "winter": "Winter",
     "summer": "Summer",
     "autumn": "Autumn",
+    "spring": "Spring",
     "newyear": "New Year",
+    # Liked Tracks
+    "liked_tracks": "My Favorites",
     # Discovery
     "top_picks": "Top Picks",
     "mood_mix": "Mood Mix",

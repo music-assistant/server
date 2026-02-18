@@ -843,7 +843,7 @@ class YandexMusicProvider(MusicProvider):
             return Playlist(
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names["tracks"],
+                name=names[LIKED_TRACKS_PLAYLIST_ID],
                 owner="Yandex Music",
                 provider_mappings={
                     ProviderMapping(
