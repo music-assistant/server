@@ -733,10 +733,119 @@ def validate_announcement_chime_url(url: str) -> bool:
 
 
 async def get_mac_address(ip_address: str) -> str | None:
-    """Get MAC address for given IP address."""
-    from getmac import get_mac_address  # noqa: PLC0415
+    """Get MAC address for given IP address via ARP lookup."""
+    try:
+        from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-    return await asyncio.to_thread(get_mac_address, ip=ip_address)
+        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+    except ImportError:
+        LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except Exception as err:
+        LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
+        return None
+
+
+def is_locally_administered_mac(mac_address: str) -> bool:
+    """
+    Check if a MAC address is locally administered (virtual/randomized).
+
+    Locally administered addresses have bit 1 of the first octet set to 1.
+    These are often used by devices for virtual interfaces or protocol-specific
+    addresses (e.g., AirPlay, DLNA may use different virtual MACs than the real hardware MAC).
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: True if locally administered, False if globally unique (real hardware MAC).
+    """
+    # Normalize MAC address
+    mac_clean = mac_address.upper().replace(":", "").replace("-", "")
+    if len(mac_clean) < 2:
+        return False
+
+    # Get first octet and check bit 1 (second bit from right)
+    try:
+        first_octet = int(mac_clean[:2], 16)
+        return bool(first_octet & 0x02)
+    except ValueError:
+        return False
+
+
+def is_valid_mac_address(mac_address: str | None) -> bool:
+    """
+    Check if a MAC address is valid and usable for device identification.
+
+    Invalid MAC addresses include:
+    - None or empty strings
+    - Null MAC: 00:00:00:00:00:00
+    - Broadcast MAC: ff:ff:ff:ff:ff:ff
+    - Any MAC that doesn't follow the expected pattern
+
+    :param mac_address: MAC address to validate.
+    :return: True if valid and usable, False otherwise.
+    """
+    if not mac_address:
+        return False
+
+    # Normalize MAC address (remove separators and convert to lowercase)
+    normalized = mac_address.lower().replace(":", "").replace("-", "")
+
+    # Check for invalid/reserved MAC addresses
+    if normalized in ("000000000000", "ffffffffffff"):
+        return False
+
+    # Check length and hex validity
+    if len(normalized) != 12:
+        return False
+
+    try:
+        int(normalized, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_ip_address(ip_address: str | None) -> str | None:
+    """
+    Normalize IP address for comparison.
+
+    Handles IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.64 -> 192.168.1.64).
+
+    :param ip_address: IP address to normalize.
+    :return: Normalized IP address or None if invalid.
+    """
+    if not ip_address:
+        return None
+
+    # Handle IPv6-mapped IPv4 addresses
+    if ip_address.startswith("::ffff:"):
+        # Extract the IPv4 part
+        return ip_address[7:]
+
+    return ip_address
+
+
+async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | None) -> str | None:
+    """
+    Resolve the real MAC address for a device.
+
+    Some devices report different virtual MAC addresses per protocol (AirPlay, DLNA,
+    Chromecast). This function tries to resolve the actual hardware MAC via ARP
+    when the reported MAC appears to be locally administered (virtual).
+
+    :param reported_mac: The MAC address reported by the protocol.
+    :param ip_address: The IP address of the device (for ARP lookup).
+    :return: The real MAC address if found, or None if it couldn't be resolved.
+    """
+    if not ip_address:
+        return None
+
+    # If no MAC reported or it's a locally administered one, try ARP lookup
+    if not reported_mac or is_locally_administered_mac(reported_mac):
+        real_mac = await get_mac_address(ip_address)
+        if real_mac and is_valid_mac_address(real_mac):
+            return real_mac.upper()
+
+    return None
 
 
 class TaskManager:

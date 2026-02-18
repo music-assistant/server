@@ -202,7 +202,7 @@ class MusicController(CoreController):
     async def on_provider_unload(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
         # make sure to stop any running sync tasks first
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider.instance_id:
                 if sync_task.task:
                     sync_task.task.cancel()
@@ -865,7 +865,7 @@ class MusicController(CoreController):
             if not prov_mapping.in_library:
                 continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
@@ -876,9 +876,12 @@ class MusicController(CoreController):
 
     @api_command("music/library/add_item")
     async def add_item_to_library(
-        self, item: str | MediaItemType, overwrite_existing: bool = False
+        self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, ItemMapping):
+            # handle browse results that are returned as ItemMappings
+            item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
             full_item = await self.get_item_by_uri(item)
@@ -896,7 +899,7 @@ class MusicController(CoreController):
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
@@ -1182,17 +1185,20 @@ class MusicController(CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        if user:
-            # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
-
         # update generic playlog table (when not playing)
         if not is_playing:
-            await self.database.insert(
-                DB_TABLE_PLAYLOG,
-                params,
-                allow_replace=True,
-            )
+            if user:
+                user_ids = [user.user_id]
+            else:
+                # NOTE: if no user was found, we will alter the playlog for all users
+                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+            for user_id in user_ids:
+                params["userid"] = user_id
+                await self.database.insert(
+                    DB_TABLE_PLAYLOG,
+                    params,
+                    allow_replace=True,
+                )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -1259,10 +1265,14 @@ class MusicController(CoreController):
             user = provider_user
 
         if user:
+            user_ids = [user.user_id]
+        else:
             # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
+            user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        for user_id in user_ids:
+            params["userid"] = user_id
+            await self.database.delete(DB_TABLE_PLAYLOG, params)
 
-        await self.database.delete(DB_TABLE_PLAYLOG, params)
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
             if (
@@ -1601,7 +1611,7 @@ class MusicController(CoreController):
             key = f"sync_{provider_instance_id}_{media_type.value}"
             self.mass.cancel_timer(key)
         # cancel any running sync tasks
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider_instance_id:
                 sync_task.task.cancel()
 
@@ -1803,7 +1813,7 @@ class MusicController(CoreController):
     def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance != provider.instance_id:
                 continue
             if sync_task.task.done():

@@ -75,7 +75,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
             info = line.split("#EXTINF:")[1].split(",", 1)
             if len(info) != 2:
                 continue
-            length = info[0].strip()[0]
+            length = info[0].strip()
             if length == "-1":
                 length = None
             title = info[1].strip()

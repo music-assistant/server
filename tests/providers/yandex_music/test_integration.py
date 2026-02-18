@@ -18,6 +18,7 @@ from yandex_music import Track as YandexTrack
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.yandex_music.constants import BROWSE_NAMES_EN, BROWSE_NAMES_RU
 from tests.common import wait_for_sync_completion
 
 if TYPE_CHECKING:
@@ -356,6 +357,12 @@ async def test_browse(mass: MusicAssistant) -> None:
     root_items = await prov.browse(path=base_path)
     assert root_items is not None
     assert isinstance(root_items, (list, tuple))
+    all_names = set(BROWSE_NAMES_RU.values()) | set(BROWSE_NAMES_EN.values())
+    if root_items:
+        first_name = getattr(root_items[0], "name", None)
+        assert first_name in all_names, (
+            f"First folder name {first_name!r} should be from locale mapping"
+        )
 
     artists_path = f"{prov.instance_id}://artists"
     artists_items = await prov.browse(path=artists_path)

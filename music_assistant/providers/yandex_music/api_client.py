@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.errors import (
@@ -21,7 +22,7 @@ from yandex_music.utils.sign_request import get_sign_request
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-from .constants import DEFAULT_LIMIT
+from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
@@ -80,6 +81,141 @@ class YandexMusicClient:
         if self._client is None:
             raise ProviderUnavailableError("Client not connected, call connect() first")
         return self._client
+
+    def _is_connection_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a connection or server drop."""
+        if isinstance(err, NetworkError):
+            return True
+        msg = str(err).lower()
+        return "disconnect" in msg or "connection" in msg or "timeout" in msg
+
+    async def _reconnect(self) -> None:
+        """Disconnect and connect again to recover from Server disconnected / connection errors."""
+        await self.disconnect()
+        await self.connect()
+
+    # Rotor (radio station) methods
+
+    async def get_rotor_station_tracks(
+        self,
+        station_id: str,
+        queue: str | int | None = None,
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
+
+        :param station_id: Station ID (e.g. ROTOR_STATION_MY_WAVE or "track:1234" for similar).
+        :param queue: Optional track ID for pagination (first track of previous batch).
+        :return: Tuple of (list of track objects, batch_id for feedback or None).
+        """
+        for attempt in range(2):
+            client = self._ensure_connected()
+            try:
+                result = await client.rotor_station_tracks(station_id, settings2=True, queue=queue)
+                if not result or not result.sequence:
+                    return ([], result.batch_id if result else None)
+                track_ids = []
+                for seq in result.sequence:
+                    if seq.track is None:
+                        continue
+                    tid = getattr(seq.track, "id", None) or getattr(seq.track, "track_id", None)
+                    if tid is not None:
+                        track_ids.append(str(tid))
+                if not track_ids:
+                    return ([], result.batch_id if result else None)
+                full_tracks = await self.get_tracks(track_ids)
+                order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
+                ordered = [order_map[tid] for tid in track_ids if tid in order_map]
+                return (ordered, result.batch_id if result else None)
+            except BadRequestError as err:
+                LOGGER.warning("Error fetching rotor station %s tracks: %s", station_id, err)
+                return ([], None)
+            except (NetworkError, Exception) as err:
+                if attempt == 0 and self._is_connection_error(err):
+                    LOGGER.warning(
+                        "Connection error fetching rotor tracks, reconnecting: %s",
+                        err,
+                    )
+                    try:
+                        await self._reconnect()
+                    except Exception as recon_err:
+                        LOGGER.warning("Reconnect failed: %s", recon_err)
+                        return ([], None)
+                else:
+                    LOGGER.warning("Error fetching rotor station tracks: %s", err)
+                    return ([], None)
+        return ([], None)
+
+    async def get_my_wave_tracks(
+        self, queue: str | int | None = None
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Get tracks from the My Wave (Моя волна) radio station.
+
+        :param queue: Optional track ID of the last track from the previous batch (API uses it for
+            pagination; do not pass batch_id).
+        :return: Tuple of (list of track objects, batch_id for feedback).
+        """
+        return await self.get_rotor_station_tracks(ROTOR_STATION_MY_WAVE, queue=queue)
+
+    async def send_rotor_station_feedback(
+        self,
+        station_id: str,
+        feedback_type: str,
+        *,
+        batch_id: str | None = None,
+        track_id: str | None = None,
+        total_played_seconds: int | None = None,
+    ) -> bool:
+        """Send rotor station feedback for My Wave recommendations.
+
+        Used to report radioStarted, trackStarted, trackFinished, skip so that
+        Yandex can improve subsequent recommendations.
+
+        :param station_id: Station ID (e.g. ROTOR_STATION_MY_WAVE).
+        :param feedback_type: One of 'radioStarted', 'trackStarted', 'trackFinished', 'skip'.
+        :param batch_id: Optional batch ID from the last get_my_wave_tracks response.
+        :param track_id: Track ID (required for trackStarted, trackFinished, skip).
+        :param total_played_seconds: Seconds played (for trackFinished, skip).
+        :return: True if the request succeeded.
+        """
+        client = self._ensure_connected()
+        payload: dict[str, Any] = {
+            "type": feedback_type,
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        if feedback_type == "radioStarted":
+            payload["from"] = "YandexMusicDesktopAppWindows"
+        if track_id is not None:
+            payload["trackId"] = track_id
+        if total_played_seconds is not None:
+            payload["totalPlayedSeconds"] = total_played_seconds
+        if batch_id is not None:
+            payload["batchId"] = batch_id
+
+        url = f"{client.base_url}/rotor/station/{station_id}/feedback"
+        for attempt in range(2):
+            client = self._ensure_connected()
+            try:
+                await client._request.post(url, payload)
+                return True
+            except BadRequestError as err:
+                LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
+                return False
+            except (NetworkError, Exception) as err:
+                if attempt == 0 and self._is_connection_error(err):
+                    LOGGER.warning(
+                        "Connection error on rotor feedback %s, reconnecting: %s",
+                        feedback_type,
+                        err,
+                    )
+                    try:
+                        await self._reconnect()
+                    except Exception as recon_err:
+                        LOGGER.debug("Reconnect failed: %s", recon_err)
+                        return False
+                else:
+                    LOGGER.debug("Rotor feedback %s failed: %s", feedback_type, err)
+                    return False
+        return False
 
     # Library methods
 
