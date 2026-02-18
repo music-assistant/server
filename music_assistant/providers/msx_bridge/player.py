@@ -7,11 +7,15 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+
     from .provider import MSXBridgeProvider
 
 
@@ -28,6 +32,7 @@ class MSXPlayer(Player):
     _playlist_size: int = 0
     _media_ready: asyncio.Event
     _last_ws_position: float | None = None
+    _ws_ever_connected: bool = False
 
     def __init__(
         self,
@@ -37,6 +42,7 @@ class MSXPlayer(Player):
         output_format: str = "mp3",
         *,
         grouping_enabled: bool = True,
+        ip_address: str | None = None,
     ) -> None:
         """Initialize the MSX Player."""
         super().__init__(provider, player_id)
@@ -45,6 +51,7 @@ class MSXPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.PAUSE,
+            PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
         }
         if grouping_enabled:
@@ -54,6 +61,8 @@ class MSXPlayer(Player):
             model="Smart TV (MSX)",
             manufacturer="MSX Bridge",
         )
+        if ip_address:
+            self._attr_device_info.ip_address = ip_address
         self._attr_available = True
         self._attr_powered = True
         self._attr_volume_level = 100
@@ -74,6 +83,31 @@ class MSXPlayer(Player):
     def poll_interval(self) -> int:
         """Return poll interval in seconds."""
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return per-player config entries — codec is configurable per TV."""
+        return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3]
+
+    def on_ws_connected(self) -> None:
+        """Mark player as available when a WebSocket client connects."""
+        self._ws_ever_connected = True
+        if not self._attr_available:
+            self._attr_available = True
+            self.update_state()
+
+    def on_ws_disconnected(self) -> None:
+        """Mark player unavailable when last WebSocket client disconnects while playing.
+
+        If the player was playing when the TV dropped the WS connection,
+        mark it unavailable so MA reflects the actual state.
+        """
+        if self._attr_playback_state == PlaybackState.PLAYING:
+            self._attr_available = False
+            self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command — store stream URL for the TV to fetch."""
@@ -311,6 +345,15 @@ class MSXPlayer(Player):
         self._attr_volume_level = volume_level
         self.update_state()
 
+    async def seek(self, position_seconds: int) -> None:
+        """Handle SEEK command — send seek action to MSX player via WebSocket."""
+        self._attr_elapsed_time = float(position_seconds)
+        self._attr_elapsed_time_last_updated = time.time()
+        self._last_ws_position = None
+        self.update_state()
+        if not self._skip_ws_notify:
+            cast("MSXBridgeProvider", self.provider).notify_seek(self.player_id, position_seconds)
+
     def update_position(self, position: float) -> None:
         """Update elapsed time from a WebSocket position report.
 
@@ -327,9 +370,16 @@ class MSXPlayer(Player):
     async def poll(self) -> None:
         """Poll player for state updates.
 
+        Raises PlayerUnavailableError if the player was marked unavailable
+        (e.g. WS disconnected while playing — TV likely went offline).
+
         If a recent WebSocket position report was received (within 10s),
         skip wall-clock increment — the WS data is more accurate.
         """
+        if not self._attr_available:
+            raise PlayerUnavailableError(
+                f"MSX TV {self.display_name} is offline (WebSocket disconnected)"
+            )
         if (
             self._attr_playback_state == PlaybackState.PLAYING
             and self._attr_elapsed_time is not None

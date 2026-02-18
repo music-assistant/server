@@ -141,6 +141,10 @@
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
                     startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
+                } else if (msg.type === "seek" && msg.position != null && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    var seekSecs = Math.round(msg.position);
+                    startPositionTimer(seekSecs);
+                    tvx.InteractionPlugin.executeAction("player:seek:" + seekSecs);
                 } else if (msg.type === "goto_index" && msg.index != null && typeof tvx.InteractionPlugin.executeAction === "function") {
                     startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("player:goto:index:" + msg.index);

@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 from music_assistant_models.enums import ContentType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
@@ -1054,9 +1054,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """
         player_id = player.player_id
 
+        # Resolve effective output format: per-player config overrides provider default.
+        # CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 uses key "output_codec"; fall back to
+        # player.output_format (set from provider-level config during registration).
+        effective_format = cast(
+            "str",
+            player.config.get_value("output_codec", player.output_format),
+        )
+
         # --- Mode 1: MA Redirect ---
         if self.provider.is_redirect_stream_mode():
-            redirect_url = await self.provider.get_ma_stream_url(media, player.output_format)
+            redirect_url = await self.provider.get_ma_stream_url(media, effective_format)
             if redirect_url:
                 logger.info(
                     "[StreamMode:redirect] Player %s -> MA Streamserver: %s",
@@ -1072,7 +1080,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             )
 
         pcm_format, out_format, headers = self._build_audio_params(
-            player.output_format,
+            effective_format,
             duration,
         )
 
@@ -1092,7 +1100,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         logger.debug(
             "[StreamMode:independent] Serving audio %s: format=%s, duration=%s",
             player_id,
-            player.output_format,
+            effective_format,
             duration,
         )
 
@@ -1370,7 +1378,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
 
-        player_id, _, _ = await self._ensure_player_for_request(request)
+        player_id, _, player = await self._ensure_player_for_request(request)
         if player_id not in self._ws_clients:
             self._ws_clients[player_id] = set()
         self._ws_clients[player_id].add(ws)
@@ -1380,6 +1388,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             len(self._ws_clients[player_id]),
             list(self._ws_clients.keys()),
         )
+        if player and isinstance(player, MSXPlayer):
+            player.on_ws_connected()
 
         try:
             async for msg in ws:
@@ -1389,6 +1399,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             self._ws_clients.get(player_id, set()).discard(ws)
             if not self._ws_clients.get(player_id):
                 self._ws_clients.pop(player_id, None)
+                # Notify the player that its last WS client disconnected
+                offline_player = self.provider.mass.players.get_player(player_id)
+                if offline_player and isinstance(offline_player, MSXPlayer):
+                    offline_player.on_ws_disconnected()
             logger.debug("WebSocket client disconnected for player %s", player_id)
 
         return ws
@@ -1573,6 +1587,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             "showNotification": bool(show_notification),
         }
         msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg))
+
+    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
+        """Notify subscribed WebSocket clients to seek to a position."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.debug("broadcast_seek: no WebSocket clients for player_id=%s", player_id)
+            return
+        msg = json.dumps({"type": "seek", "position": position_seconds})
         for ws in list(clients):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg))
@@ -1857,8 +1882,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             return empty
 
         track = queue_item.media_item
+        if not isinstance(track, Track):
+            return empty
         try:
-            lyrics, lrc_lyrics = await self.provider.mass.metadata.get_track_lyrics(track)  # type: ignore[arg-type]
+            lyrics, lrc_lyrics = await self.provider.mass.metadata.get_track_lyrics(track)
         except Exception:
             lyrics, lrc_lyrics = None, None
 
@@ -2039,7 +2066,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         display_name = self.provider._player_display_name_from_id(
             player_id, prefix_label=prefix_label, remote_ip=remote_ip
         )
-        player = await self.provider.get_or_register_player(player_id, display_name=display_name)
+        player = await self.provider.get_or_register_player(
+            player_id, display_name=display_name, ip_address=remote_ip
+        )
         return player_id, device_param, player
 
     def _current_media_matches_uri(self, player: MSXPlayer, track_uri: str) -> bool:

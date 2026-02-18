@@ -310,6 +310,7 @@ class MSXBridgeProvider(PlayerProvider):
         self,
         player_id: str,
         display_name: str | None = None,
+        ip_address: str | None = None,
     ) -> MSXPlayer | None:
         """
         Get or register an MSX player for the given player_id.
@@ -322,6 +323,8 @@ class MSXBridgeProvider(PlayerProvider):
             await pending_event.wait()
         existing = self.mass.players.get_player(player_id, raise_unavailable=False)
         if existing and isinstance(existing, MSXPlayer):
+            if ip_address and not existing.device_info.ip_address:
+                existing.device_info.ip_address = ip_address
             self.on_player_activity(player_id)
             return existing
         output_format = cast(
@@ -334,6 +337,7 @@ class MSXBridgeProvider(PlayerProvider):
             name=name,
             output_format=output_format,
             grouping_enabled=self.grouping_enabled,
+            ip_address=ip_address,
         )
         await self.mass.players.register(player)
         self._player_last_activity[player_id] = time.time()
@@ -476,6 +480,11 @@ class MSXBridgeProvider(PlayerProvider):
 
         _send()
         _send()
+
+    def notify_seek(self, player_id: str, position_seconds: int) -> None:
+        """Notify WebSocket clients to seek to position (MA seek -> MSX)."""
+        if self.http_server:
+            self.http_server.broadcast_seek(player_id, position_seconds)
 
     async def _handle_player_unregister(self, player_id: str) -> None:
         """Unregister a player with race-condition handling."""
