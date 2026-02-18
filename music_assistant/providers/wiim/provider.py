@@ -31,10 +31,8 @@ class WiimProvider(PlayerProvider):
             logging.getLogger("pywiim").setLevel(self.logger.level + 10)
             logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        self.logger.info("WiimProvider loaded")
-
+    async def discover_players(self) -> None:
+        """Discover players for the Wiim provider."""
         discovered_devices = await discover_devices()
 
         device_ip_addresses: list[str] = [
