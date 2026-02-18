@@ -92,7 +92,7 @@ class AriaCastBridge(PluginProvider):
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
-        """Initialize MusicProvider."""
+        """Initialize AriaCast Receiver."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID))
         self._allow_player_switch = bool(config.get_value(CONF_ALLOW_PLAYER_SWITCH))
