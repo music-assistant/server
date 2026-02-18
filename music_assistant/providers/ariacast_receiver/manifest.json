@@ -4,7 +4,7 @@
   "name": "AriaCast Receiver",
   "stage": "alpha",
   "description": "Receive AriaCast audio streams over WebSocket and use them as a source in Music Assistant.",
-  "codeowners": ["@music-assistant"],
-  "documentation": "https://github.com/music-assistant/server/tree/main/music_assistant/providers/ariacast_receiver",
+  "codeowners": ["@AirPlr"],
+  "documentation": "https://beta.music-assistant.io/plugins/ariacast-receiver",
   "multi_instance": false
 }

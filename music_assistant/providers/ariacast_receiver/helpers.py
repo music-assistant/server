@@ -8,7 +8,7 @@ import stat
 from pathlib import Path
 
 
-async def _get_binary_path() -> str:
+def _get_binary_path() -> str:
     """Locate the correct binary for the current OS/Arch."""
     base_dir = os.path.join(os.path.dirname(__file__), "bin")
     system = platform.system().lower()

@@ -145,20 +145,22 @@ class AriaCastBridge(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Start the provider."""
-        # Launch Binary with stdout mode
-        binary_path = await _get_binary_path()
+        # Launch Binary with stdout and stderr mode
+        binary_path = await asyncio.to_thread(_get_binary_path)
         args = [binary_path, "--stdout"]
 
         self.logger.info("Starting AriaCast binary: %s", binary_path)
-        self._binary_process = AsyncProcess(args, name="ariacast", stdout=True, stderr=False)
+        self._binary_process = AsyncProcess(args, name="ariacast", stdout=True, stderr=True)
         await self._binary_process.start()
 
         # Start Metadata Monitor
-        await asyncio.sleep(1)
         self._metadata_task = self.mass.create_task(self._monitor_metadata())
 
         # Start Stdout Reader (feeds the frame queue)
         self._stdout_reader_task = self.mass.create_task(self._read_stdout_to_queue())
+
+        # Start Stderr Reader (logging)
+        self.mass.create_task(self._read_stderr())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Cleanup resources."""
@@ -185,11 +187,13 @@ class AriaCastBridge(PluginProvider):
     async def _monitor_metadata(self) -> None:
         """Connect to local Go binary WebSocket to receive metadata updates."""
         url = "ws://127.0.0.1:12889/metadata"
+        retry_delay = 1
 
         while not self._stop_called:
             try:
                 async with self.mass.http_session.ws_connect(url, heartbeat=30) as ws:
                     self.logger.info("Connected to AriaCast metadata stream")
+                    retry_delay = 1  # Reset delay on success
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             payload = msg.json()
@@ -200,8 +204,12 @@ class AriaCastBridge(PluginProvider):
             except Exception as exc:
                 if not self._stop_called:
                     self.logger.debug(
-                        "WebSocket connection to AriaCast metadata stream failed: %s", exc
+                        "WebSocket connection to AriaCast metadata failed: %s. Retrying in %d s...",
+                        exc,
+                        retry_delay,
                     )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
 
     def _update_metadata(self, data: dict[str, Any]) -> None:
         """Update Music Assistant metadata from Go binary data."""
@@ -212,6 +220,32 @@ class AriaCastBridge(PluginProvider):
 
         # Detect song change and clear queue to prevent stale audio
         new_title = data.get("title", "Unknown")
+        self._handle_track_change(new_title)
+
+        meta.title = new_title
+        meta.artist = data.get("artist", "Unknown")
+        meta.album = data.get("album", "Unknown")
+
+        # Handle artwork
+        self._handle_artwork_update(data.get("artwork_url"), meta)
+
+        # Duration & Progress
+        if duration_ms := data.get("duration_ms"):
+            meta.duration = int(duration_ms / 1000)
+
+        if position_ms := data.get("position_ms"):
+            meta.elapsed_time = int(position_ms / 1000)
+            meta.elapsed_time_last_updated = time.time()
+
+        # Handle playback state
+        self._handle_playback_state_update(data.get("is_playing", False))
+
+        # Trigger UI Update
+        if self._source_details.in_use_by:
+            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+
+    def _handle_track_change(self, new_title: str) -> None:
+        """Handle track change detection and queue clearing."""
         if self._current_track_title and new_title != self._current_track_title:
             if self._binary_is_playing:  # Only clear on song change during playback
                 self.logger.info(
@@ -223,28 +257,26 @@ class AriaCastBridge(PluginProvider):
                 self.frame_available.clear()
         self._current_track_title = new_title
 
-        meta.title = new_title
-        meta.artist = data.get("artist", "Unknown")
-        meta.album = data.get("album", "Unknown")
+    def _handle_artwork_update(self, artwork_url: str | None, meta: StreamMetadata) -> None:
+        """Handle artwork detection and download."""
+        if not artwork_url:
+            return
 
-        artwork_url = data.get("artwork_url")
-        if artwork_url:
-            last_artwork_identifier = getattr(self, "_last_artwork_identifier", None)
-            if artwork_url != last_artwork_identifier:
-                # Track last artwork to avoid scheduling redundant downloads
-                self._last_artwork_identifier = artwork_url
-                self.mass.create_task(self._download_artwork())
+        last_artwork_identifier = getattr(self, "_last_artwork_identifier", None)
+        if artwork_url != last_artwork_identifier:
+            # New artwork detected
+            self.logger.debug(
+                "New artwork detected: %s (was: %s)", artwork_url, last_artwork_identifier
+            )
+            self._last_artwork_identifier = artwork_url
+            # Clear old artwork data to prevent serving stale image
+            self._artwork_bytes = None
+            if meta:
+                meta.image_url = None
+            self.mass.create_task(self._download_artwork())
 
-        # Duration & Progress
-        if duration_ms := data.get("duration_ms"):
-            meta.duration = int(duration_ms / 1000)
-
-        if position_ms := data.get("position_ms"):
-            meta.elapsed_time = int(position_ms / 1000)
-            meta.elapsed_time_last_updated = time.time()
-
-        # Handle auto-start/resume when binary starts playing
-        is_playing = data.get("is_playing", False)
+    def _handle_playback_state_update(self, is_playing: bool) -> None:
+        """Handle binary playback state and player management."""
         was_playing = self._binary_is_playing
         self.logger.debug(
             "Metadata update: is_playing=%s, was_playing=%s, active=%s, in_use=%s",
@@ -284,10 +316,6 @@ class AriaCastBridge(PluginProvider):
             self.frame_queue.clear()
             self.frame_available.clear()
             self.mass.players.trigger_player_update(self._active_player_id)
-
-        # Trigger UI Update
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
     def _handle_auto_play(self) -> None:
         """Automatically select a player when music starts."""
@@ -356,7 +384,10 @@ class AriaCastBridge(PluginProvider):
 
     async def _download_artwork(self) -> None:
         """Fetch artwork bytes from Go binary."""
+        # Add a small delay to ensure binary has rotated the image
+        await asyncio.sleep(0.2)
         artwork_url = "http://127.0.0.1:12889/image/artwork"
+        self.logger.debug("Downloading artwork from %s", artwork_url)
         try:
             async with self.mass.http_session.get(
                 artwork_url, timeout=ClientTimeout(total=5)
@@ -366,6 +397,9 @@ class AriaCastBridge(PluginProvider):
                     if img_data:
                         self._artwork_bytes = img_data
                         self._artwork_timestamp = int(time.time() * 1000)
+                        self.logger.info(
+                            "Artwork downloaded successfully, size: %d bytes", len(img_data)
+                        )
 
                         image = MediaItemImage(
                             type=ImageType.THUMB,
@@ -382,6 +416,8 @@ class AriaCastBridge(PluginProvider):
 
                         if self._source_details.in_use_by:
                             self.mass.players.trigger_player_update(self._source_details.in_use_by)
+                else:
+                    self.logger.warning("Failed to download artwork: HTTP %s", response.status)
         except Exception as e:
             self.logger.debug("Failed to download artwork: %s", e)
 
@@ -434,6 +470,13 @@ class AriaCastBridge(PluginProvider):
             self.logger.error("Fatal error in stdout reader: %s", e)
         finally:
             self.logger.info("Stdout reader task ended")
+
+    async def _read_stderr(self) -> None:
+        """Log errors from binary stderr."""
+        if not self._binary_process:
+            return
+        async for line in self._binary_process.iter_stderr():
+            self.logger.debug("[%s stderr] %s", self.name, line)
 
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Return the custom audio stream for this source (like original ariacast_receiver)."""
@@ -501,5 +544,20 @@ class AriaCastBridge(PluginProvider):
     async def _on_source_selected(self) -> None:
         """Handle manual selection in UI."""
         new_player_id = self._source_details.in_use_by
-        if new_player_id:
-            self._active_player_id = new_player_id
+        if not new_player_id:
+            return
+
+        # Check if manual player switching is allowed
+        if not self._allow_player_switch:
+            current_target = self._get_target_player_id()
+            if new_player_id != current_target:
+                self.logger.debug(
+                    "Manual player switching disabled, ignoring selection on %s",
+                    new_player_id,
+                )
+                # Revert in_use_by
+                self._source_details.in_use_by = current_target
+                self.mass.players.trigger_player_update(new_player_id)
+                return
+
+        self._active_player_id = new_player_id
