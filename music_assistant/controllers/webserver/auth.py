@@ -403,15 +403,6 @@ class AuthenticationManager:
 
         return await provider.authenticate(credentials)
 
-    @staticmethod
-    def _is_jwt_token(token: str) -> bool:
-        """Check if token appears to be a JWT (3 dot-separated parts).
-
-        :param token: The token string to check.
-        :return: True if token has JWT format, False otherwise.
-        """
-        return token.count(".") == 2
-
     async def authenticate_with_token(self, token: str) -> User | None:
         """
         Authenticate a user with an access token (JWT or legacy).
