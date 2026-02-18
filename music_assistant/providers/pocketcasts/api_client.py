@@ -397,6 +397,57 @@ class PocketCastsClient:
             LOGGER.error("Error adding to Up Next: %s", err)
             return False
 
+    async def add_to_history(
+        self,
+        episode_uuid: str,
+        podcast_uuid: str,
+        title: str,
+        url: str,
+        published: str | None = None,
+    ) -> bool:
+        """Record episode playback start in listening history.
+
+        Called when an episode begins playing to add it to the recent history.
+
+        :param episode_uuid: The episode UUID.
+        :param podcast_uuid: The podcast UUID.
+        :param title: The episode title.
+        :param url: The episode audio URL.
+        :param published: The episode publish date (ISO format), optional.
+        """
+        try:
+            LOGGER.debug("Adding episode %s to history", episode_uuid)
+
+            payload: dict[str, Any] = {
+                "action": 1,
+                "podcast": podcast_uuid,
+                "episode": episode_uuid,
+                "title": title,
+                "url": url,
+            }
+            if published:
+                payload["published"] = published
+
+            async with self.session.post(
+                f"{self.BASE_URL}/history/do",
+                headers=self._headers(),
+                json=payload,
+            ) as response:
+                if response.status in (401, 403):
+                    raise LoginError(f"Authentication failed with status {response.status}")
+                if response.status != 200:
+                    text = await response.text()
+                    LOGGER.error("Failed to add to history: %d - %s", response.status, text)
+                    return False
+
+                return True
+
+        except LoginError:
+            raise
+        except Exception as err:
+            LOGGER.error("Error adding to history: %s", err)
+            return False
+
     async def get_episode_details(self, episode_uuid: str) -> dict[str, Any] | None:
         """Get detailed episode info including correct duration and playback status.
 

@@ -688,8 +688,15 @@ class PocketCastsProvider(MusicProvider):
         if not url:
             raise MediaNotFoundError(f"No URL found for episode {item_id}")
 
-        # Add to Up Next (play now position) when starting playback
+        # Sync playback start with Pocket Casts: add to Up Next and history
         await self._client.play_now(
+            episode_uuid=episode_uuid,
+            podcast_uuid=podcast_uuid,
+            title=episode_data.get("title", ""),
+            url=url,
+            published=episode_data.get("published"),
+        )
+        await self._client.add_to_history(
             episode_uuid=episode_uuid,
             podcast_uuid=podcast_uuid,
             title=episode_data.get("title", ""),
