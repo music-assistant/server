@@ -105,7 +105,7 @@ async def test_stream_no_media(provider: MSXBridgeProvider, mass_mock: Mock) -> 
 
 
 async def test_stream_not_msx_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """GET /stream/{id} should return 400 for a non-MSX player."""
+    """GET /stream/{id} should return 404 for a non-MSX player."""
     # Return a plain Mock (not spec=MSXPlayer)
     non_msx_player = Mock()
     mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = non_msx_player
@@ -563,7 +563,7 @@ async def test_msx_audio_player_not_found(http_client: TestClient[Any, Any]) -> 
 
 
 async def test_msx_audio_not_msx_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """GET /msx/audio/{id}?uri=x should return 400 for non-MSX player."""
+    """GET /msx/audio/{id}?uri=x should return 404 for non-MSX player."""
     non_msx_player = Mock()
     mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = non_msx_player
 
