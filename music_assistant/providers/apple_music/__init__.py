@@ -112,6 +112,7 @@ CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
+MAX_ARTWORK_DIMENSION = 1000
 
 
 async def setup(
@@ -731,7 +732,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -811,7 +815,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -906,7 +913,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -945,7 +955,10 @@ class AppleMusicProvider(MusicProvider):
         if artwork := attributes.get("artwork"):
             url = artwork["url"]
             if artwork["width"] and artwork["height"]:
-                url = url.format(w=artwork["width"], h=artwork["height"])
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             playlist.metadata.add_image(
                 MediaItemImage(
                     provider=self.instance_id,

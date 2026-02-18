@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEvent, SendspinServer
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
@@ -42,7 +43,6 @@ class SendspinProvider(PlayerProvider):
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
-        self.logger.debug("Received SendspinEvent: %s", event)
         match event:
             case ClientAddedEvent(client_id):
                 self.mass.create_task(self._handle_client_added(client_id))
@@ -52,7 +52,7 @@ class SendspinProvider(PlayerProvider):
                 self.logger.error("Unknown sendspin event: %s", event)
 
     async def _handle_client_added(self, client_id: str) -> None:
-        """Handle client added event asynchronously."""
+        """Handle a new client connection asynchronously."""
         # Wait for any pending unregister to complete before registering
         # This prevents a race condition where a slow unregister removes
         # a newly registered player after a quick reconnect
@@ -62,6 +62,11 @@ class SendspinProvider(PlayerProvider):
         # Check if client still exists (may have disconnected while waiting)
         if self.server_api.get_client(client_id) is None:
             self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
+            return
+        if self.mass.players.get_player(client_id) is not None:
+            self.logger.debug(
+                "Client %s already registered, skipping duplicate add event", client_id
+            )
             return
         player = SendspinPlayer(self, client_id)
         self.logger.debug("Client %s connected", client_id)
@@ -74,10 +79,15 @@ class SendspinProvider(PlayerProvider):
                 player._attr_name = (
                     hass_device["name_by_user"] or hass_device["name"] or player.name
                 )
-        await self.mass.players.register(player)
+        try:
+            await self.mass.players.register(player)
+        except AlreadyRegisteredError:
+            self.logger.debug("Client %s already registered while handling add event", client_id)
+            player.unsub_event_cb()
+            player.unsub_group_event_cb()
 
     async def _handle_client_removed(self, client_id: str) -> None:
-        """Handle client removed event asynchronously."""
+        """Handle a client disconnection asynchronously."""
         self.logger.debug("Client %s disconnected", client_id)
         unregister_event = asyncio.Event()
         self._pending_unregisters[client_id] = unregister_event
@@ -115,13 +125,16 @@ class SendspinProvider(PlayerProvider):
         """
         # Disconnect all clients before stopping the server
         clients = list(self.server_api.clients)
+        connected_clients = []
         disconnect_tasks = []
         for client in clients:
-            self.logger.debug("Disconnecting client %s", client.client_id)
-            disconnect_tasks.append(client.disconnect(retry_connection=False))
+            if client.connection is None:
+                continue
+            connected_clients.append(client)
+            disconnect_tasks.append(client.connection.disconnect(retry_connection=False))
         if disconnect_tasks:
             results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            for client, result in zip(clients, results, strict=True):
+            for client, result in zip(connected_clients, results, strict=True):
                 if isinstance(result, Exception):
                     self.logger.warning(
                         "Error disconnecting client %s: %s", client.client_id, result

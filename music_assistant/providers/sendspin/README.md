@@ -198,7 +198,7 @@ Sendspin players support:
 |------|-------------|
 | `provider.py` | Main provider class, handles WebRTC signaling and server lifecycle |
 | `player.py` | Player implementation with playback, grouping, and metadata handling |
-| `timed_client_stream.py` | Multi-client audio stream distribution with timing |
+| `playback.py` | Playback pipeline with DSP channel processing and timed frame commits |
 | `__init__.py` | Provider setup and configuration |
 | `manifest.json` | Provider metadata |
 
