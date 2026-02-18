@@ -691,7 +691,8 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            if not (group_player := self.mass.players.get_player(self.active_cast_group)):
+            player_obj = self.mass.players.get_player(self.active_cast_group)
+            if not player_obj:
                 return
             # Now assert/check the type to satisfy MyPy
             if not isinstance(player_obj, ChromecastPlayer):
@@ -770,7 +771,7 @@ class ChromecastPlayer(Player):
                     child._attr_current_media = self._attr_current_media
                     child._attr_elapsed_time = self._attr_elapsed_time
                     child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
-                    child._attr_active_source = self._active_source
+                    child._attr_active_source = self._attr_active_source
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 

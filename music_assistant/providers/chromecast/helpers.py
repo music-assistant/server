@@ -95,7 +95,7 @@ class ChromecastInfo:
 
         # Get MAC address for device matching (not available for groups)
         if self.mac_address is None and self.cast_type != "group":
-            self.mac_address = get_mac_address(self.services, zconf)
+            self.mac_address = get_mac_address(list(self.services), zconf)
 
 
 def get_multizone_info(
@@ -143,8 +143,9 @@ def get_mac_address(services: list[ServiceInfo], zconf: Zeroconf, timeout: int =
     :return: MAC address string or None if not available.
     """
     try:
+        services_set = cast("set[HostServiceInfo | MDNSServiceInfo]", set(services))
         _, status = dial._get_status(
-            services,
+            services_set,
             zconf,
             "/setup/eureka_info?options=detail",
             True,
@@ -157,7 +158,7 @@ def get_mac_address(services: list[ServiceInfo], zconf: Zeroconf, timeout: int =
             # Ensure proper format
             if ":" not in mac and len(mac) == 12:
                 mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
-            return mac
+            return str(mac)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
         pass
     return None
