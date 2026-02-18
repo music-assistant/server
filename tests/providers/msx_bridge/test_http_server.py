@@ -42,14 +42,13 @@ async def test_root_html(http_client: TestClient[Any, Any]) -> None:
 
 
 async def test_start_json(http_client: TestClient[Any, Any]) -> None:
-    """GET /msx/start.json should return interaction mode config."""
+    """GET /msx/start.json should return launcher menu config."""
     resp = await http_client.get("/msx/start.json")
     assert resp.status == 200
     data = await resp.json()
     assert data["name"] == "Music Assistant"
-    assert "menu:request:interaction:init@" in data["parameter"]
-    assert "plugin.html" in data["parameter"]
-    assert "plugin.html?v=" in data["parameter"]
+    assert data["parameter"].startswith("content:")
+    assert "/msx/launcher.json" in data["parameter"]
     assert "scripts" not in data
 
 
