@@ -191,7 +191,7 @@ async def test_send_rotor_station_feedback_posts() -> None:
 
 async def test_lrc_regex_matches_valid_synced_lyrics() -> None:
     """LRC regex matches valid synced lyrics with proper format [mm:ss.xx]."""
-    # Pattern from api_client.py line 433
+    # LRC timestamp regex pattern used by the client implementation
     pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
 
     # Valid LRC formats that should match

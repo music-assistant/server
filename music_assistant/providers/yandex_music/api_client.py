@@ -628,7 +628,7 @@ class YandexMusicClient:
                 param_string.encode(),
                 hashlib.sha256,
             )
-            # SHA-256 (32 bytes) -> base64 = 44 chars with "==" padding.
+            # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
             # Yandex API expects exactly 43 chars (one "=" removed).
             # Matches yandex-music-downloader-realflac reference implementation.
             params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
