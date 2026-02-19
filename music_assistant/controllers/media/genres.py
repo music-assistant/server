@@ -274,11 +274,27 @@ class GenreController(MediaControllerBase[Genre]):
         item: Genre,
         limit: int = 0,
         offset: int = 0,
+        track_limit: int | None = None,
+        album_limit: int | None = None,
+        artist_limit: int | None = None,
+        order_by: str | None = None,
     ) -> tuple[list[Track], list[Album], list[Artist]]:
-        """Return tracks, albums, and artists mapped to aliases for a genre."""
+        """Return tracks, albums, and artists mapped to aliases for a genre.
+
+        :param item: The genre to fetch mapped media for.
+        :param limit: Default limit applied to all media types (0 = unlimited).
+        :param offset: Offset for pagination.
+        :param track_limit: Override limit for tracks (defaults to limit).
+        :param album_limit: Override limit for albums (defaults to limit).
+        :param artist_limit: Override limit for artists (defaults to limit).
+        :param order_by: Sort order for all queries (e.g. "random").
+        """
         db_id = int(item.item_id)
         ami = DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING
         gam = DB_TABLE_GENRE_ALIAS_MAPPING
+        t_limit = track_limit if track_limit is not None else limit
+        a_limit = album_limit if album_limit is not None else limit
+        ar_limit = artist_limit if artist_limit is not None else limit
 
         track_query = (
             f"EXISTS(SELECT 1 FROM {ami} ami "
@@ -303,20 +319,23 @@ class GenreController(MediaControllerBase[Genre]):
             self.mass.music.tracks.get_library_items_by_query(
                 extra_query_parts=[track_query],
                 extra_query_params={"genre_id": db_id},
-                limit=limit,
+                limit=t_limit,
                 offset=offset,
+                order_by=order_by,
             ),
             self.mass.music.albums.get_library_items_by_query(
                 extra_query_parts=[album_query],
                 extra_query_params={"genre_id": db_id},
-                limit=limit,
+                limit=a_limit,
                 offset=offset,
+                order_by=order_by,
             ),
             self.mass.music.artists.get_library_items_by_query(
                 extra_query_parts=[artist_query],
                 extra_query_params={"genre_id": db_id},
-                limit=limit,
+                limit=ar_limit,
                 offset=offset,
+                order_by=order_by,
             ),
         )
         return tracks, albums, artists

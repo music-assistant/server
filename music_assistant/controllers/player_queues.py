@@ -1632,7 +1632,13 @@ class PlayerQueuesController(CoreController):
             "Fetching tracks to play for genre %s",
             genre.name,
         )
-        tracks, albums, artists = await self.mass.music.genres.mapped_media(genre, limit=50)
+        tracks, albums, artists = await self.mass.music.genres.mapped_media(
+            genre,
+            track_limit=25,
+            album_limit=5,
+            artist_limit=5,
+            order_by="random",
+        )
 
         for genre_track in tracks:
             if not genre_track.available:
@@ -1644,12 +1650,12 @@ class PlayerQueuesController(CoreController):
             result.append(genre_track)
 
         for album in albums:
-            for album_track in await self.get_album_tracks(album, None):
-                result.append(album_track)
+            album_tracks = await self.get_album_tracks(album, None)
+            result.extend(album_tracks[:5])
 
         for artist in artists:
-            for artist_track in await self.get_artist_tracks(artist):
-                result.append(artist_track)
+            artist_tracks = await self.get_artist_tracks(artist)
+            result.extend(artist_tracks[:5])
         return result
 
     async def get_playlist_tracks(
