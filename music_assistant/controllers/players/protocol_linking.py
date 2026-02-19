@@ -501,7 +501,19 @@ class ProtocolLinkingMixin:
         for player in list(self._players.values()):
             if player.provider.domain != "universal_player":
                 continue
-            if not self._identifiers_match(native_player, player, ""):
+
+            # Check by identifiers first
+            identifiers_match = self._identifiers_match(native_player, player, "")
+
+            # Also check if native player's ID is in the universal player's stored protocol list
+            # This handles players that changed type (e.g., sendspin web players changed from
+            # PROTOCOL to PLAYER type) and have no identifiers to match against
+            player_id_in_protocols = (
+                isinstance(player, UniversalPlayer)
+                and native_player.player_id in player._protocol_player_ids
+            )
+
+            if not identifiers_match and not player_id_in_protocols:
                 continue
 
             # Transfer all protocol links from universal player to native player

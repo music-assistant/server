@@ -50,22 +50,14 @@ class UniversalPlayer(Player):
         :param device_info: Device information aggregated from protocol players.
         :param protocol_player_ids: List of protocol player IDs to link.
         """
-        super().__init__(provider, player_id)
         self._protocol_player_ids = protocol_player_ids
+        super().__init__(provider, player_id)
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info
         # a universal player does not have any features on its own,
         # it delegates to protocol players
         self._attr_supported_features = set()
-
-    @property
-    def hidden_by_default(self) -> bool:
-        """Return if the player should be hidden in the UI by default."""
-        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
-            # hide web players by default
-            return True
-        return False
 
     @property
     def available(self) -> bool:
@@ -75,14 +67,6 @@ class UniversalPlayer(Player):
             (p := self.mass.players.get_player(pid)) and p.available
             for pid in self._protocol_player_ids
         )
-
-    @property
-    def expose_to_ha_by_default(self) -> bool:
-        """Return if the player should be exposed to Home Assistant by default."""
-        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
-            # hide web players by default
-            return False
-        return True
 
     def _get_control_target(
         self, required_feature: PlayerFeature, require_active: bool = False
