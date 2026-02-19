@@ -14,7 +14,7 @@ BRANCHES=$(git branch -r | grep 'origin/upstream/' | awk '{print $1}' | sed 's|^
 
 if [[ -z "$BRANCHES" ]]; then
   echo "→ No upstream/* branches — integration = dev"
-  git push origin integration/pending-upstream-prs --force-with-lease
+  git push origin integration/pending-upstream-prs:integration/pending-upstream-prs --force
 else
   for branch in $BRANCHES; do
     echo "→ Merging $branch"
@@ -27,7 +27,7 @@ else
       exit 1
     }
   done
-  git push origin integration/pending-upstream-prs --force-with-lease
+  git push origin integration/pending-upstream-prs:integration/pending-upstream-prs --force
   echo "✓ Rebuilt: dev + $(echo "$BRANCHES" | wc -l | tr -d ' ') upstream branches"
 fi
 
