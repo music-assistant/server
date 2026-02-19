@@ -1786,7 +1786,7 @@ class Player(ABC):
         (native or universal). This method translates protocol player IDs
         back to the visible (parent) players.
 
-        :param player_ids: Set of player IDs (may include both protocol and non-protocol IDs).
+        :param player_ids: Set of player IDs.
         :return: Set of visible players.
         """
         result: set[Player] = set()
