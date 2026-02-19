@@ -11,6 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+from urllib.parse import unquote
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -831,7 +832,7 @@ class YandexMusicClient:
                     # Filter out editorial posts — only include /tag/ URLs
                     if not url.startswith("/tag/"):
                         continue
-                    slug = url.strip("/").split("/")[-1]
+                    slug = unquote(url.strip("/").split("/")[-1])
                     if slug:
                         tags.append((slug, entity.data.title))
         return tags

@@ -198,8 +198,10 @@ class YandexMusicProvider(MusicProvider):
             return await self._browse_mixes(path, path_parts)
 
         # Handle direct tag subpath (when folder is played by URI, the full path
-        # "picks/category/tag" is lost and only the tag slug arrives as subpath)
-        if subpath:
+        # "picks/category/tag" is lost and only the tag slug arrives as subpath).
+        # Skip the API call for standard top-level folders that are never tag slugs.
+        _known_folders = {"artists", "albums", "tracks", "playlists", LIKED_TRACKS_PLAYLIST_ID}
+        if subpath and subpath not in _known_folders:
             discovered_tags = await self._get_discovered_tag_slugs()
             if subpath in discovered_tags:
                 return await self._get_tag_playlists_as_browse(subpath)

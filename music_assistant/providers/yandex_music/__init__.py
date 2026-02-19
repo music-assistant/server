@@ -157,7 +157,7 @@ async def get_config_entries(
             default_value=8,
             advanced=True,
             depends_on=CONF_STREAMING_MODE,
-            depends_on_value=STREAMING_MODE_BUFFERED,
+            depends_on_value_not=STREAMING_MODE_DIRECT,
         ),
         # My Wave maximum tracks (advanced)
         ConfigEntry(
