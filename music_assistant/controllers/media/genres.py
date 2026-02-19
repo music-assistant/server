@@ -351,8 +351,10 @@ class GenreController(MediaControllerBase[Genre]):
             (MediaType.PODCAST, "Podcasts"),
             (MediaType.AUDIOBOOK, "Audiobooks"),
         ]
-        rows: list[RecommendationFolder] = []
-        for media_type, title in media_rows:
+
+        async def _fetch_media_type(
+            media_type: MediaType, title: str
+        ) -> RecommendationFolder | None:
             ctrl = self.mass.music.get_controller(media_type)
             query = (
                 f"EXISTS(SELECT 1 FROM {ami} ami "
@@ -370,16 +372,16 @@ class GenreController(MediaControllerBase[Genre]):
                 limit=limit,
             )
             if not items:
-                continue
-            rows.append(
-                RecommendationFolder(
-                    item_id=f"genre_{media_type.value}",
-                    name=title,
-                    provider="library",
-                    items=UniqueList(items[:limit]),
-                )
+                return None
+            return RecommendationFolder(
+                item_id=f"genre_{media_type.value}",
+                name=title,
+                provider="library",
+                items=UniqueList(items[:limit]),
             )
-        return rows
+
+        results = await asyncio.gather(*[_fetch_media_type(mt, title) for mt, title in media_rows])
+        return [r for r in results if r is not None]
 
     async def match_providers(self, db_item: Genre) -> None:
         """No provider matching for genres at this time."""
