@@ -36,6 +36,7 @@ from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
     normalize_ip_address,
+    normalize_mac_for_matching,
     resolve_real_mac_address,
 )
 from music_assistant.models.player import Player
@@ -812,8 +813,15 @@ class ProtocolLinkingMixin:
                     continue
 
             # Normalize values for comparison
-            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+            if conn_type == IdentifierType.MAC_ADDRESS:
+                # Use MAC normalization that handles locally-administered bit differences
+                # Some protocols (like AirPlay) report a locally-administered MAC variant
+                # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
+                val_a_norm = normalize_mac_for_matching(val_a)
+                val_b_norm = normalize_mac_for_matching(val_b)
+            else:
+                val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+                val_b_norm = val_b.lower().replace(":", "").replace("-", "")
 
             # Direct match
             if val_a_norm == val_b_norm:
