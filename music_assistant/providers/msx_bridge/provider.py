@@ -150,7 +150,7 @@ class SharedGroupStream:
                     self.group_id,
                     player_id,
                 )
-                return
+                raise
 
             # Phase 1: Snapshot buffer and register for live chunks atomically.
             # Holding the lock ensures the producer cannot distribute a new chunk
