@@ -65,115 +65,98 @@ class WiimPlayer(Player):
         try:
             # Get device info for UUID
             device_info = await client.get_device_info_model()
-        except pywiim.WiiMError as ex:
-            provider.logger.error("Failed to initialize WiiM player at %s: %s", ip_address, ex)
-            await client.close()
-            return
 
-        if device_info.uuid is None or device_info.name is None:
-            provider.logger.error("WiiM player at %s doesn't have a uuid or name", ip_address)
-            await client.close()
-            return
+            if device_info.uuid is None or device_info.name is None:
+                raise RuntimeError("WiiM player at {ip_address} doesn't have a uuid or name")
 
-        if not provider.mass.config.get_raw_player_config_value(device_info.uuid, "enabled", True):
-            provider.logger.debug("Ignoring %s in discovery as it is disabled.", device_info.name)
-            await client.close()
-            return
+            if not provider.mass.config.get_raw_player_config_value(
+                device_info.uuid, "enabled", True
+            ):
+                provider.logger.debug(
+                    "Ignoring %s in discovery as it is disabled.", device_info.name
+                )
+                await client.close()
+                return
 
-        # Create UPnP client (required for events and queue management)
-        description_url = f"http://{ip_address}:49152/description.xml"
-        try:
+            # Create UPnP client (required for events and queue management)
+            description_url = f"http://{ip_address}:49152/description.xml"
             upnp_client = await UpnpClient.create(
                 ip_address, description_url, session=provider.mass.http_session
             )
-        except Exception as ex:
-            provider.logger.error(
-                "Failed to create UPnP client for WiiM player at %s: %s", ip_address, ex
-            )
-            await client.close()
-            return
 
-        player = WiimPlayer(
-            provider=provider,
-            player_id=device_info.uuid,
-            name=device_info.name,
-            client=client,
-            upnp_client=upnp_client,
-        )
-
-        # Create UpnpEventer with same UPnP client (for real-time events)
-        player.wiim_eventer = UpnpEventer(
-            upnp_client,  # Share same UPnP client
-            player.wiim_player,  # Player implements apply_diff() for state updates
-            player.player_id,
-            state_updated_callback=player.update_ma_state,
-        )
-
-        # Start UPnP event subscriptions
-        try:
-            await player.wiim_eventer.start()
-        except Exception as ex:
-            provider.logger.error(
-                "Failed to start UPnP eventer for WiiM player at %s: %s", ip_address, ex
-            )
-            await upnp_client.close()
-            await client.close()
-            return
-
-        try:
-            await player.wiim_player.refresh()
-        except Exception as ex:
-            provider.logger.error(
-                "Failed to refresh state for WiiM player at %s after setup: %s", ip_address, ex
-            )
-            await player.wiim_eventer.async_unsubscribe()
-            await upnp_client.close()
-            await client.close()
-            return
-
-        player._attr_device_info = DeviceInfo(
-            model=player.wiim_player.model if player.wiim_player.model else "",
-            software_version=player.wiim_player.firmware if player.wiim_player.firmware else "",
-            manufacturer=player.wiim_player.client.capabilities.get("vendor", "Unknown"),
-        )
-
-        if player.wiim_player.device_info:
-            if player.wiim_player.device_info.ip is not None:
-                player._attr_device_info.add_identifier(
-                    IdentifierType.IP_ADDRESS, player.wiim_player.device_info.ip
+            try:
+                player = WiimPlayer(
+                    provider=provider,
+                    player_id=device_info.uuid,
+                    name=device_info.name,
+                    client=client,
+                    upnp_client=upnp_client,
                 )
 
-            if player.wiim_player.device_info.mac is not None:
-                player._attr_device_info.add_identifier(
-                    IdentifierType.MAC_ADDRESS, player.wiim_player.device_info.mac
+                # Create UpnpEventer with same UPnP client (for real-time events)
+                player.wiim_eventer = UpnpEventer(
+                    upnp_client,  # Share same UPnP client
+                    player.wiim_player,  # Player implements apply_diff() for state updates
+                    player.player_id,
+                    state_updated_callback=player.update_ma_state,
                 )
 
-        if player.wiim_player.uuid:
-            player._attr_device_info.add_identifier(IdentifierType.UUID, player.wiim_player.uuid)
+                # Start UPnP event subscriptions
+                await player.wiim_eventer.start()
 
-        for source in player.wiim_player.source_catalog:
-            player._attr_source_list.append(
-                PlayerSource(
-                    id=source.get("id", ""),
-                    name=source.get("name", ""),
-                    passive=not source.get("selectable", False),
-                    can_play_pause=source.get("supports_pause", False),
-                    can_seek=source.get("supports_seek", False),
-                    can_next_previous=source.get("supports_next_track", False)
-                    and source.get("supports_previous_track", False),
-                )
-            )
+                try:
+                    await player.wiim_player.refresh()
 
-        try:
-            await provider.mass.players.register_or_update(player)
-        except Exception as ex:
-            provider.logger.error(
-                "Failed to register WiiM player at %s in Music Assistant: %s", ip_address, ex
-            )
-            await player.wiim_eventer.async_unsubscribe()
-            await upnp_client.close()
+                    player._attr_device_info = DeviceInfo(
+                        model=player.wiim_player.model if player.wiim_player.model else "",
+                        software_version=player.wiim_player.firmware
+                        if player.wiim_player.firmware
+                        else "",
+                        manufacturer=player.wiim_player.client.capabilities.get(
+                            "vendor", "Unknown"
+                        ),
+                    )
+
+                    if player.wiim_player.device_info:
+                        if player.wiim_player.device_info.ip is not None:
+                            player._attr_device_info.add_identifier(
+                                IdentifierType.IP_ADDRESS, player.wiim_player.device_info.ip
+                            )
+
+                        if player.wiim_player.device_info.mac is not None:
+                            player._attr_device_info.add_identifier(
+                                IdentifierType.MAC_ADDRESS, player.wiim_player.device_info.mac
+                            )
+
+                    if player.wiim_player.uuid:
+                        player._attr_device_info.add_identifier(
+                            IdentifierType.UUID, player.wiim_player.uuid
+                        )
+
+                    for source in player.wiim_player.source_catalog:
+                        player._attr_source_list.append(
+                            PlayerSource(
+                                id=source.get("id", ""),
+                                name=source.get("name", ""),
+                                passive=not source.get("selectable", False),
+                                can_play_pause=source.get("supports_pause", False),
+                                can_seek=source.get("supports_seek", False),
+                                can_next_previous=source.get("supports_next_track", False)
+                                and source.get("supports_previous_track", False),
+                            )
+                        )
+
+                    await provider.mass.players.register_or_update(player)
+
+                except Exception:
+                    await player.wiim_eventer.async_unsubscribe()
+                    raise
+            except Exception:
+                await upnp_client.close()
+                raise
+        except Exception:
             await client.close()
-            return
+            raise
 
     @property
     def needs_poll(self) -> bool:
