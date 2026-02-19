@@ -10,7 +10,7 @@ git fetch origin
 git checkout -B integration/pending-upstream-prs origin/dev
 
 # awk is more robust than sed for stripping leading whitespace + "origin/" prefix
-BRANCHES=$(git branch -r | grep 'origin/upstream/' | awk '{print $1}' | sed 's|^origin/||')
+BRANCHES=$(git branch -r | grep 'origin/upstream/' | awk '{print $1}' | sed 's|^origin/||' || true)
 
 if [[ -z "$BRANCHES" ]]; then
   echo "→ No upstream/* branches — integration = dev"
