@@ -13,10 +13,6 @@ CONF_BASE_URL = "base_url"
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
 STREAMING_MODE_DIRECT = "direct"
 STREAMING_MODE_BUFFERED = "buffered"
-STREAMING_MODE_PRELOAD = "preload"
-
-# Preload buffer limit (MB) before switching to tempfile
-CONF_PRELOAD_BUFFER_MB: Final[str] = "preload_buffer_mb"
 
 # Buffered mode stream buffer size (MB)
 CONF_STREAM_BUFFER_MB: Final[str] = "stream_buffer_mb"

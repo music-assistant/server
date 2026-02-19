@@ -278,36 +278,6 @@ def test_select_best_quality_high_only_flac_returns_flac(
     assert result.codec == "flac"
 
 
-# -- Temp file cleanup order tests ------------------------------------------
-
-
-def test_temp_file_replacement_order() -> None:
-    """New temp file is tracked before old file is deleted to prevent file leaks."""
-    temp_files: dict[str, str] = {}
-    item_id = "item-1"
-    old_path = "/cache/old-file"
-    new_path = "/cache/new-file"
-    temp_files[item_id] = old_path
-
-    removed_paths: list[str] = []
-
-    def fake_remove(path: str) -> None:
-        # At deletion time the new path must already be stored
-        assert temp_files[item_id] == new_path
-        removed_paths.append(path)
-
-    def replace_temp_file(item: str, path: str) -> None:
-        previous = temp_files.get(item)
-        temp_files[item] = path
-        if previous is not None and previous != path:
-            fake_remove(previous)
-
-    replace_temp_file(item_id, new_path)
-
-    assert temp_files[item_id] == new_path
-    assert removed_paths == [old_path]
-
-
 # --- Audio params tests ---
 
 

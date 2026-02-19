@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import tempfile
-import threading
-import time
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -21,7 +16,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from . import mp4_seek
 from .constants import (
-    CONF_PRELOAD_BUFFER_MB,
     CONF_QUALITY,
     CONF_STREAM_BUFFER_MB,
     CONF_STREAMING_MODE,
@@ -31,16 +25,12 @@ from .constants import (
     RADIO_TRACK_ID_SEP,
     STREAMING_MODE_BUFFERED,
     STREAMING_MODE_DIRECT,
-    STREAMING_MODE_PRELOAD,
 )
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
     from .provider import YandexMusicProvider
-
-# Temp file prefix for easy identification and cleanup
-TEMP_FILE_PREFIX = "yandex_audio_"
 
 
 class YandexMusicStreamingManager:
@@ -55,9 +45,6 @@ class YandexMusicStreamingManager:
         self.client = provider.client
         self.mass = provider.mass
         self.logger = provider.logger
-        # Track temp files for cleanup: item_id -> temp_file_path
-        self._temp_files: dict[str, str] = {}
-        self._temp_files_lock = threading.Lock()
         # Shared aiohttp session for streaming downloads (reuses TCP connections to CDN)
         self._streaming_session: aiohttp.ClientSession | None = None
         self._streaming_session_lock = asyncio.Lock()
@@ -83,144 +70,6 @@ class YandexMusicStreamingManager:
             return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
         return item_id
 
-    async def _get_content_length(self, url: str) -> int | None:
-        """Get Content-Length from URL via HEAD request.
-
-        :param url: URL to check.
-        :return: Content length in bytes, or None if unavailable.
-        """
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        try:
-            async with self.mass.http_session.head(
-                url, timeout=timeout, allow_redirects=True
-            ) as response:
-                if response.status == 200:
-                    content_length = response.headers.get("Content-Length")
-                    if content_length:
-                        return int(content_length)
-        except Exception as err:
-            self.logger.debug("Failed to get Content-Length for %s: %s", url[:80], err)
-        return None
-
-    async def _download_and_decrypt_to_file(
-        self,
-        encrypted_url: str,
-        decryption_key: str,
-        item_id: str,
-        content_type: ContentType = ContentType.FLAC,
-    ) -> str:
-        """Download encrypted data, decrypt, and save to a temp file.
-
-        Uses a shared streaming aiohttp session (not self.mass.http_session)
-        to reuse TCP connections to Yandex CDN while keeping streaming traffic
-        isolated from the shared session's connection pool.
-
-        :param encrypted_url: URL of the encrypted file.
-        :param decryption_key: Hex-encoded AES-256 decryption key.
-        :param item_id: Track item ID for logging.
-        :param content_type: Container content type for file extension.
-        :return: Path to the decrypted temp file.
-        :raises MediaNotFoundError: If download fails.
-        """
-        key_bytes = bytes.fromhex(decryption_key)
-        nonce = bytes(12)
-        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR)
-
-        chunk_size = 65536
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
-
-        # Create temp file with extension matching the container format
-        suffix = f".{content_type.value}" if content_type != ContentType.UNKNOWN else ".flac"
-        temp_fd, temp_path = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, suffix=suffix)
-
-        try:
-            session = await self._get_streaming_session()
-            async with session.get(encrypted_url, timeout=timeout) as response:
-                if response.status != 200:
-                    msg = f"Failed to download encrypted track: HTTP {response.status}"
-                    self.logger.error(msg)
-                    raise MediaNotFoundError(msg)
-
-                total_bytes = 0
-                fd = temp_fd
-                temp_fd = -1  # fdopen takes ownership; prevent double-close on error
-                with os.fdopen(fd, "wb") as f:
-                    async for encrypted_chunk in response.content.iter_chunked(chunk_size):
-                        decrypted_chunk = cipher.decrypt(encrypted_chunk)
-                        f.write(decrypted_chunk)
-                        total_bytes += len(decrypted_chunk)
-
-                self.logger.info(
-                    "Preloaded and decrypted track %s to %s (%d bytes)",
-                    item_id,
-                    temp_path,
-                    total_bytes,
-                )
-                return temp_path
-
-        except Exception:
-            # Close fd if not yet closed by os.fdopen
-            if temp_fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(temp_fd)
-            # Clean up temp file on error
-            with contextlib.suppress(OSError):
-                os.unlink(temp_path)  # noqa: PTH108
-            raise
-
-    def _replace_temp_file(self, item_id: str, new_path: str) -> None:
-        """Atomically replace the tracked temp file for an item, deleting the old one.
-
-        :param item_id: Track item ID.
-        :param new_path: Path to the new temp file.
-        """
-        with self._temp_files_lock:
-            old_path = self._temp_files.pop(item_id, None)
-            self._temp_files[item_id] = new_path
-        if old_path:
-            with contextlib.suppress(OSError):
-                Path(old_path).unlink(missing_ok=True)
-
-    def cleanup_temp_file(self, item_id: str) -> None:
-        """Clean up temp file for a track after playback.
-
-        :param item_id: Track item ID.
-        """
-        with self._temp_files_lock:
-            temp_path = self._temp_files.pop(item_id, None)
-        if temp_path:
-            try:
-                Path(temp_path).unlink(missing_ok=True)
-                self.logger.debug("Cleaned up temp file for %s: %s", item_id, temp_path)
-            except Exception as err:
-                self.logger.warning("Failed to clean up temp file %s: %s", temp_path, err)
-
-    def cleanup_stale_temp_files(self, max_age_seconds: int = 600) -> None:
-        """Clean up temp files older than max_age_seconds.
-
-        :param max_age_seconds: Maximum age in seconds (default: 600 = 10 minutes).
-        """
-        now = time.time()
-        with self._temp_files_lock:
-            snapshot = dict(self._temp_files)
-        stale_ids: list[str] = []
-        for item_id, temp_path in snapshot.items():
-            try:
-                file_age = now - Path(temp_path).stat().st_mtime
-                if file_age > max_age_seconds:
-                    stale_ids.append(item_id)
-            except OSError:
-                stale_ids.append(item_id)
-        for item_id in stale_ids:
-            self.cleanup_temp_file(item_id)
-
-    def cleanup_all_temp_files(self) -> None:
-        """Clean up all tracked temp files (called on provider unload)."""
-        with self._temp_files_lock:
-            item_ids = list(self._temp_files.keys())
-        for item_id in item_ids:
-            self.cleanup_temp_file(item_id)
-
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get stream details for a track.
 
@@ -228,9 +77,6 @@ class YandexMusicStreamingManager:
         :return: StreamDetails for the track (item_id preserved for on_streamed).
         :raises MediaNotFoundError: If stream URL cannot be obtained.
         """
-        # Clean up stale temp files periodically
-        self.cleanup_stale_temp_files()
-
         track_id = self._track_id_from_item_id(item_id)
         track = await self.provider.get_track(item_id)
         if not track:
@@ -258,80 +104,9 @@ class YandexMusicStreamingManager:
 
                 if url and codec.lower() in ("flac", "flac-mp4"):
                     audio_format = self._build_audio_format(codec)
-                    content_type = audio_format.content_type
 
                     # Handle encrypted URLs from encraw transport
                     if needs_decryption and "key" in file_info:
-                        streaming_mode = (
-                            self.provider.config.get_value(CONF_STREAMING_MODE)
-                            or STREAMING_MODE_BUFFERED
-                        )
-
-                        # For Preload mode: check file size and preload if within limit
-                        if streaming_mode == STREAMING_MODE_PRELOAD:
-                            max_size_mb = int(
-                                self.provider.config.get_value(CONF_PRELOAD_BUFFER_MB) or 100  # type: ignore[arg-type]
-                            )
-                            max_size_bytes = max_size_mb * 1024 * 1024
-
-                            # Check file size first
-                            content_length = await self._get_content_length(url)
-                            if content_length and content_length <= max_size_bytes:
-                                self.logger.info(
-                                    "Preloading encrypted %s for track %s (size=%dMB, limit=%dMB)",
-                                    codec,
-                                    track_id,
-                                    content_length // (1024 * 1024),
-                                    max_size_mb,
-                                )
-                                # Download, decrypt, save to temp file
-                                temp_path = await self._download_and_decrypt_to_file(
-                                    url, file_info["key"], item_id, content_type
-                                )
-                                self._replace_temp_file(item_id, temp_path)
-
-                                return StreamDetails(
-                                    item_id=item_id,
-                                    provider=self.provider.instance_id,
-                                    audio_format=audio_format,
-                                    stream_type=StreamType.LOCAL_FILE,
-                                    duration=track.duration,
-                                    path=temp_path,
-                                    can_seek=True,
-                                    allow_seek=True,
-                                )
-                            # File too large or size unknown - fall back to buffered
-                            size_info = (
-                                f"{content_length // (1024 * 1024)}MB"
-                                if content_length
-                                else "unknown size"
-                            )
-                            self.logger.info(
-                                "Track %s (%s) exceeds preload limit (%dMB), "
-                                "using buffered streaming",
-                                track_id,
-                                size_info,
-                                max_size_mb,
-                            )
-                            # Return with streaming_mode_override to force buffered mode
-                            # MP4 container supports seek via sample table
-                            can_seek = codec.lower() in ("flac-mp4", "mp4")
-                            return StreamDetails(
-                                item_id=item_id,
-                                provider=self.provider.instance_id,
-                                audio_format=audio_format,
-                                stream_type=StreamType.CUSTOM,
-                                duration=track.duration,
-                                data={
-                                    "encrypted_url": url,
-                                    "decryption_key": file_info["key"],
-                                    "codec": codec,
-                                    "streaming_mode_override": STREAMING_MODE_BUFFERED,
-                                },
-                                can_seek=can_seek,
-                                allow_seek=True,
-                            )
-
                         self.logger.info(
                             "Streaming encrypted %s for track %s - will decrypt on-the-fly",
                             codec,
@@ -595,9 +370,6 @@ class YandexMusicStreamingManager:
         Dispatches to the configured streaming mode: direct or buffered.
         For MP4-container tracks with a non-zero seek_position, dispatches to
         _stream_buffered_seek which parses the moov atom and issues a Range request.
-        Preload mode is handled entirely in get_stream_details() which downloads,
-        decrypts, and returns a LOCAL_FILE StreamType — so get_audio_stream is never
-        called for preload.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :param seek_position: Seek position in seconds; 0 means play from start.
