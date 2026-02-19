@@ -18,13 +18,10 @@ from . import mp4_seek
 from .constants import (
     CONF_QUALITY,
     CONF_STREAM_BUFFER_MB,
-    CONF_STREAMING_MODE,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
     RADIO_TRACK_ID_SEP,
-    STREAMING_MODE_BUFFERED,
-    STREAMING_MODE_DIRECT,
 )
 
 if TYPE_CHECKING:
@@ -367,7 +364,8 @@ class YandexMusicStreamingManager:
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with decryption.
 
-        Dispatches to the configured streaming mode: direct or buffered.
+        Uses buffered streaming: a background task downloads and decrypts chunks
+        into a bounded async queue, decoupling download from consumption.
         For MP4-container tracks with a non-zero seek_position, dispatches to
         _stream_buffered_seek which parses the moov atom and issues a Range request.
 
@@ -375,109 +373,16 @@ class YandexMusicStreamingManager:
         :param seek_position: Seek position in seconds; 0 means play from start.
         :return: Async generator yielding decrypted audio bytes.
         """
-        mode = (
-            streamdetails.data.get("streaming_mode_override")
-            or self.provider.config.get_value(CONF_STREAMING_MODE)
-            or STREAMING_MODE_BUFFERED
-        )
         codec = streamdetails.data.get("codec", "")
         is_mp4 = codec.lower() in ("flac-mp4", "mp4")
 
-        if seek_position > 0 and is_mp4 and mode != STREAMING_MODE_DIRECT:
+        if seek_position > 0 and is_mp4:
             gen = self._stream_buffered_seek(streamdetails, seek_position)
-        elif mode == STREAMING_MODE_DIRECT:
-            gen = self._stream_direct(streamdetails)
         else:
             gen = self._stream_buffered(streamdetails)
 
         async for chunk in gen:
             yield chunk
-
-    async def _stream_direct(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
-        """Stream and decrypt on-the-fly (original behavior).
-
-        Download and decryption are coupled — each chunk is decrypted as it arrives.
-        Best for fast networks and powerful CPUs. Retries on CDN connection drops
-        (ClientPayloadError) by resuming the download with an HTTP Range request.
-
-        :param streamdetails: Stream details containing encrypted URL and key.
-        """
-        _, encrypted_url, codec = self._prepare_cipher(streamdetails)
-
-        self.logger.info(
-            "Starting direct streaming decryption for track %s (codec=%s)",
-            streamdetails.item_id,
-            codec,
-        )
-
-        chunk_size = 65536
-        total_bytes = 0
-        max_retries = 3
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
-
-        for attempt in range(max_retries + 1):
-            try:
-                # Resume from byte-aligned block boundary for correct CTR decryption
-                resume_block = total_bytes // 16
-                resume_byte = resume_block * 16
-                skip_bytes = total_bytes - resume_byte
-                cipher, _, _ = self._prepare_cipher(streamdetails, start_block=resume_block)
-
-                headers = {}
-                if total_bytes > 0:
-                    headers["Range"] = f"bytes={resume_byte}-"
-
-                session = await self._get_streaming_session()
-                async with session.get(encrypted_url, timeout=timeout, headers=headers) as response:
-                    if response.status not in (200, 206):
-                        msg = f"Failed to stream encrypted track: HTTP {response.status}"
-                        self.logger.error(msg)
-                        raise MediaNotFoundError(msg)
-
-                    if total_bytes == 0:
-                        self.logger.debug("Started streaming from %s", encrypted_url[:100])
-
-                    first_chunk = True
-                    async for encrypted_chunk in response.content.iter_chunked(chunk_size):
-                        decrypted_chunk = cipher.decrypt(encrypted_chunk)
-                        if first_chunk and skip_bytes:
-                            decrypted_chunk = decrypted_chunk[skip_bytes:]
-                            first_chunk = False
-                        total_bytes += len(decrypted_chunk)
-                        yield decrypted_chunk
-
-                self.logger.info(
-                    "Completed direct streaming for track %s: %d bytes total",
-                    streamdetails.item_id,
-                    total_bytes,
-                )
-                return
-
-            except aiohttp.ClientPayloadError as err:
-                if attempt >= max_retries:
-                    self.logger.exception(
-                        "Error during direct streaming for track %s: %s",
-                        streamdetails.item_id,
-                        err,
-                    )
-                    raise
-                self.logger.warning(
-                    "Stream dropped at %d bytes for track %s, retry %d/%d: %s",
-                    total_bytes,
-                    streamdetails.item_id,
-                    attempt + 1,
-                    max_retries,
-                    err,
-                )
-                await asyncio.sleep(1)
-
-            except Exception as err:
-                self.logger.exception(
-                    "Error during direct streaming for track %s: %s",
-                    streamdetails.item_id,
-                    err,
-                )
-                raise
 
     async def _stream_buffered(  # noqa: PLR0915
         self, streamdetails: StreamDetails

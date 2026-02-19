@@ -14,15 +14,12 @@ from .constants import (
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_STREAM_BUFFER_MB,
-    CONF_STREAMING_MODE,
     CONF_TOKEN,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
-    STREAMING_MODE_BUFFERED,
-    STREAMING_MODE_DIRECT,
 )
 from .provider import YandexMusicProvider
 
@@ -109,34 +106,17 @@ async def get_config_entries(
             ],
             default_value=QUALITY_BALANCED,
         ),
-        # Streaming mode (advanced)
-        ConfigEntry(
-            key=CONF_STREAMING_MODE,
-            type=ConfigEntryType.STRING,
-            label="FLAC streaming mode",
-            description="How encrypted FLAC streams are handled. "
-            "'Direct' streams and decrypts on-the-fly. "
-            "'Buffered' decouples download from decryption via async queue (recommended).",
-            options=[
-                ConfigValueOption("Direct (on-the-fly)", STREAMING_MODE_DIRECT),
-                ConfigValueOption("Buffered (async queue, recommended)", STREAMING_MODE_BUFFERED),
-            ],
-            default_value=STREAMING_MODE_BUFFERED,
-            advanced=True,
-        ),
         ConfigEntry(
             key=CONF_STREAM_BUFFER_MB,
             type=ConfigEntryType.INTEGER,
             label="Stream buffer size (MB)",
-            description="Memory buffer for Buffered streaming mode. "
+            description="Memory buffer for encrypted FLAC streaming. "
             "Larger values help with slow or unstable connections "
             "by allowing more audio to be downloaded ahead of playback. "
             "Default: 8 MB (~45 seconds of FLAC audio).",
             range=(1, 64),
             default_value=8,
             advanced=True,
-            depends_on=CONF_STREAMING_MODE,
-            depends_on_value_not=STREAMING_MODE_DIRECT,
         ),
         # My Wave maximum tracks (advanced)
         ConfigEntry(

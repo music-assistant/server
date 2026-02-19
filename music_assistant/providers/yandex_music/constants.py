@@ -9,11 +9,6 @@ CONF_TOKEN = "token"
 CONF_QUALITY = "quality"
 CONF_BASE_URL = "base_url"
 
-# Streaming mode config
-CONF_STREAMING_MODE: Final[str] = "streaming_mode"
-STREAMING_MODE_DIRECT = "direct"
-STREAMING_MODE_BUFFERED = "buffered"
-
 # Buffered mode stream buffer size (MB)
 CONF_STREAM_BUFFER_MB: Final[str] = "stream_buffer_mb"
 
