@@ -446,7 +446,13 @@ class PlexProvider(MusicProvider):
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
+            """
+            - Plex.tv for discovery of accessible servers (including shared)
+            - Find the local server by IP or friendly name
+            - Use the server-specific token for a direct local connection
+            """
             try:
+                # Setup session for local connection
                 session = requests.Session()
                 session.verify = (
                     self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT)
@@ -462,24 +468,39 @@ class PlexProvider(MusicProvider):
                         "X-Plex-Version": self.mass.version,
                     }
                 )
-                local_server_protocol = (
-                    "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
-                )
+                local_ip = self.config.get_value(CONF_LOCAL_SERVER_IP)
+                local_port = self.config.get_value(CONF_LOCAL_SERVER_PORT)
+                local_protocol = "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
+                plex_url = f"{local_protocol}://{local_ip}:{local_port}"
                 token = self.config.get_value(CONF_AUTH_TOKEN)
-                plex_url = (
-                    f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
-                    f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
-                )
+
                 if token == AUTH_TOKEN_UNAUTH:
                     # Doing local connection, not via plex.tv.
                     plex_server = PlexServer(plex_url, session=session)
                 else:
-                    plex_server = PlexServer(
-                        plex_url,
-                        token,
-                        session=session,
-                    )
-                # I don't think PlexAPI intends for this to be accessible, but we need it.
+                    # If we have a Plex.tv token, use it to discover resources
+                    plex_server = None
+                    account = self._myplex_account
+                    if account:
+                        for resource in account.resources():
+                            if "server" not in resource.provides:
+                                continue
+                            try:
+                                for conn in resource.connections:
+                                    if (
+                                        conn.address == local_ip
+                                        and str(conn.port) == str(local_port)
+                                    ):
+                                        plex_server = PlexServer(
+                                            f"{conn.protocol}://{conn.address}:{conn.port}",
+                                            token=resource.accessToken,
+                                            session=session,
+                                        )
+                                        break
+                                if plex_server:
+                                    break
+                            except Exception:
+                                continue
                 self._baseurl = plex_server._baseurl
 
             except plexapi.exceptions.BadRequest as err:
@@ -1319,11 +1340,14 @@ class PlexProvider(MusicProvider):
             return self._myplex_account
 
         def _refresh_plex_token() -> MyPlexAccount:
-            if self._myplex_account is None:
-                myplex_account = MyPlexAccount(token=auth_token)
-                self._myplex_account = myplex_account
-            self._myplex_account.ping()
-            return self._myplex_account
+            try:
+                if self._myplex_account is None:
+                    myplex_account = MyPlexAccount(token=auth_token)
+                    self._myplex_account = myplex_account
+                self._myplex_account.ping()
+                return self._myplex_account
+            except plexapi.exceptions.Unauthorized as err:
+                raise LoginFailed("Plex.tv authentication failed") from err
 
         return await asyncio.to_thread(_refresh_plex_token)
 
