@@ -50,8 +50,8 @@ class UniversalPlayer(Player):
         :param device_info: Device information aggregated from protocol players.
         :param protocol_player_ids: List of protocol player IDs to link.
         """
-        super().__init__(provider, player_id)
         self._protocol_player_ids = protocol_player_ids
+        super().__init__(provider, player_id)
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info

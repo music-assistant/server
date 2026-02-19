@@ -1663,6 +1663,147 @@ class TestCanGroupWith:
         # DLNA players should not be shown since DLNA doesn't support SET_MEMBERS
 
 
+class TestNativePlayerProtocolGrouping:
+    """Tests for grouping between native PLAYER type and PROTOCOL type AirPlay players."""
+
+    def test_native_airplay_player_sees_protocol_players_as_visible_parents(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a native PLAYER type translates protocol players to visible parents."""
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # HomePod: native AirPlay PLAYER (not PROTOCOL)
+        homepod = MockPlayer(airplay_provider, "homepod_1", "Office")
+        homepod._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        homepod._attr_can_group_with = {"airplay"}  # Provider instance ID
+        homepod._cache.clear()
+
+        # Sonos native player (visible to the user)
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Kitchen")
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for the Sonos (hidden, linked to sonos_player)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos_1",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        mock_mass.get_provider = MagicMock(return_value=airplay_provider)
+
+        controller._players = {
+            "homepod_1": homepod,
+            "sonos_1": sonos_player,
+            "airplay_sonos_1": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "homepod_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos_1": Throttler(1, 0.05),
+        }
+
+        # Update protocol players first, then parents
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        homepod.update_state(signal_event=False)
+
+        groupable = homepod.state.can_group_with
+
+        # HomePod should see Sonos's VISIBLE player, not the hidden protocol player
+        assert "sonos_1" in groupable
+        assert "airplay_sonos_1" not in groupable  # Hidden protocol ID must NOT appear
+
+    def test_protocol_linked_player_sees_native_airplay_player(self, mock_mass: MagicMock) -> None:
+        """Test that a player with linked AirPlay protocol sees native PLAYER type players."""
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # HomePod: native AirPlay PLAYER
+        homepod = MockPlayer(airplay_provider, "homepod_1", "Office")
+        homepod._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        homepod._attr_can_group_with = {"airplay"}
+        homepod._cache.clear()
+
+        # Sonos native player (visible to the user)
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Kitchen")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = set()  # No native Sonos grouping peers
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for the Sonos (hidden, linked to sonos_player)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos_1",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay"}  # Provider instance ID
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        mock_mass.get_provider = MagicMock(return_value=airplay_provider)
+
+        controller._players = {
+            "homepod_1": homepod,
+            "sonos_1": sonos_player,
+            "airplay_sonos_1": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "homepod_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos_1": Throttler(1, 0.05),
+        }
+
+        # Update protocol players first, then parents
+        sonos_airplay.update_state(signal_event=False)
+        homepod.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+
+        groupable = sonos_player.state.can_group_with
+
+        # Sonos should see HomePod via its linked AirPlay protocol's can_group_with
+        assert "homepod_1" in groupable
+
+
 class TestProtocolSwitchingDuringPlayback:
     """Tests for dynamic protocol switching when group members change during playback."""
 

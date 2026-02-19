@@ -56,7 +56,9 @@ class UniversalPlayerProvider(PlayerProvider):
         not through discovery. However, we restore previously created
         universal players from config.
         """
-        for player_conf in await self.mass.config.get_player_configs(self.instance_id):
+        for player_conf in await self.mass.config.get_player_configs(
+            self.instance_id, include_unavailable=True, include_disabled=True
+        ):
             if player_conf.player_id.startswith(UNIVERSAL_PLAYER_PREFIX):
                 # Restore universal player from config
                 # The stored protocol IDs enable fast matching when protocols register
