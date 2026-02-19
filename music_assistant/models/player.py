@@ -1784,8 +1784,7 @@ class Player(ABC):
 
         Protocol players are hidden and users interact with visible players
         (native or universal). This method translates protocol player IDs
-        back to the visible (parent) players. Non-protocol players (e.g.,
-        native Apple AirPlay players) are already visible and included as-is.
+        back to the visible (parent) players.
 
         :param player_ids: Set of player IDs (may include both protocol and non-protocol IDs).
         :return: Set of visible players.
