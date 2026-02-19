@@ -105,7 +105,7 @@ async def get_config_entries(
     if values is None:
         values = {}
 
-    verify_ssl = False
+    verify_ssl = True
     if _verify_ssl := values.get(CONF_VERIFY_SSL):
         verify_ssl = bool(_verify_ssl)
 
