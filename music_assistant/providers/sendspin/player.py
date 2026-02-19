@@ -405,9 +405,9 @@ class SendspinPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something
+        # Stop previous stream in case we were already playing something.
+        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
-        await self.api.group.stop()
         await self.playback_session.start(media)
         self.update_state()
 

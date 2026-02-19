@@ -741,6 +741,11 @@ class SendspinPlaybackSession:
                 self._first_commit_monotonic_us = None
                 self._produced_audio_us = 0
                 self._history.clear()
+            # Only emit a group STOP when MA stream playback reached natural EOF.
+            # Skip this on cancellation/error paths to avoid stop-event races with transitions.
+            if producer_stopped_cleanly:
+                with suppress(Exception):
+                    await self.player.api.group.stop()
 
     # -- Join injection --------------------------------------------------------
 
