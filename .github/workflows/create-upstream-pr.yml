@@ -1,0 +1,96 @@
+name: Create upstream PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Provider name
+        required: true
+        type: choice
+        options:
+          - yandex_music
+          - kion_music
+          - zvuk_music
+          - msx_bridge
+      description:
+        description: Branch slug (e.g. add-provider)
+        required: true
+        type: string
+      pr_title:
+        description: PR title in upstream
+        required: true
+        type: string
+      pr_body:
+        description: PR body (markdown)
+        required: false
+        type: string
+        default: ''
+      source_ref:
+        description: Source branch in fork
+        required: false
+        type: string
+        default: dev
+      draft:
+        description: Open as draft PR
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  create-upstream-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_PAT }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sanitize description
+        id: slug
+        run: |
+          slug="${{ inputs.description }}"
+          slug="${slug// /-}"
+          echo "value=$slug" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push upstream branch
+        id: branch
+        run: |
+          branch="upstream/${{ inputs.provider }}/${{ steps.slug.outputs.value }}"
+          git checkout -b "$branch"
+          git push origin "$branch"
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR in upstream
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_PAT }}
+        run: |
+          args=(
+            --repo music-assistant/server
+            --base dev
+            --head "trudenboy:${{ steps.branch.outputs.name }}"
+            --title "${{ inputs.pr_title }}"
+            --body "${{ inputs.pr_body }}"
+          )
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            args+=(--draft)
+          fi
+          pr_url=$(gh pr create "${args[@]}")
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Job summary
+        run: |
+          echo "## Upstream PR created" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Branch** | \`${{ steps.branch.outputs.name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **PR** | ${{ steps.pr.outputs.url }} |" >> "$GITHUB_STEP_SUMMARY"
