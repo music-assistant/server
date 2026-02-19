@@ -56,6 +56,26 @@ gh pr create \
 # 3. rebuild-integration.yml rebuilds integration automatically on push
 ```
 
+### When upstream requests changes (review feedback)
+
+**Minor fixes** — commit directly to the upstream PR branch:
+```bash
+git checkout upstream/yandex_music/add-provider
+# make changes
+git push origin upstream/yandex_music/add-provider --force-with-lease
+```
+
+**Major changes** — develop in provider repo, release a patch, sync to fork, then cherry-pick to upstream branch:
+```bash
+# provider repo: fix/* → dev → main → v2.1.1 release
+# sync-to-fork.yml creates PR: provider/yandex_music-2.1.1 → fork dev
+# merge sync PR — <FIX_COMMIT> now in fork dev
+
+git checkout upstream/yandex_music/add-provider
+git cherry-pick <FIX_COMMIT>
+git push origin upstream/yandex_music/add-provider --force-with-lease
+```
+
 ### When upstream merges your PR
 
 ```bash
@@ -138,21 +158,48 @@ Initial versions:
 ### State Machine
 
 ```
-STATE 1: Development (provider repo: feature/* → dev)
-  ↓ release
-STATE 2: Released (sync PR open in fork)
-  ↓ merge sync PR
+STATE 1: Development
+  provider repo:  feature/* → dev (active development)
+  fork:           unchanged, no upstream/* branch
+  Commands:       cd ma-provider-<name> && git checkout -b feature/x && pytest tests/
+
+                  ↓  release workflow → tag → GitHub Release
+
+STATE 2: Released, sync PR open in fork
+  provider repo:  main @ vX.Y.Z
+  fork:           PR open: provider/<domain>-X.Y.Z → dev
+  Commands:       gh pr view --repo trudenboy/ma-server
+
+                  ↓  merge sync PR
+
 STATE 3: Synced to fork (integration & E2E testing)
-  ↓ create upstream PR branch
+  provider repo:  main @ vX.Y.Z
+  fork dev:       contains vX.Y.Z code
+  integration:    unchanged (no upstream/* yet)
+  ⚠️ Can stay here indefinitely — run E2E tests, accumulate releases
+  Commands:       ./scripts/dev-server.sh  (from provider repo)
+                  docker compose up        (from fork)
+
+                  ↓  create upstream PR branch + open PR
+
 STATE 4: Upstream PR open (pending review)
-  ↓ upstream merged
-STATE 5: Cleanup (delete upstream/* branch → auto-rebuild)
+  fork:           upstream/<domain>/<desc> branch exists
+  upstream:       PR open: trudenboy:upstream/... → music-assistant:dev
+  integration:    = dev + upstream/* branch (auto-rebuilt)
+  Commands:       gh pr view --repo music-assistant/server
+                  git push origin upstream/... --force-with-lease  (for review fixes)
+
+                  ↓  upstream merged
+
+STATE 5: Cleanup
+  Commands:       git push origin --delete upstream/<domain>/<desc>
+                  # then: sync fork dev with upstream (see above)
 ```
 
 ### Cleanup after upstream merge
 
 ```bash
-# Delete upstream PR branch → triggers auto-rebuild
+# Delete upstream PR branch → triggers auto-rebuild of integration
 git push origin --delete upstream/yandex_music/add-provider
 
 # Sync fork dev immediately (don't wait for cron)
@@ -163,9 +210,39 @@ git merge upstream/dev --no-edit -m "chore: sync upstream dev after merge"
 git push origin dev
 ```
 
+## E2E Checklist: Yandex Music
+
+Run before creating an upstream PR:
+
+### Setup
+- [ ] Provider connects successfully (token accepted, no error on load)
+- [ ] No errors in MA logs at startup
+
+### Browse
+- [ ] Browse → Yandex Music opens
+- [ ] Liked Tracks displayed
+- [ ] My Wave available
+- [ ] Picks & Mixes shows playlists
+
+### Search
+- [ ] Track search returns results
+- [ ] Artist search works
+- [ ] Album search works
+
+### Playback
+- [ ] Track plays (AAC/MP3 quality)
+- [ ] Track plays (FLAC quality, if premium)
+- [ ] Seek works correctly
+- [ ] No stall mid-track
+
+### Library sync
+- [ ] Liked Tracks sync to library
+- [ ] Album art loads
+
 ## Troubleshooting
 
 **sync-upstream.yml failed with merge conflict**
+
 Upstream changed files that overlap with provider code. Resolve manually:
 ```bash
 git checkout dev
@@ -177,6 +254,7 @@ git push origin dev
 ```
 
 **rebuild-integration.sh: conflict merging upstream/***
+
 Two upstream/* branches conflict with each other:
 ```bash
 git checkout integration/pending-upstream-prs
@@ -184,9 +262,30 @@ git status  # see conflicting files
 # resolve conflicts
 git add .
 git commit
-git push origin integration/pending-upstream-prs --force-with-lease
+git push origin integration/pending-upstream-prs:integration/pending-upstream-prs --force
 ```
 
+Note: use the explicit refspec `branch:branch` rather than `--force-with-lease` here,
+as the worktree-based rebuild script may not have the remote tracking ref set up.
+
 **sync-to-fork.yml: FORK_SYNC_PAT expired**
-Renew PAT with `contents:write` on trudenboy/ma-server and update the secret
-in each provider repo (Settings → Secrets → FORK_SYNC_PAT).
+
+Renew the PAT (needs `contents:write` on `trudenboy/ma-server`) then update the secret
+in all 4 provider repos:
+```bash
+gh secret set FORK_SYNC_PAT --body "$NEW_PAT" --repo trudenboy/ma-provider-yandex-music
+gh secret set FORK_SYNC_PAT --body "$NEW_PAT" --repo trudenboy/ma-provider-kion-music
+gh secret set FORK_SYNC_PAT --body "$NEW_PAT" --repo trudenboy/ma-provider-zvuk-music
+gh secret set FORK_SYNC_PAT --body "$NEW_PAT" --repo trudenboy/ma-provider-msx-bridge
+```
+
+**sync-to-fork.yml ran but no PR created**
+
+This is normal when the provider files haven't changed since the last sync.
+`create-pull-request` action skips PR creation if the diff is empty.
+
+**gh repo sync fails when run manually on fork**
+
+`gh repo sync` does a fast-forward only — it fails when fork `dev` has extra commits
+(provider syncs) not present in upstream. Use `git merge upstream/dev` instead
+(as in `sync-upstream.yml`).
