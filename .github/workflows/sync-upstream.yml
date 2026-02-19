@@ -1,0 +1,35 @@
+name: Sync fork dev with upstream
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Merge upstream dev into fork dev
+        run: |
+          # gh repo sync --force would RESET fork dev (losing provider commits).
+          # gh repo sync without --force fails when fork dev has diverged (extra commits).
+          # We use git merge so provider commits in fork dev are preserved.
+          git remote add upstream https://github.com/music-assistant/server.git 2>/dev/null || true
+          git fetch upstream dev
+          if git merge upstream/dev --no-edit -m "chore: sync upstream dev $(date +%Y-%m-%d)"; then
+            git push origin dev
+            echo "✓ Merged upstream/dev into fork dev"
+          else
+            git merge --abort
+            echo "⚠️ Merge conflict with upstream — manual resolution needed"
+            exit 1
+          fi

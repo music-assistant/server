@@ -1,0 +1,45 @@
+# docker-compose.yml — dev environment for all 4 providers
+services:
+  ma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE_VERSION: "1.4.11"
+    ports:
+      - "8095:8095"
+    volumes:
+      # Live-reload providers from local source (no rebuild needed)
+      - ./music_assistant/providers/yandex_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/yandex_music
+      - ./music_assistant/providers/kion_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/kion_music
+      - ./music_assistant/providers/zvuk_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/zvuk_music
+      - ./music_assistant/providers/msx_bridge:/usr/local/lib/python3.13/site-packages/music_assistant/providers/msx_bridge
+      # Persistent state across restarts
+      - ma-data:/data
+    environment:
+      LOG_LEVEL: debug
+    restart: unless-stopped
+
+  # Reset-friendly clean state — run with: docker compose --profile fresh up ma-fresh
+  ma-fresh:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE_VERSION: "1.4.11"
+    profiles: [fresh]
+    ports:
+      - "8095:8095"
+    volumes:
+      - ./music_assistant/providers/yandex_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/yandex_music
+      - ./music_assistant/providers/kion_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/kion_music
+      - ./music_assistant/providers/zvuk_music:/usr/local/lib/python3.13/site-packages/music_assistant/providers/zvuk_music
+      - ./music_assistant/providers/msx_bridge:/usr/local/lib/python3.13/site-packages/music_assistant/providers/msx_bridge
+      - ma-fresh-data:/data
+    environment:
+      LOG_LEVEL: debug
+    restart: unless-stopped
+
+volumes:
+  ma-data:
+  ma-fresh-data:

@@ -1,0 +1,22 @@
+name: Rebuild integration branch
+on:
+  push:
+    branches: ['upstream/**', 'dev']
+  workflow_dispatch:
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Rebuild integration
+        run: bash scripts/rebuild-integration.sh
