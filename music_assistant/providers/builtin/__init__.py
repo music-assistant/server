@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Final, cast, get_args
+from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
 import shortuuid
@@ -24,11 +24,13 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
+    Audiobook,
     AudioFormat,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
     Playlist,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     Track,
@@ -392,13 +394,11 @@ class BuiltinProvider(MusicProvider):
                     # episodes (controller has PODCAST, not PODCAST_EPISODE).
                     item_prov = self.mass.get_provider(provider_instance_id_or_domain)
                     if item_prov:
-                        media_item = await cast("MusicProvider", item_prov).get_item(
-                            media_type, item_id
-                        )
-                if isinstance(media_item, get_args(PlaylistPlayableItem)):
-                    playlist_item = cast("PlaylistPlayableItem", media_item)
-                    playlist_item.position = index
-                    result.append(playlist_item)
+                        item_prov = cast("MusicProvider", item_prov)
+                        media_item = await item_prov.get_item(media_type, item_id)
+                    if isinstance(media_item, (Track, Radio, PodcastEpisode, Audiobook)):
+                        media_item.position = index
+                        result.append(media_item)
                 else:
                     self.logger.warning(
                         "Unsupported media type in playlist %s: %s",
