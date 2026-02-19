@@ -6,6 +6,6 @@
   "description": "Stream music from Yandex Music service.",
   "codeowners": ["@TrudenBoy"],
   "documentation": "https://music-assistant.io/music-providers/yandex-music/",
-  "requirements": ["yandex-music==2.2.0"],
+  "requirements": ["yandex-music==2.2.0", "pycryptodome==3.23.0"],
   "multi_instance": true
 }
