@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import errno
 import logging
 import os
 import os.path
 import time
 import urllib.parse
-from collections.abc import AsyncGenerator, Iterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -97,12 +96,12 @@ from .constants import (
     IsChapterFile,
 )
 from .helpers import (
-    IGNORE_DIRS,
     FileSystemItem,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
     get_relative_path,
+    recursive_iter,
     sorted_scandir,
 )
 
@@ -352,61 +351,13 @@ class LocalFileSystemProvider(MusicProvider):
 
         # NOTE: we do the entire traversing of the directory structure, including parsing tags
         # in a single executor thread to save the overhead of having to spin up tons of tasks
-        def listdir(path: str) -> Iterator[FileSystemItem]:
-            """Recursively traverse directory entries."""
-            try:
-                scan_iter = os.scandir(path)
-            except OSError as err:
-                if err.errno == errno.EINVAL:
-                    self.logger.warning(
-                        "Skipping directory '%s' - unsupported characters in path",
-                        path,
-                    )
-                else:
-                    self.logger.warning("Unable to scan directory %s: %s", path, err)
-                return
-            with scan_iter:
-                for item in scan_iter:
-                    if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
-                        continue
-                    try:
-                        is_dir = item.is_dir(follow_symlinks=False)
-                        is_file = item.is_file(follow_symlinks=False)
-                    except OSError as err:
-                        if err.errno == errno.EINVAL:
-                            self.logger.warning(
-                                "Skipping '%s' - unsupported characters in name",
-                                item.name,
-                            )
-                        continue
-                    if is_dir:
-                        yield from listdir(item.path)
-                    elif is_file:
-                        if "." not in item.name:
-                            continue
-                        ext = item.name.rsplit(".", 1)[1].lower()
-                        if ext not in SUPPORTED_EXTENSIONS:
-                            continue
-                        try:
-                            yield FileSystemItem.from_dir_entry(item, self.base_path)
-                        except OSError as err:
-                            if err.errno == errno.EINVAL:
-                                self.logger.warning(
-                                    "Skipping '%s' - unsupported characters in name",
-                                    item.name,
-                                )
-                            else:
-                                self.logger.debug(
-                                    "Skipping file %s due to OS error: %s",
-                                    item.path,
-                                    str(err),
-                                )
-
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""
             self.sync_running = True
             try:
-                for item in listdir(self.base_path):
+                for item in recursive_iter(
+                    self.base_path, self.base_path, SUPPORTED_EXTENSIONS, self.logger
+                ):
                     prev_checksum = file_checksums.get(item.relative_path)
                     if self._process_item(item, prev_checksum):
                         cur_filenames.add(item.relative_path)
