@@ -159,6 +159,62 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is False
 
+    def test_mac_address_locally_administered_bit_match(self, mock_mass: MagicMock) -> None:
+        """Test that MAC addresses differing only in locally-administered bit match.
+
+        Some protocols (like AirPlay) report a MAC with the locally-administered
+        bit set (bit 1 of first octet), while other protocols report the real
+        hardware MAC. These should match as the same device.
+
+        Example: 54:78:C9:E6:0D:A0 (hardware) vs 56:78:C9:E6:0D:A0 (AirPlay)
+        """
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        # Real hardware MAC (first byte 0x54 = 01010100, bit 1 = 0)
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "WiiM Pro (DLNA)",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+        # AirPlay MAC with locally-administered bit set (first byte 0x56 = 01010110, bit 1 = 1)
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "WiiM Pro (AirPlay)",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
+        )
+
+        # These should match because they differ only in the locally-administered bit
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_mac_address_locally_administered_bit_different_devices_no_match(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that different devices with locally-administered MACs don't match.
+
+        Only the locally-administered bit should be ignored, not other differences.
+        """
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Device A",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Device B",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A1"},  # Different last byte
+        )
+
+        # These should NOT match - they differ in more than just the locally-administered bit
+        assert controller._identifiers_match(player_a, player_b) is False
+
     def test_ip_address_no_match(self, mock_mass: MagicMock) -> None:
         """Test that IP addresses don't match (IP is excluded as it's not stable)."""
         controller = PlayerController(mock_mass)
@@ -342,20 +398,63 @@ class TestGetDeviceKeyFromPlayers:
     """Tests for device key generation."""
 
     def test_device_key_from_mac(self, mock_mass: MagicMock) -> None:
-        """Test device key generation from MAC address."""
+        """Test device key generation from MAC address.
+
+        Note: Device keys are normalized to clear the locally-administered bit
+        (bit 1 of first octet) to ensure consistent keys across protocols.
+        """
         universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("airplay")
+        # Use a MAC without locally-administered bit set for cleaner test
+        # 00:BB:CC:DD:EE:FF has first byte 0x00, bit 1 = 0
         player = MockPlayer(
             provider,
             "ap_123456",
             "Test Player",
-            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+            identifiers={IdentifierType.MAC_ADDRESS: "00:BB:CC:DD:EE:FF"},
         )
 
         device_key = universal_provider._get_device_key_from_players([player])
 
-        assert device_key == "aabbccddeeff"
+        assert device_key == "00bbccddeeff"
+
+    def test_device_key_normalizes_locally_administered_mac(self, mock_mass: MagicMock) -> None:
+        """Test that device key normalizes locally-administered MACs.
+
+        A device with hardware MAC 54:78:C9:E6:0D:A0 and AirPlay MAC 56:78:C9:E6:0D:A0
+        should generate the same device key, allowing them to be merged into
+        the same universal player.
+        """
+        universal_provider = create_mock_universal_provider(mock_mass)
+
+        provider_dlna = MockProvider("dlna")
+        provider_airplay = MockProvider("airplay")
+
+        # DLNA player with real hardware MAC
+        player_dlna = MockPlayer(
+            provider_dlna,
+            "dlna_123456",
+            "WiiM Pro (DLNA)",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+
+        # AirPlay player with locally-administered MAC (bit 1 set)
+        player_airplay = MockPlayer(
+            provider_airplay,
+            "ap_123456",
+            "WiiM Pro (AirPlay)",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
+        )
+
+        # Both should generate the same device key
+        key_dlna = universal_provider._get_device_key_from_players([player_dlna])
+        key_airplay = universal_provider._get_device_key_from_players([player_airplay])
+
+        # Keys should be identical (both normalized to clear locally-administered bit)
+        assert key_dlna == key_airplay
+        # The normalized MAC should have bit 1 cleared (0x54 not 0x56)
+        assert key_dlna == "5478c9e60da0"
 
     def test_device_key_from_uuid_fallback(self, mock_mass: MagicMock) -> None:
         """Test device key generation falls back to UUID when no MAC available."""
