@@ -303,7 +303,10 @@ class WiimPlayer(Player):
 
         if self.wiim_player.is_master:
             self._attr_group_members = (
-                [i.uuid for i in self.wiim_player.group.slaves if i.uuid is not None]
+                [
+                    self.player_id,
+                    *(i.uuid for i in self.wiim_player.group.slaves if i.uuid is not None),
+                ]
                 if self.wiim_player.group is not None
                 else []
             )
