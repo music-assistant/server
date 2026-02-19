@@ -25,8 +25,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
-    DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING,
-    DB_TABLE_GENRE_ALIAS_MAPPING,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
@@ -919,6 +918,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         ]
 
+    @property
+    def _search_filter_clause(self) -> str:
+        """Return the SQL WHERE clause fragment used for search filtering."""
+        return f"{self.db_table}.search_name LIKE :search"
+
     @final
     def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
         """Preprocess search string and add to query params."""
@@ -1005,7 +1009,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Apply search, favorite, and provider filters."""
         # handle search
         if search:
-            query_parts.append(f"{self.db_table}.search_name LIKE :search")
+            query_parts.append(self._search_filter_clause)
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
@@ -1016,12 +1020,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["genre_media_type"] = self.media_type.value
             query_parts.append(
                 f"EXISTS("
-                f"SELECT 1 FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} ami "
-                f"INNER JOIN {DB_TABLE_GENRE_ALIAS_MAPPING} gam "
-                f"ON gam.alias_id = ami.alias_id "
-                f"WHERE ami.media_id = {self.db_table}.item_id "
-                "AND ami.media_type = :genre_media_type "
-                "AND gam.genre_id IN :genre_ids)"
+                f"SELECT 1 FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
+                f"WHERE gm.media_id = {self.db_table}.item_id "
+                "AND gm.media_type = :genre_media_type "
+                "AND gm.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
         if provider_filter:

@@ -49,11 +49,9 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING,
-    DB_TABLE_ALIASES,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
-    DB_TABLE_GENRE_ALIAS_MAPPING,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
@@ -944,6 +942,11 @@ class MusicController(CoreController):
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
+
+        # genres are library-only items with no provider mappings, nothing to refresh
+        if media_type == MediaType.GENRE:
+            return media_item
+
         library_id = media_item.item_id if media_item.provider == "library" else None
 
         # cache in_library state before the provider fetch overwrites media_item
@@ -2252,10 +2255,7 @@ class MusicController(CoreController):
             # create genre/alias tables
             await self.__create_database_tables()
 
-            # Use raw aiosqlite connection to avoid per-row commits from the
-            # database helper's insert() method. Genre/alias inserts use
-            # individual execute_insert (bounded count, need rowids). Mapping
-            # inserts use executemany (high volume, no rowids needed).
+            # Use raw aiosqlite connection for bulk operations.
             db = self._database._db
 
             empty_metadata = serialize_to_json({})
@@ -2269,32 +2269,27 @@ class MusicController(CoreController):
                 return name, sort_name, search_name, search_sort_name
 
             genre_cache: dict[str, int] = {}
-            alias_cache: dict[str, int] = {}
 
             genre_insert_sql = (
                 f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
                 "(name, sort_name, translation_key, description, favorite, "
-                "metadata, external_ids, play_count, last_played, "
+                "metadata, external_ids, genre_aliases, play_count, last_played, "
                 "search_name, search_sort_name) "
-                "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
-            )
-            alias_insert_sql = (
-                f"INSERT OR IGNORE INTO {DB_TABLE_ALIASES}"
-                "(name, sort_name, favorite, metadata, external_ids, "
-                "play_count, last_played, search_name, search_sort_name) "
-                "VALUES (?, ?, 0, ?, ?, 0, 0, ?, ?)"
+                "VALUES (?, ?, ?, NULL, 0, ?, ?, ?, 0, 0, ?, ?)"
             )
             genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
-            alias_select_sql = f"SELECT item_id FROM {DB_TABLE_ALIASES} WHERE search_name = ?"
 
             async def _get_or_create_genre(
-                raw_name: str, translation_key: str | None = None
+                raw_name: str,
+                aliases: list[str] | None = None,
+                translation_key: str | None = None,
             ) -> int:
                 name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
                 if not search_name:
                     return 0
                 if search_name in genre_cache:
                     return genre_cache[search_name]
+                aliases_json = serialize_to_json(aliases or [name])
                 row_id = await db.execute_insert(
                     genre_insert_sql,
                     (
@@ -2303,6 +2298,7 @@ class MusicController(CoreController):
                         translation_key,
                         empty_metadata,
                         empty_external_ids,
+                        aliases_json,
                         search_name,
                         search_sort_name,
                     ),
@@ -2310,7 +2306,6 @@ class MusicController(CoreController):
                 if row_id and row_id[0]:
                     genre_cache[search_name] = row_id[0]
                     return row_id[0]
-                # INSERT OR IGNORE skipped (already exists) — fetch the id
                 async with db.execute(genre_select_sql, (search_name,)) as cursor:
                     row = await cursor.fetchone()
                     if row:
@@ -2318,61 +2313,38 @@ class MusicController(CoreController):
                         return row[0]
                 return 0
 
-            async def _get_or_create_alias(raw_name: str) -> int:
-                name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
-                if not search_name:
-                    return 0
-                if search_name in alias_cache:
-                    return alias_cache[search_name]
-                row_id = await db.execute_insert(
-                    alias_insert_sql,
-                    (
-                        name,
-                        sort_name,
-                        empty_metadata,
-                        empty_external_ids,
-                        search_name,
-                        search_sort_name,
-                    ),
-                )
-                if row_id and row_id[0]:
-                    alias_cache[search_name] = row_id[0]
-                    return row_id[0]
-                # INSERT OR IGNORE skipped (already exists) — fetch the id
-                async with db.execute(alias_select_sql, (search_name,)) as cursor:
-                    row = await cursor.fetchone()
-                    if row:
-                        alias_cache[search_name] = row[0]
-                        return row[0]
-                return 0
-
-            # Phase 1: Seed DEFAULT_GENRE_MAPPING
-            genre_alias_mappings: list[tuple[int, int]] = []
+            # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases
+            # Build a lookup: normalized alias name -> genre_id for Phase 2.
+            # Two passes: first collect all aliases, then override with each
+            # genre's own name so standalone genres take priority over being
+            # an alias elsewhere (e.g. "funk" is both a genre and alias of Soul).
+            alias_to_genre: dict[str, int] = {}
+            genre_own_names: dict[str, int] = {}
             for entry in DEFAULT_GENRE_MAPPING:
                 genre_name = entry.get("genre")
                 if not genre_name:
                     continue
-                genre_id = await _get_or_create_genre(genre_name, entry.get("translation_key"))
+                all_aliases = [genre_name, *entry.get("aliases", [])]
+                genre_id = await _get_or_create_genre(
+                    genre_name,
+                    aliases=all_aliases,
+                    translation_key=entry.get("translation_key"),
+                )
                 if not genre_id:
                     continue
-                alias_id = await _get_or_create_alias(genre_name)
-                if alias_id:
-                    genre_alias_mappings.append((genre_id, alias_id))
-                for alias_name in entry.get("aliases", []):
-                    alias_id = await _get_or_create_alias(alias_name)
-                    if alias_id:
-                        genre_alias_mappings.append((genre_id, alias_id))
-
-            if genre_alias_mappings:
-                await db.executemany(
-                    f"INSERT OR IGNORE INTO {DB_TABLE_GENRE_ALIAS_MAPPING}"
-                    "(genre_id, alias_id) VALUES (?, ?)",
-                    genre_alias_mappings,
-                )
+                for alias in all_aliases:
+                    norm = create_safe_string(alias.strip(), True, True)
+                    if norm:
+                        alias_to_genre[norm] = genre_id
+                own_norm = create_safe_string(genre_name.strip(), True, True)
+                if own_norm:
+                    genre_own_names[own_norm] = genre_id
+            # Own names override alias collisions
+            alias_to_genre.update(genre_own_names)
             await db.commit()
 
             # Phase 2: Discover unique genre names from all media items,
-            # create genres/aliases, then bulk-insert mappings via SQL.
+            # create genres for unknown names, then bulk-insert mappings.
             media_tables = (
                 (DB_TABLE_TRACKS, MediaType.TRACK),
                 (DB_TABLE_ALBUMS, MediaType.ALBUM),
@@ -2383,7 +2355,7 @@ class MusicController(CoreController):
                 (DB_TABLE_PODCASTS, MediaType.PODCAST),
             )
 
-            # 2a: Extract all unique raw genre names from metadata via json_each
+            # 2a: Extract all unique raw genre names from metadata
             union_parts = [
                 f"SELECT DISTINCT TRIM(g.value) AS raw_name "
                 f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
@@ -2399,60 +2371,81 @@ class MusicController(CoreController):
                 "Genre migration - discovered %d unique genre names", len(unique_raw_names)
             )
 
-            # 2b: Create genre + alias for each unique name (Python, bounded count).
-            # Names that already exist as aliases from Phase 1 (e.g. "Classic Rock"
-            # is an alias of "Rock") must not create a duplicate genre — just reuse
-            # the existing alias for the media-item mapping in Phase 2c.
-            phase1_aliases = set(alias_cache.keys())
-            raw_name_to_alias_id: dict[str, int] = {}
-            ga_mappings: list[tuple[int, int]] = []
+            # 2b: Ensure genres exist for all discovered names.
+            # Names already covered by Phase 1 aliases just reuse that genre.
+            # New names get their own genre.
+            raw_name_to_genre: dict[str, int] = {}
             for raw_name in unique_raw_names:
-                alias_id = await _get_or_create_alias(raw_name)
-                if not alias_id:
+                norm = create_safe_string(raw_name.strip(), True, True)
+                if not norm:
                     continue
-                raw_name_to_alias_id[raw_name] = alias_id
-                search_name = create_safe_string(raw_name.strip(), True, True)
-                if search_name in phase1_aliases:
-                    continue
-                genre_id = await _get_or_create_genre(raw_name)
-                if genre_id:
-                    ga_mappings.append((genre_id, alias_id))
+                if norm in alias_to_genre:
+                    raw_name_to_genre[raw_name] = alias_to_genre[norm]
+                    self.logger.debug(
+                        "Genre migration - resolved %r -> genre_id %d (alias match)",
+                        raw_name,
+                        alias_to_genre[norm],
+                    )
+                else:
+                    genre_id = await _get_or_create_genre(raw_name)
+                    if genre_id:
+                        raw_name_to_genre[raw_name] = genre_id
+                        alias_to_genre[norm] = genre_id
+                        self.logger.debug(
+                            "Genre migration - resolved %r -> genre_id %d (new genre)",
+                            raw_name,
+                            genre_id,
+                        )
+            await db.commit()
+            self.logger.info(
+                "Genre migration - resolved %d unique genre names", len(raw_name_to_genre)
+            )
 
-            if ga_mappings:
-                ga_query = (
-                    f"INSERT OR IGNORE INTO {DB_TABLE_GENRE_ALIAS_MAPPING}"
-                    f"(genre_id, alias_id) VALUES (?, ?) -- {len(ga_mappings)} rows"
-                )
-                self.logger.info("Genre migration - genre-alias mappings query:\n%s", ga_query)
-                await db.executemany(
-                    f"INSERT OR IGNORE INTO {DB_TABLE_GENRE_ALIAS_MAPPING}"
-                    "(genre_id, alias_id) VALUES (?, ?)",
-                    ga_mappings,
-                )
+            # 2c: Add discovered raw names as aliases to their resolved genres
+            # so that frontend searches by raw name find the parent genre.
+            genre_new_aliases: dict[int, list[str]] = {}
+            for raw_name, gid in raw_name_to_genre.items():
+                genre_new_aliases.setdefault(gid, []).append(raw_name)
+            for gid, new_aliases in genre_new_aliases.items():
+                async with db.execute(
+                    f"SELECT genre_aliases FROM {DB_TABLE_GENRES} WHERE item_id = :gid",
+                    {"gid": gid},
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if not row:
+                    continue
+                existing = json_loads(row[0]) if row[0] else []
+                existing_lower = {a.lower() for a in existing}
+                to_add = [a for a in new_aliases if a.lower() not in existing_lower]
+                if to_add:
+                    merged = existing + to_add
+                    await db.execute(
+                        f"UPDATE {DB_TABLE_GENRES} SET genre_aliases = :aliases "
+                        "WHERE item_id = :gid",
+                        {"aliases": json_dumps(merged), "gid": gid},
+                    )
             await db.commit()
 
-            # 2c: Build CTE with (raw_name, alias_id) and do one INSERT per
-            # media type using json_each to explode metadata.genres, joining
-            # through the CTE to resolve alias IDs entirely DB-side.
-            if raw_name_to_alias_id:
+            # 2d: Build CTE with (raw_name, genre_id) and do one INSERT per
+            # media type using json_each to map media items directly to genres.
+            if raw_name_to_genre:
                 cte_values = ", ".join(
-                    f"('{name.replace(chr(39), chr(39) + chr(39))}', {aid})"
-                    for name, aid in raw_name_to_alias_id.items()
+                    f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
+                    for name, gid in raw_name_to_genre.items()
                 )
-                cte = f"WITH genre_lookup(raw_name, alias_id) AS (VALUES {cte_values})"
+                cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
                 for table, media_type in media_tables:
-                    insert_select = (
-                        f"SELECT '{media_type.value}', {table}.item_id, gl.alias_id "
+                    full_query = (
+                        f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
+                        f"(genre_id, media_id, media_type, alias) "
+                        f"SELECT gl.genre_id, {table}.item_id, "
+                        f"'{media_type.value}', TRIM(g.value) "
                         f"FROM {table}, "
                         f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
-                        f"JOIN genre_lookup gl ON gl.raw_name = TRIM(g.value) "
+                        f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
                         f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
                         f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-                    )
-                    full_query = (
-                        f"{cte} INSERT OR REPLACE INTO {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}"
-                        f"(media_type, media_id, alias_id) {insert_select}"
                     )
                     self.logger.info(
                         "Genre migration - %s query:\n%s", media_type.value, full_query
@@ -2802,6 +2795,7 @@ class MusicController(CoreController):
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
+            [genre_aliases] json NOT NULL DEFAULT '[]',
             [play_count] INTEGER NOT NULL DEFAULT 0,
             [last_played] INTEGER NOT NULL DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -2812,39 +2806,13 @@ class MusicController(CoreController):
         )
         await self.database.execute(
             f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_ALIASES}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER NOT NULL DEFAULT 0,
-            [last_played] INTEGER NOT NULL DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_ALIAS_MAPPING}(
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
             [genre_id] INTEGER NOT NULL,
-            [alias_id] INTEGER NOT NULL,
-            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
-            FOREIGN KEY([alias_id]) REFERENCES [aliases]([item_id]),
-            UNIQUE(genre_id, alias_id)
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}(
-            [media_type] TEXT NOT NULL,
             [media_id] INTEGER NOT NULL,
-            [alias_id] INTEGER NOT NULL,
-            FOREIGN KEY([alias_id]) REFERENCES [aliases]([item_id]),
-            UNIQUE(media_type, media_id, alias_id)
+            [media_type] TEXT NOT NULL,
+            [alias] TEXT NOT NULL,
+            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+            UNIQUE(genre_id, media_id, media_type)
             );"""
         )
         await self.database.execute(
@@ -2936,7 +2904,6 @@ class MusicController(CoreController):
             DB_TABLE_AUDIOBOOKS,
             DB_TABLE_PODCASTS,
             DB_TABLE_GENRES,
-            DB_TABLE_ALIASES,
         ):
             # index on favorite column
             await self.database.execute(
@@ -3035,22 +3002,14 @@ class MusicController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
             f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider,fragment);"
         )
-        # indexes on genre/alias mapping tables
+        # indexes on genre_media_item_mapping table
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_ALIAS_MAPPING}_genre_idx "
-            f"on {DB_TABLE_GENRE_ALIAS_MAPPING}(genre_id);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_type,media_id);"
         )
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_ALIAS_MAPPING}_alias_idx "
-            f"on {DB_TABLE_GENRE_ALIAS_MAPPING}(alias_id);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}_media_idx "
-            f"on {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}(media_type,media_id);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}_alias_idx "
-            f"on {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}(alias_id);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(genre_id,alias);"
         )
         # unique index on playlog table
         await self.database.execute(
@@ -3071,7 +3030,6 @@ class MusicController(CoreController):
             "audiobooks",
             "podcasts",
             "genres",
-            "aliases",
         ):
             await self.database.execute(
                 f"""

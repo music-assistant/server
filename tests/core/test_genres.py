@@ -1,4 +1,4 @@
-"""Integration tests for the GenreController (Groups B-J).
+"""Integration tests for the GenreController (V3 schema).
 
 Uses the ``mass`` fixture from ``tests/conftest.py`` which creates a full
 MusicAssistant instance with a real SQLite database in a temporary directory.
@@ -7,24 +7,22 @@ MusicAssistant instance with a real SQLite database in a temporary directory.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     Genre,
-    GenreAlias,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING,
-    DB_TABLE_ALIASES,
-    DB_TABLE_GENRE_ALIAS_MAPPING,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DEFAULT_GENRE_MAPPING,
 )
@@ -70,11 +68,6 @@ def _make_genre(name: str, favorite: bool = False) -> Genre:
     )
 
 
-def _make_alias(name: str) -> GenreAlias:
-    """Create a GenreAlias object."""
-    return GenreAlias(item_id="0", name=name)
-
-
 async def _add_test_artist(mass: MusicAssistant, name: str) -> Artist:
     """Add a minimal artist to the library."""
     artist = Artist(
@@ -116,24 +109,13 @@ class TestGenreCRUD:
     async def test_add_genre_creates_self_alias(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """DB has an alias matching the genre name with a mapping entry."""
+        """Genre has its own name in genre_aliases JSON column."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Blues"))
-        # Check alias exists in DB
-        rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIASES} WHERE name = :name",
-            {"name": "Blues"},
-            limit=1,
-        )
-        assert len(rows) == 1
-        alias_id = int(rows[0]["item_id"])
-        # Check genre-alias mapping exists
-        mapping_rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_GENRE_ALIAS_MAPPING} "
-            "WHERE genre_id = :genre_id AND alias_id = :alias_id",
-            {"genre_id": int(genre.item_id), "alias_id": alias_id},
-            limit=1,
-        )
-        assert len(mapping_rows) == 1
+        # Check genre_aliases JSON column directly
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": int(genre.item_id)})
+        assert row is not None
+        aliases = json.loads(row["genre_aliases"])
+        assert "Blues" in aliases
 
     async def test_add_genre_duplicate_updates(self, genre_ctrl: GenreController) -> None:
         """Adding the same genre with library id returns the same item_id (update, no duplicate)."""
@@ -154,8 +136,7 @@ class TestGenreCRUD:
         fetched = await genre_ctrl.get_library_item(int(created.item_id))
         assert fetched.name == "Funk"
         assert fetched.genre_aliases is not None
-        alias_names = {a.name for a in fetched.genre_aliases}
-        assert "Funk" in alias_names
+        assert "Funk" in fetched.genre_aliases
 
     async def test_get_library_item_not_found(self, genre_ctrl: GenreController) -> None:
         """Raises MediaNotFoundError for nonexistent id."""
@@ -184,8 +165,7 @@ class TestGenreCRUD:
         update = _make_genre("RenamedGenre")
         updated = await genre_ctrl.update_item_in_library(genre.item_id, update, overwrite=True)
         assert updated.genre_aliases is not None
-        alias_names = {a.name for a in updated.genre_aliases}
-        assert "RenamedGenre" in alias_names
+        assert "RenamedGenre" in updated.genre_aliases
 
     async def test_remove_genre(self, genre_ctrl: GenreController) -> None:
         """After remove, get_library_item raises MediaNotFoundError."""
@@ -197,12 +177,16 @@ class TestGenreCRUD:
     async def test_remove_cleans_mappings(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """After remove, genre_alias_mapping entries for that genre are gone."""
+        """After remove, genre_media_item_mapping entries for that genre are gone."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Dubstep"))
         genre_id = int(genre.item_id)
+        # Add a media mapping first
+        track = await _add_test_track(mass, "Dubstep Track")
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track.item_id, "Dubstep")
+        # Now remove the genre
         await genre_ctrl.remove_item_from_library(genre.item_id)
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_GENRE_ALIAS_MAPPING} WHERE genre_id = :genre_id",
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} WHERE genre_id = :genre_id",
             {"genre_id": genre_id},
             limit=0,
         )
@@ -240,189 +224,136 @@ class TestGenreCRUD:
 
 
 # ===================================================================
-# Group C: Alias CRUD (12 tests)
+# Group C: Alias Operations (8 tests)
 # ===================================================================
 
 
-class TestAliasCRUD:
-    """Tests for alias add, get, update, remove, and listing."""
+class TestAliasOperations:
+    """Tests for add_alias, remove_alias string operations on genres."""
 
     async def test_add_alias(self, genre_ctrl: GenreController) -> None:
-        """Returns GenreAlias with valid id and correct name."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Indie Rock"))
-        assert int(alias.item_id) > 0
-        assert alias.name == "Indie Rock"
+        """add_alias adds a string to genre_aliases."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Electronic"))
+        updated = await genre_ctrl.add_alias(genre.item_id, "EDM")
+        assert updated.genre_aliases is not None
+        assert "EDM" in updated.genre_aliases
+        assert "Electronic" in updated.genre_aliases
 
-    async def test_add_alias_duplicate_exact_raises(self, genre_ctrl: GenreController) -> None:
-        """Same name raises InvalidDataError."""
-        await genre_ctrl.add_alias_to_library(_make_alias("Dream Pop"))
-        with pytest.raises(InvalidDataError):
-            await genre_ctrl.add_alias_to_library(_make_alias("Dream Pop"))
+    async def test_add_alias_idempotent(self, genre_ctrl: GenreController) -> None:
+        """Adding the same alias twice doesn't duplicate."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("House"))
+        await genre_ctrl.add_alias(genre.item_id, "Deep House")
+        updated = await genre_ctrl.add_alias(genre.item_id, "Deep House")
+        assert updated.genre_aliases is not None
+        assert list(updated.genre_aliases).count("Deep House") == 1
 
-    async def test_add_alias_duplicate_normalized_raises(self, genre_ctrl: GenreController) -> None:
-        """Normalized-equivalent name raises InvalidDataError.
-
-        'SynthPop' and 'Synth Pop' both normalize to search_name 'synthpop'.
-        """
-        await genre_ctrl.add_alias_to_library(_make_alias("Synth Pop"))
-        with pytest.raises(InvalidDataError):
-            await genre_ctrl.add_alias_to_library(_make_alias("SynthPop"))
-
-    async def test_add_alias_overwrite_exact(self, genre_ctrl: GenreController) -> None:
-        """overwrite_existing=True updates an existing alias."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Shoegaze"))
-        updated = await genre_ctrl.add_alias_to_library(
-            _make_alias("Shoegaze"), overwrite_existing=True
-        )
-        assert updated.item_id == alias.item_id
-
-    async def test_add_alias_overwrite_normalized(self, genre_ctrl: GenreController) -> None:
-        """overwrite_existing=True updates normalized-matched alias."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Post Rock"))
-        updated = await genre_ctrl.add_alias_to_library(
-            _make_alias("PostRock"), overwrite_existing=True
-        )
-        assert updated.item_id == alias.item_id
-
-    async def test_get_alias(self, genre_ctrl: GenreController) -> None:
-        """Returns alias with genres populated when mapped."""
+    async def test_add_alias_multiple(self, genre_ctrl: GenreController) -> None:
+        """Multiple aliases can be added to a single genre."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Ambient"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Ambient Music"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-        fetched = await genre_ctrl.get_alias(int(alias.item_id))
-        assert fetched.name == "Ambient Music"
-        assert fetched.genres is not None
-
-    async def test_get_alias_not_found(self, genre_ctrl: GenreController) -> None:
-        """Raises MediaNotFoundError."""
-        with pytest.raises(MediaNotFoundError):
-            await genre_ctrl.get_alias(999999)
-
-    async def test_update_alias(self, genre_ctrl: GenreController) -> None:
-        """Name change reflected in returned alias."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("LoFi"))
-        updated = await genre_ctrl.update_alias_in_library(
-            alias.item_id, _make_alias("Lo-Fi Hip Hop")
-        )
-        assert updated.name == "Lo-Fi Hip Hop"
+        await genre_ctrl.add_alias(genre.item_id, "Ambient Music")
+        updated = await genre_ctrl.add_alias(genre.item_id, "Chill Ambient")
+        assert updated.genre_aliases is not None
+        assert "Ambient" in updated.genre_aliases
+        assert "Ambient Music" in updated.genre_aliases
+        assert "Chill Ambient" in updated.genre_aliases
 
     async def test_remove_alias(self, genre_ctrl: GenreController) -> None:
-        """After remove, get_alias raises MediaNotFoundError."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Vaporwave"))
-        await genre_ctrl.remove_alias_from_library(alias.item_id)
-        with pytest.raises(MediaNotFoundError):
-            await genre_ctrl.get_alias(int(alias.item_id))
+        """remove_alias removes a string from genre_aliases."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Techno"))
+        await genre_ctrl.add_alias(genre.item_id, "Detroit Techno")
+        updated = await genre_ctrl.remove_alias(genre.item_id, "Detroit Techno")
+        assert updated.genre_aliases is not None
+        assert "Detroit Techno" not in updated.genre_aliases
+        assert "Techno" in updated.genre_aliases
 
     async def test_remove_self_alias_raises(self, genre_ctrl: GenreController) -> None:
-        """Deleting self-alias raises ValueError with 'Cannot delete self-alias'."""
+        """Removing the genre's own name raises ValueError."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Soul"))
-        assert genre.genre_aliases is not None
-        self_alias = next(a for a in genre.genre_aliases if a.name == "Soul")
-        with pytest.raises(ValueError, match="Cannot delete self-alias"):
-            await genre_ctrl.remove_alias_from_library(self_alias.item_id)
+        with pytest.raises(ValueError, match="Cannot remove self-alias"):
+            await genre_ctrl.remove_alias(genre.item_id, "Soul")
 
-    async def test_alias_library_items(self, genre_ctrl: GenreController) -> None:
-        """Returns all aliases."""
-        await genre_ctrl.add_alias_to_library(_make_alias("Darkwave"))
-        await genre_ctrl.add_alias_to_library(_make_alias("Chillout"))
-        items = await genre_ctrl.alias_library_items()
-        names = {a.name for a in items}
-        assert {"Darkwave", "Chillout"}.issubset(names)
+    async def test_remove_alias_cleans_media_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Removing an alias also removes media mappings that used that alias."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Latin"))
+        await genre_ctrl.add_alias(genre.item_id, "Latin Pop")
+        track = await _add_test_track(mass, "Latin Track")
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "Latin Pop"
+        )
+        # Remove the alias
+        await genre_ctrl.remove_alias(genre.item_id, "Latin Pop")
+        # Check mapping is gone
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND alias = :alias",
+            {"gid": int(genre.item_id), "alias": "Latin Pop"},
+            limit=0,
+        )
+        assert len(rows) == 0
 
-    async def test_alias_library_items_search(self, genre_ctrl: GenreController) -> None:
-        """Search filters correctly."""
-        await genre_ctrl.add_alias_to_library(_make_alias("Darkambient"))
-        await genre_ctrl.add_alias_to_library(_make_alias("Brightnoise"))
-        items = await genre_ctrl.alias_library_items(search="darkambient")
-        assert all("darkambient" in a.name.lower() for a in items)
+    async def test_add_alias_not_found(self, genre_ctrl: GenreController) -> None:
+        """add_alias for nonexistent genre raises MediaNotFoundError."""
+        with pytest.raises(MediaNotFoundError):
+            await genre_ctrl.add_alias(999999, "NoGenre")
+
+    async def test_remove_alias_not_found(self, genre_ctrl: GenreController) -> None:
+        """remove_alias for nonexistent genre raises MediaNotFoundError."""
+        with pytest.raises(MediaNotFoundError):
+            await genre_ctrl.remove_alias(999999, "NoGenre")
 
 
 # ===================================================================
-# Group D: Mapping Operations (10 tests)
+# Group D: Media Mapping Operations (8 tests)
 # ===================================================================
 
 
-class TestMappingOperations:
-    """Tests for alias-genre and alias-media mappings."""
-
-    async def test_add_alias_mapping(self, genre_ctrl: GenreController) -> None:
-        """Genre's genre_aliases includes the mapped alias."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("Electronic"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("EDM"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-        updated = await genre_ctrl.get_library_item(int(genre.item_id))
-        assert updated.genre_aliases is not None
-        alias_names = {a.name for a in updated.genre_aliases}
-        assert "EDM" in alias_names
-
-    async def test_add_alias_mapping_idempotent(self, genre_ctrl: GenreController) -> None:
-        """Calling twice doesn't raise."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("House"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Deep House"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-
-    async def test_remove_alias_mapping(self, genre_ctrl: GenreController) -> None:
-        """Alias removed from genre's genre_aliases."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("Techno"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Detroit Techno"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-        await genre_ctrl.remove_alias_mapping(genre.item_id, alias.item_id)
-        updated = await genre_ctrl.get_library_item(int(genre.item_id))
-        if updated.genre_aliases:
-            alias_names = {a.name for a in updated.genre_aliases}
-            assert "Detroit Techno" not in alias_names
-
-    async def test_remove_self_alias_mapping_raises(self, genre_ctrl: GenreController) -> None:
-        """Raises ValueError when trying to unlink self-alias."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("Trance"))
-        assert genre.genre_aliases is not None
-        self_alias = next(a for a in genre.genre_aliases if a.name == "Trance")
-        with pytest.raises(ValueError, match="Cannot unlink self-alias"):
-            await genre_ctrl.remove_alias_mapping(genre.item_id, self_alias.item_id)
+class TestMediaMappingOperations:
+    """Tests for add_media_mapping and remove_media_mapping."""
 
     async def test_add_media_mapping_track(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Mapping exists in alias_media_item_mapping table."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Pop"))
-        track = await _add_test_track(mass, "Test Track")
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.TRACK, track.item_id)
+        """Mapping exists in genre_media_item_mapping table."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Pop"))
+        track = await _add_test_track(mass, "Pop Track")
+        await genre_ctrl.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id, "Pop")
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
-            "WHERE alias_id = :alias_id AND media_type = :mt AND media_id = :mid",
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = :mt AND media_id = :mid",
             {
-                "alias_id": int(alias.item_id),
+                "gid": int(genre.item_id),
                 "mt": MediaType.TRACK.value,
                 "mid": int(track.item_id),
             },
             limit=1,
         )
         assert len(rows) == 1
+        assert rows[0]["alias"] == "Pop"
 
-    async def test_add_media_mapping_genre_delegates(self, genre_ctrl: GenreController) -> None:
-        """media_type=GENRE delegates to add_alias_mapping."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("Latin"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Latin Pop"))
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.GENRE, genre.item_id)
-        updated = await genre_ctrl.get_library_item(int(genre.item_id))
-        assert updated.genre_aliases is not None
-        alias_names = {a.name for a in updated.genre_aliases}
-        assert "Latin Pop" in alias_names
+    async def test_add_media_mapping_idempotent(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Calling add_media_mapping twice doesn't raise (uses allow_replace)."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Grunge"))
+        track = await _add_test_track(mass, "Grunge Song")
+        await genre_ctrl.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id, "Grunge")
+        await genre_ctrl.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id, "Grunge")
 
     async def test_remove_media_mapping_track(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """Mapping removed from DB."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Disco"))
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Disco"))
         track = await _add_test_track(mass, "Disco Track")
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.TRACK, track.item_id)
-        await genre_ctrl.remove_media_mapping(alias.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id, "Disco")
+        await genre_ctrl.remove_media_mapping(genre.item_id, MediaType.TRACK, track.item_id)
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
-            "WHERE alias_id = :alias_id AND media_type = :mt AND media_id = :mid",
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = :mt AND media_id = :mid",
             {
-                "alias_id": int(alias.item_id),
+                "gid": int(genre.item_id),
                 "mt": MediaType.TRACK.value,
                 "mid": int(track.item_id),
             },
@@ -430,38 +361,86 @@ class TestMappingOperations:
         )
         assert len(rows) == 0
 
-    async def test_remove_media_mapping_genre_delegates(self, genre_ctrl: GenreController) -> None:
-        """media_type=GENRE delegates to remove_alias_mapping."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("Funk2"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("P-Funk"))
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.GENRE, genre.item_id)
-        await genre_ctrl.remove_media_mapping(alias.item_id, MediaType.GENRE, genre.item_id)
-        updated = await genre_ctrl.get_library_item(int(genre.item_id))
-        if updated.genre_aliases:
-            alias_names = {a.name for a in updated.genre_aliases}
-            assert "P-Funk" not in alias_names
-
-    async def test_add_media_mapping_idempotent(
+    async def test_add_media_mapping_artist(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Calling add_media_mapping twice doesn't raise."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Grunge"))
-        track = await _add_test_track(mass, "Grunge Song")
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.TRACK, track.item_id)
-        await genre_ctrl.add_media_mapping(alias.item_id, MediaType.TRACK, track.item_id)
+        """Artist mapping works correctly."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Funk2"))
+        artist = await _add_test_artist(mass, "Funk Artist")
+        await genre_ctrl.add_media_mapping(genre.item_id, MediaType.ARTIST, artist.item_id, "Funk2")
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = :mt AND media_id = :mid",
+            {
+                "gid": int(genre.item_id),
+                "mt": MediaType.ARTIST.value,
+                "mid": int(artist.item_id),
+            },
+            limit=1,
+        )
+        assert len(rows) == 1
 
-    async def test_add_alias_mapping_returns_updated_genre(
-        self, genre_ctrl: GenreController
+    async def test_mapping_preserves_alias_string(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """After add_alias_mapping, re-fetching genre shows the new alias."""
+        """The alias column records which alias caused the mapping."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Afrobeat"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Highlife"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
-        updated = await genre_ctrl.get_library_item(int(genre.item_id))
-        assert updated.genre_aliases is not None
-        alias_names = {a.name for a in updated.genre_aliases}
-        assert "Highlife" in alias_names
-        assert "Afrobeat" in alias_names
+        await genre_ctrl.add_alias(genre.item_id, "Highlife")
+        track = await _add_test_track(mass, "Afrobeat Track")
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "Highlife"
+        )
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT alias FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": int(genre.item_id), "mid": int(track.item_id)},
+            limit=1,
+        )
+        assert len(rows) == 1
+        assert rows[0]["alias"] == "Highlife"
+
+    async def test_multiple_genres_same_track(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A track can be mapped to multiple genres."""
+        genre1 = await genre_ctrl.add_item_to_library(_make_genre("Genre1"))
+        genre2 = await genre_ctrl.add_item_to_library(_make_genre("Genre2"))
+        track = await _add_test_track(mass, "Multi Genre Track")
+        await genre_ctrl.add_media_mapping(genre1.item_id, MediaType.TRACK, track.item_id, "Genre1")
+        await genre_ctrl.add_media_mapping(genre2.item_id, MediaType.TRACK, track.item_id, "Genre2")
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert len(rows) == 2
+
+    async def test_multiple_tracks_same_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Multiple tracks can be mapped to the same genre."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("SharedGenre"))
+        track1 = await _add_test_track(mass, "Shared Track 1")
+        track2 = await _add_test_track(mass, "Shared Track 2")
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track1.item_id, "SharedGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track2.item_id, "SharedGenre"
+        )
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = 'track'",
+            {"gid": int(genre.item_id)},
+            limit=0,
+        )
+        assert len(rows) == 2
+
+    async def test_remove_nonexistent_mapping(self, genre_ctrl: GenreController) -> None:
+        """Removing a mapping that doesn't exist doesn't raise."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("NoMapping"))
+        await genre_ctrl.remove_media_mapping(genre.item_id, MediaType.TRACK, 999999)
 
 
 # ===================================================================
@@ -472,13 +451,12 @@ class TestMappingOperations:
 class TestSyncMediaItemGenres:
     """Tests for sync_media_item_genres."""
 
-    async def test_sync_creates_genre_and_alias(
+    async def test_sync_creates_genre(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """New genre + alias created, mapping exists."""
+        """New genre created, mapping exists."""
         track = await _add_test_track(mass, "Sync Track 1")
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Psytrance"})
-        # Genre should exist
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT * FROM {DB_TABLE_GENRES} WHERE name = :name",
             {"name": "Psytrance"},
@@ -509,7 +487,7 @@ class TestSyncMediaItemGenres:
             MediaType.TRACK, track.item_id, {"SyncRock", "SyncJazz"}
         )
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'track'",
             {"mid": int(track.item_id)},
             limit=0,
@@ -524,7 +502,7 @@ class TestSyncMediaItemGenres:
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncA", "SyncB"})
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncA"})
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'track'",
             {"mid": int(track.item_id)},
             limit=0,
@@ -539,7 +517,7 @@ class TestSyncMediaItemGenres:
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncX"})
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'track'",
             {"mid": int(track.item_id)},
             limit=0,
@@ -552,7 +530,7 @@ class TestSyncMediaItemGenres:
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncIdem"})
         await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncIdem"})
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'track'",
             {"mid": int(track.item_id)},
             limit=0,
@@ -568,7 +546,7 @@ class TestSyncMediaItemGenres:
             MediaType.TRACK, track.item_id, {"SyncValid", "", "  "}
         )
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING} "
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'track'",
             {"mid": int(track.item_id)},
             limit=0,
@@ -593,44 +571,55 @@ class TestSyncMediaItemGenres:
 class TestPromoteAlias:
     """Tests for promote_alias_to_genre."""
 
-    async def test_promote_alias(self, genre_ctrl: GenreController) -> None:
-        """New genre created, alias re-mapped to new genre."""
+    async def test_promote_alias(self, mass: MusicAssistant, genre_ctrl: GenreController) -> None:
+        """New genre created, media mappings moved to new genre."""
         parent = await genre_ctrl.add_item_to_library(_make_genre("ParentGenre"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("SubGenre"))
-        await genre_ctrl.add_alias_mapping(parent.item_id, alias.item_id)
+        await genre_ctrl.add_alias(parent.item_id, "SubGenre")
+        # Add a media mapping via the alias
+        track = await _add_test_track(mass, "Promote Track")
+        await genre_ctrl.add_media_mapping(
+            parent.item_id, MediaType.TRACK, track.item_id, "SubGenre"
+        )
 
-        new_genre = await genre_ctrl.promote_alias_to_genre(alias.item_id)
+        new_genre = await genre_ctrl.promote_alias_to_genre(parent.item_id, "SubGenre")
         assert new_genre.name == "SubGenre"
         assert int(new_genre.item_id) != int(parent.item_id)
 
-    async def test_promote_creates_self_alias(self, genre_ctrl: GenreController) -> None:
-        """New genre has its own self-alias."""
-        parent = await genre_ctrl.add_item_to_library(_make_genre("PromParent"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("PromChild"))
-        await genre_ctrl.add_alias_mapping(parent.item_id, alias.item_id)
+        # Media mapping should have moved to new genre
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track' AND alias = 'SubGenre'",
+            {"mid": int(track.item_id)},
+            limit=1,
+        )
+        assert len(rows) == 1
+        assert int(rows[0]["genre_id"]) == int(new_genre.item_id)
 
-        new_genre = await genre_ctrl.promote_alias_to_genre(alias.item_id)
+    async def test_promote_creates_self_alias(self, genre_ctrl: GenreController) -> None:
+        """New genre has its own name as alias."""
+        parent = await genre_ctrl.add_item_to_library(_make_genre("PromParent"))
+        await genre_ctrl.add_alias(parent.item_id, "PromChild")
+
+        new_genre = await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromChild")
         assert new_genre.genre_aliases is not None
-        alias_names = {a.name for a in new_genre.genre_aliases}
-        assert "PromChild" in alias_names
+        assert "PromChild" in new_genre.genre_aliases
 
     async def test_promote_self_alias_raises(self, genre_ctrl: GenreController) -> None:
         """Raises ValueError for self-alias."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("PromSelf"))
-        assert genre.genre_aliases is not None
-        self_alias = next(a for a in genre.genre_aliases if a.name == "PromSelf")
         with pytest.raises(ValueError, match="Cannot promote self-alias"):
-            await genre_ctrl.promote_alias_to_genre(self_alias.item_id)
+            await genre_ctrl.promote_alias_to_genre(genre.item_id, "PromSelf")
 
-    async def test_promote_returns_complete_genre(self, genre_ctrl: GenreController) -> None:
-        """Returned genre has genre_aliases populated."""
+    async def test_promote_removes_alias_from_source(self, genre_ctrl: GenreController) -> None:
+        """Alias is removed from source genre after promotion."""
         parent = await genre_ctrl.add_item_to_library(_make_genre("PromComplete"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("PromAlias"))
-        await genre_ctrl.add_alias_mapping(parent.item_id, alias.item_id)
+        await genre_ctrl.add_alias(parent.item_id, "PromAlias")
 
-        new_genre = await genre_ctrl.promote_alias_to_genre(alias.item_id)
-        assert new_genre.genre_aliases is not None
-        assert len(new_genre.genre_aliases) >= 1
+        await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromAlias")
+        updated_parent = await genre_ctrl.get_library_item(int(parent.item_id))
+        assert updated_parent.genre_aliases is not None
+        assert "PromAlias" not in updated_parent.genre_aliases
+        assert "PromComplete" in updated_parent.genre_aliases
 
 
 # ===================================================================
@@ -645,11 +634,9 @@ class TestRestoreDefaultGenres:
         """Creates genres from DEFAULT_GENRE_MAPPING with self-aliases."""
         created = await genre_ctrl.restore_default_genres(full_restore=False)
         assert len(created) > 0
-        # Check self-aliases
         for genre in created[:3]:
             assert genre.genre_aliases is not None
-            alias_names = {a.name for a in genre.genre_aliases}
-            assert genre.name in alias_names
+            assert genre.name in genre.genre_aliases
 
     async def test_restore_partial_idempotent(self, genre_ctrl: GenreController) -> None:
         """Second call returns empty list (no duplicates)."""
@@ -661,14 +648,11 @@ class TestRestoreDefaultGenres:
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """Pre-existing genres not duplicated, missing ones added."""
-        # Add one genre that's in the defaults
         first_default = DEFAULT_GENRE_MAPPING[0]["genre"]
         await genre_ctrl.add_item_to_library(_make_genre(first_default))
-        # Count before
         before = await genre_ctrl.library_count()
         created = await genre_ctrl.restore_default_genres(full_restore=False)
         after = await genre_ctrl.library_count()
-        # Only missing genres should have been created
         assert len(created) == after - before
 
     async def test_restore_full_clears_all(self, genre_ctrl: GenreController) -> None:
@@ -683,7 +667,6 @@ class TestRestoreDefaultGenres:
     async def test_restore_creates_configured_aliases(self, genre_ctrl: GenreController) -> None:
         """Genres have aliases from genre_mapping.json."""
         await genre_ctrl.restore_default_genres(full_restore=True)
-        # Find a default genre that has configured aliases
         entries_with_aliases = [e for e in DEFAULT_GENRE_MAPPING if e.get("aliases")]
         if not entries_with_aliases:
             pytest.skip("No default genres with aliases configured")
@@ -692,9 +675,11 @@ class TestRestoreDefaultGenres:
         assert len(items) > 0
         genre = items[0]
         assert genre.genre_aliases is not None
-        alias_names = {a.name for a in genre.genre_aliases}
-        # At minimum the self-alias should be there
-        assert entry["genre"] in alias_names
+        # Self-alias should be present
+        assert entry["genre"] in genre.genre_aliases
+        # Configured aliases should be present
+        for alias in entry["aliases"]:
+            assert alias in genre.genre_aliases
 
 
 # ===================================================================
@@ -717,10 +702,9 @@ class TestQueryMethods:
         """Mapped tracks are returned."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("RadioGenre"))
         track = await _add_test_track(mass, "Radio Track")
-        # Map via sync
-        assert genre.genre_aliases is not None
-        self_alias = next(a for a in genre.genre_aliases if a.name == "RadioGenre")
-        await genre_ctrl.add_media_mapping(self_alias.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "RadioGenre"
+        )
         tracks = await genre_ctrl.radio_mode_base_tracks(genre)
         assert len(tracks) >= 1
         assert any(t.name == "Radio Track" for t in tracks)
@@ -758,9 +742,9 @@ class TestQueryMethods:
         """Returns RecommendationFolder items when mappings exist."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("OverviewGenre"))
         track = await _add_test_track(mass, "Overview Track")
-        assert genre.genre_aliases is not None
-        self_alias = next(a for a in genre.genre_aliases if a.name == "OverviewGenre")
-        await genre_ctrl.add_media_mapping(self_alias.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "OverviewGenre"
+        )
         folders = await genre_ctrl.get_overview(genre.item_id)
         assert len(folders) >= 1
         assert folders[0].name == "Tracks"
@@ -773,42 +757,38 @@ class TestQueryMethods:
 
 
 # ===================================================================
-# Group I: Fuzzy Matching & Scanner (6 tests)
+# Group I: Genre Lookup & Scanner (5 tests)
 # ===================================================================
 
 
-class TestFuzzyMatchingAndScanner:
-    """Tests for alias/genre name lookup and scanner status."""
+class TestGenreLookupAndScanner:
+    """Tests for genre/alias lookup and scanner status."""
 
-    async def test_alias_id_by_name_exact(self, genre_ctrl: GenreController) -> None:
-        """Exact search_name match returns ID."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Breakbeat"))
-        found = await genre_ctrl._get_alias_id_by_name("Breakbeat")
-        assert found == int(alias.item_id)
-
-    async def test_alias_id_by_name_normalized(self, genre_ctrl: GenreController) -> None:
-        """Normalized search_name match finds equivalent name ('trip-hop' -> 'triphop')."""
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Trip Hop"))
-        found = await genre_ctrl._get_alias_id_by_name("trip-hop")
-        assert found == int(alias.item_id)
-
-    async def test_genre_id_by_name_exact(self, genre_ctrl: GenreController) -> None:
-        """Exact match returns ID."""
+    async def test_ensure_genre_for_alias_existing(self, genre_ctrl: GenreController) -> None:
+        """Finds existing genre by name."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Garage"))
-        found = await genre_ctrl._get_genre_id_by_name("Garage")
+        found = await genre_ctrl._ensure_genre_for_alias("Garage")
         assert found == int(genre.item_id)
 
-    async def test_genre_id_by_name_not_found(self, genre_ctrl: GenreController) -> None:
-        """Returns None for nonexistent name."""
-        found = await genre_ctrl._get_genre_id_by_name("NonexistentGenre12345")
-        assert found is None
+    async def test_ensure_genre_for_alias_by_alias(self, genre_ctrl: GenreController) -> None:
+        """Finds existing genre by alias string in genre_aliases JSON."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Breakbeat"))
+        await genre_ctrl.add_alias(genre.item_id, "Big Beat")
+        found = await genre_ctrl._ensure_genre_for_alias("Big Beat")
+        assert found == int(genre.item_id)
+
+    async def test_ensure_genre_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
+        """Creates new genre when no match found."""
+        new_id = await genre_ctrl._ensure_genre_for_alias("BrandNewGenre12345")
+        assert new_id is not None
+        genre = await genre_ctrl.get_library_item(new_id)
+        assert genre.name == "BrandNewGenre12345"
 
     async def test_scanner_status(self, genre_ctrl: GenreController) -> None:
         """Returns dict with expected keys."""
         status = await genre_ctrl.get_scanner_status()
         assert "running" in status
         assert "last_scan_time" in status
-        assert "batch_size" in status
 
     async def test_scan_mappings_trigger(self, genre_ctrl: GenreController) -> None:
         """Returns 'triggered' status."""
@@ -822,21 +802,19 @@ class TestFuzzyMatchingAndScanner:
 
 
 class TestBaseClassIntegration:
-    """Tests for base class query patterns (JSON_GROUP_ARRAY, pagination, favorites)."""
+    """Tests for base class query patterns (genre_aliases column, pagination, favorites)."""
 
     async def test_genre_aliases_inline(self, genre_ctrl: GenreController) -> None:
-        """base_query JSON_GROUP_ARRAY populates genre_aliases on fetched Genre."""
+        """genre_aliases column populates genre_aliases on fetched Genre."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("InlineTest"))
-        alias = await genre_ctrl.add_alias_to_library(_make_alias("Inline Alias"))
-        await genre_ctrl.add_alias_mapping(genre.item_id, alias.item_id)
+        await genre_ctrl.add_alias(genre.item_id, "Inline Alias")
         # Fetch via library_items (uses base_query)
         items = await genre_ctrl.library_items(search="InlineTest")
         assert len(items) >= 1
         fetched = items[0]
         assert fetched.genre_aliases is not None
-        alias_names = {a.name for a in fetched.genre_aliases}
-        assert "InlineTest" in alias_names
-        assert "Inline Alias" in alias_names
+        assert "InlineTest" in fetched.genre_aliases
+        assert "Inline Alias" in fetched.genre_aliases
 
     async def test_pagination(self, genre_ctrl: GenreController) -> None:
         """limit/offset work correctly."""
@@ -846,7 +824,6 @@ class TestBaseClassIntegration:
         page2 = await genre_ctrl.library_items(limit=2, offset=2, order_by="name")
         assert len(page1) == 2
         assert len(page2) == 2
-        # No overlap between pages
         ids1 = {g.item_id for g in page1}
         ids2 = {g.item_id for g in page2}
         assert ids1.isdisjoint(ids2)
