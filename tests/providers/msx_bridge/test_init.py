@@ -53,7 +53,7 @@ async def test_get_config_entries(mass_mock: Mock) -> None:
     grouping_entry = next((e for e in entries if e.key == CONF_ENABLE_GROUPING), None)
     assert grouping_entry is not None
     assert grouping_entry.type == ConfigEntryType.BOOLEAN
-    assert grouping_entry.default_value is True
+    assert grouping_entry.default_value is False
 
 
 async def test_setup_without_sync_players(
