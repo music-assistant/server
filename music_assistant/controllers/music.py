@@ -98,7 +98,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 26
+DB_SCHEMA_VERSION: Final[int] = 27
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -898,6 +898,10 @@ class MusicController(CoreController):
             )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
+            # we optimistically set in library to True to prevent items
+            # from disappearing when the provider doesn't support library edit
+            # or 2-way sync is disabled.
+            prov_mapping.in_library = True
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
@@ -906,7 +910,6 @@ class MusicController(CoreController):
             prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
-            prov_mapping.in_library = True
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
@@ -937,6 +940,12 @@ class MusicController(CoreController):
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
         library_id = media_item.item_id if media_item.provider == "library" else None
+
+        # cache in_library state before the provider fetch overwrites media_item
+        in_library_cache: dict[tuple[str, str], bool] = {}
+        for m in media_item.provider_mappings:
+            if m.in_library is not None:
+                in_library_cache[(m.provider_instance, m.item_id)] = m.in_library
 
         available_providers = get_global_cache_value("available_providers")
         if TYPE_CHECKING:
@@ -990,6 +999,11 @@ class MusicController(CoreController):
         # update library item if needed (including refresh of the metadata etc.)
         if library_id is None:
             return media_item
+        # restore in_library state from before the refresh
+        for prov_mapping in media_item.provider_mappings:
+            key = (prov_mapping.provider_instance, prov_mapping.item_id)
+            if prov_mapping.in_library is None and key in in_library_cache:
+                prov_mapping.in_library = in_library_cache[key]
         library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
@@ -2229,6 +2243,22 @@ class MusicController(CoreController):
                 "WHERE media_type = 'playlist' AND in_library = 0;"
             )
 
+        if prev_version <= 27:
+            # set streaming provider mappings to in_library=True, but only for items
+            # that do not already have any mapping with in_library=True
+            # (to avoid overwriting explicit values in multi-instance setups)
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain NOT IN "
+                "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
+                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
+                "AND NOT EXISTS ("
+                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
+                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
+                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
+                "AND pm2.in_library = 1)"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2638,7 +2668,9 @@ class MusicController(CoreController):
             self.audiobooks,
             self.podcasts,
         ):
-            async for db_item in ctrl.iter_library_items(provider=list(multi_instance_providers)):
+            async for db_item in ctrl.iter_library_items(
+                provider=list(multi_instance_providers), library_items_only=False
+            ):
                 if self.match_provider_instances(db_item):
                     await ctrl.update_item_in_library(db_item.item_id, db_item)
                 # prevent overwhelming the event loop

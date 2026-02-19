@@ -723,6 +723,19 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     category="sync_options",
 )
 
+CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
+    key="library_sync_deletions",
+    type=ConfigEntryType.BOOLEAN,
+    label="Sync library deletions",
+    description="When enabled, items removed from the provider's library will also be "
+    "hidden from the Music Assistant library.\n\n"
+    "When disabled, items removed from the provider will remain visible in the "
+    "Music Assistant library.",
+    default_value=True,
+    category="sync_options",
+    advanced=True,
+)
+
 
 CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
     ConfigValueOption("Disable automatic sync for this mediatype", 0),
