@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import dataclasses
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
@@ -35,6 +36,13 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+
+# Compatibility shim: advanced= was added in models >=1.1.87; stable uses 1.1.86
+_ADVANCED: Any = (
+    {"advanced": True}
+    if any(f.name == "advanced" for f in dataclasses.fields(ConfigEntry))
+    else {"category": "advanced"}
+)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -127,7 +135,7 @@ async def get_config_entries(
                 ConfigValueOption("Preload (full download first)", STREAMING_MODE_PRELOAD),
             ],
             default_value=STREAMING_MODE_BUFFERED,
-            advanced=True,
+            **_ADVANCED,
         ),
         ConfigEntry(
             key=CONF_PRELOAD_BUFFER_MB,
@@ -140,7 +148,7 @@ async def get_config_entries(
             "Default: 100 MB (typical FLAC track is 30-50 MB).",
             range=(10, 500),
             default_value=100,
-            advanced=True,
+            **_ADVANCED,
             depends_on=CONF_STREAMING_MODE,
             depends_on_value=STREAMING_MODE_PRELOAD,
         ),
@@ -155,7 +163,7 @@ async def get_config_entries(
             "Default: 8 MB (~45 seconds of FLAC audio).",
             range=(1, 64),
             default_value=8,
-            advanced=True,
+            **_ADVANCED,
             depends_on=CONF_STREAMING_MODE,
             depends_on_value_not=STREAMING_MODE_DIRECT,
         ),
@@ -169,7 +177,7 @@ async def get_config_entries(
             range=(10, 1000),
             default_value=150,
             required=False,
-            advanced=True,
+            **_ADVANCED,
         ),
         # Liked Tracks maximum tracks (advanced)
         ConfigEntry(
@@ -181,7 +189,7 @@ async def get_config_entries(
             range=(50, 5000),
             default_value=500,
             required=False,
-            advanced=True,
+            **_ADVANCED,
         ),
         # API Base URL (advanced)
         ConfigEntry(
@@ -193,6 +201,6 @@ async def get_config_entries(
             "Default: https://api.music.yandex.net",
             default_value=DEFAULT_BASE_URL,
             required=False,
-            advanced=True,
+            **_ADVANCED,
         ),
     )
