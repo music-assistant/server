@@ -2392,10 +2392,12 @@ class MusicController(CoreController):
                 for table, _ in media_tables
             ]
             unique_names_sql = " UNION ".join(union_parts)
-            print(f"Genre migration - unique names query:\n{unique_names_sql}\n")  # noqa: T201
+            self.logger.info("Genre migration - unique names query:\n%s", unique_names_sql)
             async with db.execute(unique_names_sql) as cursor:
                 unique_raw_names = [row[0] for row in await cursor.fetchall() if row[0]]
-            print(f"Genre migration - discovered {len(unique_raw_names)} unique genre names")  # noqa: T201
+            self.logger.info(
+                "Genre migration - discovered %d unique genre names", len(unique_raw_names)
+            )
 
             # 2b: Create genre + alias for each unique name (Python, bounded count).
             # Names that already exist as aliases from Phase 1 (e.g. "Classic Rock"
@@ -2421,7 +2423,7 @@ class MusicController(CoreController):
                     f"INSERT OR IGNORE INTO {DB_TABLE_GENRE_ALIAS_MAPPING}"
                     f"(genre_id, alias_id) VALUES (?, ?) -- {len(ga_mappings)} rows"
                 )
-                print(f"Genre migration - genre-alias mappings query:\n{ga_query}\n")  # noqa: T201
+                self.logger.info("Genre migration - genre-alias mappings query:\n%s", ga_query)
                 await db.executemany(
                     f"INSERT OR IGNORE INTO {DB_TABLE_GENRE_ALIAS_MAPPING}"
                     "(genre_id, alias_id) VALUES (?, ?)",
@@ -2452,7 +2454,9 @@ class MusicController(CoreController):
                         f"{cte} INSERT OR REPLACE INTO {DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING}"
                         f"(media_type, media_id, alias_id) {insert_select}"
                     )
-                    print(f"Genre migration - {media_type.value} query:\n{full_query}\n")  # noqa: T201
+                    self.logger.info(
+                        "Genre migration - %s query:\n%s", media_type.value, full_query
+                    )
                     await db.execute(full_query)
                     await db.commit()
 
