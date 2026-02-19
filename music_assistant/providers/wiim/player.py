@@ -67,7 +67,7 @@ class WiimPlayer(Player):
             device_info = await client.get_device_info_model()
 
             if device_info.uuid is None or device_info.name is None:
-                raise RuntimeError("WiiM player at {ip_address} doesn't have a uuid or name")
+                raise RuntimeError(f"WiiM player at {ip_address} doesn't have a uuid or name")
 
             if not provider.mass.config.get_raw_player_config_value(
                 device_info.uuid, "enabled", True
