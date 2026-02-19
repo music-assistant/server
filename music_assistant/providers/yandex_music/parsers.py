@@ -24,7 +24,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .constants import IMAGE_SIZE_LARGE
+from .constants import (
+    IMAGE_SIZE_LARGE,
+    PROVIDER_DISPLAY_NAME_EN,
+    PROVIDER_DISPLAY_NAME_RU,
+    YANDEX_SYSTEM_OWNER_NAMES,
+)
 
 if TYPE_CHECKING:
     from yandex_music import Album as YandexAlbum
@@ -33,6 +38,19 @@ if TYPE_CHECKING:
     from yandex_music import Track as YandexTrack
 
     from .provider import YandexMusicProvider
+
+
+def get_canonical_provider_name(provider: YandexMusicProvider) -> str:
+    """Return the locale-aware canonical display name for the Yandex Music system account.
+
+    :param provider: The Yandex Music provider instance.
+    :return: Localized provider display name.
+    """
+    with suppress(Exception):
+        locale = (provider.mass.metadata.locale or "en_US").lower()
+        if locale.startswith("ru"):
+            return PROVIDER_DISPLAY_NAME_RU
+    return PROVIDER_DISPLAY_NAME_EN
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
@@ -311,7 +329,11 @@ def parse_playlist(
         elif is_editable:
             owner_name = "Me"
         else:
-            owner_name = "Yandex Music"
+            owner_name = get_canonical_provider_name(provider)
+
+    # Normalize all known system account name variants to locale-aware canonical form
+    if owner_name and owner_name.lower() in YANDEX_SYSTEM_OWNER_NAMES:
+        owner_name = get_canonical_provider_name(provider)
 
     playlist = Playlist(
         item_id=playlist_id,

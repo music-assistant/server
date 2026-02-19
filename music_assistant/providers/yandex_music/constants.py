@@ -56,6 +56,21 @@ IMAGE_SIZE_SMALL = "200x200"
 IMAGE_SIZE_MEDIUM = "400x400"
 IMAGE_SIZE_LARGE = "1000x1000"
 
+# Locale-aware provider display names for owner normalization
+PROVIDER_DISPLAY_NAME_RU: Final[str] = "Яндекс Музыка"
+PROVIDER_DISPLAY_NAME_EN: Final[str] = "Yandex Music"
+
+# Known API-returned system owner name variants (all locales/capitalizations)
+YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "яндекс музыка",
+        "яндекс.музыка",
+        "yandex.music",
+        "yandexmusic",
+        "yandex music",
+    }
+)
+
 # ID separators
 PLAYLIST_ID_SPLITTER: Final[str] = ":"
 

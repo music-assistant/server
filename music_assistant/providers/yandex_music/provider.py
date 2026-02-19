@@ -61,7 +61,13 @@ from .constants import (
     TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
 )
-from .parsers import parse_album, parse_artist, parse_playlist, parse_track
+from .parsers import (
+    get_canonical_provider_name,
+    parse_album,
+    parse_artist,
+    parse_playlist,
+    parse_track,
+)
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
@@ -829,7 +835,7 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
                 name=names[MY_WAVE_PLAYLIST_ID],
-                owner="Yandex Music",
+                owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
                         item_id=MY_WAVE_PLAYLIST_ID,
@@ -847,7 +853,7 @@ class YandexMusicProvider(MusicProvider):
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
                 name=names[LIKED_TRACKS_PLAYLIST_ID],
-                owner="Yandex Music",
+                owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
                         item_id=LIKED_TRACKS_PLAYLIST_ID,
