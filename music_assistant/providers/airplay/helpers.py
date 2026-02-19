@@ -137,7 +137,7 @@ def is_apple_device(manufacturer: str) -> bool:
     and should be exposed as PlayerType.PLAYER. Non-Apple devices with AirPlay
     support should be exposed as PlayerType.PROTOCOL.
     """
-    return manufacturer.lower() == "apple"
+    return manufacturer.lower().startswith("apple")
 
 
 async def get_cli_binary(protocol: StreamingProtocol) -> str:

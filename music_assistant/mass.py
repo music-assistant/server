@@ -207,7 +207,7 @@ class MusicAssistant:
         self.signal_event(EventType.SHUTDOWN)
         self.closing = True
         # cancel all running tasks
-        for task in self._tracked_tasks.values():
+        for task in list(self._tracked_tasks.values()):
             task.cancel()
         # cleanup all providers
         await asyncio.gather(
@@ -282,9 +282,13 @@ class MusicAssistant:
         return list(self._provider_manifests.values())
 
     @api_command("providers/manifests/get")
-    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+    def get_provider_manifest(self, instance_id_or_domain: str) -> ProviderManifest:
         """Return Provider manifests of single provider(domain)."""
-        return self._provider_manifests[domain]
+        if instance_id_or_domain in self._provider_manifests:
+            return self._provider_manifests[instance_id_or_domain]
+        if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
+            return provider.manifest
+        raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
     @api_command("providers")
     def get_providers(
@@ -302,7 +306,7 @@ class MusicAssistant:
         )
         return [
             x
-            for x in self._providers.values()
+            for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
             # apply user provider filter
             and (
@@ -366,7 +370,7 @@ class MusicAssistant:
                 return None
             provider_instance_or_domain = prov.domain
         # fallback to match on domain
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if prov.domain != provider_instance_or_domain:
                 continue
             if return_unavailable or prov.available:
@@ -386,7 +390,7 @@ class MusicAssistant:
         """
         return [
             prov
-            for prov in self._providers.values()
+            for prov in list(self._providers.values())
             if (provider_type is None or provider_type == prov.type)
             and prov.domain == domain
             and (return_unavailable or prov.available)
@@ -409,7 +413,7 @@ class MusicAssistant:
             LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
-        for cb_func, event_filter, id_filter in self._subscribers:
+        for cb_func, event_filter, id_filter in list(self._subscribers):
             if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
@@ -454,11 +458,21 @@ class MusicAssistant:
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,
+        eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
+
+        :param target: Coroutine function or awaitable to run as a task.
+        :param args: Arguments to pass to the coroutine function.
+        :param task_id: Optional ID to track and deduplicate tasks.
+        :param abort_existing: If True, cancel existing task with same task_id.
+        :param eager_start: If True (default), start task immediately without waiting
+                           for next event loop iteration. This ensures proper ordering
+                           when creating multiple tasks in sequence.
+        :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
@@ -470,14 +484,17 @@ class MusicAssistant:
 
         if inspect.iscoroutinefunction(target):
             # coroutine function
-            task = self.loop.create_task(target(*args, **kwargs))
+            coro = target(*args, **kwargs)
         elif inspect.iscoroutine(target):
             # coroutine
-            task = self.loop.create_task(target)
+            coro = target
         elif callable(target):
             raise RuntimeError("Function is not a coroutine or coroutine function")
         else:
             raise RuntimeError("Target is missing")
+
+        # Use asyncio.Task directly with eager_start for immediate execution
+        task: asyncio.Task[_R] = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
 
         if task_id is None:
             task_id = uuid4().hex
@@ -1037,7 +1054,7 @@ class MusicAssistant:
             service_type,
             state_change,
         )
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if not prov.manifest.mdns_discovery:
                 continue
             if not prov.available:

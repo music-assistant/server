@@ -41,25 +41,25 @@ def _load_json(path: pathlib.Path) -> dict[str, Any]:
 
 
 def _artist_from_fixture(path: pathlib.Path) -> YandexArtist | None:
-    """Deserialize Artist from fixture JSON."""
+    """Deserialize KION Artist from fixture JSON."""
     data = _load_json(path)
     return YandexArtist.de_json(data, DE_JSON_CLIENT)
 
 
 def _album_from_fixture(path: pathlib.Path) -> YandexAlbum | None:
-    """Deserialize Album from fixture JSON."""
+    """Deserialize KION Album from fixture JSON."""
     data = _load_json(path)
     return YandexAlbum.de_json(data, DE_JSON_CLIENT)
 
 
 def _track_from_fixture(path: pathlib.Path) -> YandexTrack | None:
-    """Deserialize Track from fixture JSON."""
+    """Deserialize KION Track from fixture JSON."""
     data = _load_json(path)
     return YandexTrack.de_json(data, DE_JSON_CLIENT)
 
 
 def _playlist_from_fixture(path: pathlib.Path) -> YandexPlaylist | None:
-    """Deserialize Playlist from fixture JSON."""
+    """Deserialize KION Playlist from fixture JSON."""
     data = _load_json(path)
     return YandexPlaylist.de_json(data, DE_JSON_CLIENT)
 

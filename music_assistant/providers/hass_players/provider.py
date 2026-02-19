@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.enums import ProviderFeature
+
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -42,7 +44,8 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         hass_prov: HomeAssistantProvider,
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        supported_features = {ProviderFeature.REMOVE_PLAYER}
+        super().__init__(mass, manifest, config, supported_features=supported_features)
         self.hass_prov = hass_prov
 
     async def loaded_in_mass(self) -> None:
@@ -63,6 +66,12 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         self.on_unload_callbacks = [
             await self.hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
         ]
+        # cleanup any players that are no longer in the config
+        for player_conf in await self.mass.config.get_player_configs(
+            provider=self.instance_id, include_unavailable=True, include_disabled=True
+        ):
+            if player_conf.player_id not in player_ids:
+                await self.mass.players.remove(player_conf.player_id)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -74,6 +83,16 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         if self.on_unload_callbacks:
             for callback in self.on_unload_callbacks:
                 callback()
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a player."""
+        player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
+        if player_id in player_ids:
+            player_ids.remove(player_id)
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, CONF_PLAYERS, player_ids
+            )
+        await self.mass.players.unregister(player_id, True)
 
     async def _setup_player(
         self,

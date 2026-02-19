@@ -289,6 +289,54 @@ class TestFindMatchingProtocolPlayers:
         assert airplay_player in matches
         assert chromecast_player in matches
 
+    def test_same_protocol_not_matched(self, mock_mass: MagicMock) -> None:
+        """Test that multiple players of same protocol on same host are NOT matched together."""
+        controller = PlayerController(mock_mass)
+
+        # Set up provider
+        snapcast_provider = MockProvider("snapcast")
+
+        # Create multiple Snapcast players on same host (same MAC/IP)
+        # This simulates multiple Snapcast clients running on the same server
+        snapcast_player_1 = MockPlayer(
+            snapcast_provider,
+            "snapcast_client_1",
+            "Snapcast Client 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                IdentifierType.IP_ADDRESS: "192.168.1.100",
+            },
+        )
+        snapcast_player_2 = MockPlayer(
+            snapcast_provider,
+            "snapcast_client_2",
+            "Snapcast Client 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                IdentifierType.IP_ADDRESS: "192.168.1.100",
+            },
+        )
+
+        # Register players
+        controller._players = {
+            "snapcast_client_1": snapcast_player_1,
+            "snapcast_client_2": snapcast_player_2,
+        }
+        controller._player_throttlers = {
+            "snapcast_client_1": Throttler(1, 0.05),
+            "snapcast_client_2": Throttler(1, 0.05),
+        }
+
+        # Find matching players for first Snapcast player
+        matches = controller._find_matching_protocol_players(snapcast_player_1)
+
+        # Should only match itself, NOT the other Snapcast player (same protocol domain)
+        assert len(matches) == 1
+        assert snapcast_player_1 in matches
+        assert snapcast_player_2 not in matches
+
 
 class TestGetDeviceKeyFromPlayers:
     """Tests for device key generation."""

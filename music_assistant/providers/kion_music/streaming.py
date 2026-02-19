@@ -9,7 +9,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CONF_QUALITY, QUALITY_LOSSLESS
+from .constants import CONF_QUALITY, QUALITY_LOSSLESS, RADIO_TRACK_ID_SEP
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -30,14 +30,20 @@ class KionMusicStreamingManager:
         self.mass = provider.mass
         self.logger = provider.logger
 
+    def _track_id_from_item_id(self, item_id: str) -> str:
+        """Extract API track ID from item_id (may be track_id@station_id for My Mix)."""
+        if RADIO_TRACK_ID_SEP in item_id:
+            return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+        return item_id
+
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get stream details for a track.
 
-        :param item_id: Track ID.
-        :return: StreamDetails for the track.
+        :param item_id: Track ID or composite track_id@station_id for My Mix.
+        :return: StreamDetails for the track (item_id preserved for on_streamed).
         :raises MediaNotFoundError: If stream URL cannot be obtained.
         """
-        # Get track info first
+        track_id = self._track_id_from_item_id(item_id)
         track = await self.provider.get_track(item_id)
         if not track:
             raise MediaNotFoundError(f"Track {item_id} not found")
@@ -51,8 +57,8 @@ class KionMusicStreamingManager:
 
         # When user wants lossless, try get-file-info first (FLAC; download-info often MP3 only)
         if want_lossless:
-            self.logger.debug("Requesting lossless via get-file-info for track %s", item_id)
-            file_info = await self.client.get_track_file_info_lossless(item_id)
+            self.logger.debug("Requesting lossless via get-file-info for track %s", track_id)
+            file_info = await self.client.get_track_file_info_lossless(track_id)
             if file_info:
                 url = file_info.get("url")
                 codec = file_info.get("codec") or ""
@@ -78,7 +84,7 @@ class KionMusicStreamingManager:
                     )
 
         # Default: use /tracks/.../download-info and select best quality
-        download_infos = await self.client.get_track_download_info(item_id, get_direct_links=True)
+        download_infos = await self.client.get_track_download_info(track_id, get_direct_links=True)
         if not download_infos:
             raise MediaNotFoundError(f"No stream info available for track {item_id}")
 
@@ -87,7 +93,7 @@ class KionMusicStreamingManager:
         ]
         self.logger.debug(
             "Stream quality for track %s: config quality=%s, available codecs=%s",
-            item_id,
+            track_id,
             quality_str,
             codecs_available,
         )
@@ -98,7 +104,7 @@ class KionMusicStreamingManager:
 
         self.logger.debug(
             "Stream selected for track %s: codec=%s, bitrate=%s",
-            item_id,
+            track_id,
             getattr(selected_info, "codec", None),
             getattr(selected_info, "bitrate_in_kbps", None),
         )
@@ -162,7 +168,7 @@ class KionMusicStreamingManager:
     def _get_content_type(self, codec: str | None) -> ContentType:
         """Determine content type from codec string.
 
-        :param codec: Codec string from API.
+        :param codec: Codec string from KION API.
         :return: ContentType enum value.
         """
         if not codec:
@@ -173,7 +179,7 @@ class KionMusicStreamingManager:
             return ContentType.FLAC
         if codec_lower in ("mp3", "mpeg"):
             return ContentType.MP3
-        if codec_lower == "aac":
+        if codec_lower in ("aac", "aac-mp4", "he-aac", "he-aac-mp4"):
             return ContentType.AAC
 
         return ContentType.UNKNOWN

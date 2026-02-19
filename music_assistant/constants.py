@@ -723,6 +723,19 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     category="sync_options",
 )
 
+CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
+    key="library_sync_deletions",
+    type=ConfigEntryType.BOOLEAN,
+    label="Sync library deletions",
+    description="When enabled, items removed from the provider's library will also be "
+    "hidden from the Music Assistant library.\n\n"
+    "When disabled, items removed from the provider will remain visible in the "
+    "Music Assistant library.",
+    default_value=True,
+    category="sync_options",
+    advanced=True,
+)
+
 
 CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
     ConfigValueOption("Disable automatic sync for this mediatype", 0),
@@ -938,6 +951,9 @@ SOUNDTRACK_INDICATORS = [
     r"\bfrom the film\b",
     r"\boriginal.*cast.*recording\b",
 ]
+
+# how often we report the playback progress in the player_queues controller
+PLAYBACK_REPORT_INTERVAL_SECONDS = 30
 
 # List of providers that do not use HTTP streaming
 # but consume raw audio data over other protocols

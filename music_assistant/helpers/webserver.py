@@ -192,7 +192,7 @@ class Webserver:
                 return await handler(request)
         # Try prefix match (for routes registered with /*)
         if self._dynamic_routes is not None:
-            for route_key, handler in self._dynamic_routes.items():
+            for route_key, handler in list(self._dynamic_routes.items()):
                 method, path = route_key.split(".", 1)
                 if method in (request.method, "*") and path.endswith("/*"):
                     prefix = path[:-2]
