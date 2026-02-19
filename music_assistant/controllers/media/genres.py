@@ -299,23 +299,25 @@ class GenreController(MediaControllerBase[Genre]):
             "AND ami.media_type = 'artist' AND gam.genre_id = :genre_id)"
         )
 
-        tracks = await self.mass.music.tracks.get_library_items_by_query(
-            extra_query_parts=[track_query],
-            extra_query_params={"genre_id": db_id},
-            limit=limit,
-            offset=offset,
-        )
-        albums = await self.mass.music.albums.get_library_items_by_query(
-            extra_query_parts=[album_query],
-            extra_query_params={"genre_id": db_id},
-            limit=limit,
-            offset=offset,
-        )
-        artists = await self.mass.music.artists.get_library_items_by_query(
-            extra_query_parts=[artist_query],
-            extra_query_params={"genre_id": db_id},
-            limit=limit,
-            offset=offset,
+        tracks, albums, artists = await asyncio.gather(
+            self.mass.music.tracks.get_library_items_by_query(
+                extra_query_parts=[track_query],
+                extra_query_params={"genre_id": db_id},
+                limit=limit,
+                offset=offset,
+            ),
+            self.mass.music.albums.get_library_items_by_query(
+                extra_query_parts=[album_query],
+                extra_query_params={"genre_id": db_id},
+                limit=limit,
+                offset=offset,
+            ),
+            self.mass.music.artists.get_library_items_by_query(
+                extra_query_parts=[artist_query],
+                extra_query_params={"genre_id": db_id},
+                limit=limit,
+                offset=offset,
+            ),
         )
         return tracks, albums, artists
 
@@ -1016,6 +1018,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
+                    "timestamp_added": UNSET,
                 },
             )
         await self.mass.music.database.insert(
@@ -1048,10 +1051,12 @@ class GenreController(MediaControllerBase[Genre]):
         search_sort_name = create_safe_string(sort_name or "", True, True)
         return name, sort_name, search_name, search_sort_name
 
-    def _on_sync_tasks_updated(self, event: MassEvent) -> None:
+    def _on_sync_tasks_updated(self, _event: MassEvent) -> None:
         """Trigger genre mapping scan when all sync tasks complete."""
-        if not event.data:  # empty list = all syncs done
-            self.mass.create_task(self._scan_genre_mappings())
+        if self.mass.music.in_progress_syncs or self._scanner_running:
+            return
+        self._scanner_running = True
+        self.mass.create_task(self._scan_genre_mappings())
 
     async def _scan_genre_mappings(self) -> None:
         """Scan media items with metadata.genres and map them to genre aliases.
@@ -1067,6 +1072,11 @@ class GenreController(MediaControllerBase[Genre]):
         self._last_scan_time = time.time()
 
         try:
+            if self.mass.music.in_progress_syncs:
+                self.logger.debug("Syncs still in progress, deferring genre scan")
+                self._scanner_running = False
+                return
+
             self.logger.debug("Starting genre mapping scan...")
 
             track_count = await self._scan_media_type_genres(
