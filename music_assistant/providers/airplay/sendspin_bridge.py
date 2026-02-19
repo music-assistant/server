@@ -17,6 +17,7 @@ Sendspin PushStream → BridgePlayerRole.on_audio_chunk → AirPlay CLI process
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -24,13 +25,14 @@ from typing import TYPE_CHECKING, cast
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand, Roles
+from aiosendspin.models.types import AudioCodec, BinaryMessageType, PlayerCommand, Roles
 from aiosendspin.server.roles import AudioRequirements, Role
 
 from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.mass import LOGGER
 
 from .constants import StreamingProtocol
-from .helpers import player_id_to_mac_address
+from .helpers import player_id_to_mac_address, unix_time_to_ntp
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -73,20 +75,30 @@ class BridgePlayerRole(Role):
         self,
         client: SendspinClient,
         on_audio_chunk: Callable[[AudioChunk], None],
+        on_volume_change: Callable[[int, bool], None],
+        on_stream_end_cb: Callable[[], None],
+        initial_volume: int = 100,
     ) -> None:
         """Initialize the bridge player role.
 
         :param client: The Sendspin client this role belongs to.
         :param on_audio_chunk: Callback to receive audio chunks.
+        :param on_volume_change: Callback when volume or mute state changes.
+        :param on_stream_end_cb: Callback when the stream ends.
+        :param initial_volume: Initial volume level (0-100).
         """
         self._client = client
         self._on_audio_chunk_cb = on_audio_chunk
+        self._on_volume_change_cb = on_volume_change
+        self._on_stream_end_cb = on_stream_end_cb
         self._audio_requirements: AudioRequirements | None = None
+        self._volume: int = initial_volume
+        self._muted: bool = False
 
     @property
     def role_id(self) -> str:
         """Return role identifier."""
-        return "player@bridge"
+        return "player@_airplay_bridge"
 
     @property
     def role_family(self) -> str:
@@ -106,19 +118,48 @@ class BridgePlayerRole(Role):
         """Return audio requirements for PushStream."""
         return self._audio_requirements
 
+    def get_player_volume(self) -> int | None:
+        """Return current volume level."""
+        return self._volume
+
+    def get_player_muted(self) -> bool | None:
+        """Return current mute state."""
+        return self._muted
+
+    def set_player_volume(self, volume: int) -> None:
+        """Set volume and notify bridge."""
+        self._volume = volume
+        self._on_volume_change_cb(volume, self._muted)
+
+    def set_player_mute(self, muted: bool) -> None:
+        """Set mute state and notify bridge."""
+        self._muted = muted
+        self._on_volume_change_cb(self._volume, muted)
+
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
         self._on_audio_chunk_cb(chunk)
 
     def on_connect(self) -> None:
-        """Handle connection (no-op for bridge)."""
+        """Subscribe to PlayerGroupRole on attach."""
+        self._subscribe_to_group_role()
 
     def on_disconnect(self) -> None:
-        """Handle disconnection (no-op for bridge)."""
+        """Unsubscribe from PlayerGroupRole on detach."""
+        self._unsubscribe_from_group_role()
 
     def has_connection(self) -> bool:
         """Return True to indicate bridge is "connected" for audio purposes."""
         return True
+
+    def on_stream_start(self) -> None:
+        """Log stream start."""
+        LOGGER.debug("BridgePlayerRole stream started for client %s", self._client.client_id)
+
+    def on_stream_end(self) -> None:
+        """Log stream end and invoke the stream-end callback."""
+        LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
+        self._on_stream_end_cb()
 
 
 class SendspinAirPlayBridge:
@@ -153,6 +194,11 @@ class SendspinAirPlayBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._protocol: AirPlayProtocol | None = None
         self._is_streaming = False
+        self._next_expected_timestamp_us: int | None = None
+        self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._writer_task: asyncio.Task[None] | None = None
+        self._protocol_start_task: asyncio.Task[None] | None = None
+        self._protocol_ready = asyncio.Event()
         self._lock = asyncio.Lock()
 
     @property
@@ -188,7 +234,7 @@ class SendspinAirPlayBridge:
                         bit_depth=16,
                     )
                 ],
-                buffer_capacity=100_000,
+                buffer_capacity=1_000,
                 supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
         )
@@ -241,56 +287,171 @@ class SendspinAirPlayBridge:
                 self.logger.error("Client not found for stream start")
                 return
 
-            self._bridge_role = BridgePlayerRole(client, self._on_audio_chunk)
+            self._bridge_role = BridgePlayerRole(
+                client,
+                on_audio_chunk=self._on_audio_chunk,
+                on_volume_change=self._on_volume_change,
+                on_stream_end_cb=self._on_bridge_stream_end,
+                initial_volume=self.airplay_player.volume_level or 100,
+            )
             self._bridge_role.setup_audio_requirements()
             client._roles[self._bridge_role.role_id] = self._bridge_role
+            client._roles_warm_disconnected = True
+            self._bridge_role.on_connect()
+
+            # Rebuild the binary-handling cache to keep it consistent
+            client._binary_handling_cache.clear()
+            for msg_type in BinaryMessageType:
+                for role in client._roles.values():
+                    handling = role.get_binary_handling(msg_type.value)
+                    if handling is not None:
+                        client._binary_handling_cache[msg_type.value] = (handling, role)
+                        break
 
             group = client.group
             if group and group.has_active_stream:
                 push_stream = group._push_stream
                 if push_stream and not push_stream.is_stopped:
+                    # Join PushStream before starting the AirPlay protocol so that
+                    # the first chunk's timestamp can be used to derive start_ntp
+                    # precisely, rather than guessing a fixed offset.
+                    self._next_expected_timestamp_us = None
                     push_stream.on_role_join(self._bridge_role)
+                    self._writer_task = self.mass.create_task(self._cli_writer())
                     self.logger.info(
-                        "Bridge role joined PushStream for %s",
+                        "Bridge joined PushStream for %s, awaiting first chunk",
                         self.airplay_player.display_name,
                     )
 
             self._is_streaming = True
 
+    async def _start_protocol_from_chunk(self, chunk: AudioChunk) -> None:
+        """Start the AirPlay protocol, deriving start_ntp from the first chunk's timestamp.
+
+        :param chunk: The first audio chunk delivered by the PushStream.
+        """
+        future_s = (chunk.timestamp_us - time.monotonic() * 1_000_000) / 1_000_000
+        start_ntp = unix_time_to_ntp(time.time() + future_s)
+
+        if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+            self._protocol = AirPlay2Stream(self.airplay_player)
+        else:
+            self._protocol = RaopStream(self.airplay_player)
+
+        await self._protocol.start(start_ntp)
+        self._protocol_ready.set()
+        self.logger.info(
+            "Bridge protocol started for %s (NTP=%s, lookahead=%.0fms)",
+            self.airplay_player.display_name,
+            start_ntp,
+            future_s * 1000,
+        )
+        self.mass.create_task(self._wait_for_airplay_connection())
+
+    async def _wait_for_airplay_connection(self) -> None:
+        """Wait for AirPlay connection in the background and log the result."""
+        if not self._protocol:
+            return
+        try:
+            await self._protocol.wait_for_connection()
+            self.logger.info(
+                "AirPlay connection established for %s", self.airplay_player.display_name
+            )
+        except Exception as err:
+            self.logger.warning(
+                "AirPlay connection failed for %s: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+
+    def _on_volume_change(self, volume: int, muted: bool) -> None:
+        """Forward volume/mute changes to the AirPlay CLI."""
+        effective_volume = 0 if muted else volume
+        self.mass.create_task(self._send_volume_command(effective_volume))
+
+    async def _send_volume_command(self, volume: int) -> None:
+        """Send VOLUME command to the AirPlay CLI."""
+        if self._protocol and self._protocol.running:
+            await self._protocol.send_cli_command(f"VOLUME={volume}")
+
+    def _on_bridge_stream_end(self) -> None:
+        """Signal the writer task that the stream has ended."""
+        self._is_streaming = False
+        self._next_expected_timestamp_us = None
+        self._write_queue.put_nowait(None)
+
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""
         if not self._is_streaming:
             return
-        if self._protocol and self._protocol.running and self._protocol._cli_proc:
-            self.mass.create_task(self._protocol._cli_proc.write(chunk.data))
 
-    async def start_airplay_stream(self, start_ntp: int) -> None:
-        """Start the AirPlay protocol stream.
-
-        :param start_ntp: NTP timestamp when playback should start.
-        """
-        async with self._lock:
-            if self._protocol:
-                await self._protocol.stop(force=True)
-            if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-                self._protocol = AirPlay2Stream(self.airplay_player)
-            else:
-                self._protocol = RaopStream(self.airplay_player)
-
-            await self._protocol.start(start_ntp)
-            await self._protocol.wait_for_connection()
-
-            self.logger.info(
-                "AirPlay stream started for %s (NTP=%s)",
-                self.airplay_player.display_name,
-                start_ntp,
+        if self._protocol_start_task is None:
+            self._protocol_start_task = self.mass.create_task(
+                self._start_protocol_from_chunk(chunk)
             )
+
+        if self._next_expected_timestamp_us is not None:
+            gap_us = chunk.timestamp_us - self._next_expected_timestamp_us
+            if gap_us > 1_000:
+                # Forward gap: fill with silence, capped at 2 seconds to avoid huge fills on seeks
+                fill_us = min(gap_us, 2_000_000)
+                # 44100 Hz * 2 channels * 2 bytes/sample = 176400 bytes/sec = 0.1764 bytes/µs
+                silence = bytes(int(fill_us * 44100 * 2 * 2 / 1_000_000))
+                self._write_queue.put_nowait(silence)
+            elif gap_us < -1_000:
+                self.logger.debug("Discarding late audio chunk (%d µs behind)", -gap_us)
+                return
+
+        self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
+        self._write_queue.put_nowait(chunk.data)
+
+    async def _cli_writer(self) -> None:
+        """Write queued audio data to the CLI process stdin.
+
+        Waits for the protocol to be ready before writing. Runs as a single
+        task so writes are serialised and ordered. A None sentinel signals
+        end-of-stream: write EOF to stdin and exit.
+        """
+        await self._protocol_ready.wait()
+        while True:
+            data = await self._write_queue.get()
+            if not self._protocol or not self._protocol._cli_proc:
+                if data is None:
+                    return
+                continue
+            if data is None:
+                with suppress(Exception):
+                    await self._protocol._cli_proc.write_eof()
+                return
+            with suppress(Exception):
+                await self._protocol._cli_proc.write(data)
 
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
+        self._next_expected_timestamp_us = None
+        self._protocol_ready.clear()
+        if self._protocol_start_task:
+            self._protocol_start_task.cancel()
+            with suppress(Exception):
+                await self._protocol_start_task
+            self._protocol_start_task = None
+        if self._writer_task:
+            self._writer_task.cancel()
+            with suppress(Exception):
+                await self._writer_task
+            self._writer_task = None
+        while not self._write_queue.empty():
+            self._write_queue.get_nowait()
         if self._sendspin_client and self._bridge_role:
-            self._sendspin_client._roles.pop(self._bridge_role.role_id, None)
+            role = self._bridge_role
+            if self._sendspin_client.group:
+                push_stream = self._sendspin_client.group._push_stream
+                if push_stream and not push_stream.is_stopped:
+                    push_stream.on_role_leave(role)
+            role.on_disconnect()
+            self._sendspin_client._roles.pop(role.role_id, None)
+            self._sendspin_client._binary_handling_cache.clear()
             self._bridge_role = None
         if self._protocol:
             await self._protocol.stop(force=True)
