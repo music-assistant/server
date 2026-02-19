@@ -300,9 +300,7 @@ class WiimPlayer(Player):
             if self.current_uri and self.current_uri == self.wiim_player.media_content_id:
                 self._attr_active_source = self.player_id
             else:
-                self._attr_active_source = (
-                    self.wiim_player.source if self.wiim_player.source else ""
-                )
+                self._attr_active_source = self.wiim_player.source
                 self.set_current_media(
                     uri=self.wiim_player.media_content_id or "",
                     title=self.wiim_player.media_title,
