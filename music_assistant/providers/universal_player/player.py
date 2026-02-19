@@ -14,12 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlayerFeature
-
 from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import PlayerFeature
+
     from .provider import UniversalPlayerProvider
 
 
@@ -55,8 +55,6 @@ class UniversalPlayer(Player):
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info
-        # Start as unavailable - will be updated when protocol players are linked
-        self._attr_available = False
         # a universal player does not have any features on its own,
         # it delegates to protocol players
         self._attr_supported_features = set()
@@ -71,6 +69,15 @@ class UniversalPlayer(Player):
             # hide web players by default
             return True
         return False
+
+    @property
+    def available(self) -> bool:
+        """Return if the player is currently available."""
+        # A universal player is available if any of its linked protocol players are available
+        return any(
+            (p := self.mass.players.get_player(pid)) and p.available
+            for pid in self._protocol_player_ids
+        )
 
     @property
     def expose_to_ha_by_default(self) -> bool:
@@ -114,27 +121,6 @@ class UniversalPlayer(Player):
                 return protocol_player
 
         return None
-
-    def update_from_protocol_players(self) -> None:
-        """
-        Update state from linked protocol players.
-
-        Called to sync state like volume, availability from protocol players.
-        """
-        # Aggregate availability - available if any protocol is available
-        self._attr_available = any(
-            (p := self.mass.players.get_player(pid)) and p.available
-            for pid in self._protocol_player_ids
-        )
-        # Get volume from best control target
-        if target := self._get_control_target(PlayerFeature.VOLUME_SET):
-            if target.volume_level is not None:
-                self._attr_volume_level = target.volume_level
-        if target := self._get_control_target(PlayerFeature.VOLUME_MUTE):
-            if target.volume_muted is not None:
-                self._attr_volume_muted = target.volume_muted
-
-        self.update_state()
 
     def add_protocol_player(self, protocol_player_id: str) -> None:
         """Add a protocol player to this universal player."""

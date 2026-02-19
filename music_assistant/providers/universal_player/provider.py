@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import IdentifierType, PlayerType
 
 from music_assistant.constants import CONF_PLAYERS
+from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -367,8 +368,11 @@ class UniversalPlayerProvider(PlayerProvider):
         for player in protocol_players:
             identifiers = player.device_info.identifiers
             # Prefer MAC address (most reliable)
+            # Use normalize_mac_for_matching to handle locally-administered MAC variants
+            # Some protocols (like AirPlay) report a variant where bit 1 of the first octet
+            # is set (e.g., 54:78:... vs 56:78:...), but they represent the same device
             if mac := identifiers.get(IdentifierType.MAC_ADDRESS):
-                return mac.replace(":", "").replace("-", "").lower()
+                return normalize_mac_for_matching(mac)
             # Fall back to UUID (reliable for DLNA, Chromecast)
             if not uuid_key and (uuid := identifiers.get(IdentifierType.UUID)):
                 # Normalize UUID: remove special characters, lowercase
