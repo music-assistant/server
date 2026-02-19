@@ -344,6 +344,27 @@ class YandexMusicClient:
             LOGGER.error("Error fetching playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
 
+    async def get_liked_playlists(self) -> list[YandexPlaylist]:
+        """Get user's liked/saved editorial playlists.
+
+        :return: List of liked playlist objects.
+        """
+        try:
+            result = await self._call_with_retry(lambda c: c.users_likes_playlists())
+            if result is None:
+                return []
+            playlists = []
+            for like in result:
+                if like.playlist is not None:
+                    playlists.append(like.playlist)
+            return playlists
+        except BadRequestError as err:
+            LOGGER.error("Error fetching liked playlists: %s", err)
+            raise ResourceTemporarilyUnavailable("Failed to fetch liked playlists") from err
+        except (NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching liked playlists: %s", err)
+            raise ResourceTemporarilyUnavailable("Failed to fetch liked playlists") from err
+
     # Search
 
     async def search(
