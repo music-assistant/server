@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
@@ -1428,7 +1428,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         try:
             async for msg in ws:
-                if msg.type == msg.type.TEXT:
+                if msg.type == WSMsgType.TEXT:
                     self._handle_ws_message(player_id, msg.data)
         finally:
             self._ws_clients.get(player_id, set()).discard(ws)
@@ -1945,6 +1945,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         try:
             queue_items = self.provider.mass.player_queues.items(queue_id)
         except Exception:
+            logger.debug("Failed to fetch queue items for player %s", player_id, exc_info=True)
             queue_items = []
 
         current_uri = None
@@ -2068,10 +2069,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             )
         return player_id, param
 
-    def _append_device_param(self, url: str, device_param: str) -> str:
-        """Append device_id to URL if present."""
-        return append_device_param(url, device_param)
-
     async def _ensure_player_for_request(
         self, request: web.Request
     ) -> tuple[str, str, MSXPlayer | None]:
@@ -2084,7 +2081,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         player_id, device_param = self._get_player_id_and_device_param(request)
         remote_ip = request.remote
         # Web player clients pass source=web to distinguish from MSX TV players
-        display_name: str | None = None
         prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"
         display_name = self.provider._player_display_name_from_id(
             player_id, prefix_label=prefix_label, remote_ip=remote_ip

@@ -14,14 +14,12 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
-    CONF_ABORT_STREAM_FIRST,
     CONF_ENABLE_GROUPING,
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
-    DEFAULT_ABORT_STREAM_FIRST,
     DEFAULT_ENABLE_GROUPING,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
@@ -80,7 +78,7 @@ async def get_config_entries(
             key=CONF_PLAYER_IDLE_TIMEOUT,
             type=ConfigEntryType.INTEGER,
             label="Player Idle Timeout (minutes)",
-            required=True,
+            required=False,
             default_value=str(DEFAULT_PLAYER_IDLE_TIMEOUT),
             description="Unregister MSX players after this many minutes without activity.",
         ),
@@ -91,17 +89,6 @@ async def get_config_entries(
             required=False,
             default_value=DEFAULT_SHOW_STOP_NOTIFICATION,
             description="Show confirmation dialog on MSX when stopping playback from MA.",
-        ),
-        ConfigEntry(
-            key=CONF_ABORT_STREAM_FIRST,
-            type=ConfigEntryType.BOOLEAN,
-            label="Abort stream before broadcast stop",
-            required=False,
-            default_value=DEFAULT_ABORT_STREAM_FIRST,
-            description=(
-                "When stopping: abort stream first, then send WebSocket stop. "
-                "May stop playback faster on some TVs."
-            ),
         ),
         ConfigEntry(
             key=CONF_ENABLE_GROUPING,

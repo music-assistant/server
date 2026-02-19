@@ -1,12 +1,13 @@
 """Constants for the MSX Bridge Provider."""
 
+from __future__ import annotations
+
 import re
 
 CONF_HTTP_PORT = "http_port"
 CONF_OUTPUT_FORMAT = "output_format"
 CONF_PLAYER_IDLE_TIMEOUT = "player_idle_timeout"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
-CONF_ABORT_STREAM_FIRST = "abort_stream_first"
 CONF_ENABLE_GROUPING = "enable_player_grouping"
 CONF_GROUP_STREAM_MODE = "group_stream_mode"
 
@@ -14,8 +15,7 @@ DEFAULT_HTTP_PORT = 8099
 DEFAULT_OUTPUT_FORMAT = "mp3"
 DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
-DEFAULT_ABORT_STREAM_FIRST = False
-DEFAULT_ENABLE_GROUPING = True
+DEFAULT_ENABLE_GROUPING = False
 
 # Group stream modes
 GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream (default)

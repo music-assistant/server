@@ -158,6 +158,7 @@ class MSXPlayer(Player):
         try:
             current_size = len(self.mass.player_queues.items(source_id))
         except Exception:
+            self.logger.debug("Failed to get queue size for %s", source_id, exc_info=True)
             current_size = self._playlist_size
         if current_size != self._playlist_size:
             self._playlist_size = current_size
@@ -177,6 +178,7 @@ class MSXPlayer(Player):
         try:
             self._playlist_size = len(self.mass.player_queues.items(source_id))
         except Exception:
+            self.logger.debug("Failed to get queue size for %s", source_id, exc_info=True)
             self._playlist_size = 0
         self._playlist_offset = start_index
         self._queue_source_id = source_id
