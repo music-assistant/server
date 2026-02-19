@@ -1721,9 +1721,18 @@ class Player(ABC):
 
         # always start with the native can_group_with options (expanded for provider instance IDs)
         for player in self._expand_can_group_with():
-            if not _should_include_player(player):
-                continue
-            result.add(player.player_id)
+            if player.type == PlayerType.PROTOCOL:
+                # Protocol player is hidden - translate to its visible parent player
+                if not player.protocol_parent_id:
+                    continue
+                visible_parent = self.mass.players.get_player(player.protocol_parent_id)
+                if not visible_parent or not _should_include_player(visible_parent):
+                    continue
+                result.add(visible_parent.player_id)
+            else:
+                if not _should_include_player(player):
+                    continue
+                result.add(player.player_id)
 
         # Scenario 1: Player is a protocol player - just return the (expanded) result
         if self.type == PlayerType.PROTOCOL:
@@ -1775,9 +1784,10 @@ class Player(ABC):
 
         Protocol players are hidden and users interact with visible players
         (native or universal). This method translates protocol player IDs
-        back to the visible (parent) players.
+        back to the visible (parent) players. Non-protocol players (e.g.,
+        native Apple AirPlay players) are already visible and included as-is.
 
-        :param player_ids: Set of player IDs (protocol player IDs).
+        :param player_ids: Set of player IDs (may include both protocol and non-protocol IDs).
         :return: Set of visible players.
         """
         result: set[Player] = set()
@@ -1785,7 +1795,11 @@ class Player(ABC):
             return result
         for player_id in player_ids:
             target_player = self.mass.players.get_player(player_id)
-            if not target_player or target_player.type != PlayerType.PROTOCOL:
+            if not target_player:
+                continue
+            if target_player.type != PlayerType.PROTOCOL:
+                # Non-protocol player is already visible - include directly
+                result.add(target_player)
                 continue
             # This is a protocol player - find its visible parent
             if not target_player.protocol_parent_id:
