@@ -770,6 +770,40 @@ def is_locally_administered_mac(mac_address: str) -> bool:
         return False
 
 
+def normalize_mac_for_matching(mac_address: str) -> str:
+    """
+    Normalize a MAC address for device matching by masking out the locally-administered bit.
+
+    Some protocols (like AirPlay) report a locally-administered MAC address variant where
+    bit 1 of the first octet is set. For example:
+    - Real hardware MAC: 54:78:C9:E6:0D:A0 (first byte 0x54 = 01010100)
+    - AirPlay reports:   56:78:C9:E6:0D:A0 (first byte 0x56 = 01010110)
+
+    These represent the same device but differ only in the locally-administered bit.
+    This function normalizes the MAC by clearing bit 1 of the first octet, allowing
+    both variants to match the same device.
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: Normalized MAC address in lowercase without separators, with the
+             locally-administered bit cleared.
+    """
+    # Normalize MAC address (remove separators, lowercase)
+    mac_clean = mac_address.lower().replace(":", "").replace("-", "")
+    if len(mac_clean) != 12:
+        # Invalid MAC length, return as-is
+        return mac_clean
+
+    try:
+        # Parse first octet and clear bit 1 (the locally-administered bit)
+        first_octet = int(mac_clean[:2], 16)
+        first_octet_normalized = first_octet & ~0x02  # Clear bit 1
+        # Reconstruct the MAC with the normalized first octet
+        return f"{first_octet_normalized:02x}{mac_clean[2:]}"
+    except ValueError:
+        # Invalid hex, return as-is
+        return mac_clean
+
+
 def is_valid_mac_address(mac_address: str | None) -> bool:
     """
     Check if a MAC address is valid and usable for device identification.
