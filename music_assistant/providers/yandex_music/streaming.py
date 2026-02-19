@@ -111,8 +111,8 @@ class YandexMusicStreamingManager:
                         )
                         # Return StreamType.CUSTOM for streaming decryption
                         # Store encrypted URL and decryption key in data for get_audio_stream
-                        # MP4 container supports seek via sample table
-                        can_seek = codec.lower() in ("flac-mp4", "mp4")
+                        # can_seek=False: provider always streams from position 0;
+                        # allow_seek=True: ffmpeg handles seek with -ss input flag.
                         return StreamDetails(
                             item_id=item_id,
                             provider=self.provider.instance_id,
@@ -124,7 +124,7 @@ class YandexMusicStreamingManager:
                                 "decryption_key": file_info["key"],
                                 "codec": codec,
                             },
-                            can_seek=can_seek,
+                            can_seek=False,
                             allow_seek=True,
                         )
                     # Unencrypted URL, use directly
@@ -366,22 +366,14 @@ class YandexMusicStreamingManager:
 
         Uses buffered streaming: a background task downloads and decrypts chunks
         into a bounded async queue, decoupling download from consumption.
-        For MP4-container tracks with a non-zero seek_position, dispatches to
-        _stream_buffered_seek which parses the moov atom and issues a Range request.
+        Seeking is handled externally by ffmpeg (-ss flag); can_seek=False means
+        seek_position is always 0 here.
 
         :param streamdetails: Stream details containing encrypted URL and key.
-        :param seek_position: Seek position in seconds; 0 means play from start.
+        :param seek_position: Always 0 (seeking delegated to ffmpeg via allow_seek=True).
         :return: Async generator yielding decrypted audio bytes.
         """
-        codec = streamdetails.data.get("codec", "")
-        is_mp4 = codec.lower() in ("flac-mp4", "mp4")
-
-        if seek_position > 0 and is_mp4:
-            gen = self._stream_buffered_seek(streamdetails, seek_position)
-        else:
-            gen = self._stream_buffered(streamdetails)
-
-        async for chunk in gen:
+        async for chunk in self._stream_buffered(streamdetails):
             yield chunk
 
     async def _stream_buffered(  # noqa: PLR0915
