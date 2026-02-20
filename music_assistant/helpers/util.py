@@ -770,6 +770,94 @@ def is_locally_administered_mac(mac_address: str) -> bool:
         return False
 
 
+def normalize_mac_for_matching(mac_address: str) -> str:
+    """
+    Normalize a MAC address for device matching by masking out the locally-administered bit.
+
+    Some protocols (like AirPlay) report a locally-administered MAC address variant where
+    bit 1 of the first octet is set. For example:
+    - Real hardware MAC: 54:78:C9:E6:0D:A0 (first byte 0x54 = 01010100)
+    - AirPlay reports:   56:78:C9:E6:0D:A0 (first byte 0x56 = 01010110)
+
+    These represent the same device but differ only in the locally-administered bit.
+    This function normalizes the MAC by clearing bit 1 of the first octet, allowing
+    both variants to match the same device.
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: Normalized MAC address in lowercase without separators, with the
+             locally-administered bit cleared.
+    """
+    # Normalize MAC address (remove separators, lowercase)
+    mac_clean = mac_address.lower().replace(":", "").replace("-", "")
+    if len(mac_clean) != 12:
+        # Invalid MAC length, return as-is
+        return mac_clean
+
+    try:
+        # Parse first octet and clear bit 1 (the locally-administered bit)
+        first_octet = int(mac_clean[:2], 16)
+        first_octet_normalized = first_octet & ~0x02  # Clear bit 1
+        # Reconstruct the MAC with the normalized first octet
+        return f"{first_octet_normalized:02x}{mac_clean[2:]}"
+    except ValueError:
+        # Invalid hex, return as-is
+        return mac_clean
+
+
+def is_valid_mac_address(mac_address: str | None) -> bool:
+    """
+    Check if a MAC address is valid and usable for device identification.
+
+    Invalid MAC addresses include:
+    - None or empty strings
+    - Null MAC: 00:00:00:00:00:00
+    - Broadcast MAC: ff:ff:ff:ff:ff:ff
+    - Any MAC that doesn't follow the expected pattern
+
+    :param mac_address: MAC address to validate.
+    :return: True if valid and usable, False otherwise.
+    """
+    if not mac_address:
+        return False
+
+    # Normalize MAC address (remove separators and convert to lowercase)
+    normalized = mac_address.lower().replace(":", "").replace("-", "")
+
+    # Check for invalid/reserved MAC addresses
+    if normalized in ("000000000000", "ffffffffffff"):
+        return False
+
+    # Check length and hex validity
+    if len(normalized) != 12:
+        return False
+
+    try:
+        int(normalized, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_ip_address(ip_address: str | None) -> str | None:
+    """
+    Normalize IP address for comparison.
+
+    Handles IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.64 -> 192.168.1.64).
+
+    :param ip_address: IP address to normalize.
+    :return: Normalized IP address or None if invalid.
+    """
+    if not ip_address:
+        return None
+
+    # Handle IPv6-mapped IPv4 addresses
+    if ip_address.startswith("::ffff:"):
+        # Extract the IPv4 part
+        return ip_address[7:]
+
+    return ip_address
+
+
 async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | None) -> str | None:
     """
     Resolve the real MAC address for a device.
@@ -788,7 +876,7 @@ async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | N
     # If no MAC reported or it's a locally administered one, try ARP lookup
     if not reported_mac or is_locally_administered_mac(reported_mac):
         real_mac = await get_mac_address(ip_address)
-        if real_mac and real_mac.lower() not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+        if real_mac and is_valid_mac_address(real_mac):
             return real_mac.upper()
 
     return None
@@ -918,6 +1006,7 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             *args,
             task_id=task_id,
             abort_existing=False,
+            eager_start=True,
             **kwargs,
         )
         return await task

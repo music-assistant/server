@@ -30,6 +30,7 @@ PLAYER_FEATURES = {
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
+    PlayerFeature.PLAY_MEDIA,
 }
 
 

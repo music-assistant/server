@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -91,7 +92,9 @@ class AirPlayPlayer(Player):
             model=model,
             manufacturer=manufacturer,
         )
-        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+        if is_valid_mac_address(mac_address):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}

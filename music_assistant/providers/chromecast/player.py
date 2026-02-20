@@ -30,6 +30,7 @@ from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -117,9 +118,11 @@ class ChromecastPlayer(Player):
             manufacturer=self.cast_info.manufacturer or "",
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
-        self._attr_device_info.add_identifier(
-            IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
-        )
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+        if is_valid_mac_address(self.cast_info.mac_address):
+            self._attr_device_info.add_identifier(
+                IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+            )
         self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         assert provider.mz_mgr is not None  # for type checking
         status_listener = CastStatusListener(self, provider.mz_mgr)
@@ -799,7 +802,8 @@ class ChromecastPlayer(Player):
             )
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
             self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
-            if self.cast_info.mac_address:
+            # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+            if is_valid_mac_address(self.cast_info.mac_address):
                 self._attr_device_info.add_identifier(
                     IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
                 )

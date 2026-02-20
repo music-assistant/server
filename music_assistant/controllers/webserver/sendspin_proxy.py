@@ -45,7 +45,12 @@ class SendspinProxyHandler:
     @property
     def internal_sendspin_url(self) -> str:
         """Return the internal sendspin URL for connecting to the internal Sendspin server."""
-        return f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
+        # Connect via localhost since the proxy and Sendspin server run in the same process
+        # If the server binds to 0.0.0.0 (all interfaces), use localhost for efficiency
+        # Otherwise use the actual bind IP in case it's configured to a specific interface
+        bind_ip = self.mass.streams.bind_ip
+        connect_ip = "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
+        return f"ws://{connect_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
