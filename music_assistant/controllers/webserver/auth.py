@@ -1634,23 +1634,35 @@ class AuthenticationManager:
         self.logger.debug("Join code exchanged for token (user=%s)", user.username)
         return token
 
-    async def revoke_join_codes(self, user_id: str | None = None) -> int:
-        """Revoke all join codes, optionally for a specific user.
+    async def revoke_join_codes(
+        self,
+        user_id: str | None = None,
+        provider_name: str | None = None,
+    ) -> int:
+        """Revoke join codes, optionally filtered by user or provider.
 
-        :param user_id: Optional user ID to revoke codes for (default: all codes).
+        :param user_id: Optional user ID to revoke codes for.
+        :param provider_name: Optional provider name to revoke codes for.
         :return: Number of codes revoked.
         """
-        if user_id:
-            # Count codes first using a dedicated COUNT query (no row limit)
-            query = "SELECT COUNT(*) FROM join_codes WHERE user_id = :user_id"
-            count = await self.database.get_count_from_query(query, params={"user_id": user_id})
-            await self.database.delete("join_codes", {"user_id": user_id})
-        else:
-            # Revoke all join codes
-            count = await self.database.get_count("join_codes")
-            await self.database.execute("DELETE FROM join_codes")
+        conditions = []
+        params = {}
 
+        if user_id:
+            conditions.append("user_id = :user_id")
+            params["user_id"] = user_id
+        if provider_name:
+            conditions.append("provider_name = :provider_name")
+            params["provider_name"] = provider_name
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        cursor = await self.database.execute(
+            f"DELETE FROM join_codes {where_clause}", params or None
+        )
         await self.database.commit()
+
+        count = cursor.rowcount
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
