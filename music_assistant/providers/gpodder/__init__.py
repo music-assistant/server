@@ -105,11 +105,16 @@ async def get_config_entries(
     if values is None:
         values = {}
 
+    verify_ssl = True
+    if _verify_ssl := values.get(CONF_VERIFY_SSL):
+        verify_ssl = bool(_verify_ssl)
+
     if action == CONF_ACTION_AUTH_NC:
         session = mass.http_session
         response = await session.post(
             str(values[CONF_URL_NC]).rstrip("/") + "/index.php/login/v2",
             headers={"User-Agent": "Music Assistant"},
+            ssl=verify_ssl,
         )
         data = await response.json()
         poll_endpoint = data["poll"]["endpoint"]
@@ -118,7 +123,7 @@ async def get_config_entries(
         session_id = str(values["session_id"])
         mass.signal_event(EventType.AUTH_SESSION, session_id, login_url)
         while True:
-            response = await session.post(poll_endpoint, data={"token": poll_token})
+            response = await session.post(poll_endpoint, data={"token": poll_token}, ssl=verify_ssl)
             if response.status not in [200, 404]:
                 raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
             if response.status == 200:
@@ -260,10 +265,13 @@ class GPodder(MusicProvider):
         _device_id = self.config.get_value(CONF_DEVICE_ID)
         nc_url = str(self.config.get_value(CONF_URL_NC))
         nc_token = self.config.get_value(CONF_TOKEN_NC)
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
 
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
 
-        self._client = GPodderClient(session=self.mass.http_session, logger=self.logger)
+        self._client = GPodderClient(
+            session=self.mass.http_session, logger=self.logger, verify_ssl=verify_ssl
+        )
 
         if nc_token is not None:
             assert nc_url is not None
