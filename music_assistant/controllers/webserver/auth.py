@@ -7,7 +7,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
-from sqlite3 import OperationalError
+from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any
 
 import jwt as pyjwt
@@ -1558,32 +1558,38 @@ class AuthenticationManager:
         :param provider_name: Optional provider name identifier (e.g., "party_mode").
         :return: Tuple of (code, expires_at datetime).
         """
-        # Verify user exists
         user = await self.get_user(user_id)
         if not user:
             raise ValueError(f"User not found: {user_id}")
 
-        code = "".join(secrets.choice(JOIN_CODE_CHARSET) for _ in range(JOIN_CODE_LENGTH))
-
         now = utc()
         expires_at = now + timedelta(hours=expires_in_hours)
 
-        code_data = {
-            "code_id": secrets.token_urlsafe(32),
-            "code": code,
-            "user_id": user_id,
-            "created_at": now.isoformat(),
-            "expires_at": expires_at.isoformat(),
-            "max_uses": max_uses,
-            "use_count": 0,
-            "device_name": device_name,
-            "provider_name": provider_name,
-        }
-        await self.database.insert("join_codes", code_data)
-        await self.database.commit()
+        for _ in range(3):  # Try up to 3 times to avoid code collisions
+            code = "".join(secrets.choice(JOIN_CODE_CHARSET) for _ in range(JOIN_CODE_LENGTH))
+            code_data = {
+                "code_id": secrets.token_urlsafe(32),
+                "code": code,
+                "user_id": user_id,
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "max_uses": max_uses,
+                "use_count": 0,
+                "device_name": device_name,
+                "provider_name": provider_name,
+            }
+            try:
+                await self.database.insert("join_codes", code_data)
+                await self.database.commit()
+                self.logger.debug(
+                    "Generated join code (expires: %s, max_uses: %s)", expires_at, max_uses
+                )
+                return code, expires_at
+            except IntegrityError:
+                self.logger.warning("Join code collision, retrying...")
+                continue
 
-        self.logger.debug("Generated join code (expires: %s, max_uses: %s)", expires_at, max_uses)
-        return code, expires_at
+        raise RuntimeError("Failed to generate a unique join code after 3 attempts")
 
     async def exchange_join_code(self, code: str) -> str | None:
         """Exchange a join code for a JWT access token.
@@ -1600,13 +1606,13 @@ class AuthenticationManager:
             """
             UPDATE join_codes
             SET use_count = use_count + 1,
-                last_used_at = ?
-            WHERE code = ?
-            AND expires_at > ?
+                last_used_at = :now
+            WHERE code = :code
+            AND expires_at > :now
             AND (max_uses = 0 OR use_count < max_uses)
             RETURNING user_id, provider_name, device_name
             """,
-            (now.isoformat(), code.upper(), now.isoformat()),
+            {"now": now.isoformat(), "code": code.upper()},
         )
         row = await cursor.fetchone()
         await self.database.commit()
@@ -1662,7 +1668,7 @@ class AuthenticationManager:
         )
         await self.database.commit()
 
-        count = cursor.rowcount
+        count = int(cursor.rowcount)
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
