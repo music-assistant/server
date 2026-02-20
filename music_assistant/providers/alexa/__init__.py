@@ -460,6 +460,8 @@ class AlexaPlayer(Player):
                 artist = media.artist
                 album = media.album
                 image_url = media.image_url
+            else:
+                return
 
             meta_checksum = f"{stream_url}-{album}-{artist}-{title}-{image_url}"
             if meta_checksum == self._last_meta_checksum:
