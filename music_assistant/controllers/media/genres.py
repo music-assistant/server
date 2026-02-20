@@ -672,15 +672,15 @@ class GenreController(MediaControllerBase[Genre]):
                     if genre_id not in alias_to_genre[norm]:
                         alias_to_genre[norm].append(genre_id)
 
-        # Extract unique raw genre names only from unmapped items
+        # Extract all unique raw genre names from media items.
+        # We don't filter by unmapped items here because a media item may
+        # have some genres mapped but not all (e.g. added a new genre tag).
         union_parts = [
             f"SELECT DISTINCT TRIM(g.value) AS raw_name "
             f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
             f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-            f"AND json_extract({table}.metadata, '$.genres') != '[]' "
-            f"AND {table}.item_id NOT IN "
-            f"(SELECT media_id FROM {gm} WHERE media_type = '{mtype.value}')"
-            for table, mtype in media_tables
+            f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+            for table, _mtype in media_tables
         ]
         unique_names_sql = " UNION ".join(union_parts)
         rows = await db.get_rows_from_query(unique_names_sql, limit=0)
@@ -740,7 +740,7 @@ class GenreController(MediaControllerBase[Genre]):
         count_before = await db.get_count(gm)
         for table, media_type in media_tables:
             full_query = (
-                f"{cte} INSERT OR REPLACE INTO {gm}"
+                f"{cte} INSERT OR IGNORE INTO {gm}"
                 f"(genre_id, media_id, media_type, alias) "
                 f"SELECT gl.genre_id, {table}.item_id, "
                 f"'{media_type.value}', TRIM(g.value) "
@@ -749,8 +749,11 @@ class GenreController(MediaControllerBase[Genre]):
                 f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
                 f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
                 f"AND json_extract({table}.metadata, '$.genres') != '[]' "
-                f"AND {table}.item_id NOT IN "
-                f"(SELECT media_id FROM {gm} WHERE media_type = '{media_type.value}')"
+                f"AND NOT EXISTS ("
+                f"SELECT 1 FROM {gm} ex "
+                f"WHERE ex.genre_id = gl.genre_id "
+                f"AND ex.media_id = {table}.item_id "
+                f"AND ex.media_type = '{media_type.value}')"
             )
             await db.execute(full_query)
         await db.commit()
@@ -794,7 +797,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         db_id = int(genre_id)
         genre = await self.get_library_item(db_id)
-        if alias.lower() == genre.name.lower():
+        if create_safe_string(alias, True, True) == create_safe_string(genre.name, True, True):
             msg = (
                 f"Cannot remove self-alias '{alias}' from genre '{genre.name}'. "
                 f"Delete the genre instead."
@@ -871,7 +874,9 @@ class GenreController(MediaControllerBase[Genre]):
         db_genre_id = int(genre_id)
         source_genre = await self.get_library_item(db_genre_id)
 
-        if alias.lower() == source_genre.name.lower():
+        if create_safe_string(alias, True, True) == create_safe_string(
+            source_genre.name, True, True
+        ):
             msg = (
                 f"Cannot promote self-alias '{alias}'. "
                 f"This alias is the primary name for genre '{source_genre.name}'."
@@ -1025,20 +1030,20 @@ class GenreController(MediaControllerBase[Genre]):
                 if gid not in found_ids:
                     found_ids.append(gid)
 
-            # Fallback: normalize each alias with create_safe_string and compare.
-            # Handles cases like "Synthpop" matching "synth-pop" where LOWER
-            # alone can't bridge the difference (hyphens, spaces, unicode).
-            if not found_ids:
-                all_genres = await self.mass.music.database.get_rows_from_query(
-                    f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
-                )
-                for row in all_genres:
-                    aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
-                    for alias in aliases:
-                        if create_safe_string(alias.strip(), True, True) == search_name:
-                            gid = int(row["item_id"])
-                            if gid not in found_ids:
-                                found_ids.append(gid)
+            # Also check via normalized comparison (create_safe_string).
+            # This catches genres that stages 1-2 miss due to normalization
+            # differences, e.g. genre A has "synthpop", genre B has "synth-pop"
+            # — both normalize to "synthpop" but LOWER can't bridge the gap.
+            all_genres = await self.mass.music.database.get_rows_from_query(
+                f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+            )
+            for row in all_genres:
+                aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
+                for alias in aliases:
+                    if create_safe_string(alias.strip(), True, True) == search_name:
+                        gid = int(row["item_id"])
+                        if gid not in found_ids:
+                            found_ids.append(gid)
 
             if found_ids:
                 return found_ids

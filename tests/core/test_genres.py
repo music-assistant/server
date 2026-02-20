@@ -562,6 +562,27 @@ class TestSyncMediaItemGenres:
             genre_ctrl.sync_media_item_genres(MediaType.TRACK, track2.item_id, {"ConcB"}),
         )
 
+    async def test_sync_one_alias_maps_to_multiple_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """One alias shared by two genres creates mappings to both (n:n)."""
+        genre_a = await genre_ctrl.add_item_to_library(_make_genre("GenreA"))
+        genre_b = await genre_ctrl.add_item_to_library(_make_genre("GenreB"))
+        # Both genres claim "shared-alias"
+        await genre_ctrl.add_alias(genre_a.item_id, "shared-alias")
+        await genre_ctrl.add_alias(genre_b.item_id, "shared-alias")
+        track = await _add_test_track(mass, "SharedAlias Track")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"shared-alias"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        mapped_genre_ids = {int(r["genre_id"]) for r in rows}
+        assert int(genre_a.item_id) in mapped_genre_ids
+        assert int(genre_b.item_id) in mapped_genre_ids
+
 
 # ===================================================================
 # Group F: promote_alias_to_genre (4 tests)
