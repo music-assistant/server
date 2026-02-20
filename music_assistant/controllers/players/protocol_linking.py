@@ -959,7 +959,6 @@ class ProtocolLinkingMixin:
         player: Player,
         required_feature: PlayerFeature,
         require_active: bool = False,
-        allow_native: bool = True,
     ) -> Player | None:
         """
         Get the best player(protocol) to send control commands to.
@@ -977,13 +976,19 @@ class ProtocolLinkingMixin:
             return protocol_player
 
         # if the player natively supports the required feature, use that
-        if allow_native and required_feature in player.supported_features:
+        if (
+            player.active_output_protocol == "native"
+            and required_feature in player.supported_features
+        ):
             return player
 
         # If require_active is set, and no active protocol found, return None
         if require_active:
             return None
 
+        # if the player natively supports the required feature, use that
+        if required_feature in player.supported_features:
+            return player
         # Otherwise, use the first available linked protocol
         for linked in player.linked_output_protocols:
             if (
@@ -1061,7 +1066,23 @@ class ProtocolLinkingMixin:
                     protocol_members.append(child_protocol.output_protocol_id)
                     continue
 
-            native_members.append(child_player_id)
+            # Check if child's protocol player is in parent's native group_members
+            # This handles native protocol players (e.g., native AirPlay player like Apple TV)
+            # where the parent itself contains protocol player IDs in its group_members
+            translated = False
+            for linked in child_player.linked_output_protocols:
+                if linked.output_protocol_id in parent_player.group_members:
+                    self.logger.debug(
+                        "Translating removal (native parent): %s -> protocol %s",
+                        child_player_id,
+                        linked.output_protocol_id,
+                    )
+                    native_members.append(linked.output_protocol_id)
+                    translated = True
+                    break
+
+            if not translated:
+                native_members.append(child_player_id)
 
         return protocol_members, native_members
 
@@ -1114,13 +1135,15 @@ class ProtocolLinkingMixin:
         if not child_protocol or not child_protocol.available:
             return None, None
 
-        # Check if parent supports this protocol
-        parent_protocol = parent_player.get_linked_protocol(child_protocol.protocol_domain)
+        # Check if parent supports this protocol (including native protocol)
+        parent_protocol = parent_player.get_output_protocol_by_domain(
+            child_protocol.protocol_domain
+        )
         if not parent_protocol or not parent_protocol.available:
             return None, None
 
         # Check if this protocol supports set_members
-        protocol_player = self.get_player(parent_protocol.output_protocol_id)
+        protocol_player = parent_player.get_protocol_player(parent_protocol.output_protocol_id)
         if (
             not protocol_player
             or PlayerFeature.SET_MEMBERS not in protocol_player.state.supported_features
@@ -1160,7 +1183,9 @@ class ProtocolLinkingMixin:
             )
             if not child_protocol or not child_protocol.available:
                 continue
-            protocol_player = self.get_player(parent_output_protocol.output_protocol_id)
+            protocol_player = parent_player.get_protocol_player(
+                parent_output_protocol.output_protocol_id
+            )
             if (
                 protocol_player
                 and PlayerFeature.SET_MEMBERS in protocol_player.state.supported_features
@@ -1226,9 +1251,11 @@ class ProtocolLinkingMixin:
                 and (not parent_protocol_domain or protocol_domain == parent_protocol_domain)
             ):
                 if not parent_protocol_player or parent_protocol_domain != protocol_domain:
-                    parent_protocol = parent_player.get_linked_protocol(protocol_domain)
+                    parent_protocol = parent_player.get_output_protocol_by_domain(protocol_domain)
                     if parent_protocol:
-                        parent_protocol_player = self.get_player(parent_protocol.output_protocol_id)
+                        parent_protocol_player = parent_player.get_protocol_player(
+                            parent_protocol.output_protocol_id
+                        )
                         parent_protocol_domain = protocol_domain
                 protocol_members.append(child_protocol_id)
                 self.logger.log(
@@ -1285,7 +1312,9 @@ class ProtocolLinkingMixin:
                     not parent_protocol_player
                     or parent_protocol_domain != parent_protocol.protocol_domain
                 ):
-                    parent_protocol_player = self.get_player(parent_protocol.output_protocol_id)
+                    parent_protocol_player = parent_player.get_protocol_player(
+                        parent_protocol.output_protocol_id
+                    )
                     if parent_protocol_player:
                         parent_protocol_domain = parent_protocol_player.provider.domain
                 protocol_members.append(child_protocol.output_protocol_id)
@@ -1360,28 +1389,55 @@ class ProtocolLinkingMixin:
             player_ids_to_remove=filtered_protocol_remove or None,
         )
 
+        # Set active output protocol on added child players
+        if filtered_protocol_add:
+            for child_protocol_id in filtered_protocol_add:
+                if child_protocol := self.get_player(child_protocol_id):
+                    if child_protocol.protocol_parent_id:
+                        if child_player := self.get_player(child_protocol.protocol_parent_id):
+                            if child_player.active_output_protocol != child_protocol_id:
+                                self.logger.debug(
+                                    "Setting active output protocol on child %s to %s",
+                                    child_player.state.name,
+                                    child_protocol_id,
+                                )
+                                child_player.set_active_output_protocol(child_protocol_id)
+
         # If we added members via this protocol, set it as the active output protocol
-        # and restart playback if currently playing
-        if (
-            filtered_protocol_add
-            and parent_player.active_output_protocol != parent_protocol_player.player_id
-        ):
+        # and restart playback if currently playing AND we're switching protocols
+        if filtered_protocol_add:
             previous_protocol = parent_player.active_output_protocol
             was_playing = parent_player.state.playback_state == PlaybackState.PLAYING
 
+            # Determine if we're switching protocols (which requires restart)
+            # Native protocol: parent_protocol_player is the same as parent_player
+            is_native_protocol = parent_protocol_player.player_id == parent_player.player_id
+            already_using_native = previous_protocol in (None, "native")
+            already_using_this_protocol = previous_protocol == parent_protocol_player.player_id
+
+            # Only restart if we're actually switching to a different protocol
+            switching_protocols = not (
+                (is_native_protocol and already_using_native) or already_using_this_protocol
+            )
+
             self.logger.debug(
-                "Setting active output protocol to %s after grouping members "
-                "(previous: %s, was_playing: %s)",
-                parent_protocol_player.player_id,
-                previous_protocol,
+                "Protocol grouping: is_native=%s, already_native=%s, already_this=%s, "
+                "switching=%s, was_playing=%s",
+                is_native_protocol,
+                already_using_native,
+                already_using_this_protocol,
+                switching_protocols,
                 was_playing,
             )
-            parent_player.set_active_output_protocol(parent_protocol_player.player_id)
 
-            # Restart playback on the new protocol if we were playing
-            if was_playing:
+            # Update active output protocol if not already using native
+            if not (is_native_protocol and already_using_native):
+                parent_player.set_active_output_protocol(parent_protocol_player.player_id)
+
+            # Restart playback only if we're switching protocols
+            if was_playing and switching_protocols:
                 self.logger.info(
-                    "Restarting playback on %s via %s protocol after grouping members",
+                    "Restarting playback on %s via %s protocol after switching protocols",
                     parent_player.state.name,
                     parent_protocol_player.provider.domain,
                 )
