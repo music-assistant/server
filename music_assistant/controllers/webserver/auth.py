@@ -1645,31 +1645,24 @@ class AuthenticationManager:
         :param provider_name: Optional provider name to revoke codes for.
         :return: Number of codes revoked.
         """
-        if user_id and provider_name:
-            # Filter by both user and provider
-            rows = await self.database.get_rows(
-                "join_codes", {"user_id": user_id, "provider_name": provider_name}
-            )
-            count = len(list(rows))
-            await self.database.delete(
-                "join_codes", {"user_id": user_id, "provider_name": provider_name}
-            )
-        elif user_id:
-            # Filter by user only
-            rows = await self.database.get_rows("join_codes", {"user_id": user_id})
-            count = len(list(rows))
-            await self.database.delete("join_codes", {"user_id": user_id})
-        elif provider_name:
-            # Filter by provider only
-            rows = await self.database.get_rows("join_codes", {"provider_name": provider_name})
-            count = len(list(rows))
-            await self.database.delete("join_codes", {"provider_name": provider_name})
-        else:
-            # Revoke all join codes
-            count = await self.database.get_count("join_codes")
-            await self.database.execute("DELETE FROM join_codes")
+        conditions = []
+        params = {}
 
+        if user_id:
+            conditions.append("user_id = :user_id")
+            params["user_id"] = user_id
+        if provider_name:
+            conditions.append("provider_name = :provider_name")
+            params["provider_name"] = provider_name
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        cursor = await self.database.execute(
+            f"DELETE FROM join_codes {where_clause}", params or None
+        )
         await self.database.commit()
+
+        count = cursor.rowcount
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
