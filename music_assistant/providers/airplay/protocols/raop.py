@@ -40,7 +40,6 @@ class RaopStream(AirPlayProtocol):
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
@@ -49,9 +48,7 @@ class RaopStream(AirPlayProtocol):
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        if device_password := self.mass.config.get_raw_player_config_value(
-            player_id, CONF_PASSWORD
-        ):
+        if device_password := self.player.config.get_value(CONF_PASSWORD):
             extra_args += ["-password", str(device_password)]
         # Add RAOP credentials from pairing if available (for Apple devices)
         if raop_credentials := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
@@ -124,6 +121,12 @@ class RaopStream(AirPlayProtocol):
                 # note that this represents the total elapsed time of the streaming session
                 elapsed_time = millis / 1000
                 player.set_state_from_stream(elapsed_time=elapsed_time)
+            elif "Password required, but none supplied." in line:
+                logger.error(
+                    f"Player {self.player.name} requires a password. "
+                    f"Please add one in Player Settings"
+                )
+                break
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
