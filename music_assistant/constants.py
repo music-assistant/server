@@ -1,8 +1,9 @@
 """All constants for Music Assistant."""
 
+import json
 import pathlib
 from copy import deepcopy
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from music_assistant_models.config_entries import (
     MULTI_VALUE_SPLITTER,
@@ -26,8 +27,8 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 )
 
 
-API_SCHEMA_VERSION: Final[int] = 28
-MIN_SCHEMA_VERSION: Final[int] = 28
+API_SCHEMA_VERSION: Final[int] = 29
+MIN_SCHEMA_VERSION: Final[int] = 29
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
@@ -44,6 +45,7 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
+GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genre_mapping.json")
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -146,6 +148,47 @@ DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
+DB_TABLE_GENRES: Final[str] = "genres"
+DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+
+
+def load_genre_mapping() -> list[dict[str, Any]]:
+    """Load default genre mapping from JSON file.
+
+    :return: List of genre mapping dictionaries with 'genre' and 'aliases' keys.
+    :raises FileNotFoundError: If genre_mapping.json is missing.
+    :raises ValueError: If JSON is malformed or missing required fields.
+    """
+    try:
+        content = GENRE_MAPPING_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except FileNotFoundError as err:
+        msg = f"Genre mapping file not found: {GENRE_MAPPING_FILE}"
+        raise FileNotFoundError(msg) from err
+    except json.JSONDecodeError as err:
+        msg = f"Invalid JSON in genre mapping file: {GENRE_MAPPING_FILE}"
+        raise ValueError(msg) from err
+
+    if not isinstance(data, list):
+        msg = f"Genre mapping must be a list, got {type(data).__name__}"
+        raise TypeError(msg)
+
+    for idx, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            msg = f"Genre mapping entry {idx} must be a dict, got {type(entry).__name__}"
+            raise TypeError(msg)
+        if "genre" not in entry:
+            msg = f"Genre mapping entry {idx} missing required field 'genre'"
+            raise ValueError(msg)
+        if "aliases" not in entry:
+            msg = f"Genre mapping entry {idx} missing required field 'aliases'"
+            raise ValueError(msg)
+
+    return cast("list[dict[str, Any]]", data)
+
+
+DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping()
+DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
 
 # all other

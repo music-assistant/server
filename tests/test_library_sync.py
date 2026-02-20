@@ -542,6 +542,7 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
         join_parts=join_parts,
         favorite=None,
         search=None,
+        genre_ids=None,
         provider_filter=None,
         in_library_only=True,
     )
@@ -568,6 +569,7 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
         join_parts=join_parts,
         favorite=None,
         search=None,
+        genre_ids=None,
         provider_filter=["spotify_1"],
         in_library_only=True,
     )
@@ -595,6 +597,7 @@ async def test_apply_filters_no_in_library_filter_by_default() -> None:
         join_parts=join_parts,
         favorite=None,
         search=None,
+        genre_ids=None,
         provider_filter=None,
         in_library_only=False,
     )
@@ -619,6 +622,7 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
         join_parts=join_parts,
         favorite=None,
         search=None,
+        genre_ids=None,
         provider_filter=["spotify_1"],
         in_library_only=False,
     )
