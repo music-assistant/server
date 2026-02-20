@@ -1668,7 +1668,7 @@ class AuthenticationManager:
         )
         await self.database.commit()
 
-        count = cursor.rowcount
+        count = int(cursor.rowcount)
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
