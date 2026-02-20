@@ -6,19 +6,10 @@ import asyncio
 from typing import TYPE_CHECKING, cast
 
 import requests
-import plexapi.exceptions
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.server import PlexServer
-from plexapi.myplex import MyPlexAccount
-
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-    SetupFailedError,
-)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -32,6 +23,7 @@ async def get_libraries(
     local_server_port: str,
     local_server_verify_cert: bool,
     instance_id: str | None = None,
+    plex_server: PlexServer | None = None,
 ) -> list[str]:
     """
     Get all music libraries for all plex servers.
@@ -48,48 +40,12 @@ async def get_libraries(
     """
     cache_key = "plex_libraries"
 
+    if plex_server is None:
+        raise ValueError("plex_server must be provided")
+
     def _get_libraries() -> list[str]:
         # create a listing of available music libraries on all servers
         all_libraries: list[str] = []
-        session = requests.Session()
-        session.verify = local_server_verify_cert
-        local_server_protocol = "https" if local_server_ssl else "http"
-        base_url = f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
-
-        plex_server: PlexServer | None = None
-
-        # Plex.tv for resource discovery
-        if auth_token and auth_token != "local_auth":
-            try:
-                account = MyPlexAccount(token=auth_token)
-            except plexapi.exceptions.Unauthorized as err:
-                raise LoginFailed("Plex.tv authentication failed") from err
-
-            # Try to find the resource that matches local IP/port
-            for resource in account.resources():
-                if "server" not in resource.provides:
-                    continue
-                try:
-                    for conn in resource.connections:
-                        if conn.address == local_server_ip and str(conn.port) == str(local_server_port):
-                            plex_server = PlexServer(
-                                f"{conn.protocol}://{conn.address}:{conn.port}",
-                                token=resource.accessToken,
-                                session=session,
-                            )
-                            break
-                    if plex_server:
-                        break
-                except Exception:
-                    continue
-            if plex_server is None:
-                raise LoginFailed(
-                    f"Configured Plex server {local_server_ip}:{local_server_port} not found in Plex.tv resources"
-                )
-
-        else:
-            plex_server = PlexServer(base_url, session=session)
-
         for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:
                 continue
