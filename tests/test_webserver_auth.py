@@ -1016,8 +1016,7 @@ async def test_exchange_join_code_expired(auth_manager: AuthenticationManager) -
     )
 
     # Manually expire the code by updating expires_at in database
-    code_hash = hashlib.sha256(code.encode()).hexdigest()
-    code_row = await auth_manager.database.get_row("join_codes", {"code_hash": code_hash})
+    code_row = await auth_manager.database.get_row("join_codes", {"code": code})
     assert code_row is not None
 
     past_time = utc() - timedelta(hours=1)

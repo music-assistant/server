@@ -57,7 +57,7 @@ class SonosPlayerProvider(PlayerProvider):
         while self._discovery_running:
             await asyncio.sleep(0.5)
         # Clean up subscriptions and connections
-        for sonos_player in self.mass.players.all(provider_filter=self.instance_id):
+        for sonos_player in self.mass.players.all_players(provider_filter=self.instance_id):
             sonos_player = cast("SonosPlayer", sonos_player)
             await sonos_player.offline()
         # Stop the async event listener
@@ -136,7 +136,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Set up a discovered Sonos player."""
         player_id = soco.uid
 
-        if existing := cast("SonosPlayer", self.mass.players.get(player_id=player_id)):
+        if existing := cast("SonosPlayer", self.mass.players.get_player(player_id=player_id)):
             if existing.soco.ip_address != soco.ip_address:
                 existing.update_ip(soco.ip_address)
             return

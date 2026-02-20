@@ -58,7 +58,7 @@ TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renew
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 6
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
-JOIN_CODE_DEFAULT_EXPIRY_HOURS = 6
+JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
 
 
 class AuthenticationManager:
@@ -209,7 +209,7 @@ class AuthenticationManager:
             """
             CREATE TABLE IF NOT EXISTS join_codes (
                 code_id TEXT PRIMARY KEY,
-                code_hash TEXT NOT NULL UNIQUE,
+                code TEXT NOT NULL UNIQUE,
                 user_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
@@ -239,9 +239,6 @@ class AuthenticationManager:
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_join_codes_hash ON join_codes(code_hash)"
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
@@ -289,7 +286,7 @@ class AuthenticationManager:
                 """
                 CREATE TABLE IF NOT EXISTS join_codes (
                     code_id TEXT PRIMARY KEY,
-                    code_hash TEXT NOT NULL UNIQUE,
+                    code TEXT NOT NULL UNIQUE,
                     user_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -398,15 +395,6 @@ class AuthenticationManager:
             return AuthResult(success=False, error="Invalid provider")
 
         return await provider.authenticate(credentials)
-
-    @staticmethod
-    def _is_jwt_token(token: str) -> bool:
-        """Check if token appears to be a JWT (3 dot-separated parts).
-
-        :param token: The token string to check.
-        :return: True if token has JWT format, False otherwise.
-        """
-        return token.count(".") == 2
 
     async def authenticate_with_token(self, token: str) -> User | None:
         """
@@ -885,11 +873,7 @@ class AuthenticationManager:
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
     async def create_token(
-        self,
-        user: User,
-        name: str,
-        is_long_lived: bool = False,
-        provider_name: str | None = None,
+        self, user: User, name: str, is_long_lived: bool = False, provider_name: str | None = None
     ) -> str:
         """
         Create a new JWT access token for a user.
@@ -1557,7 +1541,7 @@ class AuthenticationManager:
         self,
         user_id: str,
         expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
-        max_uses: int = 0,
+        max_uses: int = 1,
         device_name: str = "Short Code Login",
         provider_name: str | None = None,
     ) -> tuple[str, datetime]:
@@ -1568,7 +1552,7 @@ class AuthenticationManager:
         device pairing, or other short-code authentication flows.
 
         :param user_id: The user ID that tokens created from this code will belong to.
-        :param expires_in_hours: Hours until code expires (default: 24).
+        :param expires_in_hours: Hours until code expires (default: 8).
         :param max_uses: Maximum number of uses (0 = unlimited).
         :param device_name: Device name for tokens created with this code.
         :param provider_name: Optional provider name identifier (e.g., "party_mode").
@@ -1579,16 +1563,14 @@ class AuthenticationManager:
         if not user:
             raise ValueError(f"User not found: {user_id}")
 
-        # Generate short alphanumeric code
         code = "".join(secrets.choice(JOIN_CODE_CHARSET) for _ in range(JOIN_CODE_LENGTH))
-        code_hash = hashlib.sha256(code.encode()).hexdigest()
 
         now = utc()
         expires_at = now + timedelta(hours=expires_in_hours)
 
         code_data = {
             "code_id": secrets.token_urlsafe(32),
-            "code_hash": code_hash,
+            "code": code,
             "user_id": user_id,
             "created_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
@@ -1612,49 +1594,41 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: JWT token string if valid, None otherwise.
         """
-        code_hash = hashlib.sha256(code.upper().encode()).hexdigest()
-
-        # Find code in database
-        code_row = await self.database.get_row("join_codes", {"code_hash": code_hash})
-        if not code_row:
-            return None
-
-        # Check if code is expired
-        expires_at = datetime.fromisoformat(code_row["expires_at"])
-        if utc() > expires_at:
-            # Code expired, delete it
-            await self.database.delete("join_codes", {"code_id": code_row["code_id"]})
-            await self.database.commit()
-            return None
-
-        # Check use limit
-        max_uses = code_row["max_uses"]
-        use_count = code_row["use_count"]
-        if max_uses > 0 and use_count >= max_uses:
-            return None
-
-        # Update use count
         now = utc()
-        await self.database.update(
-            "join_codes",
-            {"code_id": code_row["code_id"]},
-            {"use_count": use_count + 1, "last_used_at": now.isoformat()},
+
+        cursor = await self.database.execute(
+            """
+            UPDATE join_codes
+            SET use_count = use_count + 1,
+                last_used_at = ?
+            WHERE code = ?
+            AND expires_at > ?
+            AND (max_uses = 0 OR use_count < max_uses)
+            RETURNING user_id, provider_name, device_name
+            """,
+            (now.isoformat(), code.upper(), now.isoformat()),
         )
+        row = await cursor.fetchone()
         await self.database.commit()
 
-        # Get user and create token
-        user = await self.get_user(code_row["user_id"])
-        if not user:
-            self.logger.error("User not found for join code (user_id=%s)", code_row["user_id"])
+        if not row:
             return None
 
-        device_name = code_row["device_name"] or "Short Code Login"
-        provider_name = code_row["provider_name"]  # May be None
+        user = await self.get_user(row["user_id"])
+        if not user:
+            self.logger.error(
+                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
+            )
+            raise RuntimeError(
+                f"Data integrity violation: user_id {row['user_id']} missing despite FK constraint"
+            )
+
+        device_name = row["device_name"] or "Short Code Login"
         token = await self.create_token(
             user,
             device_name,
             is_long_lived=False,
-            provider_name=provider_name,
+            provider_name=row["provider_name"],
         )
 
         self.logger.debug("Join code exchanged for token (user=%s)", user.username)
@@ -1692,8 +1666,7 @@ class AuthenticationManager:
             await self.database.delete("join_codes", {"provider_name": provider_name})
         else:
             # Revoke all join codes
-            rows = await self.database.get_rows("join_codes")
-            count = len(list(rows))
+            count = await self.database.get_count("join_codes")
             await self.database.execute("DELETE FROM join_codes")
 
         await self.database.commit()

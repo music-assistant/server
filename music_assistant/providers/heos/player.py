@@ -30,6 +30,7 @@ PLAYER_FEATURES = {
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
+    PlayerFeature.PLAY_MEDIA,
 }
 
 
@@ -254,7 +255,8 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        await self._device.play_url(media.uri)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self._device.play_url(url)
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id

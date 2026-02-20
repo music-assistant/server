@@ -96,7 +96,7 @@ class MusicCastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""
-        for mc_player in self.mass.players.all(provider_filter=self.instance_id):
+        for mc_player in self.mass.players.all_players(provider_filter=self.instance_id):
             assert isinstance(mc_player, MusicCastPlayer)  # for type checking
             mc_player.physical_device.remove()
 
@@ -159,7 +159,7 @@ class MusicCastProvider(PlayerProvider):
         if not check:
             return
 
-        if self.mass.players.get(device_id) is not None:
+        if self.mass.players.get_player(device_id) is not None:
             return
         mc_player_known = self.musiccast_player_helpers.get(device_id)
         if mc_player_known is not None and (

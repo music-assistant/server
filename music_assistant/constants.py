@@ -9,10 +9,21 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
+from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
+
+# Type alias for items that can be added to playlists
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+
+# Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
+PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
 
 
 API_SCHEMA_VERSION: Final[int] = 28
@@ -91,6 +102,13 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
+CONF_LINKED_PROTOCOL_PLAYER_IDS: Final[str] = (
+    "linked_protocol_player_ids"  # cached for fast restart
+)
+CONF_PROTOCOL_PARENT_ID: Final[str] = (
+    "protocol_parent_id"  # cached native player ID for protocol player
+)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -100,6 +118,10 @@ CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
 CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
+CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
+CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -142,7 +164,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
-SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
+
 
 ####### REUSABLE CONFIG ENTRIES #######
 
@@ -220,7 +242,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
-    range=(-70, -5),
+    range=(-30, -5),
     default_value=-17,
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
@@ -701,6 +723,19 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     category="sync_options",
 )
 
+CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
+    key="library_sync_deletions",
+    type=ConfigEntryType.BOOLEAN,
+    label="Sync library deletions",
+    description="When enabled, items removed from the provider's library will also be "
+    "hidden from the Music Assistant library.\n\n"
+    "When disabled, items removed from the provider will remain visible in the "
+    "Music Assistant library.",
+    default_value=True,
+    category="sync_options",
+    advanced=True,
+)
+
 
 CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
     ConfigValueOption("Disable automatic sync for this mediatype", 0),
@@ -896,6 +931,8 @@ ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_MUTE_LOCK: Final[str] = "mute_lock"
+ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -916,8 +953,50 @@ SOUNDTRACK_INDICATORS = [
     r"\boriginal.*cast.*recording\b",
 ]
 
+# how often we report the playback progress in the player_queues controller
+PLAYBACK_REPORT_INTERVAL_SECONDS = 30
+
 # List of providers that do not use HTTP streaming
 # but consume raw audio data over other protocols
 # for provider domains in this list, we won't show the default
 # http-streaming specific config options in player settings
 NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
+
+# Protocol priority values (lower = more preferred)
+PROTOCOL_PRIORITY: Final[dict[str, int]] = {
+    "sendspin": 10,
+    "squeezelite": 20,
+    "chromecast": 30,
+    "airplay": 40,
+    "dlna": 50,
+}
+
+PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from (inactive) protocol implementations
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
+    PlayerFeature.SET_MEMBERS,
+}
+
+ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the active output protocol
+    *PROTOCOL_FEATURES,
+    PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.MULTI_DEVICE_DSP,
+    PlayerFeature.PAUSE,
+}
+
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+    # list of providers that are setup by default once
+    # (and they can be removed/disabled by the user if they want to)
+    # the boolean value indicates whether it needs to be discovered on mdns
+    ("airplay", False),
+    ("chromecast", False),
+    ("dlna", False),
+    ("sonos", True),
+    ("bluesound", True),
+    ("heos", True),
+}

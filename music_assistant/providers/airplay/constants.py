@@ -5,7 +5,8 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Final
 
-from music_assistant_models.enums import ContentType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import INTERNAL_PCM_FORMAT
@@ -80,3 +81,22 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
 )
+
+BROKEN_AIRPLAY_WARN = ConfigEntry(
+    key="BROKEN_AIRPLAY",
+    type=ConfigEntryType.ALERT,
+    default_value=None,
+    required=False,
+    label="This player is known to have broken AirPlay support. "
+    "Playback may fail or simply be silent. "
+    "There is no workaround for this issue at the moment. \n"
+    "If you already enforced AirPlay 2 on the player and it remains silent, "
+    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
+)
+
+BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
+    PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.SET_MEMBERS,
+    PlayerFeature.MULTI_DEVICE_DSP,
+    PlayerFeature.VOLUME_SET,
+}

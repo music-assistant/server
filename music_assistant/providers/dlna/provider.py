@@ -86,10 +86,6 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 assert ssdp_udn is not None  # for type checking
 
-                if "rincon" in ssdp_udn.lower():
-                    # ignore Sonos devices
-                    return
-
                 discovered_devices.add(ssdp_udn)
 
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
@@ -103,11 +99,11 @@ class DLNAPlayerProvider(PlayerProvider):
         finally:
             self._discovery_running = False
 
-        def reschedule() -> None:
-            self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
+            def reschedule() -> None:
+                self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
 
-        # reschedule self once finished
-        self.mass.loop.call_later(300, reschedule)
+            # reschedule self once finished
+            self.mass.loop.call_later(300, reschedule)
 
     async def _device_disconnect(self, dlna_player: DLNAPlayer) -> None:
         """
@@ -125,6 +121,7 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.device.on_event = None
             old_device = dlna_player.device
             dlna_player.device = None
+            dlna_player.set_available(False)
             await old_device.async_unsubscribe_services()
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
@@ -151,10 +148,14 @@ class DLNAPlayerProvider(PlayerProvider):
                     player_id=udn,
                     description_url=description_url,
                 )
-                # will be updated later.
+                # will be updated later when device connects
                 dlna_player._attr_device_info = DeviceInfo(
                     model="unknown",
                     manufacturer="unknown",
                 )
                 self.dlnaplayers[udn] = dlna_player
-            await dlna_player.setup()
+
+            # Setup will return False if the device should be ignored (e.g., passive speaker)
+            if not await dlna_player.setup():
+                # Remove from dict if it was just added
+                self.dlnaplayers.pop(udn, None)

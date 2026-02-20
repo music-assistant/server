@@ -61,7 +61,7 @@ from music_assistant.constants import (
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
@@ -82,7 +82,6 @@ from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
     get_total_system_memory,
-    select_free_port,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -112,6 +111,7 @@ CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 CONF_ALLOW_BUFFER_DEFAULT = TOTAL_SYSTEM_MEMORY_GB >= 8.0
+DEFAULT_PORT: Final[int] = 8097
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -186,7 +186,6 @@ class StreamsController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
                 key=CONF_ALLOW_BUFFER,
@@ -268,7 +267,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=default_port,
+                default_value=DEFAULT_PORT,
                 label="TCP Port",
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
@@ -281,10 +280,10 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="generic",
@@ -313,7 +312,7 @@ class StreamsController(CoreController):
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
-        self.publish_port = config.get_value(CONF_BIND_PORT)
+        self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
@@ -337,12 +336,12 @@ class StreamsController(CoreController):
             static_routes=[
                 (
                     "*",
-                    "/flow/{session_id}/{queue_id}/{queue_item_id}.{fmt}",
+                    "/flow/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}",
                     self.serve_queue_flow_stream,
                 ),
                 (
                     "*",
-                    "/single/{session_id}/{queue_id}/{queue_item_id}.{fmt}",
+                    "/single/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}",
                     self.serve_queue_item_stream,
                 ),
                 (
@@ -372,14 +371,10 @@ class StreamsController(CoreController):
 
     async def resolve_stream_url(
         self,
-        session_id: str,
-        queue_item: QueueItem,
-        flow_mode: bool = False,
-        player_id: str | None = None,
+        player_id: str,
+        media: PlayerMedia,
     ) -> str:
-        """Resolve the stream URL for the given QueueItem."""
-        if not player_id:
-            player_id = queue_item.queue_id
+        """Resolve the stream URL for the given PlayerMedia."""
         conf_output_codec = await self.mass.config.get_player_config_value(
             player_id, CONF_OUTPUT_CODEC, default="flac", return_type=str
         )
@@ -388,8 +383,15 @@ class StreamsController(CoreController):
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
+        extra_data = media.custom_data or {}
+        flow_mode = extra_data.get("flow_mode", False)
+        session_id = extra_data.get("session_id")
+        queue_item_id = media.queue_item_id
+        if not session_id or not queue_item_id:
+            raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
+        queue_id = media.source_id
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_item.queue_id}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
+        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"  # noqa: E501
 
     async def get_plugin_source_url(
         self,
@@ -407,13 +409,14 @@ class StreamsController(CoreController):
         """Stream single queueitem audio to a player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue:
+        player_id = request.match_info["player_id"]
+        if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
         if queue.session_id and session_id != queue.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        queue_player = self.mass.players.get(queue_id)
+        if not (player := self.mass.players.get_player(player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         queue_item_id = request.match_info["queue_item_id"]
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
@@ -431,26 +434,24 @@ class StreamsController(CoreController):
                 raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
 
         # pick output format based on the streamdetails and player capabilities
-        if not queue_player:
-            raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
-
-        # work out pcm format based on streamdetails
         pcm_format = await self._select_pcm_format(
-            player=queue_player,
+            player=player,
             streamdetails=queue_item.streamdetails,
             smartfades_enabled=True,
         )
         output_format = await self.get_output_format(
             output_format_str=request.match_info["fmt"],
-            player=queue_player,
+            player=player,
             content_sample_rate=pcm_format.sample_rate,
             content_bit_depth=pcm_format.bit_depth,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
+        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
+        # see https://github.com/music-assistant/support/issues/4913
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name,
+            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -491,13 +492,13 @@ class StreamsController(CoreController):
             )
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
-            and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
+            and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
         ):
             # crossfade is not supported on this player due to missing gapless playback
             self.logger.warning(
                 "Crossfade disabled: Player %s does not support gapless playback, "
                 "consider enabling flow mode to enable crossfade on this player.",
-                queue_player.display_name if queue_player else "Unknown Player",
+                player.state.name if player else "Unknown Player",
             )
             smart_fades_mode = SmartFadesMode.DISABLED
 
@@ -522,14 +523,6 @@ class StreamsController(CoreController):
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
-        if queue_item.media_type == MediaType.RADIO:
-            # keep very short buffer for radio streams
-            # to keep them (more or less) realtime and prevent time outs
-            read_rate_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "2"]
-        else:
-            # just allow the player to buffer whatever it wants for single item streams
-            read_rate_input_args = None
-
         first_chunk_received = False
         bytes_sent = 0
         async for chunk in get_ffmpeg_stream(
@@ -538,11 +531,10 @@ class StreamsController(CoreController):
             output_format=output_format,
             filter_params=get_player_filter_params(
                 self.mass,
-                player_id=queue_player.player_id,
+                player_id=player.player_id,
                 input_format=pcm_format,
                 output_format=output_format,
             ),
-            extra_input_args=read_rate_input_args,
         ):
             try:
                 await resp.write(chunk)
@@ -555,7 +547,7 @@ class StreamsController(CoreController):
                         queue_item.queue_id, queue_item.queue_item_id
                     )
             except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                if first_chunk_received and not queue_player.stop_called:
+                if first_chunk_received and not player.stop_called:
                     # Player disconnected (unexpected) after receiving at least some data
                     # This could indicate buffering issues, network problems,
                     # or player-specific issues
@@ -586,11 +578,11 @@ class StreamsController(CoreController):
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue:
+        player_id = request.match_info["player_id"]
+        if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
-        if not (queue_player := self.mass.players.get(queue_id)):
-            raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
+        if not (player := self.mass.players.get_player(player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
@@ -599,12 +591,12 @@ class StreamsController(CoreController):
         queue.flow_mode_stream_log = []
 
         # select the highest possible PCM settings for this player
-        flow_pcm_format = await self._select_flow_format(queue_player)
+        flow_pcm_format = await self._select_flow_format(player)
 
         # work out output format/details
         output_format = await self.get_output_format(
             output_format_str=request.match_info["fmt"],
-            player=queue_player,
+            player=player,
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
         )
@@ -663,7 +655,7 @@ class StreamsController(CoreController):
             input_format=flow_pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(
-                self.mass, queue_player.player_id, flow_pcm_format, output_format
+                self.mass, player.player_id, flow_pcm_format, output_format
             ),
             # we need to slowly feed the music to avoid the player stopping and later
             # restarting (or completely failing) the audio stream by keeping the buffer short.
@@ -768,7 +760,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.display_name,
+            player.state.name,
         )
         async for chunk in self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
@@ -784,7 +776,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.display_name,
+            player.state.name,
         )
 
         return resp
@@ -798,7 +790,7 @@ class StreamsController(CoreController):
             raise ProviderUnavailableError(f"Unknown PluginSource: {plugin_source_id}")
         # work out output format/details
         player_id = request.match_info["player_id"]
-        player = self.mass.players.get(player_id)
+        player = self.mass.players.get_player(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         plugin_source = provider.get_source()
@@ -909,7 +901,7 @@ class StreamsController(CoreController):
         ):
             # special case: member player accessing UGP stream
             # Check URI to distinguish from the UGP accessing its own stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get_player(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             if ugp_stream.base_pcm_format == pcm_format:
@@ -1142,9 +1134,10 @@ class StreamsController(CoreController):
                     del _chunk
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
-            if self._crossfade_allowed(
+            crossfade_allowed = self._crossfade_allowed(
                 queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
-            ):
+            )
+            if crossfade_allowed:
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_buffer_size:]
                 last_streamdetails = queue_track.streamdetails
@@ -1154,7 +1147,14 @@ class StreamsController(CoreController):
                     yield remaining_bytes
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif buffer:
+            elif smart_fades_mode != SmartFadesMode.DISABLED:
+                self.logger.debug(
+                    "Flow mode: crossfade NOT allowed for track %s on queue %s"
+                    " - fadeout part not saved",
+                    queue_track.name,
+                    queue.display_name,
+                )
+            if not crossfade_allowed and buffer:
                 # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
                 for _chunk in divide_chunks(buffer, pcm_sample_size):
@@ -1495,6 +1495,12 @@ class StreamsController(CoreController):
         streamdetails = queue_item.streamdetails
         assert streamdetails
         crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
+        self.logger.debug(
+            "Crossfade data pop for queue %s (track: %s): %s",
+            queue.display_name,
+            queue_item.name,
+            "found" if crossfade_data else "EMPTY - no crossfade data from previous track",
+        )
 
         if crossfade_data and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track
@@ -1674,7 +1680,7 @@ class StreamsController(CoreController):
             queue.index_in_buffer = self.mass.player_queues.index_by_id(
                 queue.queue_id, next_queue_item.queue_item_id
             )
-            queue_player = self.mass.players.get(queue.queue_id)
+            queue_player = self.mass.players.get_player(queue.queue_id)
             assert queue_player is not None
             next_queue_item_pcm_format = await self._select_pcm_format(
                 player=queue_player,
@@ -1685,20 +1691,34 @@ class StreamsController(CoreController):
             # end of queue reached, no next item
             next_queue_item = None
 
-        if not next_queue_item or not self._crossfade_allowed(
+        crossfade_allowed = bool(next_queue_item) and self._crossfade_allowed(
             queue_item,
             smart_fades_mode=smart_fades_mode,
             flow_mode=False,
             next_queue_item=next_queue_item,
             sample_rate=pcm_format.sample_rate,
             next_sample_rate=next_queue_item_pcm_format.sample_rate,
-        ):
+        )
+        if not crossfade_allowed:
+            if not next_queue_item:
+                self.logger.debug(
+                    "Enqueue mode: no next queue item loaded (QueueEmpty) for queue %s",
+                    queue.display_name,
+                )
+            else:
+                self.logger.debug(
+                    "Enqueue mode: crossfade NOT allowed for track %s -> %s on queue %s",
+                    queue_item.name,
+                    next_queue_item.name,
+                    queue.display_name,
+                )
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
             for _chunk in divide_chunks(buffer, pcm_format.pcm_sample_size):
                 yield _chunk
         else:
             # if crossfade is enabled, save fadeout part in buffer to pickup for next track
+            assert next_queue_item is not None
             fade_out_data = buffer
             buffer = b""
             try:
@@ -1767,6 +1787,12 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,  # Format of the data (current track)
                     fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
                     queue_item_id=next_queue_item.queue_item_id,
+                )
+                self.logger.debug(
+                    "Crossfade data STORED for queue %s (outgoing track: %s, incoming track: %s)",
+                    queue.display_name,
+                    queue_item.name,
+                    next_queue_item.name if next_queue_item else "N/A",
                 )
             except AudioError:
                 # no crossfade possible, just yield the fade_out_data
@@ -1918,7 +1944,7 @@ class StreamsController(CoreController):
         """Get the crossfade config for a queue item."""
         if smart_fades_mode == SmartFadesMode.DISABLED:
             return False
-        if not (self.mass.players.get(queue_item.queue_id)):
+        if not (self.mass.players.get_player(queue_item.queue_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")
@@ -1929,6 +1955,12 @@ class StreamsController(CoreController):
         )
         if not next_item:
             # there is no next item!
+            self.logger.debug(
+                "Crossfade not allowed: no next item found for %s (flow_mode=%s, queue_id=%s)",
+                queue_item.name,
+                flow_mode,
+                queue_item.queue_id,
+            )
             return False
         # check if next item is a track
         if next_item.media_type != MediaType.TRACK:
