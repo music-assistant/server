@@ -267,8 +267,7 @@ class WiimPlayer(Player):
 
     def update_ma_state(self) -> None:
         """Update MA state from SDK's cache/HTTP poll attributes."""
-        logger = self.logger
-        logger.debug("Device %s: Updating MA state from SDK cache/HTTP poll", self._attr_name)
+        self.logger.debug("Device %s: Updating MA state from SDK cache/HTTP poll", self._attr_name)
 
         self._attr_available = self.wiim_player.available
 
