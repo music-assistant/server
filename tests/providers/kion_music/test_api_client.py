@@ -8,7 +8,8 @@ import pytest
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from yandex_music.exceptions import NetworkError
 
-from music_assistant.providers.kion_music.api_client import KION_BASE_URL, KionMusicClient
+from music_assistant.providers.kion_music.api_client import KionMusicClient
+from music_assistant.providers.kion_music.constants import DEFAULT_BASE_URL
 
 
 @pytest.fixture
@@ -18,7 +19,7 @@ def client() -> KionMusicClient:
 
 
 async def test_connect_sets_base_url(client: KionMusicClient) -> None:
-    """Verify connect() passes KION_BASE_URL to ClientAsync."""
+    """Verify connect() passes DEFAULT_BASE_URL to ClientAsync."""
     with mock.patch("music_assistant.providers.kion_music.api_client.ClientAsync") as mock_cls:
         mock_instance = mock.AsyncMock()
         mock_instance.me = type("Me", (), {"account": type("Account", (), {"uid": 42})()})()
@@ -28,7 +29,7 @@ async def test_connect_sets_base_url(client: KionMusicClient) -> None:
         result = await client.connect()
 
         assert result is True
-        mock_cls.assert_called_once_with("fake_token", base_url=KION_BASE_URL)
+        mock_cls.assert_called_once_with("fake_token", base_url=DEFAULT_BASE_URL)
 
 
 async def test_get_liked_albums_batching(client: KionMusicClient) -> None:

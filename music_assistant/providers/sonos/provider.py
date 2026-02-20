@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import IdentifierType
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -27,7 +27,6 @@ from .helpers import get_primary_ip_address
 from .player import SonosPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -57,7 +56,7 @@ class SonosPlayerProvider(PlayerProvider):
                 continue
             player_id = discovery_info["device"]["id"]
             sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
-            sonos_player.device_info.ip_address = ip_address
+            sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
             await sonos_player.setup()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -78,7 +77,7 @@ class SonosPlayerProvider(PlayerProvider):
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
         # handle update for existing device
-        if sonos_player := self.mass.players.get(player_id):
+        if sonos_player := self.mass.players.get_player(player_id):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
@@ -90,7 +89,7 @@ class SonosPlayerProvider(PlayerProvider):
                     sonos_player.device_info.ip_address,
                     cur_address,
                 )
-                sonos_player.device_info.ip_address = cur_address
+                sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
             if not sonos_player.connected:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
@@ -103,24 +102,9 @@ class SonosPlayerProvider(PlayerProvider):
         task_id = f"setup_sonos_{player_id}"
         self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
 
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        await super().on_player_config_change(config, changed_keys)
-        if "values/airplay_mode" in changed_keys and (
-            (sonos_player := self.mass.players.get(config.player_id))
-            and (airplay_player := sonos_player.get_linked_airplay_player(False))
-            and airplay_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-        ):
-            # edge case: we switched from airplay mode to sonos mode (or vice versa)
-            # we need to make sure that playback gets stopped on the airplay player
-            await airplay_player.stop()
-            # We also need to run setup again on the Sonos player to ensure the supported
-            # features are updated.
-            await sonos_player.setup()
-
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        assert not self.mass.players.get(player_id)
+        assert not self.mass.players.get_player(player_id)
         address = get_primary_ip_address(info)
         if address is None:
             return
@@ -141,7 +125,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         self.logger.debug("Discovered Sonos device %s on %s", name, address)
         sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
-        sonos_player.device_info.ip_address = address
+        sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
 
     async def _handle_sonos_cloud_queue_request(self, request: web.Request) -> web.Response:
@@ -160,7 +144,7 @@ class SonosPlayerProvider(PlayerProvider):
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
         player_id = path_parts[1]
-        if not (sonos_player := self.mass.players.get(player_id)):
+        if not (sonos_player := self.mass.players.get_player(player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)

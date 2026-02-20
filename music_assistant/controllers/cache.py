@@ -11,6 +11,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -32,6 +33,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
 DB_SCHEMA_VERSION = 7
+MAX_CACHE_DB_SIZE_MB = 2048
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
@@ -259,34 +261,66 @@ class CacheController(CoreController):
         finally:
             BYPASS_CACHE.reset(token)
 
+    async def _check_and_reset_oversized_cache(self) -> bool:
+        """Check cache database size and remove it if it exceeds the max size.
+
+        Returns True if the cache database was removed.
+        """
+        db_path = os.path.join(self.mass.cache_path, "cache.db")
+        # also include the write ahead log and shared memory db files
+        db_files = [db_path + suffix for suffix in ("", "-wal", "-shm")]
+
+        def _get_db_size() -> float:
+            total = 0
+            for path in db_files:
+                if os.path.exists(path):
+                    total += Path(path).stat().st_size
+            return total / (1024 * 1024)
+
+        db_size_mb = await asyncio.to_thread(_get_db_size)
+        if db_size_mb <= MAX_CACHE_DB_SIZE_MB:
+            return False
+        self.logger.warning(
+            "Cache database size %.2f MB exceeds maximum of %d MB, removing cache database",
+            db_size_mb,
+            MAX_CACHE_DB_SIZE_MB,
+        )
+        for path in db_files:
+            if await asyncio.to_thread(os.path.exists, path):
+                await asyncio.to_thread(os.remove, path)
+        return True
+
     async def _setup_database(self) -> None:
         """Initialize database."""
+        cache_was_reset = await self._check_and_reset_oversized_cache()
         db_path = os.path.join(self.mass.cache_path, "cache.db")
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
-        try:
-            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
-                prev_version = int(db_row["value"])
-            else:
-                prev_version = 0
-        except (KeyError, ValueError):
-            prev_version = 0
 
-        if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.warning(
-                "Performing database migration from %s to %s",
-                prev_version,
-                DB_SCHEMA_VERSION,
-            )
+        if not cache_was_reset:
             try:
-                await self.__migrate_database(prev_version)
-            except Exception as err:
-                LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
-                await self.__create_database_tables()
+                if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
+                    prev_version = int(db_row["value"])
+                else:
+                    prev_version = 0
+            except (KeyError, ValueError):
+                prev_version = 0
+
+            if prev_version not in (0, DB_SCHEMA_VERSION):
+                LOGGER.warning(
+                    "Performing database migration from %s to %s",
+                    prev_version,
+                    DB_SCHEMA_VERSION,
+                )
+                try:
+                    await self.__migrate_database(prev_version)
+                except Exception as err:
+                    LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
+                    await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
+                    await self.__create_database_tables()
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -294,14 +328,16 @@ class CacheController(CoreController):
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         await self.__create_database_indexes()
-        # compact db (vacuum) at startup
-        self.logger.debug("Compacting database...")
-        try:
-            await self.database.vacuum()
-        except Exception as err:
-            self.logger.warning("Database vacuum failed: %s", str(err))
-        else:
-            self.logger.debug("Compacting database done")
+
+        if not cache_was_reset:
+            # compact db (vacuum) at startup
+            self.logger.debug("Compacting database...")
+            try:
+                await self.database.vacuum()
+            except Exception as err:
+                self.logger.warning("Database vacuum failed: %s", str(err))
+            else:
+                self.logger.debug("Compacting database done")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""

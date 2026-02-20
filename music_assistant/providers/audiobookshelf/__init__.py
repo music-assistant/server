@@ -35,6 +35,9 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
 from aioaudiobookshelf.schema.session import DeviceInfo as AbsDeviceInfo
 from aioaudiobookshelf.schema.shelf import (
+    LibraryItemMinifiedPodcast as ShelfLibraryItemMinifiedPodcast,
+)
+from aioaudiobookshelf.schema.shelf import (
     SeriesShelf,
     ShelfAuthors,
     ShelfBook,
@@ -71,6 +74,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -496,6 +500,7 @@ for more details.
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
+                add_cover=bool(abs_podcast.media.cover_path or False),
             )
             yield mass_episode
             episode_cnt += 1
@@ -524,6 +529,7 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
+                    add_cover=bool(abs_podcast.media.cover_path or False),
                 )
 
             episode_cnt += 1
@@ -664,6 +670,8 @@ for more details.
         async with self.create_session_lock:
             # check for an available open session
             if session_helper := self.sessions.get(mass_item_id):
+                # reset here, as this is our "time listened".
+                session_helper.last_sync_time = time.time()
                 with suppress(AbsSessionNotFoundError):
                     return await self._client.get_open_session(
                         session_id=session_helper.abs_session_id
@@ -774,7 +782,7 @@ for more details.
         # this method is called _before_ get_stream_details, so the playback session
         # is created here.
         session = await self._get_playback_session(mass_item_id=item_id)
-        finished = session.current_time > session.duration - 30
+        finished = session.current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
         self.logger.debug("Resume position: obtained.")
         return finished, int(session.current_time * 1000)
 
@@ -819,8 +827,6 @@ for more details.
             # newest-episodes
             # etc
             name = f"{shelf_id.capitalize().replace('-', ' ')}"
-            if ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id):
-                name = ""  # use translation key if available
             folders.append(
                 RecommendationFolder(
                     item_id=f"{shelf_id}",
@@ -859,7 +865,7 @@ for more details.
         folders.append(
             RecommendationFolder(
                 item_id="browse",
-                name="",  # use translation key
+                name="Libraries",
                 icon="mdi-bookshelf",
                 translation_key=translation_key,
                 items=UniqueList(browse_items),
@@ -875,6 +881,7 @@ for more details.
         library_id: str,
         items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]],
     ) -> None:
+        # ruff: noqa: PLR0915
         for shelf in shelves:
             media_type: MediaType
             match shelf.type_:
@@ -915,6 +922,9 @@ for more details.
                             podcast_id = entity.id_
                             if entity.recent_episode is None:
                                 continue
+                            _add_cover = False
+                            if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
+                                _add_cover = bool(entity.media.cover_path or False)
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
@@ -923,6 +933,7 @@ for more details.
                                 domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                                add_cover=_add_cover,
                             )
                         if item is not None:
                             items.append(item)
@@ -1007,12 +1018,20 @@ for more details.
 
         async def _update_by_session(session_helper: SessionHelper, duration: int) -> bool:
             now = time.time()
+            time_listened = now - session_helper.last_sync_time
+            if time_listened > PLAYBACK_REPORT_INTERVAL_SECONDS + 3:
+                # See player_queues controller, we get an update every 30s, and immediately on pause
+                # or play.
+                # We reset above 33, as this indicates a trigger after a longer absence and should
+                # not count into abs' statistics
+                self.logger.debug("Resetting time_listened due to longer absence.")
+                time_listened = 0.0
             try:
                 await self._client.sync_open_session(
                     session_id=session_helper.abs_session_id,
                     parameters=SyncOpenSessionParameters(
                         current_time=position,
-                        time_listened=now - session_helper.last_sync_time,
+                        time_listened=time_listened,
                         duration=duration,
                     ),
                 )
@@ -1036,7 +1055,7 @@ for more details.
             if media_item is None or not isinstance(media_item, PodcastEpisode):
                 return
 
-            if fully_played and position < media_item.duration - 30:
+            if fully_played and position < media_item.duration - PLAYBACK_REPORT_INTERVAL_SECONDS:
                 # faulty position update
                 # occurs sometimes, if a player disconnects unexpectedly, or reports
                 # a false position - seen this for MC players, but not for sendspin
@@ -1077,7 +1096,7 @@ for more details.
             if media_item is None or not isinstance(media_item, Audiobook):
                 return
 
-            if fully_played and position < media_item.duration - 30:
+            if fully_played and position < media_item.duration - PLAYBACK_REPORT_INTERVAL_SECONDS:
                 # faulty position update, see above
                 return
 
@@ -1591,7 +1610,10 @@ for more details.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
             if progress.current_time is not None:
-                if int(progress.current_time) != 0 and not progress.current_time >= 30:
+                if (
+                    int(progress.current_time) != 0
+                    and not progress.current_time >= PLAYBACK_REPORT_INTERVAL_SECONDS
+                ):
                     # same as mass default, only > 30s
                     continue
             if progress.library_item_id not in known_ids:
@@ -1642,7 +1664,7 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        if int(progress.current_time) == 0:
+        if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(mass_audiobook)
         else:
             await self.mass.music.mark_item_played(
@@ -1663,7 +1685,7 @@ for more details.
             mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
         except MediaNotFoundError:
             return
-        if int(progress.current_time) == 0:
+        if int(progress.current_time) == 0 and not progress.is_finished:
             await self.mass.music.mark_item_unplayed(mass_episode)
         else:
             await self.mass.music.mark_item_played(

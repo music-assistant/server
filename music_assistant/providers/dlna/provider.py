@@ -86,10 +86,6 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 assert ssdp_udn is not None  # for type checking
 
-                if "rincon" in ssdp_udn.lower():
-                    # ignore Sonos devices
-                    return
-
                 discovered_devices.add(ssdp_udn)
 
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
@@ -152,10 +148,14 @@ class DLNAPlayerProvider(PlayerProvider):
                     player_id=udn,
                     description_url=description_url,
                 )
-                # will be updated later.
+                # will be updated later when device connects
                 dlna_player._attr_device_info = DeviceInfo(
                     model="unknown",
                     manufacturer="unknown",
                 )
                 self.dlnaplayers[udn] = dlna_player
-            await dlna_player.setup()
+
+            # Setup will return False if the device should be ignored (e.g., passive speaker)
+            if not await dlna_player.setup():
+                # Remove from dict if it was just added
+                self.dlnaplayers.pop(udn, None)

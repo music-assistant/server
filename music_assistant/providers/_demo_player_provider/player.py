@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -22,8 +22,8 @@ class DemoPlayer(Player):
         super().__init__(provider, player_id)
         # init some static variables
         self._attr_name = f"Demo Player {player_id}"
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -54,10 +54,10 @@ class DemoPlayer(Player):
         # OPTIONAL
         # used in conjunction with the needs_poll property.
         # this should return the interval in seconds to poll the player for state updates.
-        return 5 if self.playback_state == PlaybackState.PLAYING else 30
+        return 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     @property
-    def _source_list(self) -> list[PlayerSource]:
+    def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
         # this is an optional property that you can implement if your
@@ -267,10 +267,9 @@ class DemoPlayer(Player):
         # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
-            "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
-        )
+        logger.info("Received PLAY_MEDIA command on player %s with url %s", self.display_name, url)
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()

@@ -118,7 +118,7 @@ class ChromecastProvider(PlayerProvider):
 
             self.logger.debug("Discovered new or updated chromecast %s", disc_info)
 
-            castplayer = self.mass.players.get(player_id)
+            castplayer = self.mass.players.get_player(player_id)
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 # if player was already added, the player will take care of reconnects itself.
