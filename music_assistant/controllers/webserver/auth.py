@@ -469,18 +469,18 @@ class AuthenticationManager:
         # Implement sliding expiration for short-lived tokens
         is_long_lived = bool(token_row["is_long_lived"])
         now = utc()
-        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
+        updates: dict[str, str] = {"last_used_at": now.isoformat()}
 
         if not is_long_lived and token_row["expires_at"]:
             # Short-lived token: extend expiration on each use (sliding window)
             new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            legacy_updates["expires_at"] = new_expires_at.isoformat()
+            updates["expires_at"] = new_expires_at.isoformat()
 
         # Update last used timestamp and potentially expiration
         await self.database.update(
             "auth_tokens",
             {"token_id": token_row["token_id"]},
-            legacy_updates,
+            updates,
         )
 
         # Get user
