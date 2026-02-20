@@ -312,21 +312,13 @@ async def api_request(
     api_url = str(provider.config.get_value(CONF_API_URL) or "")
     url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    mass_session = provider.mass.http_session
-
-    if mass_session:
-        try:
-            return await _request_with_session(mass_session, method, url, json_data, timeout, auth)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("Failed API request to %s: %s", url, exc)
-            raise ActionUnavailable("Failed to connect to the configured API endpoint.")
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            return await _request_with_session(session, method, url, json_data, timeout, auth)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("Failed API request to %s: %s", url, exc)
-            raise ActionUnavailable("Failed to connect to the configured API endpoint.")
+    try:
+        return await _request_with_session(
+            provider.mass.http_session, method, url, json_data, timeout, auth
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        _LOGGER.error("Failed API request to %s: %s", url, exc)
+        raise ActionUnavailable("Failed to connect to the configured API endpoint.")
 
 
 class AlexaDevice:
@@ -360,6 +352,10 @@ class AlexaPlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_powered = False
         self._attr_available = True
+        # Keep track of the last metadata we pushed to avoid unnecessary uploads
+        self._last_meta_checksum: str | None = None
+        # Keep last stream url pushed (set in play_media)
+        self._last_stream_url: str | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -375,12 +371,9 @@ class AlexaPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         provider = cast("AlexaProvider", self.provider)
-        try:
-            utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
-            await self.api.run_custom(utter)
-        except Exception as exc:
-            _LOGGER.error("Failed to run Stop intent: %s", exc)
-            raise ActionUnavailable("Failed to trigger Alexa Stop intent")
+
+        utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
+        await self.api.run_custom(utter)
 
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
@@ -389,12 +382,9 @@ class AlexaPlayer(Player):
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         provider = cast("AlexaProvider", self.provider)
-        try:
-            utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
-            await self.api.run_custom(utter)
-        except Exception as exc:
-            _LOGGER.error("Failed to run Resume intent: %s", exc)
-            raise ActionUnavailable("Failed to trigger Alexa Resume intent")
+
+        utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+        await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -402,12 +392,9 @@ class AlexaPlayer(Player):
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
         provider = cast("AlexaProvider", self.provider)
-        try:
-            utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
-            await self.api.run_custom(utter)
-        except Exception as exc:
-            _LOGGER.error("Failed to run Pause intent: %s", exc)
-            raise ActionUnavailable("Failed to trigger Alexa Pause intent")
+
+        utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+        await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
@@ -421,22 +408,9 @@ class AlexaPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        # Prefer the player's current_media (may contain enriched metadata),
-        # fallback to the provided `media` parameter. Ensure values are
-        # non-None strings to avoid sending nulls to external API
-        state = getattr(self, "state", None)
-        current = getattr(state, "current_media", None) or media
-        title = getattr(current, "title", None) or media.title or ""
-        artist = getattr(current, "artist", None) or media.artist or ""
-        album = getattr(current, "album", None) or media.album or ""
-        image_url = getattr(current, "image_url", None) or media.image_url or ""
 
         payload = {
             "streamUrl": stream_url,
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "imageUrl": image_url,
         }
 
         await api_request(
@@ -446,6 +420,9 @@ class AlexaPlayer(Player):
             json_data=payload,
             timeout=10,
         )
+
+        # Save last pushed stream url so metadata updates can reuse it
+        self._last_stream_url = stream_url
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
@@ -470,6 +447,44 @@ class AlexaPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_current_media = media
         self.update_state()
+
+    def _on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated.
+
+        Upload the stream URL and media metadata (title/artist/album/imageUrl)
+        to the configured Music Assistant / Alexa API so the Alexa side can
+        display/update the playing item.
+        """
+        media = self.state.current_media
+
+        async def _upload_metadata() -> None:
+            stream_url = self._last_stream_url
+            if media is not None:
+                title = media.title
+                artist = media.artist
+                album = media.album
+                image_url = media.image_url
+
+            meta_checksum = f"{stream_url}-{album}-{artist}-{title}-{image_url}"
+            if meta_checksum == self._last_meta_checksum:
+                return
+
+            payload = {
+                "streamUrl": stream_url,
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "imageUrl": image_url,
+            }
+
+            await api_request(
+                self.provider, "/ma/push-url", method="POST", json_data=payload, timeout=10
+            )
+
+            # store last pushed values
+            self._last_meta_checksum = meta_checksum
+
+        self.mass.create_task(_upload_metadata())
 
 
 class AlexaProvider(PlayerProvider):
@@ -526,28 +541,18 @@ class AlexaProvider(PlayerProvider):
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
 
-        # Prefetch intents so players can use cached utterances
-        try:
-            await self._load_intents()
-        except Exception:  # don't fail provider load on intent fetch issues
-            _LOGGER.debug("Could not prefetch Alexa intents, will lazy-load on use.")
+        await self._load_intents()
 
     @lock
     async def _load_intents(self) -> None:
         """Load intents from the configured API and cache them on the provider."""
-        try:
-            resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
-            data = json.loads(resp)
-            if isinstance(data, dict):
-                # cache invocationName if present
-                self._invocation_name = data.get("invocationName")
-                self._intents = data.get("intents", []) or []
-            else:
-                self._intents = []
-        except ActionUnavailable:
-            raise
-        except Exception as exc:
-            _LOGGER.debug("Failed to load Alexa intents: %s", exc)
+        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
+        data = json.loads(resp)
+        if isinstance(data, dict):
+            # cache invocationName if present
+            self._invocation_name = data.get("invocationName")
+            self._intents = data.get("intents", []) or []
+        else:
             self._intents = []
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:
@@ -556,12 +561,7 @@ class AlexaProvider(PlayerProvider):
         If intents are not yet cached, attempt to load them.
         """
         if self._intents is None:
-            try:
-                await self._load_intents()
-            except ActionUnavailable:
-                raise
-            except Exception:
-                return default
+            await self._load_intents()
 
         for intent in self._intents or []:
             if intent.get("intent") == intent_name:
