@@ -276,9 +276,9 @@ class BluesoundPlayer(Player):
             )
 
         self.logger.debug(self.status)
-        mass_active = self.mass.streams.base_url
-        if self.status.stream_url and mass_active in self.status.stream_url:
-            self._attr_active_source = self.player_id
+        mass_url = self.mass.streams.base_url
+        if self.status.stream_url and mass_url in self.status.stream_url:
+            self._attr_active_source = None
         elif player_source := PLAYER_SOURCE_MAP.get(self.status.input_id):
             self._attr_active_source = self.status.input_id
             self._attr_source_list.append(player_source)

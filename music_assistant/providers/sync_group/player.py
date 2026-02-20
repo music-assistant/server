@@ -102,16 +102,6 @@ class SyncGroupPlayer(GroupPlayer):
         return self.sync_leader.state.elapsed_time_last_updated if self.sync_leader else None
 
     @property
-    def current_media(self) -> PlayerMedia | None:
-        """Return the current media item (if any) loaded in the player."""
-        return self.sync_leader.state.current_media if self.sync_leader else None
-
-    @property
-    def active_source(self) -> str | None:
-        """Return the active source id (if any) of the player."""
-        return self.sync_leader.active_source if self.sync_leader else None
-
-    @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
         if not self.is_dynamic:
@@ -181,6 +171,8 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
+        self._attr_current_media = None
+        self._attr_active_source = None
         if sync_leader := self.sync_leader:
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             # (sync_leader is part of this group, so redirect would loop back here)
@@ -194,14 +186,10 @@ class SyncGroupPlayer(GroupPlayer):
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_cmd_play(sync_leader.player_id)
 
-    async def pause(self) -> None:
-        """Send PAUSE command to given player."""
-        if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            await self.mass.players._handle_cmd_pause(sync_leader.player_id)
-
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        self._attr_current_media = media
+        self._attr_active_source = media.source_id if media.source_id else None
         if not self.sync_leader:
             await self._form_syncgroup()
         # simply forward the command to the sync leader
