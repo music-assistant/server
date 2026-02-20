@@ -161,7 +161,6 @@ def resolve_plex_server(
     if auth_token and auth_token != AUTH_TOKEN_UNAUTH:
 
         # Ensure we have a MyPlexAccount
-        print(myplex_account)
         if not myplex_account:
             try:
                 myplex_account = MyPlexAccount(token=auth_token)
@@ -176,8 +175,13 @@ def resolve_plex_server(
                 session=session,
             )
             return plex_server
-        except Exception:
-            pass
+        except plexapi.exceptions.Unauthorized as err:
+            logging.getLogger("music_assistant.providers.plex").debug(
+                "Account-owner auth failed for %s:%s, continuing to check shared servers: %s",
+                local_server_ip,
+                local_server_port,
+                err,
+            )
 
         # If local-owner token fails, iterate over shared servers
         try:
