@@ -312,13 +312,9 @@ async def api_request(
     api_url = str(provider.config.get_value(CONF_API_URL) or "")
     url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    try:
-        return await _request_with_session(
-            provider.mass.http_session, method, url, json_data, timeout, auth
-        )
-    except Exception as exc:  # pylint: disable=broad-except
-        _LOGGER.error("Failed API request to %s: %s", url, exc)
-        raise ActionUnavailable("Failed to connect to the configured API endpoint.")
+    return await _request_with_session(
+        provider.mass.http_session, method, url, json_data, timeout, auth
+    )
 
 
 class AlexaDevice:
