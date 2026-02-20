@@ -1402,14 +1402,12 @@ def get_player_filter_params(
     """Get player specific filter parameters for ffmpeg (if any)."""
     filter_params = []
 
+    player = mass.players.get_player(player_id)
     # In case this is a protocol player, their DSP config is stored
     # under the parent (native or universal) player that wraps them.
     dsp_player_id = player_id
-    if (player := mass.players.get_player(player_id)) and (
-        player.type == PlayerType.PROTOCOL and player.protocol_parent_id
-    ):
+    if player and player.protocol_parent_id:
         dsp_player_id = player.protocol_parent_id
-
     dsp = mass.config.get_player_dsp_config(dsp_player_id)
     limiter_enabled = True
 
