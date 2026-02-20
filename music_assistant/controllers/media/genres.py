@@ -245,6 +245,7 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 

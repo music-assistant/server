@@ -863,7 +863,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
 
     @final
-    async def get_library_items_by_query(
+    async def get_library_items_by_query(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,

@@ -2252,6 +2252,22 @@ class MusicController(CoreController):
             )
 
         if prev_version <= 27:
+            # set streaming provider mappings to in_library=True, but only for items
+            # that do not already have any mapping with in_library=True
+            # (to avoid overwriting explicit values in multi-instance setups)
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain NOT IN "
+                "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
+                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
+                "AND NOT EXISTS ("
+                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
+                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
+                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
+                "AND pm2.in_library = 1)"
+            )
+
+        if prev_version <= 28:
             # create genre/alias tables
             await self.__create_database_tables()
 
@@ -2454,164 +2470,6 @@ class MusicController(CoreController):
                     )
                     await db.execute(full_query)
                     await db.commit()
-
-        if prev_version <= 27:
-            # set streaming provider mappings to in_library=True, but only for items
-            # that do not already have any mapping with in_library=True
-            # (to avoid overwriting explicit values in multi-instance setups)
-            await self._database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain NOT IN "
-                "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
-                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
-                "AND NOT EXISTS ("
-                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
-                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
-                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
-                "AND pm2.in_library = 1)"
-            )
-
-        if prev_version <= 28:
-            # create genre/alias tables
-            await self.__create_database_tables()
-
-            def _normalize_name(raw_name: str) -> tuple[str, str, str, str]:
-                name = raw_name.strip()
-                sort_name = name
-                search_name = create_safe_string(name, True, True)
-                search_sort_name = create_safe_string(sort_name or "", True, True)
-                return name, sort_name, search_name, search_sort_name
-
-            genre_cache: dict[str, int] = {}
-            alias_cache: dict[str, int] = {}
-
-            async def _get_or_create_genre(
-                raw_name: str, translation_key: str | None = None
-            ) -> int:
-                name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
-                if not search_name:
-                    return 0
-                if search_name in genre_cache:
-                    return genre_cache[search_name]
-                if db_row := await self._database.get_row(
-                    DB_TABLE_GENRES, {"search_name": search_name}
-                ):
-                    genre_id = int(db_row["item_id"])
-                    genre_cache[search_name] = genre_id
-                    return genre_id
-                genre_id = await self._database.insert(
-                    DB_TABLE_GENRES,
-                    {
-                        "name": name,
-                        "sort_name": sort_name,
-                        "translation_key": translation_key,
-                        "description": None,
-                        "favorite": 0,
-                        "metadata": serialize_to_json({}),
-                        "external_ids": serialize_to_json(set()),
-                        "play_count": 0,
-                        "last_played": 0,
-                        "search_name": search_name,
-                        "search_sort_name": search_sort_name,
-                    },
-                )
-                genre_cache[search_name] = genre_id
-                return genre_id
-
-            async def _get_or_create_alias(raw_name: str) -> int:
-                name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
-                if not search_name:
-                    return 0
-                if search_name in alias_cache:
-                    return alias_cache[search_name]
-                if db_row := await self._database.get_row(
-                    DB_TABLE_ALIASES, {"search_name": search_name}
-                ):
-                    alias_id = int(db_row["item_id"])
-                    alias_cache[search_name] = alias_id
-                    return alias_id
-                alias_id = await self._database.insert(
-                    DB_TABLE_ALIASES,
-                    {
-                        "name": name,
-                        "sort_name": sort_name,
-                        "favorite": 0,
-                        "metadata": serialize_to_json({}),
-                        "external_ids": serialize_to_json(set()),
-                        "play_count": 0,
-                        "last_played": 0,
-                        "search_name": search_name,
-                        "search_sort_name": search_sort_name,
-                    },
-                )
-                alias_cache[search_name] = alias_id
-                return alias_id
-
-            async def _ensure_alias_genre_mapping(genre_id: int, alias_id: int) -> None:
-                if not genre_id or not alias_id:
-                    return
-                await self._database.insert(
-                    DB_TABLE_GENRE_ALIAS_MAPPING,
-                    {"genre_id": genre_id, "alias_id": alias_id},
-                    allow_replace=True,
-                )
-
-            for entry in DEFAULT_GENRE_MAPPING:
-                genre_name = entry.get("genre")
-                if not genre_name:
-                    continue
-                genre_id = await _get_or_create_genre(genre_name, entry.get("translation_key"))
-                if not genre_id:
-                    continue
-                alias_id = await _get_or_create_alias(genre_name)
-                await _ensure_alias_genre_mapping(genre_id, alias_id)
-                for alias_name in entry.get("aliases", []):
-                    alias_id = await _get_or_create_alias(alias_name)
-                    await _ensure_alias_genre_mapping(genre_id, alias_id)
-
-            async def _ensure_media_alias_mapping(
-                media_type: MediaType, media_id: int, alias_id: int
-            ) -> None:
-                if not alias_id:
-                    return
-                await self._database.insert(
-                    DB_TABLE_ALIAS_MEDIA_ITEM_MAPPING,
-                    {
-                        "media_type": media_type.value,
-                        "media_id": media_id,
-                        "alias_id": alias_id,
-                    },
-                    allow_replace=True,
-                )
-
-            for table, media_type in (
-                (DB_TABLE_TRACKS, MediaType.TRACK),
-                (DB_TABLE_ALBUMS, MediaType.ALBUM),
-                (DB_TABLE_ARTISTS, MediaType.ARTIST),
-                (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
-                (DB_TABLE_RADIOS, MediaType.RADIO),
-                (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
-                (DB_TABLE_PODCASTS, MediaType.PODCAST),
-            ):
-                async for db_row in self._database.iter_items(table):
-                    row_dict = dict(db_row)
-                    metadata = json_loads(row_dict.get("metadata") or "{}")
-                    genres = metadata.get("genres") or []
-                    if isinstance(genres, set):
-                        genres = list(genres)
-                    if isinstance(genres, str):
-                        genres = [genres]
-                    if not isinstance(genres, list):
-                        continue
-                    for genre_name in genres:
-                        if not genre_name:
-                            continue
-                        alias_id = await _get_or_create_alias(str(genre_name))
-                        genre_id = await _get_or_create_genre(str(genre_name))
-                        await _ensure_alias_genre_mapping(genre_id, alias_id)
-                        await _ensure_media_alias_mapping(
-                            media_type, int(row_dict["item_id"]), alias_id
-                        )
 
         # save changes
         await self._database.commit()
