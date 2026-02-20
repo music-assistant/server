@@ -56,7 +56,9 @@ class UniversalPlayerProvider(PlayerProvider):
         not through discovery. However, we restore previously created
         universal players from config.
         """
-        for player_conf in await self.mass.config.get_player_configs(self.instance_id):
+        for player_conf in await self.mass.config.get_player_configs(
+            self.instance_id, include_unavailable=True, include_disabled=True
+        ):
             if player_conf.player_id.startswith(UNIVERSAL_PLAYER_PREFIX):
                 # Restore universal player from config
                 # The stored protocol IDs enable fast matching when protocols register
@@ -77,9 +79,46 @@ class UniversalPlayerProvider(PlayerProvider):
 
         # Get stored values
         values = config.get("values", {})
-        stored_protocol_ids = values.get(CONF_LINKED_PROTOCOL_IDS, [])
+        stored_protocol_ids = list(values.get(CONF_LINKED_PROTOCOL_IDS, []))
         stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
         stored_device_info = values.get(CONF_DEVICE_INFO, {})
+
+        # Filter out protocol IDs that are no longer PROTOCOL type players
+        valid_protocol_ids = []
+        for protocol_id in stored_protocol_ids:
+            protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if not protocol_config:
+                # Config doesn't exist, keep it for now (player may register later)
+                valid_protocol_ids.append(protocol_id)
+                continue
+            protocol_player_type = protocol_config.get("player_type")
+            if protocol_player_type == "protocol":
+                valid_protocol_ids.append(protocol_id)
+            else:
+                self.logger.info(
+                    "Removing %s from universal player %s - player type changed to %s",
+                    protocol_id,
+                    player_id,
+                    protocol_player_type,
+                )
+
+        # If no valid protocol IDs remain, delete this stale universal player
+        if not valid_protocol_ids:
+            self.logger.info(
+                "Deleting stale universal player %s - no valid protocol players remain",
+                player_id,
+            )
+            await self.mass.config.remove_player_config(player_id)
+            return
+
+        stored_protocol_ids = valid_protocol_ids
+
+        # Persist the filtered protocol IDs to config if they changed
+        if len(valid_protocol_ids) != len(values.get(CONF_LINKED_PROTOCOL_IDS, [])):
+            self.mass.config.set(
+                f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
+                valid_protocol_ids,
+            )
 
         # Check if protocols have been linked to a native player (stale universal player)
         for protocol_id in stored_protocol_ids:

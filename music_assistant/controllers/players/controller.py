@@ -51,6 +51,7 @@ from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ACTIVE_SOURCE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_AVAILABLE,
     ATTR_ELAPSED_TIME,
@@ -863,7 +864,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
                 require_active=False,
-                allow_native=True,
             ):
                 native_announce_support = True
             else:
@@ -1558,6 +1558,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for _removed_player_id in removed_members:
                 if removed_player := self.get_player(_removed_player_id):
                     removed_player.update_state()
+
+        # Handle external source takeover - detect when active_source changes to
+        # something external while we have a grouped protocol active
+        if ATTR_ACTIVE_SOURCE in changed_values:
+            prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
+            self._handle_external_source_takeover(player, prev_source, new_source)
 
         became_inactive = False
         if ATTR_AVAILABLE in changed_values:
@@ -2268,6 +2274,87 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
 
+    def _handle_external_source_takeover(
+        self, player: Player, prev_source: str | None, new_source: str | None
+    ) -> None:
+        """
+        Handle when an external source takes over playback on a player.
+
+        When a player has an active grouped output protocol (e.g., AirPlay group) and
+        an external source (e.g., Spotify Connect, TV input) takes over playback,
+        we need to clear the active output protocol and ungroup the protocol players.
+
+        This prevents the situation where the player appears grouped via protocol
+        but is actually playing from a different source.
+
+        :param player: The player whose active_source changed.
+        :param prev_source: The previous active_source value.
+        :param new_source: The new active_source value.
+        """
+        # Only relevant for non-protocol players
+        if player.type == PlayerType.PROTOCOL:
+            return
+
+        # Only relevant if we have an active output protocol (not native)
+        if not player.active_output_protocol or player.active_output_protocol == "native":
+            return
+
+        # Check if new source is external (not MA-managed)
+        if self._is_ma_managed_source(player, new_source):
+            return
+
+        # Get the active protocol player
+        protocol_player = self.get_player(player.active_output_protocol)
+        if not protocol_player:
+            return
+
+        # Only relevant if the protocol is grouped
+        if not self._is_protocol_grouped(protocol_player):
+            return
+
+        # External source took over while protocol was grouped - unbond
+        self.logger.info(
+            "External source '%s' took over on %s while grouped via protocol %s - "
+            "clearing active output protocol and ungrouping",
+            new_source,
+            player.display_name,
+            protocol_player.provider.domain,
+        )
+
+        # Clear active output protocol
+        player.set_active_output_protocol(None)
+
+        # Ungroup the protocol player (async task)
+        self.mass.create_task(protocol_player.ungroup())
+
+    def _is_ma_managed_source(self, player: Player, source: str | None) -> bool:
+        """
+        Check if a source is managed by Music Assistant.
+
+        MA-managed sources include:
+        - None (no source active)
+        - The player's own ID (MA queue)
+        - Any active queue ID
+        - Any plugin source ID
+
+        :param player: The player to check.
+        :param source: The source ID to check.
+        :return: True if the source is MA-managed, False if external.
+        """
+        if source is None:
+            return True
+
+        # Player's own ID means MA queue is active
+        if source == player.player_id:
+            return True
+
+        # Check if it's a known queue ID
+        if self.mass.player_queues.get(source):
+            return True
+
+        # Check if it's a plugin source
+        return any(plugin_source.id == source for plugin_source in self.get_plugin_sources())
+
     def _schedule_update_all_players(self, delay: float = 2.0) -> None:
         """
         Schedule a debounced update of all players' state.
@@ -2369,10 +2456,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Forward native members to parent player's set_members
         if native_members_to_add or native_members_to_remove:
             filtered_native_add = self._filter_native_members(native_members_to_add, parent_player)
+            # For removal, allow protocol players if they're actually in the parent's group_members
+            # This handles native protocol players (e.g., native AirPlay) where group_members
+            # contains protocol player IDs
             filtered_native_remove = [
                 pid
                 for pid in native_members_to_remove
-                if (p := self.get_player(pid)) and p.type != PlayerType.PROTOCOL
+                if (p := self.get_player(pid))
+                and (p.type != PlayerType.PROTOCOL or pid in parent_player.group_members)
             ]
             self.logger.debug(
                 "Native grouping on %s: filtered_add=%s, filtered_remove=%s",
@@ -2661,13 +2752,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
         if target_player := self._get_control_target(
-            player, required_feature=PlayerFeature.ENQUEUE, require_active=True, allow_native=False
+            player,
+            required_feature=PlayerFeature.ENQUEUE,
+            require_active=True,
         ):
             self.logger.debug(
                 "Redirecting enqueue command to protocol player %s",
                 target_player.provider.manifest.name,
             )
-            await self._handle_enqueue_next_media(target_player.player_id, media)
+            await target_player.enqueue_next_media(media)
             return
 
         if PlayerFeature.ENQUEUE not in player.state.supported_features:
@@ -2782,7 +2875,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
                 raise PlayerCommandFailed(msg)
             # Delegate to active protocol player if one is active
-            if target_player := self._get_control_target(player, PlayerFeature.PAUSE, True):
+            if target_player := self._get_control_target(
+                player, PlayerFeature.PAUSE, require_active=True
+            ):
                 await target_player.play()
                 return
 
@@ -2840,7 +2935,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        if not (target_player := self._get_control_target(player, PlayerFeature.PAUSE, True)):
+        if not (
+            target_player := self._get_control_target(
+                player, PlayerFeature.PAUSE, require_active=True
+            )
+        ):
             # if player(protocol) does not support pause, we need to send stop
             self.logger.debug(
                 "Player/protocol %s does not support pause, using STOP instead",

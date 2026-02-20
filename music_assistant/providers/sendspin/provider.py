@@ -68,9 +68,14 @@ class SendspinProvider(PlayerProvider):
         if sendspin_client is None:
             self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
             return
-        # Check if info is available (should be set after yield)
-        if sendspin_client._info is None:
-            self.logger.debug("Client %s has no info, skipping", client_id)
+        # Wait for client hello to be processed (info becomes available)
+        # ClientAddedEvent fires before the hello handshake completes
+        for _ in range(50):  # Wait up to 5 seconds
+            if sendspin_client._info is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            self.logger.warning("Client %s hello not received within timeout", client_id)
             return
         if self.mass.players.get_player(client_id) is not None:
             self.logger.debug(
