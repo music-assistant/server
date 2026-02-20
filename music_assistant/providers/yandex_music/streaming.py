@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-import aiohttp
 from Crypto.Cipher import AES
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from . import mp4_seek
 from .constants import (
     CONF_QUALITY,
-    CONF_STREAM_BUFFER_MB,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
@@ -42,24 +37,6 @@ class YandexMusicStreamingManager:
         self.client = provider.client
         self.mass = provider.mass
         self.logger = provider.logger
-        # Shared aiohttp session for streaming downloads (reuses TCP connections to CDN)
-        self._streaming_session: aiohttp.ClientSession | None = None
-        self._streaming_session_lock = asyncio.Lock()
-
-    async def _get_streaming_session(self) -> aiohttp.ClientSession:
-        """Get or create the shared streaming aiohttp session."""
-        if self._streaming_session is not None and not self._streaming_session.closed:
-            return self._streaming_session
-        async with self._streaming_session_lock:
-            if self._streaming_session is None or self._streaming_session.closed:
-                self._streaming_session = aiohttp.ClientSession()
-            return self._streaming_session
-
-    async def close(self) -> None:
-        """Close the streaming session and clean up resources."""
-        if self._streaming_session and not self._streaming_session.closed:
-            await self._streaming_session.close()
-            self._streaming_session = None
 
     def _track_id_from_item_id(self, item_id: str) -> str:
         """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
@@ -109,8 +86,7 @@ class YandexMusicStreamingManager:
                             codec,
                             track_id,
                         )
-                        # Return StreamType.CUSTOM for streaming decryption
-                        # Store encrypted URL and decryption key in data for get_audio_stream
+                        # Return StreamType.CUSTOM for streaming decryption.
                         # can_seek=False: provider always streams from position 0;
                         # allow_seek=True: ffmpeg handles seek with -ss input flag.
                         return StreamDetails(
@@ -338,34 +314,12 @@ class YandexMusicStreamingManager:
             bit_depth=bit_depth,
         )
 
-    def _prepare_cipher(
-        self, streamdetails: StreamDetails, start_block: int = 0
-    ) -> tuple[Any, str, str]:
-        """Prepare AES-256-CTR cipher and return (cipher, encrypted_url, codec).
-
-        A fresh cipher is created per streaming call. CTR mode requires the counter
-        to start from zero for each complete download — this is safe because retries
-        restart the full HTTP request (and thus the ciphertext) from the beginning.
-
-        :param streamdetails: Stream details containing encrypted URL and key.
-        :param start_block: AES block number (byte_offset // 16) to initialise counter.
-        :return: Tuple of (cipher, encrypted_url, codec).
-        """
-        encrypted_url: str = streamdetails.data["encrypted_url"]
-        key_hex: str = streamdetails.data["decryption_key"]
-        codec: str = streamdetails.data.get("codec", "flac")
-        key_bytes = bytes.fromhex(key_hex)
-        nonce = bytes(12)
-        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR, initial_value=start_block)
-        return cipher, encrypted_url, codec
-
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item with decryption.
+        """Return the audio stream for the provider item with on-the-fly decryption.
 
-        Uses buffered streaming: a background task downloads and decrypts chunks
-        into a bounded async queue, decoupling download from consumption.
+        Downloads and decrypts the encrypted stream chunk-by-chunk without buffering.
         Seeking is handled externally by ffmpeg (-ss flag); can_seek=False means
         seek_position is always 0 here.
 
@@ -373,303 +327,11 @@ class YandexMusicStreamingManager:
         :param seek_position: Always 0 (seeking delegated to ffmpeg via allow_seek=True).
         :return: Async generator yielding decrypted audio bytes.
         """
-        async for chunk in self._stream_buffered(streamdetails):
-            yield chunk
-
-    async def _stream_buffered(  # noqa: PLR0915
-        self, streamdetails: StreamDetails
-    ) -> AsyncGenerator[bytes, None]:
-        """Download and decrypt via async queue, decoupling download from consumption.
-
-        A background task downloads and decrypts chunks into a bounded queue.
-        The consumer yields from the queue at its own pace. Backpressure is handled
-        by the queue's maxsize — download blocks when the queue is full. Retries on
-        CDN connection drops (ClientPayloadError) by resuming with HTTP Range.
-
-        :param streamdetails: Stream details containing encrypted URL and key.
-        """
-        _, encrypted_url, codec = self._prepare_cipher(streamdetails)
-
-        self.logger.info(
-            "Starting buffered streaming for track %s (codec=%s)",
-            streamdetails.item_id,
-            codec,
-        )
-
-        chunk_size = 65536
-        buffer_mb = int(self.provider.config.get_value(CONF_STREAM_BUFFER_MB) or 8)  # type: ignore[arg-type]
-        queue_max = (buffer_mb * 1024 * 1024) // chunk_size
-
-        self.logger.debug(
-            "Buffered streaming buffer: %dMB (%d chunks x %dKB)",
-            buffer_mb,
-            queue_max,
-            chunk_size // 1024,
-        )
-
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=queue_max)
-        error_holder: list[BaseException | None] = [None]
-        sentinel = None
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
-        max_retries = 3
-
-        async def _download_and_decrypt() -> None:
-            bytes_downloaded = 0
-            try:
-                for attempt in range(max_retries + 1):
-                    try:
-                        # Resume from block-aligned boundary for correct CTR decryption
-                        resume_block = bytes_downloaded // 16
-                        resume_byte = resume_block * 16
-                        skip_bytes = bytes_downloaded - resume_byte
-                        cipher, _, _ = self._prepare_cipher(streamdetails, start_block=resume_block)
-
-                        headers = {}
-                        if bytes_downloaded > 0:
-                            headers["Range"] = f"bytes={resume_byte}-"
-
-                        session = await self._get_streaming_session()
-                        async with session.get(
-                            encrypted_url, timeout=timeout, headers=headers
-                        ) as response:
-                            if response.status not in (200, 206):
-                                msg = f"Failed to stream encrypted track: HTTP {response.status}"
-                                error_holder[0] = MediaNotFoundError(msg)
-                                return
-
-                            first_chunk = True
-                            async for encrypted_chunk in response.content.iter_chunked(chunk_size):
-                                decrypted = cipher.decrypt(encrypted_chunk)
-                                if first_chunk and skip_bytes:
-                                    decrypted = decrypted[skip_bytes:]
-                                    first_chunk = False
-                                bytes_downloaded += len(decrypted)
-                                await queue.put(decrypted)
-                        return  # Download complete
-
-                    except aiohttp.ClientPayloadError as exc:
-                        if attempt >= max_retries:
-                            error_holder[0] = exc
-                            return
-                        self.logger.warning(
-                            "Stream dropped at %d bytes for track %s, retry %d/%d: %s",
-                            bytes_downloaded,
-                            streamdetails.item_id,
-                            attempt + 1,
-                            max_retries,
-                            exc,
-                        )
-                        await asyncio.sleep(1)
-
-                    except Exception as exc:
-                        error_holder[0] = exc
-                        return
-            finally:
-                await queue.put(sentinel)
-
-        task = asyncio.create_task(_download_and_decrypt())
-        total_bytes = 0
-        try:
-            while True:
-                item = await queue.get()
-                if item is sentinel:
-                    break
-                total_bytes += len(item)
-                yield item
-
-            if error_holder[0]:
-                raise error_holder[0]
-
-            self.logger.info(
-                "Completed buffered streaming for track %s: %d bytes total",
-                streamdetails.item_id,
-                total_bytes,
-            )
-        except Exception as err:
-            self.logger.exception(
-                "Error during buffered streaming for track %s: %s",
-                streamdetails.item_id,
-                err,
-            )
-            raise
-        finally:
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-
-    async def _fetch_and_decrypt_partial(
-        self,
-        encrypted_url: str,
-        key_hex: str,
-        max_bytes: int = 1_048_576,
-    ) -> bytes:
-        """Fetch and decrypt the first max_bytes of an encrypted file.
-
-        Used to read the moov atom without downloading the full file.
-
-        :param encrypted_url: URL of the encrypted file.
-        :param key_hex: Hex-encoded AES-256 decryption key.
-        :param max_bytes: Maximum bytes to fetch (default 1 MB).
-        :return: Decrypted bytes.
-        """
+        encrypted_url: str = streamdetails.data["encrypted_url"]
+        key_hex: str = streamdetails.data["decryption_key"]
         key_bytes = bytes.fromhex(key_hex)
         nonce = bytes(12)
         cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR, initial_value=0)
-        headers = {"Range": f"bytes=0-{max_bytes - 1}"}
-        timeout = aiohttp.ClientTimeout(total=60, connect=15)
-        session = await self._get_streaming_session()
-        async with session.get(encrypted_url, headers=headers, timeout=timeout) as response:
-            if response.status not in (200, 206):
-                return b""
-            encrypted = await response.read()
-        return cipher.decrypt(encrypted)
-
-    def _patch_stco(self, moov_data: bytes, delta: int) -> bytes:
-        """Subtract delta from all stco/co64 chunk offsets in the moov atom.
-
-        Used to adjust absolute file offsets after seeking. After serving a modified
-        moov prefix to ffmpeg and then streaming from seek_byte onwards, chunk offsets
-        must be shifted so they are relative to the new stream start.
-
-        :param moov_data: Bytes containing the moov atom (and any preceding boxes).
-        :param delta: Value to subtract from every chunk offset entry.
-        :return: Modified bytes with adjusted offsets.
-        """
-        return mp4_seek.patch_stco(moov_data, delta)
-
-    async def _stream_buffered_seek(  # noqa: PLR0915
-        self, streamdetails: StreamDetails, seek_position: int
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream an MP4-container track starting from seek_position seconds.
-
-        Fetches the first 1 MB to read the moov atom, finds the file byte offset
-        for seek_position via mp4_seek, patches moov chunk offsets so ffmpeg can
-        parse the modified stream, then streams the remainder from that offset.
-        Falls back to _stream_buffered (from the beginning) if moov parsing fails.
-
-        :param streamdetails: Stream details containing encrypted URL and key.
-        :param seek_position: Target playback position in seconds.
-        """
-        encrypted_url: str = streamdetails.data["encrypted_url"]
-        key_hex: str = streamdetails.data["decryption_key"]
-        codec: str = streamdetails.data.get("codec", "flac-mp4")
-
-        self.logger.info(
-            "Seek request for track %s: %.1fs (codec=%s)",
-            streamdetails.item_id,
-            seek_position,
-            codec,
-        )
-
-        # Step 1: Fetch and decrypt the first 1 MB to locate moov
-        try:
-            first_mb = await self._fetch_and_decrypt_partial(encrypted_url, key_hex)
-        except Exception as err:
-            self.logger.warning(
-                "Seek fallback (fetch error) for track %s: %s",
-                streamdetails.item_id,
-                err,
-            )
-            async for chunk in self._stream_buffered(streamdetails):
-                yield chunk
-            return
-
-        # Step 2: Find the byte offset for the requested seek position
-        seek_byte = mp4_seek.find_seek_byte(first_mb, seek_position)
-        moov_end = mp4_seek.find_moov_end(first_mb)
-
-        if seek_byte is None or moov_end is None:
-            self.logger.warning(
-                "Seek fallback (moov parse failed) for track %s at %.1fs",
-                streamdetails.item_id,
-                seek_position,
-            )
-            async for chunk in self._stream_buffered(streamdetails):
-                yield chunk
-            return
-
-        self.logger.info(
-            "Seek to %.1fs for track %s: byte offset %d, moov_end=%d",
-            seek_position,
-            streamdetails.item_id,
-            seek_byte,
-            moov_end,
-        )
-
-        # Step 3: Build modified moov prefix with adjusted chunk offsets.
-        # The modified prefix (bytes 0..moov_end) is served to ffmpeg so it can
-        # parse the container structure; then mdat data starts at seek_byte.
-        # Chunk offsets in stco/co64 are absolute file positions, so we subtract
-        # seek_byte and add moov_end to account for the prefix we serve.
-        moov_prefix = first_mb[:moov_end]
-        offset_delta = seek_byte - moov_end
-        modified_moov = self._patch_stco(moov_prefix, offset_delta)
-
-        yield modified_moov
-
-        # Step 4: Stream encrypted data from seek_byte with correct CTR counter.
-        # Align to AES block boundary (16 bytes).
-        resume_block = seek_byte // 16
-        resume_byte = resume_block * 16
-        skip_in_first_chunk = seek_byte - resume_byte
-
-        max_retries = 3
-        bytes_streamed = 0
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=600)
-        chunk_size = 65536
-
-        for attempt in range(max_retries + 1):
-            try:
-                current_byte = resume_byte + bytes_streamed
-                current_block = current_byte // 16
-                aligned_byte = current_block * 16
-                skip_bytes = current_byte - aligned_byte
-                cipher, _, _ = self._prepare_cipher(streamdetails, start_block=current_block)
-
-                headers = {"Range": f"bytes={aligned_byte}-"}
-                session = await self._get_streaming_session()
-                async with session.get(encrypted_url, headers=headers, timeout=timeout) as response:
-                    if response.status not in (200, 206):
-                        msg = (
-                            f"Seek stream HTTP {response.status} for track {streamdetails.item_id}"
-                        )
-                        raise MediaNotFoundError(msg)
-
-                    first_chunk = True
-                    async for encrypted_chunk in response.content.iter_chunked(chunk_size):
-                        decrypted = cipher.decrypt(encrypted_chunk)
-                        # Skip partial AES block and/or the initial seek_byte alignment gap
-                        if first_chunk:
-                            trim = skip_bytes + (skip_in_first_chunk if bytes_streamed == 0 else 0)
-                            decrypted = decrypted[trim:]
-                            first_chunk = False
-                        bytes_streamed += len(decrypted)
-                        yield decrypted
-                return  # Stream complete
-
-            except aiohttp.ClientPayloadError as err:
-                if attempt >= max_retries:
-                    self.logger.exception(
-                        "Seek stream failed for track %s: %s",
-                        streamdetails.item_id,
-                        err,
-                    )
-                    raise
-                self.logger.warning(
-                    "Seek stream dropped at %d bytes for track %s, retry %d/%d: %s",
-                    bytes_streamed,
-                    streamdetails.item_id,
-                    attempt + 1,
-                    max_retries,
-                    err,
-                )
-                await asyncio.sleep(1)
-
-            except Exception as err:
-                self.logger.exception(
-                    "Seek stream error for track %s: %s",
-                    streamdetails.item_id,
-                    err,
-                )
-                raise
+        async with self.mass.http_session.get(encrypted_url) as response:
+            async for chunk in response.content.iter_chunked(65536):
+                yield cipher.decrypt(chunk)

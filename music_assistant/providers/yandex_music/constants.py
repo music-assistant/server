@@ -9,9 +9,6 @@ CONF_TOKEN = "token"
 CONF_QUALITY = "quality"
 CONF_BASE_URL = "base_url"
 
-# Buffered mode stream buffer size (MB)
-CONF_STREAM_BUFFER_MB: Final[str] = "stream_buffer_mb"
-
 # Actions
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"

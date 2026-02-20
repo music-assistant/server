@@ -13,7 +13,6 @@ from .constants import (
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
-    CONF_STREAM_BUFFER_MB,
     CONF_TOKEN,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
@@ -105,18 +104,6 @@ async def get_config_entries(
                 ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
             ],
             default_value=QUALITY_BALANCED,
-        ),
-        ConfigEntry(
-            key=CONF_STREAM_BUFFER_MB,
-            type=ConfigEntryType.INTEGER,
-            label="Stream buffer size (MB)",
-            description="Memory buffer for encrypted FLAC streaming. "
-            "Larger values help with slow or unstable connections "
-            "by allowing more audio to be downloaded ahead of playback. "
-            "Default: 8 MB (~45 seconds of FLAC audio).",
-            range=(1, 64),
-            default_value=8,
-            advanced=True,
         ),
         # My Wave maximum tracks (advanced)
         ConfigEntry(

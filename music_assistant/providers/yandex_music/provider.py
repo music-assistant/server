@@ -148,8 +148,6 @@ class YandexMusicProvider(MusicProvider):
 
         :param is_removed: Whether the provider is being removed.
         """
-        if self._streaming:
-            await self._streaming.close()
         if self._client:
             await self._client.disconnect()
         self._client = None
