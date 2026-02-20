@@ -438,7 +438,7 @@ class PartyModePlugin(PluginProvider):
         # Generate a new short code (valid for 24 hours, unlimited uses)
         code, expires_at = await self.mass.webserver.auth.generate_join_code(
             user_id=guest_user_id,
-            expires_in_hours=24,
+            expires_in_hours=8,
             max_uses=0,  # Unlimited uses
             device_name="Party Mode Guest",
             provider_name="party_mode",
