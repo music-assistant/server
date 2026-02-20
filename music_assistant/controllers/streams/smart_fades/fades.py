@@ -75,6 +75,7 @@ class SmartFade(ABC):
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
+
         args = [
             "ffmpeg",
             "-hide_banner",
@@ -132,14 +133,17 @@ class SmartFade(ABC):
         )
         self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
-        # Execute the enhanced smart fade with full buffer
-        _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
-        await remove_file(fadeout_filename)
+        try:
+            # Execute the enhanced smart fade with full buffer
+            _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
 
-        if raw_crossfade_output:
-            return raw_crossfade_output
-        stderr_msg = stderr.decode() if stderr else "(no stderr output)"
-        raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
+            if raw_crossfade_output:
+                return raw_crossfade_output
+            stderr_msg = stderr.decode() if stderr else "(no stderr output)"
+            raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
+        finally:
+            # Always cleanup temp file, even if ffmpeg fails
+            await remove_file(fadeout_filename)
 
     def __repr__(self) -> str:
         """Return string representation of SmartFade showing the filter chain."""

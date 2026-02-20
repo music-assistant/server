@@ -30,12 +30,9 @@ from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
 
 # TODO: AirPlay provider
-# - Implement authentication for Apple TV
-# - Implement volume control for Apple devices using pyatv
-# - Implement metadata for Apple Apple devices using pyatv
-# - Use pyatv for communicating with original Apple devices (and use cliraop for actual streaming)
-# - Implement AirPlay 2 support
-# - Implement late joining to existing stream (instead of restarting it)
+# Implement Companion protocol for communicating with original Apple (TV) devices
+# This allows for getting state/metadata changes from the device,
+# even if we are not actively streaming to it.
 
 
 class AirPlayProvider(PlayerProvider):
@@ -91,7 +88,7 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if _player := self.mass.players.get(player_id):
+            if _player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", _player.display_name)
                 await self.mass.players.unregister(player_id)
@@ -99,7 +96,7 @@ class AirPlayProvider(PlayerProvider):
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := cast("AirPlayPlayer | None", self.mass.players.get(player_id)):
+        if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             return
@@ -174,15 +171,9 @@ class AirPlayProvider(PlayerProvider):
         ):
             volume = FALLBACK_VOLUME
 
-        # Append airplay to the default name for non-apple devices
-        # to make it easier for users to distinguish
-        is_apple = manufacturer.lower() == "apple"
-        if not is_apple and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
-
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)
-        if self.mass.players.get(player_id):
+        if self.mass.players.get_player(player_id):
             self.logger.debug(
                 "Player %s already registered during setup, skipping registration", player_id
             )
@@ -265,7 +256,7 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
                 or player.device_info.manufacturer.lower() == "apple"
             )
-            active_queue = self.mass.player_queues.get_active_queue(player_id)
+            active_queue = self.mass.players.get_active_queue(player)
             if not active_queue:
                 self.logger.warning(
                     "DACP request for %s (%s) but no active queue found, ignoring request",
@@ -347,4 +338,4 @@ class AirPlayProvider(PlayerProvider):
 
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get(player_id))
+        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))

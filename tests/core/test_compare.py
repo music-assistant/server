@@ -369,3 +369,10 @@ def test_compare_track() -> None:  # noqa: PLR0915
         (ExternalID.MB_RECORDING, "abcd"),
     }
     assert compare.compare_track(track_a, track_b) is False
+
+
+def test_compare_strings_case_insensitive_fuzzy() -> None:
+    """Test that non-strict fuzzy matching is fully case-insensitive."""
+    # These differ slightly ("Feat." vs "FT.") so create_safe_string won't match,
+    # falling through to SequenceMatcher which must compare both strings lowered.
+    assert compare.compare_strings("Track Feat. John", "TRACK FT. JOHN", strict=False) is True
