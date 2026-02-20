@@ -209,7 +209,7 @@ class AuthenticationManager:
             """
             CREATE TABLE IF NOT EXISTS join_codes (
                 code_id TEXT PRIMARY KEY,
-                code_hash TEXT NOT NULL UNIQUE,
+                code TEXT NOT NULL UNIQUE,
                 user_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
@@ -1642,7 +1642,8 @@ class AuthenticationManager:
         """
         if user_id:
             # Count codes first using a dedicated COUNT query (no row limit)
-            count = await self.database.get_count("join_codes", {"user_id": user_id})
+            query = "SELECT COUNT(*) FROM join_codes WHERE user_id = :user_id"
+            count = await self.database.get_count_from_query(query, params={"user_id": user_id})
             await self.database.delete("join_codes", {"user_id": user_id})
         else:
             # Revoke all join codes
