@@ -46,7 +46,7 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Player (Internal)                            │
+│                     Player (Internal)                           │
 │  - Provider-specific implementation                             │
 │  - Control methods (play, pause, volume_set, etc.)              │
 │  - Raw state (_attr_volume_level, _attr_playback_state, etc.)   │

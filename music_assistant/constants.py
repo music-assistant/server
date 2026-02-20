@@ -932,6 +932,7 @@ ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
+ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
