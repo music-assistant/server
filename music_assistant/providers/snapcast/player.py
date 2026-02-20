@@ -18,6 +18,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import CONF_ENTRY_SAMPLE_RATES_SNAPCAST
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -178,7 +179,8 @@ class SnapCastPlayer(Player):
         )
         if ip and (host := self.snap_client._client.get("host")):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, host.get("ip"))
-        if mac:
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+        if mac and is_valid_mac_address(mac):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
