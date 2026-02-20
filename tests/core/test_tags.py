@@ -1,17 +1,23 @@
-"""Tests for parsing audio file tags (ID3, MP4/AAC, etc.)."""
+"""Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
 import pathlib
 from unittest.mock import MagicMock
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
-from music_assistant.helpers.tags import _parse_vorbis_tags, split_artists
+from music_assistant.helpers.tags import (
+    _parse_apev2_tags,
+    _parse_vorbis_tags,
+    parse_tags_mutagen,
+    split_artists,
+)
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
 FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
 FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
+FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -74,6 +80,35 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
     assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
+
+
+def test_parse_metadata_from_apev2tags() -> None:
+    """Test parsing of metadata from APEv2 tags (WavPack).
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    result = parse_tags_mutagen(FILE_WV)
+    assert result.get("album") == "MyAlbum"
+    assert result.get("title") == "MyTitle"
+    assert result.get("albumartist") == "MyArtist"
+    assert result.get("artist") == "MyArtist"
+    assert result.get("artists") == ["MyArtist", "MyArtist2"]
+    assert result.get("genre") == ["Genre1", "Genre2"]
+    assert result.get("musicbrainzalbumartistid") == ["abcdefg"]
+    assert result.get("musicbrainzartistid") == ["abcdefg"]
+    assert result.get("musicbrainzreleasegroupid") == "abcdefg"
+    assert result.get("musicbrainzrecordingid") == "abcdefg"
+    # test track/disc (APEv2 uses "5/12" format like ID3)
+    assert result.get("track") == "5/12"
+    assert result.get("disc") == "1/2"
+    # test year
+    assert result.get("date") == "2022"
+    # test sort tags (artistsort/albumartistsort returned as lists to match ID3 behavior)
+    assert result.get("titlesort") == "MyTitle Sort"
+    assert result.get("artistsort") == ["MyArtist Sort"]
+    assert result.get("albumsort") == "MyAlbum Sort"
+    assert result.get("albumartistsort") == ["MyAlbumArtist Sort"]
 
 
 async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
@@ -321,3 +356,66 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
     assert result.get("musicbrainzalbumid") == "mb-album-id"
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
+
+
+def _create_mock_apev2_tags(tag_dict: dict[str, str]) -> MagicMock:
+    r"""Create a mock APEv2 tags object.
+
+    :param tag_dict: Dictionary mapping tag names to values (use \x00 for multi-value).
+    """
+    mock = MagicMock()
+    mock.__contains__ = lambda _, key: key in tag_dict
+    mock.__getitem__ = lambda _, key: tag_dict[key]
+    mock.keys = lambda: tag_dict.keys()
+    return mock
+
+
+def test_parse_apev2_tags_multi_value_artists() -> None:
+    """Test that APEv2 multi-value fields (null-separated) are parsed correctly."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Title": "My Song",
+            "Album": "My Album",
+            "Artist": "Single Artist",
+            "Artists": "Artist 1\x00Artist 2\x00Artist 3",  # Null-separated
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("title") == "My Song"
+    assert result.get("album") == "My Album"
+    assert result.get("artist") == "Single Artist"
+    assert result.get("artists") == ["Artist 1", "Artist 2", "Artist 3"]
+
+
+def test_parse_apev2_tags_musicbrainz_ids() -> None:
+    """Test that MusicBrainz IDs are parsed correctly from APEv2 tags."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "MUSICBRAINZ_ARTISTID": "mb-id-1\x00mb-id-2",  # Multi-value
+            "MUSICBRAINZ_ALBUMID": "mb-album-id",
+            "MUSICBRAINZ_TRACKID": "mb-track-id",  # Recording ID in APEv2
+            "MUSICBRAINZ_RELEASEGROUPID": "mb-rg-id",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
+    assert result.get("musicbrainzalbumid") == "mb-album-id"
+    assert result.get("musicbrainzrecordingid") == "mb-track-id"
+    assert result.get("musicbrainzreleasegroupid") == "mb-rg-id"
+
+
+def test_parse_apev2_tags_genre_multi_value() -> None:
+    """Test that APEv2 genre with multiple values is parsed correctly."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Genre": "Rock\x00Pop\x00Jazz",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("genre") == ["Rock", "Pop", "Jazz"]

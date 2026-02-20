@@ -458,11 +458,21 @@ class MusicAssistant:
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,
+        eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
+
+        :param target: Coroutine function or awaitable to run as a task.
+        :param args: Arguments to pass to the coroutine function.
+        :param task_id: Optional ID to track and deduplicate tasks.
+        :param abort_existing: If True, cancel existing task with same task_id.
+        :param eager_start: If True (default), start task immediately without waiting
+                           for next event loop iteration. This ensures proper ordering
+                           when creating multiple tasks in sequence.
+        :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
@@ -474,14 +484,17 @@ class MusicAssistant:
 
         if inspect.iscoroutinefunction(target):
             # coroutine function
-            task = self.loop.create_task(target(*args, **kwargs))
+            coro = target(*args, **kwargs)
         elif inspect.iscoroutine(target):
             # coroutine
-            task = self.loop.create_task(target)
+            coro = target
         elif callable(target):
             raise RuntimeError("Function is not a coroutine or coroutine function")
         else:
             raise RuntimeError("Target is missing")
+
+        # Use asyncio.Task directly with eager_start for immediate execution
+        task: asyncio.Task[_R] = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
 
         if task_id is None:
             task_id = uuid4().hex

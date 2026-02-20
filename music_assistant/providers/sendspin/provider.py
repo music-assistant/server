@@ -60,8 +60,18 @@ class SendspinProvider(PlayerProvider):
             self.logger.debug("Waiting for pending unregister of %s before registering", client_id)
             await pending_event.wait()
         # Check if client still exists (may have disconnected while waiting)
-        if self.server_api.get_client(client_id) is None:
+        sendspin_client = self.server_api.get_client(client_id)
+        if sendspin_client is None:
             self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
+            return
+        # Wait for client hello to be processed (info becomes available)
+        # ClientAddedEvent fires before the hello handshake completes
+        for _ in range(50):  # Wait up to 5 seconds
+            if sendspin_client._info is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            self.logger.warning("Client %s hello not received within timeout", client_id)
             return
         if self.mass.players.get_player(client_id) is not None:
             self.logger.debug(

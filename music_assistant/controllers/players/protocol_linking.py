@@ -36,6 +36,7 @@ from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
     normalize_ip_address,
+    normalize_mac_for_matching,
     resolve_real_mac_address,
 )
 from music_assistant.models.player import Player
@@ -229,8 +230,6 @@ class ProtocolLinkingMixin:
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
                         self._update_universal_device_info(native_player, protocol_player)
-                        # Update availability from protocol players
-                        native_player.update_from_protocol_players()
                         # Persist updated data to config (async via task)
                         self._save_universal_player_data(native_player)
                         protocol_player.update_state()
@@ -371,8 +370,6 @@ class ProtocolLinkingMixin:
                 universal_player.device_info.add_identifier(conn_type, value)
             # Update model/manufacturer if universal player has generic values
             self._update_universal_device_info(universal_player, protocol_player)
-            # Update availability from protocol players
-            universal_player.update_from_protocol_players()
 
             # Persist all player data (protocol IDs, identifiers, device info) to config
             for provider in self.mass.get_providers(ProviderType.PLAYER):
@@ -439,8 +436,7 @@ class ProtocolLinkingMixin:
             player.update_state()
 
         # Update availability from protocol players
-        if isinstance(universal_player, UniversalPlayer):
-            universal_player.update_from_protocol_players()
+        universal_player.update_state()
 
     async def _create_or_update_universal_player(self, protocol_players: list[Player]) -> None:
         """
@@ -505,7 +501,19 @@ class ProtocolLinkingMixin:
         for player in list(self._players.values()):
             if player.provider.domain != "universal_player":
                 continue
-            if not self._identifiers_match(native_player, player, ""):
+
+            # Check by identifiers first
+            identifiers_match = self._identifiers_match(native_player, player, "")
+
+            # Also check if native player's ID is in the universal player's stored protocol list
+            # This handles players that changed type (e.g., sendspin web players changed from
+            # PROTOCOL to PLAYER type) and have no identifiers to match against
+            player_id_in_protocols = (
+                isinstance(player, UniversalPlayer)
+                and native_player.player_id in player._protocol_player_ids
+            )
+
+            if not identifiers_match and not player_id_in_protocols:
                 continue
 
             # Transfer all protocol links from universal player to native player
@@ -812,8 +820,15 @@ class ProtocolLinkingMixin:
                     continue
 
             # Normalize values for comparison
-            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+            if conn_type == IdentifierType.MAC_ADDRESS:
+                # Use MAC normalization that handles locally-administered bit differences
+                # Some protocols (like AirPlay) report a locally-administered MAC variant
+                # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
+                val_a_norm = normalize_mac_for_matching(val_a)
+                val_b_norm = normalize_mac_for_matching(val_b)
+            else:
+                val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+                val_b_norm = val_b.lower().replace(":", "").replace("-", "")
 
             # Direct match
             if val_a_norm == val_b_norm:
