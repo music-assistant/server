@@ -755,6 +755,32 @@ class TestQueryMethods:
         folders = await genre_ctrl.get_overview(genre.item_id)
         assert folders == []
 
+    async def test_get_genres_for_media_item(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns genres mapped to a specific media item."""
+        genre1 = await genre_ctrl.add_item_to_library(_make_genre("GenreForItem1"))
+        genre2 = await genre_ctrl.add_item_to_library(_make_genre("GenreForItem2"))
+        track = await _add_test_track(mass, "Track With Genres")
+        await genre_ctrl.add_media_mapping(
+            genre1.item_id, MediaType.TRACK, track.item_id, "GenreForItem1"
+        )
+        await genre_ctrl.add_media_mapping(
+            genre2.item_id, MediaType.TRACK, track.item_id, "GenreForItem2"
+        )
+        genres = await genre_ctrl.get_genres_for_media_item(MediaType.TRACK, track.item_id)
+        genre_names = {g.name for g in genres}
+        assert "GenreForItem1" in genre_names
+        assert "GenreForItem2" in genre_names
+
+    async def test_get_genres_for_media_item_empty(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list for unmapped media item."""
+        track = await _add_test_track(mass, "Track Without Genres")
+        genres = await genre_ctrl.get_genres_for_media_item(MediaType.TRACK, track.item_id)
+        assert genres == []
+
 
 # ===================================================================
 # Group I: Genre Lookup & Scanner (5 tests)
@@ -764,24 +790,27 @@ class TestQueryMethods:
 class TestGenreLookupAndScanner:
     """Tests for genre/alias lookup and scanner status."""
 
-    async def test_ensure_genre_for_alias_existing(self, genre_ctrl: GenreController) -> None:
+    async def test_find_genres_for_alias_existing(self, genre_ctrl: GenreController) -> None:
         """Finds existing genre by name."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Garage"))
-        found = await genre_ctrl._ensure_genre_for_alias("Garage")
-        assert found == int(genre.item_id)
+        found = await genre_ctrl._find_genres_for_alias("Garage")
+        assert isinstance(found, list)
+        assert int(genre.item_id) in found
 
-    async def test_ensure_genre_for_alias_by_alias(self, genre_ctrl: GenreController) -> None:
+    async def test_find_genres_for_alias_by_alias(self, genre_ctrl: GenreController) -> None:
         """Finds existing genre by alias string in genre_aliases JSON."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Breakbeat"))
         await genre_ctrl.add_alias(genre.item_id, "Big Beat")
-        found = await genre_ctrl._ensure_genre_for_alias("Big Beat")
-        assert found == int(genre.item_id)
+        found = await genre_ctrl._find_genres_for_alias("Big Beat")
+        assert isinstance(found, list)
+        assert int(genre.item_id) in found
 
-    async def test_ensure_genre_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
+    async def test_find_genres_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
         """Creates new genre when no match found."""
-        new_id = await genre_ctrl._ensure_genre_for_alias("BrandNewGenre12345")
-        assert new_id is not None
-        genre = await genre_ctrl.get_library_item(new_id)
+        found = await genre_ctrl._find_genres_for_alias("BrandNewGenre12345")
+        assert isinstance(found, list)
+        assert len(found) == 1
+        genre = await genre_ctrl.get_library_item(found[0])
         assert genre.name == "BrandNewGenre12345"
 
     async def test_scanner_status(self, genre_ctrl: GenreController) -> None:

@@ -2313,13 +2313,11 @@ class MusicController(CoreController):
                         return row[0]
                 return 0
 
-            # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases
-            # Build a lookup: normalized alias name -> genre_id for Phase 2.
-            # Two passes: first collect all aliases, then override with each
-            # genre's own name so standalone genres take priority over being
-            # an alias elsewhere (e.g. "funk" is both a genre and alias of Soul).
-            alias_to_genre: dict[str, int] = {}
-            genre_own_names: dict[str, int] = {}
+            # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases.
+            # Build n:n lookup: normalized alias name -> list of genre_ids.
+            # One alias can belong to multiple genres (e.g. "funk" is both
+            # a standalone genre and an alias of Soul/R&B).
+            alias_to_genre: dict[str, list[int]] = {}
             for entry in DEFAULT_GENRE_MAPPING:
                 genre_name = entry.get("genre")
                 if not genre_name:
@@ -2335,12 +2333,9 @@ class MusicController(CoreController):
                 for alias in all_aliases:
                     norm = create_safe_string(alias.strip(), True, True)
                     if norm:
-                        alias_to_genre[norm] = genre_id
-                own_norm = create_safe_string(genre_name.strip(), True, True)
-                if own_norm:
-                    genre_own_names[own_norm] = genre_id
-            # Own names override alias collisions
-            alias_to_genre.update(genre_own_names)
+                        alias_to_genre.setdefault(norm, [])
+                        if genre_id not in alias_to_genre[norm]:
+                            alias_to_genre[norm].append(genre_id)
             await db.commit()
 
             # Phase 2: Discover unique genre names from all media items,
@@ -2372,25 +2367,25 @@ class MusicController(CoreController):
             )
 
             # 2b: Ensure genres exist for all discovered names.
-            # Names already covered by Phase 1 aliases just reuse that genre.
-            # New names get their own genre.
-            raw_name_to_genre: dict[str, int] = {}
+            # Names already covered by Phase 1 aliases just reuse those genre(s).
+            # New names get their own genre. One alias can map to multiple genres (n:n).
+            raw_name_to_genres: dict[str, list[int]] = {}
             for raw_name in unique_raw_names:
                 norm = create_safe_string(raw_name.strip(), True, True)
                 if not norm:
                     continue
                 if norm in alias_to_genre:
-                    raw_name_to_genre[raw_name] = alias_to_genre[norm]
+                    raw_name_to_genres[raw_name] = list(alias_to_genre[norm])
                     self.logger.debug(
-                        "Genre migration - resolved %r -> genre_id %d (alias match)",
+                        "Genre migration - resolved %r -> genre_ids %s (alias match)",
                         raw_name,
                         alias_to_genre[norm],
                     )
                 else:
                     genre_id = await _get_or_create_genre(raw_name)
                     if genre_id:
-                        raw_name_to_genre[raw_name] = genre_id
-                        alias_to_genre[norm] = genre_id
+                        raw_name_to_genres[raw_name] = [genre_id]
+                        alias_to_genre[norm] = [genre_id]
                         self.logger.debug(
                             "Genre migration - resolved %r -> genre_id %d (new genre)",
                             raw_name,
@@ -2398,14 +2393,15 @@ class MusicController(CoreController):
                         )
             await db.commit()
             self.logger.info(
-                "Genre migration - resolved %d unique genre names", len(raw_name_to_genre)
+                "Genre migration - resolved %d unique genre names", len(raw_name_to_genres)
             )
 
             # 2c: Add discovered raw names as aliases to their resolved genres
             # so that frontend searches by raw name find the parent genre.
             genre_new_aliases: dict[int, list[str]] = {}
-            for raw_name, gid in raw_name_to_genre.items():
-                genre_new_aliases.setdefault(gid, []).append(raw_name)
+            for raw_name, gids in raw_name_to_genres.items():
+                for gid in gids:
+                    genre_new_aliases.setdefault(gid, []).append(raw_name)
             for gid, new_aliases in genre_new_aliases.items():
                 async with db.execute(
                     f"SELECT genre_aliases FROM {DB_TABLE_GENRES} WHERE item_id = :gid",
@@ -2415,8 +2411,12 @@ class MusicController(CoreController):
                 if not row:
                     continue
                 existing = json_loads(row[0]) if row[0] else []
-                existing_lower = {a.lower() for a in existing}
-                to_add = [a for a in new_aliases if a.lower() not in existing_lower]
+                existing_norms = {create_safe_string(a, True, True) for a in existing}
+                to_add = [
+                    a
+                    for a in new_aliases
+                    if create_safe_string(a, True, True) not in existing_norms
+                ]
                 if to_add:
                     merged = existing + to_add
                     await db.execute(
@@ -2428,10 +2428,12 @@ class MusicController(CoreController):
 
             # 2d: Build CTE with (raw_name, genre_id) and do one INSERT per
             # media type using json_each to map media items directly to genres.
-            if raw_name_to_genre:
+            # One raw_name can map to multiple genre_ids (n:n).
+            if raw_name_to_genres:
                 cte_values = ", ".join(
                     f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                    for name, gid in raw_name_to_genre.items()
+                    for name, gids in raw_name_to_genres.items()
+                    for gid in gids
                 )
                 cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
@@ -3005,7 +3007,7 @@ class MusicController(CoreController):
         # indexes on genre_media_item_mapping table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
-            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_type,media_id);"
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_id,media_type);"
         )
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
