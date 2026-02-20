@@ -33,6 +33,12 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemMinifiedPodcast,
 )
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
+from aioaudiobookshelf.schema.playlist import (
+    PlaylistItemExpandedBook as AbsPlaylistItemExpandedBook,
+)
+from aioaudiobookshelf.schema.playlist import (
+    PlaylistItemExpandedPodcast as AbsPlaylistItemExpandedPodcast,
+)
 from aioaudiobookshelf.schema.session import DeviceInfo as AbsDeviceInfo
 from aioaudiobookshelf.schema.shelf import (
     LibraryItemMinifiedPodcast as ShelfLibraryItemMinifiedPodcast,
@@ -68,16 +74,18 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
+    Playlist,
     PodcastEpisode,
     UniqueList,
 )
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
+from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
+    parse_playlist,
     parse_podcast,
     parse_podcast_episode,
 )
@@ -120,6 +128,7 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
 }
@@ -419,6 +428,60 @@ for more details.
         # update playlog
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+        """Retrieve playlists from abs."""
+        abs_playlists = await self._client.get_all_playlists()
+        for abs_playlist in abs_playlists:
+            yield parse_playlist(
+                abs_playlist=abs_playlist,
+                instance_id=self.instance_id,
+                domain=self.domain,
+                token=self._client.token,
+                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            )
+
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[PlaylistPlayableItem]:
+        """Get playlist items."""
+        if page > 0:
+            # no pages in abs' playlist items api
+            return []
+        playlist_items: list[PlaylistPlayableItem] = []
+        playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        for item in playlist.items:
+            if isinstance(item, AbsPlaylistItemExpandedBook):
+                progress = await self._client.get_my_media_progress(item_id=item.library_item.id_)
+                playlist_items.append(
+                    parse_audiobook(
+                        abs_audiobook=item.library_item,
+                        instance_id=self.instance_id,
+                        domain=self.domain,
+                        token=self._client.token,
+                        media_progress=progress,
+                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    )
+                )
+            elif isinstance(item, AbsPlaylistItemExpandedPodcast):
+                progress = await self._client.get_my_media_progress(
+                    item_id=item.library_item.id_, episode_id=item.episode_id
+                )
+                playlist_items.append(
+                    parse_podcast_episode(
+                        episode=item.episode,
+                        prov_podcast_id=item.library_item.id_,
+                        fallback_episode_cnt=None,
+                        instance_id=self.instance_id,
+                        domain=self.domain,
+                        token=self._client.token,
+                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        media_progress=progress,
+                        add_cover=bool(item.library_item.media.cover_path or False),
+                    )
+                )
+
+        return playlist_items
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from the provider.
