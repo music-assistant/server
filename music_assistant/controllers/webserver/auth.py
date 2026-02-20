@@ -1606,13 +1606,13 @@ class AuthenticationManager:
             """
             UPDATE join_codes
             SET use_count = use_count + 1,
-                last_used_at = ?
-            WHERE code = ?
-            AND expires_at > ?
+                last_used_at = :now
+            WHERE code = :code
+            AND expires_at > :now
             AND (max_uses = 0 OR use_count < max_uses)
             RETURNING user_id, provider_name, device_name
             """,
-            (now.isoformat(), code.upper(), now.isoformat()),
+            {"now": now.isoformat(), "code": code.upper()},
         )
         row = await cursor.fetchone()
         await self.database.commit()
