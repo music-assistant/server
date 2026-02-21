@@ -1465,6 +1465,12 @@ def get_player_filter_params(
     elif conf_channels == "right":
         filter_params.append("pan=mono|c0=FR")
 
+    # Apply playback speed via atempo filter if a non-default speed is set on the queue.
+    if _speed_queue := mass.player_queues.get_active_queue(player_id):
+        speed = float(_speed_queue.extra_attributes.get("playback_speed") or 1.0)
+        if speed != 1.0:
+            filter_params.append(f"atempo={speed:.4f}")
+
     # Add safety limiter at the end
     if limiter_enabled:
         filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
