@@ -958,7 +958,11 @@ class MusicProvider(Provider):
             "Start sync of Playlist Tracks to Music Assistant library for playlist %s.",
             provider_playlist.name,
         )
-        async for prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
+        async for _prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
+            prov_track = _prov_track
+            if isinstance(_prov_track, PodcastEpisode):
+                # In MA, only full podcasts can be synced to the library
+                prov_track = await self.get_podcast(_prov_track.podcast.item_id)
             controller = self.mass.music.get_controller(prov_track.media_type)
             library_track = await controller.get_library_item_by_prov_mappings(
                 prov_track.provider_mappings,
@@ -968,11 +972,12 @@ class MusicProvider(Provider):
                     # add item to the library
                     for prov_map in prov_track.provider_mappings:
                         prov_map.in_library = True
-                    library_track = await controller.add_item_to_library(prov_track)
+                    library_track = await controller.add_item_to_library(prov_track)  # type: ignore[arg-type]
                 elif not self._check_provider_mappings(library_track, prov_track, True):
                     # existing library track but provider mapping doesn't match
                     library_track = await controller.update_item_in_library(
-                        library_track.item_id, prov_track
+                        library_track.item_id,
+                        prov_track,  # type: ignore[arg-type]
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
