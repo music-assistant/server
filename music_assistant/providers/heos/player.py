@@ -63,7 +63,7 @@ class HeosPlayer(Player):
     async def setup(self) -> None:
         """Set up the player."""
         self.set_device_info()
-        self.set_dynamic_attributes()
+        self.set_dynamic_attributes(update_media=True)
 
         await self.mass.players.register_or_update(self)
 
@@ -143,6 +143,12 @@ class HeosPlayer(Player):
             case const.EVENT_PLAYER_VOLUME_CHANGED:
                 self._update_player_volume()
 
+            case const.EVENT_PLAYER_PLAYBACK_ERROR:
+                self.logger.error(
+                    "[%s] Playback error: %s", self._device.name, self._device.playback_error
+                )
+                self.set_dynamic_attributes()
+
             case _:
                 # Update everything on other events
                 self.set_dynamic_attributes()
@@ -214,11 +220,14 @@ class HeosPlayer(Player):
             else None
         )
 
-    def set_dynamic_attributes(self) -> None:
+    def set_dynamic_attributes(self, update_media: bool = False) -> None:
         """Update all player dynamic attributes."""
         self._update_player_volume()
         self._update_player_state()
-        self._update_player_current_media()
+
+        if update_media:
+            self._update_player_current_media()
+
         self._update_player_playing_progress()
 
     async def volume_set(self, volume_level: int) -> None:
