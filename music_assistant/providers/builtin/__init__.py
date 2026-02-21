@@ -224,6 +224,12 @@ class BuiltinProvider(MusicProvider):
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
                     else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
                 ),
+                supported_mediatypes={
+                    MediaType.AUDIOBOOK,
+                    MediaType.PODCAST_EPISODE,
+                    MediaType.RADIO,
+                    MediaType.TRACK,
+                },
             )
         # user created universal playlist
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
@@ -243,6 +249,12 @@ class BuiltinProvider(MusicProvider):
             },
             owner="Music Assistant",
             is_editable=True,
+            supported_mediatypes={
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+                MediaType.RADIO,
+                MediaType.TRACK,
+            },
         )
         if image_url := stored_item.get("image_url"):
             playlist.metadata.add_image(

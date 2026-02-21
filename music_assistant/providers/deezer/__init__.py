@@ -935,6 +935,7 @@ class DeezerProvider(MusicProvider):
             ),
             is_editable=is_editable,
             owner=creator.name,
+            supported_mediatypes={MediaType.TRACK},
         )
 
     def get_playlist_creator(self, playlist: deezer.Playlist) -> deezer.User:
@@ -980,6 +981,7 @@ class DeezerProvider(MusicProvider):
             metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
             is_editable=False,
             owner="Deezer",
+            supported_mediatypes={MediaType.TRACK},
         )
 
     def parse_track(self, track: deezer.Track, user_country: str, position: int = 0) -> Track:

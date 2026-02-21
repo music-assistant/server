@@ -358,6 +358,7 @@ class NugsProvider(MusicProvider):
                 ),
             ),
             is_editable=False,
+            supported_mediatypes={MediaType.TRACK},
         )
 
     def _parse_track(

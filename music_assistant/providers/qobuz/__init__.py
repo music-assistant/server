@@ -763,6 +763,7 @@ class QobuzProvider(MusicProvider):
                 )
             },
             is_editable=is_editable,
+            supported_mediatypes={MediaType.TRACK},
         )
         if img := self.__get_image(playlist_obj):
             playlist.metadata.add_image(

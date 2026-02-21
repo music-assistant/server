@@ -443,6 +443,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
+            supported_mediatypes={MediaType.TRACK},
         )
         playlist.is_editable = False
         if playlist_obj.get("description"):

@@ -657,6 +657,7 @@ class LocalFileSystemProvider(MusicProvider):
                     details=file_item.checksum,
                 )
             },
+            supported_mediatypes={MediaType.TRACK},
         )
         playlist.is_editable = ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features
         # only playlists in the root are editable - all other are read only

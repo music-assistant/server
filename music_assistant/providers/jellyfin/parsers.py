@@ -284,6 +284,7 @@ def parse_playlist(
                 provider_instance=instance_id,
             )
         },
+        supported_mediatypes={MediaType.TRACK},
     )
     if ITEM_KEY_OVERVIEW in jellyfin_playlist:
         playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]

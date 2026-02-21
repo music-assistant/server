@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ImageType, LinkType
+from music_assistant_models.enums import ImageType, LinkType, MediaType
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemLink,
@@ -44,6 +44,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
                 },
             ),
             provider_mappings=self.helper.create_provider_mapping(str(mylist.id_), "mylist"),
+            supported_mediatypes={MediaType.TRACK},
         )
 
         if mylist.owner.icon_url:

@@ -979,6 +979,7 @@ class SpotifyProvider(MusicProvider):
                     is_unique=True,  # liked songs is user-specific
                 )
             },
+            supported_mediatypes={MediaType.TRACK},
         )
 
         liked_songs.is_editable = False  # TODO Editing requires special endpoints

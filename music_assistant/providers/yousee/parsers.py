@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType
+from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -203,6 +203,7 @@ async def parse_playlist(provider: YouSeeMusikProvider, playlist_obj: JsonLike) 
                 is_unique=playlist_obj["isOwned"],
             )
         },
+        supported_mediatypes={MediaType.TRACK},
     )
 
     if playlist_obj.get("description"):

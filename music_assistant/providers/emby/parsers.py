@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, ImageType
+from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -250,6 +250,7 @@ def parse_playlist(
                 provider_instance=instance_id,
             )
         },
+        supported_mediatypes={MediaType.TRACK},
     )
     # Extract images
     if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):

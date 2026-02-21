@@ -399,6 +399,7 @@ class PhishInProvider(MusicProvider):
                                 available=True,
                             )
                         },
+                        supported_mediatypes={MediaType.TRACK},
                     )
         except (MediaNotFoundError, ProviderUnavailableError):
             raise
@@ -437,6 +438,7 @@ class PhishInProvider(MusicProvider):
                         available=True,
                     )
                 },
+                supported_mediatypes={MediaType.TRACK},
             )
 
         except MediaNotFoundError:

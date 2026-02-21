@@ -492,6 +492,7 @@ class KionMusicProvider(MusicProvider):
                     )
                 },
                 is_editable=False,
+                supported_mediatypes={MediaType.TRACK},
             )
 
         # Parse the playlist ID (format: owner_id:kind)
