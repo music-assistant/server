@@ -131,6 +131,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
+    # abs only supports playlists of one media type, so editing them is better left outside of MA
 }
 
 
