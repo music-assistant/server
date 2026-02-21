@@ -157,7 +157,7 @@ def resolve_plex_server(
     )
     plex_server: PlexServer | None = None
 
-    # Try with account owner
+    # MyPlex authentication path
     if auth_token and auth_token != AUTH_TOKEN_UNAUTH:
 
         # Ensure we have a MyPlexAccount
@@ -166,45 +166,45 @@ def resolve_plex_server(
                 myplex_account = MyPlexAccount(token=auth_token)
             except Exception as err:
                 raise LoginFailed("Failed to authenticate with Plex.tv") from err
-             
-        # Try account-owner token first
-        try:
-            plex_server = PlexServer(
-                f"{'https' if local_server_ssl else 'http'}://{local_server_ip}:{local_server_port}",
-                token=auth_token,
-                session=session,
-            )
-            return plex_server
-        except plexapi.exceptions.Unauthorized as err:
-            logging.getLogger("music_assistant.providers.plex").debug(
-                "Account-owner auth failed for %s:%s, continuing to check shared servers: %s",
-                local_server_ip,
-                local_server_port,
-                err,
-            )
 
-        # If local-owner token fails, iterate over shared servers
         try:
-            if myplex_account:
-                for resource in myplex_account.resources():
-                    if "server" not in resource.provides:
-                        continue
-                    for conn in resource.connections:
-                        if (
-                            conn.address == local_server_ip
-                            and int(conn.port) == int(local_server_port)
-                        ):
-                            plex_server = PlexServer(
-                                f"{conn.protocol}://{conn.address}:{conn.port}",
-                                token=resource.accessToken,
-                                session=session,
-                            )
-                            break
-                    if plex_server:
+            for resource in myplex_account.resources():
+
+                if "server" not in resource.provides:
+                    continue
+
+                # Match server by address/port
+                for conn in resource.connections:
+                    if (
+                        conn.address == local_server_ip
+                        and int(conn.port) == int(local_server_port)
+                    ):
+
+                        logging.getLogger("music_assistant.providers.plex").info(
+                            "Matched Plex resource '%s' (owned=%s)",
+                            resource.name,
+                            resource.owned,
+                        )
+                        # If owned use auth_token
+                        # If shared use resource.accessToken
+                        token = (
+                            auth_token if resource.owned else resource.accessToken
+                        )
+
+                        plex_server = PlexServer(
+                            f"{conn.protocol}://{conn.address}:{conn.port}",
+                            token=token,
+                            session=session,
+                        )
                         break
-        except plexapi.exceptions.Unauthorized as err:
-            raise LoginFailed("Plex.tv authentication failed") from err
+                if plex_server:
+                    break
 
+        except plexapi.exceptions.Unauthorized as err:
+            raise LoginFailed(f"Server {local_server_ip}:{local_server_port} not accessible in your Plex account") from err
+
+
+    # Local-only path
     if auth_token == AUTH_TOKEN_UNAUTH:
         # Local connection
         plex_server = PlexServer(base_url, session=session)
@@ -383,12 +383,6 @@ async def get_config_entries(  # noqa: PLR0915
             server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
             server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
             
-            # Get MyPlex account if token is not local auth
-            myplex_account: MyPlexAccount | None = None
-            if token != AUTH_TOKEN_UNAUTH:
-                # Plex.tv auth — resolve_plex_server create/fetch MyPlexAccount
-                myplex_account = None 
-
             # Fetch libraries
             plex_server = await asyncio.to_thread(
                 resolve_plex_server,
@@ -397,7 +391,7 @@ async def get_config_entries(  # noqa: PLR0915
                 local_server_ssl=server_http_ssl,
                 local_server_verify_cert=server_http_verify_cert,
                 auth_token=token,
-                myplex_account=myplex_account,
+                myplex_account=None,
                 client_id=instance_id,
                 client_version=mass.version,
             )
