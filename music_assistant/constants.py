@@ -26,8 +26,16 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.AUDIOBOOK,
 )
 
-
+# API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
+# or small non-breaking changes to existing commands
 API_SCHEMA_VERSION: Final[int] = 29
+
+# MIN_SCHEMA_VERSION is the minimum API schema version that the current server
+# version can work with. Only bump when there are breaking changes to existing
+# API commands or models, such as removing fields or changing field types.
+# Note that doing so will break compatibility with all clients in the field
+# (including Home Assistant) that have not yet been updated to the new API
+# schema version, so only bump this when absolutely necessary.
 MIN_SCHEMA_VERSION: Final[int] = 28
 
 
