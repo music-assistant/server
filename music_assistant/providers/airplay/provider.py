@@ -256,43 +256,35 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
                 or player.device_info.manufacturer.lower() == "apple"
             )
-            active_queue = self.mass.players.get_active_queue(player)
-            if not active_queue:
-                self.logger.warning(
-                    "DACP request for %s (%s) but no active queue found, ignoring request",
-                    player.display_name,
-                    player_id,
-                )
-                return
             if path == "/ctrl-int/1/nextitem":
-                self.mass.create_task(self.mass.player_queues.next(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             elif path == "/ctrl-int/1/previtem":
-                self.mass.create_task(self.mass.player_queues.previous(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
             elif path == "/ctrl-int/1/play":
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
                 if player.playback_state != PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
+                    self.mass.create_task(self.mass.players.cmd_play(player_id))
             elif path == "/ctrl-int/1/playpause":
-                self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
             elif path == "/ctrl-int/1/stop":
-                self.mass.create_task(self.mass.player_queues.stop(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_stop(player_id))
             elif path == "/ctrl-int/1/volumeup":
                 self.mass.create_task(self.mass.players.cmd_volume_up(player_id))
             elif path == "/ctrl-int/1/volumedown":
                 self.mass.create_task(self.mass.players.cmd_volume_down(player_id))
             elif path == "/ctrl-int/1/shuffle_songs":
-                queue = self.mass.player_queues.get(player_id)
-                if not queue:
+                active_queue = self.mass.players.get_active_queue(player)
+                if not active_queue:
                     return
                 await self.mass.player_queues.set_shuffle(
-                    active_queue.queue_id, not queue.shuffle_enabled
+                    active_queue.queue_id, not active_queue.shuffle_enabled
                 )
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
                 if player.playback_state == PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
+                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.

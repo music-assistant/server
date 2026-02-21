@@ -228,7 +228,7 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
-        active_source = self._attr_active_source
+        active_source = self.state.active_source
         if self.mass.player_queues.get(active_source):
             # Sonos seems to be bugged when playing our queue tracks and we send pause,
             # it can't resume the current track and simply aborts/skips it
@@ -526,12 +526,8 @@ class SonosPlayer(Player):
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
         elif active_service == MusicService.MUSIC_ASSISTANT:
-            if (object_id := container.get("id", {}).get("objectId")) and object_id.startswith(
-                "mass:"
-            ):
-                self._attr_active_source = object_id.split(":")[1]
-            else:
-                self._attr_active_source = None
+            # setting active source to None is fine
+            self._attr_active_source = None
         # its playing some service we did not yet map
         elif container and container.get("service", {}).get("name"):
             self._attr_active_source = container["service"]["name"]
@@ -621,11 +617,11 @@ class SonosPlayer(Player):
 
         # Workaround for Sonos AirPlay ungrouping bug: when AirPlay playback starts
         # on a Sonos speaker that has native group members, Sonos dissolves the group.
-        # We capture the group state here and restore it via AirPlay protocol after a delay.
+        # We capture the group state here and restore it after a delay.
 
         self.logger.debug(
             "AirPlay playback starting on %s with native group members %s - "
-            "scheduling restoration to avoid Sonos ungrouping bug",
+            "scheduling restoration to work around Sonos ungrouping bug",
             self.name,
             current_members,
         )
@@ -633,11 +629,14 @@ class SonosPlayer(Player):
 
         async def _restore_airplay_group() -> None:
             try:
+                self.logger.info(
+                    "Restoring AirPlay group for %s with members %s",
+                    self.name,
+                    members_to_restore,
+                )
                 # we call set_members on the PlayerController here so it
                 # can try to regroup via the preferred protocol (which may be AirPlay),
-                await self.mass.players.cmd_set_members(
-                    self.player_id, player_ids_to_add=members_to_restore
-                )
+                await self.set_members(player_ids_to_add=members_to_restore)
             except Exception as err:
                 self.logger.warning("Failed to restore AirPlay group: %s", err)
 
