@@ -124,6 +124,7 @@ DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
+DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 
 
 # all other

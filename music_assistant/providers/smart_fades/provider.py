@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import soxr
@@ -14,10 +14,10 @@ from beat_this.inference import Postprocessor, Spect2Frames
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import build_smart_fades_analysis
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -86,6 +86,10 @@ class SmartFadesProvider(AudioAnalysisProvider):
         :param stream_details: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        await super().start_analysis(session_id, stream_details, audio_format)
+        if session_id not in self._sessions:
+            return
+
         block_seconds = 10.0
 
         self._data[session_id] = SmartFadesData(
@@ -124,15 +128,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if data.pcm_samples >= data.block_samples:
             await self._process_block(data)
 
-    async def finalize(self, session_id: str) -> dict[str, Any]:
-        """Finalize beat tracking, store results, and return them.
+    async def finalize(self, session_id: str) -> None:
+        """Finalize beat tracking and store results.
 
         :param session_id: The analysis session ID.
-        :return: Dictionary with beats, downbeats, and duration.
         """
         data = self._data.pop(session_id, None)
         if not data:
-            return {}
+            return
 
         # Flush remaining buffered PCM
         if data.pcm_samples:
@@ -144,7 +147,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.feature_blocks.append(final_feats)
 
         if not data.feature_blocks:
-            return {}
+            return
 
         feats = np.concatenate(data.feature_blocks, axis=0)
 
@@ -157,32 +160,35 @@ class SmartFadesProvider(AudioAnalysisProvider):
         beats, downbeats = await asyncio.to_thread(self._run_inference_sync, feats)
         duration = data.total_pcm_samples / ANALYSIS_SAMPLE_RATE
 
-        result: dict[str, Any] = {
-            "beats": beats,
-            "downbeats": downbeats,
-            "duration": duration,
-        }
-
-        analysis = build_smart_fades_analysis(result)
-        if not analysis:
+        if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
-            return result
+            return
 
-        await self.mass.music.set_smart_fades_analysis(
+        beat_intervals = np.diff(beats)
+        bpm = float(60.0 / np.mean(beat_intervals))
+
+        analysis = AudioAnalysisData(
+            bpm=bpm,
+            beats=beats,
+            downbeats=downbeats,
+            duration=duration,
+        )
+
+        await self.mass.music.set_audio_analysis(
             data.item_id,
             data.provider,
+            self.domain,
             analysis,
+            analysis_version=self.analysis_version,
         )
 
         self.logger.info(
             "Stored beat analysis for %s: BPM=%.1f, %d beats, %d downbeats",
             data.item_id,
-            analysis.bpm,
-            len(analysis.beats),
-            len(analysis.downbeats),
+            bpm,
+            len(beats),
+            len(downbeats),
         )
-
-        return result
 
     async def cancel(self, session_id: str) -> None:
         """Cancel a beat tracking session.

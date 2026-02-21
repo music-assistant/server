@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
@@ -23,14 +22,49 @@ FIXTURE_PCM = FIXTURE_DIR / "test_120bpm_44100_2_32.pcm"
 # All 32 beats match ground truth within 20ms; all 8 downbeats match within 20ms.
 # Zero false positives.
 EXPECTED_BEATS = [
-    0.000, 0.500, 1.000, 1.500, 2.020, 2.500, 3.000, 3.500,
-    4.020, 4.500, 5.020, 5.500, 6.020, 6.500, 7.000, 7.520,
-    8.020, 8.500, 9.000, 9.520, 10.020, 10.500, 11.000, 11.500,
-    12.020, 12.500, 13.020, 13.520, 14.020, 14.500, 15.020, 15.520,
+    0.000,
+    0.500,
+    1.000,
+    1.500,
+    2.020,
+    2.500,
+    3.000,
+    3.500,
+    4.020,
+    4.500,
+    5.020,
+    5.500,
+    6.020,
+    6.500,
+    7.000,
+    7.520,
+    8.020,
+    8.500,
+    9.000,
+    9.520,
+    10.020,
+    10.500,
+    11.000,
+    11.500,
+    12.020,
+    12.500,
+    13.020,
+    13.520,
+    14.020,
+    14.500,
+    15.020,
+    15.520,
 ]
 
 EXPECTED_DOWNBEATS = [
-    0.000, 2.020, 4.020, 6.020, 8.020, 10.020, 12.020, 14.020,
+    0.000,
+    2.020,
+    4.020,
+    6.020,
+    8.020,
+    10.020,
+    12.020,
+    14.020,
 ]
 
 
@@ -42,7 +76,8 @@ def mass_mock() -> Mock:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.music = Mock()
-    mass.music.set_smart_fades_analysis = AsyncMock()
+    mass.music.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.music.set_audio_analysis = AsyncMock()
     mass.config = Mock()
     mass.config.get = Mock(return_value={})
     return mass
@@ -70,9 +105,7 @@ def config_mock() -> Mock:
 
 
 @pytest.fixture
-async def provider(
-    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
-) -> SmartFadesProvider:
+async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> SmartFadesProvider:
     """Return a SmartFadesProvider with mocked MA but real Beat This model."""
     prov = SmartFadesProvider(mass_mock, manifest_mock, config_mock, set())
     await prov.handle_async_init()
@@ -106,10 +139,15 @@ async def test_beat_detection(provider: SmartFadesProvider) -> None:
         await provider.process_pcm_chunk(session_id, chunk)
         offset += chunk_size
 
-    result = await provider.finalize(session_id)
+    await provider.finalize(session_id)
 
-    beats = result["beats"]
-    downbeats = result["downbeats"]
+    # Verify set_audio_analysis was called with correct data
+    provider.mass.music.set_audio_analysis.assert_awaited_once()
+    call_args = provider.mass.music.set_audio_analysis.call_args
+    analysis = call_args[0][3]  # 4th positional arg: analysis
+
+    beats = analysis.beats
+    downbeats = analysis.downbeats
 
     assert len(beats) == len(EXPECTED_BEATS), (
         f"Expected {len(EXPECTED_BEATS)} beats, got {len(beats)}"
@@ -130,7 +168,5 @@ async def test_beat_detection(provider: SmartFadesProvider) -> None:
         )
 
     # Verify BPM is close to 120
-    beat_arr = np.array([float(b) for b in beats])
-    intervals = np.diff(beat_arr)
-    bpm = 60.0 / np.mean(intervals)
-    assert 115 < bpm < 125, f"Expected BPM ~120, got {bpm:.1f}"
+    assert analysis.bpm is not None
+    assert 115 < analysis.bpm < 125, f"Expected BPM ~120, got {analysis.bpm:.1f}"

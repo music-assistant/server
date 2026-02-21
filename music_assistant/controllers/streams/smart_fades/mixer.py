@@ -14,8 +14,6 @@ from music_assistant.helpers.audio import (
     strip_silence,
 )
 from music_assistant.models.smart_fades import (
-    SmartFadesAnalysis,
-    SmartFadesAnalysisFragment,
     SmartFadesMode,
 )
 
@@ -80,71 +78,23 @@ class SmartFadesMixer:
                 fade_in_part,
                 pcm_format,
             )
-        # Attempt smart crossfade with analysis data
-        # Prefer FULL_SONG, then OUTRO/INTRO, then analyze on-demand
-        fade_out_analysis: SmartFadesAnalysis | None = None
-        fade_out_source = "none"
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
+        # Attempt smart crossfade with stored audio analysis data
+        fade_out_analysis = await self.streams.mass.music.get_audio_analysis(
             fade_out_streamdetails.item_id,
             fade_out_streamdetails.provider,
-            SmartFadesAnalysisFragment.FULL_SONG,
-        ):
-            fade_out_analysis = stored_analysis
-            fade_out_source = "full_song"
-        elif stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
-            fade_out_streamdetails.item_id,
-            fade_out_streamdetails.provider,
-            SmartFadesAnalysisFragment.OUTRO,
-        ):
-            fade_out_analysis = stored_analysis
-            fade_out_source = "outro"
-        else:
-            fade_out_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_out_streamdetails.item_id,
-                fade_out_streamdetails.provider,
-                SmartFadesAnalysisFragment.OUTRO,
-                fade_out_part,
-                pcm_format,
-            )
-            fade_out_source = "analyzed"
-
-        fade_in_analysis: SmartFadesAnalysis | None = None
-        fade_in_source = "none"
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
-            fade_in_streamdetails.item_id,
-            fade_in_streamdetails.provider,
-            SmartFadesAnalysisFragment.FULL_SONG,
-        ):
-            fade_in_analysis = stored_analysis
-            fade_in_source = "full_song"
-        elif stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
-            fade_in_streamdetails.item_id,
-            fade_in_streamdetails.provider,
-            SmartFadesAnalysisFragment.INTRO,
-        ):
-            fade_in_analysis = stored_analysis
-            fade_in_source = "intro"
-        else:
-            fade_in_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_in_streamdetails.item_id,
-                fade_in_streamdetails.provider,
-                SmartFadesAnalysisFragment.INTRO,
-                fade_in_part,
-                pcm_format,
-            )
-            fade_in_source = "analyzed"
-
-        self.logger.debug(
-            "Smart fades analysis sources: fade_out=%s, fade_in=%s",
-            fade_out_source,
-            fade_in_source,
         )
+        fade_in_analysis = await self.streams.mass.music.get_audio_analysis(
+            fade_in_streamdetails.item_id,
+            fade_in_streamdetails.provider,
+        )
+
         if (
             fade_out_analysis
             and fade_in_analysis
-            and fade_out_analysis.confidence > 0.3
-            and fade_in_analysis.confidence > 0.3
-            and mode == SmartFadesMode.SMART_CROSSFADE
+            and fade_out_analysis.bpm
+            and fade_in_analysis.bpm
+            and fade_out_analysis.beats is not None
+            and fade_in_analysis.beats is not None
         ):
             try:
                 smart_fade = SmartCrossFade(

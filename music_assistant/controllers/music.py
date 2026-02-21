@@ -49,6 +49,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
@@ -72,6 +73,7 @@ from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_js
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.smart_fades import (
@@ -103,7 +105,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 27
+DB_SCHEMA_VERSION: Final[int] = 28
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -1037,6 +1039,116 @@ class MusicController(CoreController):
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
+
+    async def set_audio_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+        analysis: AudioAnalysisData,
+        analysis_version: int = 1,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """Store audio analysis results from an Audio Analysis provider.
+
+        :param item_id: The track's item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider that produced the data.
+        :param analysis: The analysis data to store.
+        :param analysis_version: Version of the AA provider's algorithm.
+        :param media_type: The media type of the item being analyzed.
+        """
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return
+        # prefer domain for streaming providers as the catalog is the same across instances
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+        data_json = json_dumps(analysis.to_dict())
+        await self.database.insert_or_replace(
+            DB_TABLE_AUDIO_ANALYSIS,
+            {
+                "media_type": media_type.value,
+                "item_id": item_id,
+                "provider": prov_key,
+                "aa_provider_domain": aa_provider_domain,
+                "analysis_data": data_json,
+                "analysis_version": analysis_version,
+            },
+        )
+
+    async def get_audio_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> AudioAnalysisData | None:
+        """Get merged audio analysis data from all enabled AA providers for a track.
+
+        Only rows from currently available AA providers are included.
+        Multiple providers' results are merged using latest-write-wins.
+
+        :param item_id: The track's item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param media_type: The media type of the item.
+        """
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+        rows = await self.database.get_rows(
+            DB_TABLE_AUDIO_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": prov_key,
+                "media_type": media_type.value,
+            },
+            order_by="timestamp_created ASC",
+        )
+        if not rows:
+            return None
+
+        # Only include data from currently available AA providers
+        available_aa_domains = {
+            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
+        }
+
+        merged = AudioAnalysisData()
+        found = False
+        for row in rows:
+            if row["aa_provider_domain"] not in available_aa_domains:
+                continue
+            row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+            merged.update(row_data)
+            found = True
+        return merged if found else None
+
+    async def get_audio_analysis_version(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> int | None:
+        """Get the stored analysis version for a specific AA provider and track.
+
+        :param item_id: The track's item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider.
+        :param media_type: The media type of the item.
+        """
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+        row = await self.database.get_row(
+            DB_TABLE_AUDIO_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": prov_key,
+                "aa_provider_domain": aa_provider_domain,
+                "media_type": media_type.value,
+            },
+        )
+        if not row:
+            return None
+        return int(row["analysis_version"])
 
     async def set_smart_fades_analysis(
         self,
@@ -2619,6 +2731,19 @@ class MusicController(CoreController):
                     UNIQUE(item_id,provider,fragment));"""
         )
 
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [analysis_data] json NOT NULL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -2728,6 +2853,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
             f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider,fragment);"
+        )
+        # index on audio analysis table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}_idx "
+            f"on {DB_TABLE_AUDIO_ANALYSIS}(item_id,provider,media_type);"
         )
         # unique index on playlog table
         await self.database.execute(
