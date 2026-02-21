@@ -29,9 +29,7 @@ def get_image_url(item: Any, provider: MSXBridgeProvider) -> str | None:
     return None
 
 
-async def get_album_image_fallback(
-    album: Any, provider: MSXBridgeProvider
-) -> str | None:
+async def get_album_image_fallback(album: Any, provider: MSXBridgeProvider) -> str | None:
     """Get album image from its first track (albums often lack metadata images)."""
     try:
         tracks = await provider.mass.music.albums.tracks(album.item_id, album.provider)
@@ -55,9 +53,7 @@ async def map_album_to_msx(
     year = getattr(album, "year", None)
     # Build footer: "Artist · 2024" or just one
     footer: str | None = (
-        f"{artist} · {year}"
-        if artist and year
-        else (artist or (str(year) if year else None))
+        f"{artist} · {year}" if artist and year else (artist or (str(year) if year else None))
     )
     url = f"{prefix}/msx/albums/{album.item_id}/tracks.json?provider={album.provider}"
     return MsxItem(
@@ -86,9 +82,7 @@ def map_playlist_to_msx(
     """Map a MA Playlist to an MSX Item."""
     owner = getattr(playlist, "owner", None)
     prov = getattr(playlist, "provider", None)
-    footer: str | None = (
-        f"{owner} · {prov}" if owner and prov else (owner or prov or None)
-    )
+    footer: str | None = f"{owner} · {prov}" if owner and prov else (owner or prov or None)
     url = f"{prefix}/msx/playlists/{playlist.item_id}/tracks.json"
     return MsxItem(
         title=playlist.name,

@@ -43,9 +43,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    grouping_enabled = bool(
-        config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING)
-    )
+    grouping_enabled = bool(config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING))
     features: set[ProviderFeature] = {ProviderFeature.REMOVE_PLAYER}
     if grouping_enabled:
         features.add(ProviderFeature.SYNC_PLAYERS)
