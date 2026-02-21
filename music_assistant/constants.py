@@ -28,7 +28,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 
 API_SCHEMA_VERSION: Final[int] = 29
-MIN_SCHEMA_VERSION: Final[int] = 29
+MIN_SCHEMA_VERSION: Final[int] = 28
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
