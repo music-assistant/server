@@ -2582,9 +2582,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support power control"
+            self.logger.debug(
+                "Player %s does not support power control, ignoring power command",
+                player_state.name,
             )
+            return
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
@@ -2895,21 +2897,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
-        source = player.state.active_source
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         media = player.state.current_media
         # power on the player if needed
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True)
-        # try to handle command on player directly
-        active_source = next((x for x in player.state.source_list if x.id == source), None)
-        if (
-            player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
-            and active_source
-            and active_source.can_play_pause
-        ):
-            # player has some other source active and native resume support
-            await player.play()
-            return
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
             return

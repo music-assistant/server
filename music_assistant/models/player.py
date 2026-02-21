@@ -1340,7 +1340,7 @@ class Player(ABC):
             # this is done using a timer which gets reset if the player starts playing again
             # before the timer is up, using the task_id
             self.mass.call_later(
-                5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+                2, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
 
         return get_changed_dataclass_values(
@@ -1822,17 +1822,16 @@ class Player(ABC):
         if self.active_output_protocol and self.active_output_protocol != "native":
             if protocol_player := self.mass.players.get_player(self.active_output_protocol):
                 output_protocol_domain = protocol_player.provider.domain
-        # active source as reported by the player itself, but only if playing/paused
+        # active source as reported by the player itself
         if (
-            self.playback_state != PlaybackState.IDLE
-            and self.active_source
+            self.active_source
             # try to catch cases where player reports an active source
             # that is actually from an active output protocol (e.g. AirPlay)
             and self.active_source.lower() != output_protocol_domain
         ):
             return self.active_source
-        # return the (last) known MA source
-        return self.__active_mass_source
+        # return the (last) known MA source - fallback to player's own queue source if none
+        return self.__active_mass_source or self.player_id
 
     @final
     def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[Player]:
@@ -1943,7 +1942,6 @@ class Player(ABC):
     def mark_stop_called(self) -> None:
         """Mark that the STOP command was called on the player."""
         self.__stop_called = True
-        self.__active_mass_source = None
 
     @property
     @final
