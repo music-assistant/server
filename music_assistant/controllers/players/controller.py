@@ -1563,8 +1563,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # something external while we have a grouped protocol active
         if ATTR_ACTIVE_SOURCE in changed_values:
             prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
-            self._handle_external_source_takeover(player, prev_source, new_source)
-
+            task_id = f"external_source_takeover_{player_id}"
+            self.mass.call_later(
+                3,
+                self._handle_external_source_takeover,
+                player,
+                prev_source,
+                new_source,
+                task_id=task_id,
+            )
         became_inactive = False
         if ATTR_AVAILABLE in changed_values:
             became_inactive = changed_values[ATTR_AVAILABLE][1] is False
@@ -2295,6 +2302,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.type == PlayerType.PROTOCOL:
             return
 
+        # Not a takeover if the player is not actively playing
+        if player.playback_state != PlaybackState.PLAYING:
+            return
+
         # Only relevant if we have an active output protocol (not native)
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
@@ -2308,11 +2319,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not protocol_player:
             return
 
-        # Only relevant if the protocol is grouped
-        if not self._is_protocol_grouped(protocol_player):
+        # If the source matches the active protocol's domain, it's expected - not a takeover
+        # e.g., source "airplay" when using AirPlay protocol is normal
+        if new_source and new_source.lower() == protocol_player.provider.domain.lower():
             return
 
-        # External source took over while protocol was grouped - unbond
+        # Confirmed external source takeover
         self.logger.info(
             "External source '%s' took over on %s while grouped via protocol %s - "
             "clearing active output protocol and ungrouping",
@@ -2332,7 +2344,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Check if a source is managed by Music Assistant.
 
         MA-managed sources include:
-        - None (no source active)
+        - None (=autodetect, no source explicitly set by player)
         - The player's own ID (MA queue)
         - Any active queue ID
         - Any plugin source ID

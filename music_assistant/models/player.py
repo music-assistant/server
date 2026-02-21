@@ -62,6 +62,7 @@ from music_assistant.helpers.util import get_changed_dataclass_values
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
 
@@ -127,7 +128,7 @@ class Player(ABC):
         self._extra_data: dict[str, Any] = {}
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
-        self.__active_mass_source = player_id
+        self.__active_mass_source: str | None = None
         # The PlayerState is the (snapshotted) final state of the player
         # after applying any config overrides and other transformations,
         # such as the display name and player controls.
@@ -1334,7 +1335,13 @@ class Player(ABC):
             and self._state.playback_state == PlaybackState.IDLE
         ):
             self.__stop_called = True
-            self.__active_mass_source = None
+            # when we're going to idle,
+            # we want to reset the active mass source after a short delay
+            # this is done using a timer which gets reset if the player starts playing again
+            # before the timer is up, using the task_id
+            self.mass.call_later(
+                5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+            )
 
         return get_changed_dataclass_values(
             prev_state,
@@ -1357,14 +1364,17 @@ class Player(ABC):
             and (
                 protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
             )
+            and protocol_player.playback_state != PlaybackState.IDLE
         ):
             return (
                 protocol_player.state.playback_state,
                 protocol_player.state.elapsed_time,
                 protocol_player.state.elapsed_time_last_updated,
             )
-        # if we're synced/grouped, use the parent player's state
-        parent_id = self.__final_synced_to or self.__final_active_group
+        # If we're synced, use the syncleader state for playback state and elapsed time
+        # NOTE: Don't do this for the active group player,
+        # because the group player relies on the sync leader for state info.
+        parent_id = self.__final_synced_to
         if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
             return (
                 parent_player.state.playback_state,
@@ -1471,6 +1481,7 @@ class Player(ABC):
                 parent_player := self.mass.players.get_player(parent_player_id)
             ):
                 return parent_player.state.current_media
+            return None  # if parent player not found, return None for current media
         # if this is a protocol player, use the current_media of the parent player
         if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
             if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
@@ -1495,14 +1506,11 @@ class Player(ABC):
                 elapsed_time_last_updated=source.metadata.elapsed_time_last_updated,
             )
         # if MA queue is active, return those details
-        active_queue = None
-        if self.current_media and self.current_media.source_id:
-            active_queue = self.mass.player_queues.get(self.current_media.source_id)
+        active_queue: PlayerQueue | None = None
         if not active_queue and active_source:
             active_queue = self.mass.player_queues.get(active_source)
         if not active_queue and self.active_source is None:
             active_queue = self.mass.player_queues.get(self.player_id)
-
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
@@ -1796,19 +1804,35 @@ class Player(ABC):
         if parent_player_id := (self.__final_synced_to or self.__final_active_group):
             if parent_player := self.mass.players.get_player(parent_player_id):
                 return parent_player.state.active_source
-        # always prioritize active MA source
-        # (it is set on playback start and cleared on stop)
-        if self.__active_mass_source:
-            return self.__active_mass_source
+            return None  # should not happen but just in case
+        if self.type == PlayerType.PROTOCOL:
+            if self.protocol_parent_id and (
+                parent_player := self.mass.players.get_player(self.protocol_parent_id)
+            ):
+                # if this is a protocol player, use the active source of the parent player
+                return parent_player.state.active_source
+            # fallback to None here if parent player not found,
+            # protocol players should not have an active source themselves
+            return None
         # if a plugin source is active that belongs to this player, return that
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
+        output_protocol_domain: str | None = None
+        if self.active_output_protocol and self.active_output_protocol != "native":
+            if protocol_player := self.mass.players.get_player(self.active_output_protocol):
+                output_protocol_domain = protocol_player.provider.domain
         # active source as reported by the player itself, but only if playing/paused
-        if self.playback_state != PlaybackState.IDLE and self.active_source:
+        if (
+            self.playback_state != PlaybackState.IDLE
+            and self.active_source
+            # try to catch cases where player reports an active source
+            # that is actually from an active output protocol (e.g. AirPlay)
+            and self.active_source.lower() != output_protocol_domain
+        ):
             return self.active_source
         # return the (last) known MA source
-        return self.__last_active_mass_source
+        return self.__active_mass_source
 
     @final
     def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[Player]:
@@ -1900,18 +1924,17 @@ class Player(ABC):
     # This is to keep track of the last active MA source for the player,
     # so we can restore it when needed (e.g. after switching to a plugin source).
     __active_mass_source: str | None = None
-    __last_active_mass_source: str | None = None
 
     @final
-    def set_active_mass_source(self, value: str) -> None:
+    def set_active_mass_source(self, value: str | None) -> None:
         """
-        Set the id of the active mass source.
+        Set the id of the (last) active mass source.
 
         This is to keep track of the last active MA source for the player,
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
+        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self.__active_mass_source = value
-        self.__last_active_mass_source = value
         self.update_state()
 
     __stop_called: bool = False
