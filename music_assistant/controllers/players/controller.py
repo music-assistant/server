@@ -706,7 +706,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.type == PlayerType.GROUP or player.group_members:
+        if player.state.type == PlayerType.GROUP or player.state.group_members:
             # dedicated group player or sync leader
             coros = []
             for child_player in self.iter_group_members(
