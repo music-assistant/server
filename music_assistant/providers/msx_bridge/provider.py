@@ -679,7 +679,10 @@ class MSXBridgeProvider(PlayerProvider):
                 # Fallback: use webserver base_url
                 base_url = self.mass.webserver.base_url
 
-            stream_url = f"{base_url}/api/streams/single/{source_id}/queue/{queue_item_id}.{output_format}"
+            stream_url = (
+                f"{base_url}/api/streams/single/{source_id}"
+                f"/queue/{queue_item_id}.{output_format}"
+            )
 
             logger.info(
                 "[MARedirect] Generated MA stream URL: %s",
