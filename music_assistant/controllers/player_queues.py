@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
@@ -96,6 +97,7 @@ ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
+CONF_DEFAULT_ENQUEUE_OPTION_GENRE = "default_enqueue_option_genre"
 CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
 CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
@@ -222,6 +224,14 @@ class PlayerQueuesController(CoreController):
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.PLAY.value,
                 label="Default enqueue option for Track item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE.value,
+                label="Default enqueue option for Genre item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),
@@ -1609,6 +1619,45 @@ class PlayerQueuesController(CoreController):
             result.append(album_track)
         return result
 
+    async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
+        """Return tracks for given genre, based on alias mappings.
+
+        Limits results to avoid loading thousands of tracks for broad genres.
+        Directly mapped tracks are fetched with random ordering, then supplemented
+        with tracks from a limited set of mapped albums and artists.
+        """
+        result: list[Track] = []
+        start_item_found = False
+        self.logger.info(
+            "Fetching tracks to play for genre %s",
+            genre.name,
+        )
+        tracks, albums, artists = await self.mass.music.genres.mapped_media(
+            genre,
+            track_limit=25,
+            album_limit=5,
+            artist_limit=5,
+            order_by="random",
+        )
+
+        for genre_track in tracks:
+            if not genre_track.available:
+                continue
+            if start_item in (genre_track.item_id, genre_track.uri):
+                start_item_found = True
+            if start_item is not None and not start_item_found:
+                continue
+            result.append(genre_track)
+
+        for album in albums:
+            album_tracks = await self.get_album_tracks(album, None)
+            result.extend(album_tracks[:5])
+
+        for artist in artists:
+            artist_tracks = await self.get_artist_tracks(artist)
+            result.extend(artist_tracks[:5])
+        return result
+
     async def get_playlist_tracks(
         self, playlist: Playlist, start_item: str | None
     ) -> list[PlaylistPlayableItem]:
@@ -1912,6 +1961,14 @@ class PlayerQueuesController(CoreController):
                 )
             )
             return list(await self.get_album_tracks(media_item, start_item))
+        if media_item.media_type == MediaType.GENRE:
+            media_item = cast("Genre", media_item)
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
+            return list(await self.get_genre_tracks(media_item, start_item))
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info

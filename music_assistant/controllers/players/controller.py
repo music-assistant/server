@@ -706,7 +706,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.type == PlayerType.GROUP or player.group_members:
+        if player.state.type == PlayerType.GROUP or player.state.group_members:
             # dedicated group player or sync leader
             coros = []
             for child_player in self.iter_group_members(
@@ -860,6 +860,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             # determine if the player has native announcements support
             # or if any linked protocol has announcement support
+            native_announce_support = False
             if announce_player := self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -1563,8 +1564,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # something external while we have a grouped protocol active
         if ATTR_ACTIVE_SOURCE in changed_values:
             prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
-            self._handle_external_source_takeover(player, prev_source, new_source)
-
+            task_id = f"external_source_takeover_{player_id}"
+            self.mass.call_later(
+                3,
+                self._handle_external_source_takeover,
+                player,
+                prev_source,
+                new_source,
+                task_id=task_id,
+            )
         became_inactive = False
         if ATTR_AVAILABLE in changed_values:
             became_inactive = changed_values[ATTR_AVAILABLE][1] is False
@@ -2295,6 +2303,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.type == PlayerType.PROTOCOL:
             return
 
+        # Not a takeover if the player is not actively playing
+        if player.playback_state != PlaybackState.PLAYING:
+            return
+
         # Only relevant if we have an active output protocol (not native)
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
@@ -2308,11 +2320,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not protocol_player:
             return
 
-        # Only relevant if the protocol is grouped
-        if not self._is_protocol_grouped(protocol_player):
+        # If the source matches the active protocol's domain, it's expected - not a takeover
+        # e.g., source "airplay" when using AirPlay protocol is normal
+        if new_source and new_source.lower() == protocol_player.provider.domain.lower():
             return
 
-        # External source took over while protocol was grouped - unbond
+        # Confirmed external source takeover
         self.logger.info(
             "External source '%s' took over on %s while grouped via protocol %s - "
             "clearing active output protocol and ungrouping",
@@ -2332,7 +2345,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Check if a source is managed by Music Assistant.
 
         MA-managed sources include:
-        - None (no source active)
+        - None (=autodetect, no source explicitly set by player)
         - The player's own ID (MA queue)
         - Any active queue ID
         - Any plugin source ID
@@ -2570,9 +2583,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support power control"
+            self.logger.debug(
+                "Player %s does not support power control, ignoring power command",
+                player_state.name,
             )
+            return
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
@@ -2883,21 +2898,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
-        source = player.state.active_source
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         media = player.state.current_media
         # power on the player if needed
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True)
-        # try to handle command on player directly
-        active_source = next((x for x in player.state.source_list if x.id == source), None)
-        if (
-            player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
-            and active_source
-            and active_source.can_play_pause
-        ):
-            # player has some other source active and native resume support
-            await player.play()
-            return
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
             return

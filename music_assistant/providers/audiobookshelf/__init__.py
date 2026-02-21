@@ -35,6 +35,9 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
 from aioaudiobookshelf.schema.session import DeviceInfo as AbsDeviceInfo
 from aioaudiobookshelf.schema.shelf import (
+    LibraryItemMinifiedPodcast as ShelfLibraryItemMinifiedPodcast,
+)
+from aioaudiobookshelf.schema.shelf import (
     SeriesShelf,
     ShelfAuthors,
     ShelfBook,
@@ -497,6 +500,7 @@ for more details.
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
+                add_cover=bool(abs_podcast.media.cover_path or False),
             )
             yield mass_episode
             episode_cnt += 1
@@ -525,6 +529,7 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
+                    add_cover=bool(abs_podcast.media.cover_path or False),
                 )
 
             episode_cnt += 1
@@ -876,6 +881,7 @@ for more details.
         library_id: str,
         items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]],
     ) -> None:
+        # ruff: noqa: PLR0915
         for shelf in shelves:
             media_type: MediaType
             match shelf.type_:
@@ -916,6 +922,9 @@ for more details.
                             podcast_id = entity.id_
                             if entity.recent_episode is None:
                                 continue
+                            _add_cover = False
+                            if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
+                                _add_cover = bool(entity.media.cover_path or False)
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
@@ -924,6 +933,7 @@ for more details.
                                 domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                                add_cover=_add_cover,
                             )
                         if item is not None:
                             items.append(item)

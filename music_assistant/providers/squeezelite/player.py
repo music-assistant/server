@@ -417,11 +417,8 @@ class SqueezelitePlayer(Player):
                 source_id=metadata.get("source_id"),
                 queue_item_id=metadata.get("queue_item_id"),
             )
-            # Set active source from metadata if available, otherwise use player_id
-            self._attr_active_source = metadata.get("source_id") or self.player_id
         else:
             self._attr_current_media = None
-            self._attr_active_source = self.player_id
 
     async def _handle_play_url_for_slimplayer(
         self,
