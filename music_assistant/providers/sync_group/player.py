@@ -15,7 +15,7 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
-from music_assistant.models.player import DeviceInfo, GroupPlayer, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import CONF_ENTRY_SGP_NOTE, EXTRA_FEATURES_FROM_MEMBERS
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .provider import SyncGroupProvider
 
 
-class SyncGroupPlayer(GroupPlayer):
+class SyncGroupPlayer(Player):
     """Sync Group Player implementation."""
 
     _attr_type: PlayerType = PlayerType.GROUP
@@ -48,6 +48,12 @@ class SyncGroupPlayer(GroupPlayer):
     def is_dynamic(self) -> bool:
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
+
+    @cached_property
+    def synced_to(self) -> str | None:
+        """Return the id of the player this player is synced to (sync leader)."""
+        # groups can't be synced
+        return None
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player is loaded or updated."""
@@ -128,6 +134,7 @@ class SyncGroupPlayer(GroupPlayer):
             if (
                 PlayerFeature.SET_MEMBERS in player.state.supported_features
                 and player.state.can_group_with
+                and not player.state.active_group
             ):
                 temp_can_group_with.add(player.player_id)
         return temp_can_group_with
@@ -219,14 +226,21 @@ class SyncGroupPlayer(GroupPlayer):
         prev_leader = self.sync_leader
         was_playing = self.playback_state == PlaybackState.PLAYING
         needs_restart = False
-        if was_playing and prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
+        if prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
             # We're removing the current sync leader while the group is active
             # We need to select a new leader before we can handle the member changes
-            await self.mass.players._handle_cmd_stop(prev_leader.player_id)
-            await asyncio.sleep(1)
+            self.logger.debug(
+                "Removing current sync leader %s from group %s while it is active, "
+                "selecting a new leader and dissolving the current syncgroup",
+                prev_leader.display_name,
+                self.display_name,
+            )
+            if was_playing:
+                await self.mass.players._handle_cmd_stop(prev_leader.player_id)
+                await asyncio.sleep(1)
             await self._dissolve_syncgroup()
             await asyncio.sleep(2)
-            needs_restart = True
+            needs_restart = was_playing
 
         cur_leader = self._select_sync_leader(new_members=player_ids_to_add)
         # handle additions
