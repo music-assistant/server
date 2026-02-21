@@ -9,7 +9,9 @@ from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
     """handle_async_init should create an MSXHTTPServer and start it."""
-    with patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls:
+    with patch(
+        "music_assistant.providers.msx_bridge.provider.MSXHTTPServer"
+    ) as mock_server_cls:
         mock_server = AsyncMock()
         mock_server_cls.return_value = mock_server
 
@@ -20,7 +22,9 @@ async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
         assert provider.http_server is mock_server
 
 
-async def test_handle_async_init_default_port(mass_mock: Mock, manifest_mock: Mock) -> None:
+async def test_handle_async_init_default_port(
+    mass_mock: Mock, manifest_mock: Mock
+) -> None:
     """handle_async_init should use DEFAULT_HTTP_PORT when config returns None."""
     config = Mock()
     config.name = "MSX Bridge"
@@ -35,7 +39,9 @@ async def test_handle_async_init_default_port(mass_mock: Mock, manifest_mock: Mo
 
     prov = MSXBridgeProvider(mass_mock, manifest_mock, config, set())
 
-    with patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls:
+    with patch(
+        "music_assistant.providers.msx_bridge.provider.MSXHTTPServer"
+    ) as mock_server_cls:
         mock_server = AsyncMock()
         mock_server_cls.return_value = mock_server
 
