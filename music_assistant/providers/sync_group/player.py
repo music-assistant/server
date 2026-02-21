@@ -17,7 +17,7 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player import DeviceInfo, GroupPlayer, Player, PlayerMedia
 
-from .constants import CONF_ENTRY_SGP_NOTE, EXTRA_FEATURES_FROM_MEMBERS, SUPPORT_DYNAMIC_LEADER
+from .constants import CONF_ENTRY_SGP_NOTE, EXTRA_FEATURES_FROM_MEMBERS
 
 if TYPE_CHECKING:
     from .provider import SyncGroupProvider
@@ -172,26 +172,26 @@ class SyncGroupPlayer(GroupPlayer):
     async def stop(self) -> None:
         """Send STOP command to given player."""
         self._attr_current_media = None
-        self._attr_active_source = None
         if sync_leader := self.sync_leader:
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             # (sync_leader is part of this group, so redirect would loop back here)
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
         # dissolve the sync group since we stopped playback
-        await self._dissolve_syncgroup()
+        self.mass.call_later(
+            5, self._dissolve_syncgroup, task_id=f"syncgroup_dissolve_{self.player_id}"
+        )
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            await self.mass.players._handle_cmd_play(sync_leader.player_id)
+        await self.mass.players.cmd_resume(
+            self.player_id, self._attr_active_source, self._attr_current_media
+        )
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         self._attr_current_media = media
         self._attr_active_source = media.source_id if media.source_id else None
-        if not self.sync_leader:
-            await self._form_syncgroup()
+        await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
             # Use internal handler to bypass group redirect logic and preserve protocol selection
@@ -217,6 +217,17 @@ class SyncGroupPlayer(GroupPlayer):
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
         prev_leader = self.sync_leader
+        was_playing = self.playback_state == PlaybackState.PLAYING
+        needs_restart = False
+        if was_playing and prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
+            # We're removing the current sync leader while the group is active
+            # We need to select a new leader before we can handle the member changes
+            await self.mass.players._handle_cmd_stop(prev_leader.player_id)
+            await asyncio.sleep(1)
+            await self._dissolve_syncgroup()
+            await asyncio.sleep(2)
+            needs_restart = True
+
         cur_leader = self._select_sync_leader(new_members=player_ids_to_add)
         # handle additions
         final_players_to_add: list[str] = []
@@ -252,18 +263,14 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)
         self.update_state()
-        if self.playback_state != PlaybackState.PLAYING:
+        if needs_restart:
+            await self.play()
+            return
+        if not was_playing:
             # Don't need to do anything else if the group is not active
             # The syncing will be done once playback starts
             return
-        if prev_leader and cur_leader is None:
-            # Edge case: we no longer have any members in the group (and thus no leader)
-            await self._handle_leader_transition(None)
-        elif prev_leader and prev_leader != cur_leader:
-            # Edge case: we had changed the leader (or just got one)
-            await self._handle_leader_transition(cur_leader)
-        elif cur_leader and (player_ids_to_add or player_ids_to_remove):
-            # if the group still has the same leader, we just need to (re)sync the members
+        if cur_leader:
             await self.mass.players.cmd_set_members(
                 cur_leader.player_id,
                 player_ids_to_add=final_players_to_add,
@@ -272,6 +279,7 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
+        self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
         if not self.sync_leader:
             self.sync_leader = self._select_sync_leader()
 
@@ -303,48 +311,6 @@ class SyncGroupPlayer(GroupPlayer):
                 await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
         self.sync_leader = None
         self.update_state()
-
-    async def _handle_leader_transition(self, new_leader: Player | None) -> None:
-        """Handle transition from current leader to new leader."""
-        prev_leader = self.sync_leader
-        was_playing = False
-        if prev_leader and new_leader and prev_leader != new_leader:
-            # Check if the provider(protocol) supports dynamic leader selection
-            # For cross-provider sync groups, we need to check the provider domain
-            provider_protocol = None
-            if prev_leader.active_output_protocol and (
-                proto_prov := self.mass.get_provider(prev_leader.active_output_protocol)
-            ):
-                provider_protocol = proto_prov.domain
-            else:
-                provider_protocol = prev_leader.provider.domain
-
-            if provider_protocol and provider_protocol in SUPPORT_DYNAMIC_LEADER:
-                # TODO: figure out how to handle dynamic leader transition without
-                # stopping playback, which has become complicated due
-                # to a player can support multiple protocols
-                pass
-
-        if prev_leader:
-            # Save current media and playback state for potential restart
-            was_playing = self.playback_state == PlaybackState.PLAYING
-            # Stop current playback (which also dissolves the existing syncgroup)
-            await self.stop()
-            # allow some time to propagate the changes before resyncing
-            await asyncio.sleep(2)
-
-        # Set new leader
-        self.sync_leader = new_leader
-
-        if new_leader:
-            # form a syncgroup with the new leader
-            await self._form_syncgroup()
-            # Restart playback if requested and we have media to play
-            if was_playing:
-                await self.mass.players._handle_cmd_resume(self.player_id)
-        else:
-            # We have no leader anymore, send update since we stopped playback
-            self.update_state()
 
     def _select_sync_leader(self, new_members: list[str] | None = None) -> Player | None:
         """Select a (new) sync leader."""

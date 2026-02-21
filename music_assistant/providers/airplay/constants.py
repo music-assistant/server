@@ -80,8 +80,11 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
+    ("LG Electronics", "*"),
 )
 
+PIN_REQUIRED = 0x8
+LEGACY_PAIRING_BIT = 0x200
 BROKEN_AIRPLAY_WARN = ConfigEntry(
     key="BROKEN_AIRPLAY",
     type=ConfigEntryType.ALERT,
