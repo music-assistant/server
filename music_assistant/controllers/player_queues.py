@@ -394,15 +394,8 @@ class PlayerQueuesController(CoreController):
             return  # no change
         queue.extra_attributes["playback_speed"] = speed
         self.signal_update(queue_id)
-        # If currently playing a seekable item, restart the stream at the current position
-        # so the new speed takes effect immediately without waiting for the next track.
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.current_item
-            and queue.current_item.duration
-            and queue.current_index is not None
-        ):
-            await self.seek(queue_id, int(queue.corrected_elapsed_time))
+        if queue.state == PlaybackState.PLAYING:
+            await self.resume(queue_id)
 
     @api_command("player_queues/play_media")
     async def play_media(
