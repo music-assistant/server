@@ -15,7 +15,9 @@ def test_msx_template_serialization() -> None:
 
 def test_msx_template_new_fields() -> None:
     """Test MsxTemplate serialization with imageWidth and color."""
-    template = MsxTemplate(type="default", layout="0,0,6,1", image_width=0.83, color="msx-glass")
+    template = MsxTemplate(
+        type="default", layout="0,0,6,1", image_width=0.83, color="msx-glass"
+    )
     data = template.model_dump(by_alias=True, exclude_none=True)
     assert data["type"] == "default"
     assert data["layout"] == "0,0,6,1"

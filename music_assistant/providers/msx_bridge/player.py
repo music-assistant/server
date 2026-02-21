@@ -158,7 +158,9 @@ class MSXPlayer(Player):
         try:
             current_size = len(self.mass.player_queues.items(source_id))
         except Exception:
-            self.logger.debug("Failed to get queue size for %s", source_id, exc_info=True)
+            self.logger.debug(
+                "Failed to get queue size for %s", source_id, exc_info=True
+            )
             current_size = self._playlist_size
         if current_size != self._playlist_size:
             self._playlist_size = current_size
@@ -178,7 +180,9 @@ class MSXPlayer(Player):
         try:
             self._playlist_size = len(self.mass.player_queues.items(source_id))
         except Exception:
-            self.logger.debug("Failed to get queue size for %s", source_id, exc_info=True)
+            self.logger.debug(
+                "Failed to get queue size for %s", source_id, exc_info=True
+            )
             self._playlist_size = 0
         self._playlist_offset = start_index
         self._queue_source_id = source_id
@@ -194,12 +198,18 @@ class MSXPlayer(Player):
         image_url = media.image_url
         duration = media.duration
         if media.source_id and media.queue_item_id:
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             if queue_item:
                 if queue_item.media_item:
                     title = getattr(queue_item.media_item, "name", None) or title
-                    artist = getattr(queue_item.media_item, "artist_str", None) or artist
-                    duration = getattr(queue_item.media_item, "duration", None) or duration
+                    artist = (
+                        getattr(queue_item.media_item, "artist_str", None) or artist
+                    )
+                    duration = (
+                        getattr(queue_item.media_item, "duration", None) or duration
+                    )
                 if queue_item.image:
                     image_url = self.mass.metadata.get_image_url(
                         queue_item.image, size=500, prefer_stream_server=True
@@ -235,15 +245,25 @@ class MSXPlayer(Player):
             tasks: list[asyncio.Task[None]] = []
             for member_id in self._get_group_member_ids():
                 member = self.mass.players.get_player(member_id)
-                if not member or not isinstance(member, MSXPlayer) or not member.available:
+                if (
+                    not member
+                    or not isinstance(member, MSXPlayer)
+                    or not member.available
+                ):
                     continue
-                tasks.append(asyncio.create_task(self._propagate_single(member, command, **kwargs)))
+                tasks.append(
+                    asyncio.create_task(
+                        self._propagate_single(member, command, **kwargs)
+                    )
+                )
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self._propagating = False
 
-    async def _propagate_single(self, member: MSXPlayer, command: str, **kwargs: Any) -> None:
+    async def _propagate_single(
+        self, member: MSXPlayer, command: str, **kwargs: Any
+    ) -> None:
         """Propagate a single command to one group member."""
         try:
             if command == "play_media":
@@ -314,8 +334,13 @@ class MSXPlayer(Player):
         """Handle PAUSE command — pause playback on MSX, keep stream alive for resume."""
         self.logger.info("pause on %s", self.display_name)
         # Snapshot the elapsed time before pausing
-        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
-            self._attr_elapsed_time += time.time() - self._attr_elapsed_time_last_updated
+        if (
+            self._attr_elapsed_time is not None
+            and self._attr_elapsed_time_last_updated is not None
+        ):
+            self._attr_elapsed_time += (
+                time.time() - self._attr_elapsed_time_last_updated
+            )
         self._attr_playback_state = PlaybackState.PAUSED
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
@@ -354,7 +379,9 @@ class MSXPlayer(Player):
         self._last_ws_position = None
         self.update_state()
         if not self._skip_ws_notify:
-            cast("MSXBridgeProvider", self.provider).notify_seek(self.player_id, position_seconds)
+            cast("MSXBridgeProvider", self.provider).notify_seek(
+                self.player_id, position_seconds
+            )
 
     def update_position(self, position: float) -> None:
         """Update elapsed time from a WebSocket position report.
