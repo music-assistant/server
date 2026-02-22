@@ -352,7 +352,7 @@ class YandexMusicProvider(MusicProvider):
                 if total_track_count >= effective_limit:
                     break
 
-                track = self._parse_my_wave_track(yt)
+                track = self._parse_my_wave_track(yt, self._my_wave_seen_track_ids)
                 if track is None:
                     continue
                 all_tracks.append(track)
@@ -388,20 +388,17 @@ class YandexMusicProvider(MusicProvider):
             )
         return all_tracks
 
-    def _parse_my_wave_track(self, yt: Any, seen_ids: set[str] | None = None) -> Track | None:
+    def _parse_my_wave_track(self, yt: Any, seen_ids: set[str]) -> Track | None:
         """Parse a Yandex track into a My Wave Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
         sets composite item_id (track_id@station_id), and updates provider_mappings.
-        Must be called under _my_wave_lock when using the shared seen set.
+        Callers using shared state must hold _my_wave_lock.
 
         :param yt: Yandex track object from rotor station response.
-        :param seen_ids: Set of already-seen track IDs (defaults to shared state).
+        :param seen_ids: Set of already-seen track IDs to check and update.
         :return: Parsed Track with composite item_id, or None if duplicate/invalid.
         """
-        if seen_ids is None:
-            seen_ids = self._my_wave_seen_track_ids
-
         try:
             t = parse_track(self, yt)
         except InvalidDataError as err:
@@ -947,7 +944,7 @@ class YandexMusicProvider(MusicProvider):
                     if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                         break
 
-                    track = self._parse_my_wave_track(yt)
+                    track = self._parse_my_wave_track(yt, self._my_wave_seen_track_ids)
                     if track is None:
                         continue
 

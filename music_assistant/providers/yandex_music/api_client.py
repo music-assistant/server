@@ -447,7 +447,7 @@ class YandexMusicClient:
         """
         track_id = getattr(track, "id", None) or getattr(track, "track_id", "unknown")
         try:
-            if not track.lyrics_available:
+            if not getattr(track, "lyrics_available", False):
                 LOGGER.debug("Lyrics not available for track %s", track_id)
                 return None, False
 
