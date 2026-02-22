@@ -368,12 +368,9 @@ class MSXPlayer(Player):
             return
         normalized = max(0.0, float(position))
         current_media = self._attr_current_media
-        if (
-            current_media is not None
-            and isinstance(getattr(current_media, "duration", None), (int, float))
-            and current_media.duration > 0
-        ):
-            normalized = min(normalized, float(current_media.duration))
+        duration = getattr(current_media, "duration", None) if current_media is not None else None
+        if isinstance(duration, (int, float)) and duration > 0:
+            normalized = min(normalized, float(duration))
         self._attr_elapsed_time = normalized
         self._attr_elapsed_time_last_updated = time.time()
         self._last_ws_position = time.time()
