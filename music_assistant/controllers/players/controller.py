@@ -1149,6 +1149,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         If the target player itself is already synced to another player, this may fail.
         If the player can not be synced with the given target player, this may fail.
 
+        NOTE: This is a convenience helper for cmd_set_members.
+
         :param player_id: player_id of the player to handle the command.
         :param target_player: player_id of the syncgroup leader or group player.
 
