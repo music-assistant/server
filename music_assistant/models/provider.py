@@ -171,6 +171,7 @@ class Provider:
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
+            "playlist_create_support": getattr(self, "playlist_create_support", None),
         }
 
     def supports_feature(self, feature: ProviderFeature) -> bool:

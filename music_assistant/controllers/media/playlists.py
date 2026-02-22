@@ -111,7 +111,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             page += 1
 
     async def create_playlist(
-        self, name: str, provider_instance_or_domain: str | None = None
+        self, name: str, media_types: set[MediaType], provider_instance_or_domain: str | None = None
     ) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick builtin provider
@@ -127,8 +127,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not is_safe_name(name):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
+
+        supported_types, mix_allowed = provider.playlist_create_support
+        if len(media_types.difference(supported_types)) > 0:
+            msg = f"Provider {provider.name} only supports {supported_types} in playlists."
+            raise InvalidDataError(msg)
+        if len(media_types) > 1 and not mix_allowed:
+            msg = f"Provider {provider.name} does not support mixed media_types in playlists."
+            raise InvalidDataError(msg)
+
         # create playlist on the provider
-        playlist = await provider.create_playlist(name)
+        playlist = await provider.create_playlist(name, media_types=media_types)
         for prov_mapping in playlist.provider_mappings:
             # when manually creating a playlist, it's always in the library
             prov_mapping.in_library = True
