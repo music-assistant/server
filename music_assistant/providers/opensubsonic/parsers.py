@@ -407,7 +407,6 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
                 provider_instance=instance_id,
             )
         },
-        supported_mediatypes={MediaType.TRACK},
     )
 
     if sonic_playlist.cover_art:

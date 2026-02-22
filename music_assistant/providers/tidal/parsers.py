@@ -295,7 +295,6 @@ def parse_playlist(
             )
         },
         is_editable=is_editable,
-        supported_mediatypes={MediaType.TRACK},
     )
 
     # Metadata - different fields based on type

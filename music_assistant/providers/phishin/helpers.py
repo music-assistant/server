@@ -364,7 +364,6 @@ def playlist_to_ma_playlist(provider: MusicProvider, playlist_data: dict[str, An
                 available=True,
             )
         },
-        supported_mediatypes={MediaType.TRACK},
     )
 
 

@@ -758,7 +758,6 @@ class PlexProvider(MusicProvider):
                     url=plex_playlist.getWebURL(self._baseurl),
                 )
             },
-            supported_mediatypes={MediaType.TRACK},
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
@@ -793,7 +792,6 @@ class PlexProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            supported_mediatypes={MediaType.TRACK},
         )
         # Add collection poster/thumbnail if available
         if thumb := plex_collection.firstAttr("thumb", "composite"):

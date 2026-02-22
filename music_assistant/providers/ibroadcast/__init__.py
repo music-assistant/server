@@ -451,7 +451,6 @@ class IBroadcastProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            supported_mediatypes={MediaType.TRACK},
         )
         # Can be supported in future, the API has options available
         playlist.is_editable = False

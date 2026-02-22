@@ -10,7 +10,6 @@ from music_assistant_models.enums import (
     AlbumType,
     ContentType,
     ImageType,
-    MediaType,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -327,7 +326,6 @@ def parse_playlist(
             )
         },
         is_editable=is_editable,
-        supported_mediatypes={MediaType.TRACK},
     )
 
     # Metadata

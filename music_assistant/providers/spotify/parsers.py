@@ -6,7 +6,7 @@ import contextlib
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
+from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -228,7 +228,6 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
             )
         },
         is_editable=is_editable,
-        supported_mediatypes={MediaType.TRACK},
     )
 
     playlist.metadata.images = parse_images(playlist_obj.get("images", []), provider.instance_id)
