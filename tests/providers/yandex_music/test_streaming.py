@@ -48,7 +48,7 @@ def streaming_manager(
     streaming_provider_stub: StreamingProviderStub,
 ) -> YandexMusicStreamingManager:
     """Create streaming manager with real stub (no Mock)."""
-    return YandexMusicStreamingManager(streaming_provider_stub)  # type: ignore[arg-type]
+    return YandexMusicStreamingManager(streaming_provider_stub)
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def streaming_manager_with_tracking(
     streaming_provider_stub_with_tracking: StreamingProviderStubWithTracking,
 ) -> YandexMusicStreamingManager:
     """Create streaming manager with tracking logger for assertions."""
-    return YandexMusicStreamingManager(streaming_provider_stub_with_tracking)  # type: ignore[arg-type]
+    return YandexMusicStreamingManager(streaming_provider_stub_with_tracking)
 
 
 def test_select_best_quality_lossless_returns_flac(
@@ -347,7 +347,7 @@ class _MockContent:
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
 
-    async def iter_chunked(self, size: int) -> Any:  # noqa: ANN401
+    async def iter_chunked(self, size: int) -> Any:
         for chunk in self._chunks:
             yield chunk
 
@@ -377,7 +377,7 @@ class _MockHttpSession:
     def __init__(self, response: _MockResponse) -> None:
         self._response = response
 
-    def get(self, url: str) -> _MockResponse:  # noqa: ARG002
+    def get(self, url: str) -> _MockResponse:
         return self._response
 
 
@@ -399,7 +399,7 @@ async def test_get_audio_stream_http_error_raises_media_not_found(
     """HTTP error from encrypted URL is converted to MediaNotFoundError."""
     key = b"\x00" * 32
     sd = _make_encrypted_stream_details(key.hex())
-    streaming_provider_stub.mass.http_session = _MockHttpSession(  # type: ignore[attr-defined]
+    streaming_provider_stub.mass.http_session = _MockHttpSession(
         _MockResponse([], error=RuntimeError("403 Forbidden"))
     )
 
@@ -422,9 +422,7 @@ async def test_get_audio_stream_decrypts_aes_ctr_correctly(
     ciphertext = encryptor.update(plaintext) + encryptor.finalize()
 
     sd = _make_encrypted_stream_details(key.hex())
-    streaming_provider_stub.mass.http_session = _MockHttpSession(  # type: ignore[attr-defined]
-        _MockResponse([ciphertext])
-    )
+    streaming_provider_stub.mass.http_session = _MockHttpSession(_MockResponse([ciphertext]))
 
     result = b""
     async for chunk in streaming_manager.get_audio_stream(sd):

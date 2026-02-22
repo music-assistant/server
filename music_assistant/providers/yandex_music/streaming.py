@@ -338,9 +338,7 @@ class YandexMusicStreamingManager:
             try:
                 response.raise_for_status()
             except Exception as err:
-                raise MediaNotFoundError(
-                    f"Failed to fetch encrypted stream: {err}"
-                ) from err
+                raise MediaNotFoundError(f"Failed to fetch encrypted stream: {err}") from err
             async for chunk in response.content.iter_chunked(65536):
                 yield decryptor.update(chunk)
             final = decryptor.finalize()
