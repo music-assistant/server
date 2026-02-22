@@ -92,7 +92,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                     kwargs["player_id"] = protocol_parent.player_id
                 else:
                     args = (protocol_parent.player_id, *args[1:])  # type: ignore[assignment]
-                self.logger.info(
+                self.logger.debug(
                     "Auto-resolved protocol player %s to linked parent %s for command %s",
                     player_id,
                     protocol_parent.player_id,

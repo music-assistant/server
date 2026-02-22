@@ -313,18 +313,19 @@ class AirPlayProvider(PlayerProvider):
                 # Cancel any pending debounced pause since prevent-playback takes precedence
                 self.mass.cancel_timer(f"debounced_pause_{player_id}")
                 # Ignore during stream transition (stale message from old CLI process)
-                if player._transitioning:
+                if player._transitioning or not player.stream:
                     self.logger.debug("Ignoring prevent-playback during stream transition")
-                elif stream := player.stream:
-                    stream.prevent_playback = True
-                    if stream.session:
-                        # send power off which will take care of stopping the stream
-                        # and removing this player from any sync groups, etc.
+                else:
+                    player.stream.prevent_playback = True
+                    if player.stream.session:
                         self.logger.debug(
-                            "received prevent-playback from %s, powering off player",
+                            "Prevent playback command detected for player %s",
                             player.name,
                         )
-                        self.mass.create_task(self.mass.players.cmd_power(player_id, False))
+                        if player.state.synced_to or player.state.group_members:
+                            self.mass.create_task(self.mass.players.cmd_ungroup(player_id))
+                        else:
+                            self.mass.create_task(player.stream.session.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if stream := player.stream:
