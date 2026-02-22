@@ -124,6 +124,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
+        if ProviderFeature.PLAYLIST_CREATE not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support creating playlists"
+            raise InvalidDataError(msg)
+
         if not is_safe_name(name):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
@@ -169,6 +173,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist_prov or not playlist_prov.available:
             raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
         playlist_prov = cast("MusicProvider", playlist_prov)
+
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT not in playlist_prov.supported_features:
+            msg = f"Provider {playlist_prov.name} does not support editing playlists"
+            raise InvalidDataError(msg)
 
         # sets to track existing tracks
         cur_playlist_track_ids: set[str] = set()
