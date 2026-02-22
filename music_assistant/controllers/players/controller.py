@@ -1026,12 +1026,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
-        # guard edge case: player already synced to another player
-        if parent_player.state.synced_to:
-            raise PlayerCommandFailed(
-                f"Player {parent_player.name} is already synced to another player on its own, "
-                "you need to ungroup it first before you can join other players to it.",
-            )
+        # handle edge case: player already synced to another player
+        # automatically ungroup it first and wait for state to propagate
+        await self._auto_ungroup_if_synced(parent_player, "setting members")
         # handle dissolve sync group if the target player is currently
         # a sync leader and is being removed from itself
         should_stop = False
@@ -1075,6 +1072,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 and child_player_id in parent_player.state.group_members
             ):
                 continue  # already synced to this target
+
+            # handle edge case: child player is synced to a different player
+            # automatically ungroup it first and wait for state to propagate
+            if child_player.state.synced_to and child_player.state.synced_to != target_player:
+                await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
 
             # power on the player if needed
             if (
@@ -2389,6 +2391,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Each call resets the timer, so rapid registrations only trigger one update
         task_id = "update_all_players_on_registration"
         self.mass.call_later(delay, _update_all_players, task_id=task_id)
+
+    async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
+        """
+        Automatically ungroup a player if it's synced to another player.
+
+        :param player: The player to check and potentially ungroup.
+        :param log_context: Additional context for the log message (e.g., target player name).
+        """
+        if not player.state.synced_to:
+            return
+        self.logger.info(
+            "Player %s is already synced to %s, ungrouping it first before %s",
+            player.name,
+            player.state.synced_to,
+            log_context,
+        )
+        await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player.player_id])
+        await asyncio.sleep(2)
 
     async def _handle_set_members_with_protocols(
         self,
