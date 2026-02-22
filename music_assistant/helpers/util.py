@@ -672,6 +672,23 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     return fallback
 
 
+def parse_optional_bool(value: Any) -> bool | None:
+    """Parse an optional boolean value from various input types."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ("true", "1", "yes", "on"):
+            return True
+        if value_lower in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
 def merge_dict(
     base_dict: dict[Any, Any],
     new_dict: dict[Any, Any],
