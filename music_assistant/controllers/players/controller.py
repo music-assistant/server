@@ -486,6 +486,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_cmd_resume(player_id, source, media)
 
     @api_command("players/cmd/seek")
+    @handle_player_command
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given player.
 
@@ -517,6 +518,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await player.seek(position)
 
     @api_command("players/cmd/next")
+    @handle_player_command
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -545,6 +547,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/previous")
+    @handle_player_command
     async def cmd_previous_track(self, player_id: str) -> None:
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -2203,7 +2206,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Confirmed external source takeover
         self.logger.info(
-            "External source '%s' took over on %s while grouped via protocol %s - "
+            "External source '%s' took over on %s while playing via protocol %s - "
             "clearing active output protocol and ungrouping",
             new_source,
             player.display_name,
@@ -2581,7 +2584,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return  # nothing to do
 
         # ungroup player at power off
-        player_was_synced = player.state.synced_to is not None
+        player_was_synced = bool(player.state.synced_to or player.group_members)
         if player.type == PlayerType.PLAYER and not powered:
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced

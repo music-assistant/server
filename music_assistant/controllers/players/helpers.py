@@ -82,6 +82,23 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 )
                 return
 
+            # this should not happen, but in case a player_id of a protocol player is used,
+            # auto-resolve it to the parent player
+            if player.protocol_parent_id and (
+                protocol_parent := self._players.get(player.protocol_parent_id)
+            ):
+                player = protocol_parent
+                if "player_id" in kwargs:
+                    kwargs["player_id"] = protocol_parent.player_id
+                else:
+                    args = (protocol_parent.player_id, *args[1:])  # type: ignore[assignment]
+                self.logger.info(
+                    "Auto-resolved protocol player %s to linked parent %s for command %s",
+                    player_id,
+                    protocol_parent.player_id,
+                    fn.__name__,
+                )
+
             current_user = get_current_user()
             if (
                 current_user
@@ -101,7 +118,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             )
 
             async def execute() -> None:
-                async with self._player_throttlers[player_id]:
+                async with self._player_throttlers[player.player_id]:
                     try:
                         await fn(self, *args, **kwargs)
                     except Exception as err:
