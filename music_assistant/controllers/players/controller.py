@@ -1172,46 +1172,35 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/ungroup")
     @handle_player_command
     async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
+        """
+        Handle UNGROUP command for given player.
 
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
 
-        NOTE: This is a (deprecated) alias for cmd_set_members.
+        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
             return
 
-        if (
-            player.state.active_group
-            and (group_player := self.get_player(player.state.active_group))
-            and (PlayerFeature.SET_MEMBERS in group_player.state.supported_features)
-        ):
+        if player.state.active_group:
             # the player is part of a (permanent) groupplayer and the user tries to ungroup
-            if player_id in group_player.static_group_members:
-                raise UnsupportedFeaturedException(
-                    f"Player {player.name}  is a static member of group {group_player.name} "
-                    "and cannot be removed from that group!"
-                )
-            await group_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
             return
 
-        if player.state.synced_to and (synced_player := self.get_player(player.state.synced_to)):
+        if player.state.synced_to:
             # player is a sync member
-            await synced_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
             return
 
-        if not (player.state.synced_to or player.state.group_members):
-            return  # nothing to do
-
-        if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
-            self.logger.warning("Player %s does not support (un)group commands", player.name)
+        if player.state.group_members:
+            # player is a sync leader, so we ungroup all members from it
+            await self.cmd_set_members(
+                player.player_id, player_ids_to_remove=player.state.group_members
+            )
             return
-
-        # forward command to the player once all checks passed
-        await player.ungroup()
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
