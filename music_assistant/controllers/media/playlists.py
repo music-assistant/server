@@ -133,7 +133,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
         supported_types: set[MediaType] = set()
-        if ProviderFeature.PLAYLIST_CREATE_TRACKS in provider.supported_features:
+        if ProviderFeature.PLAYLIST_CREATE in provider.supported_features:
             supported_types.add(MediaType.TRACK)
         if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
             supported_types.add(MediaType.AUDIOBOOK)
