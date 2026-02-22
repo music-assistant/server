@@ -5,7 +5,7 @@
   "description": "Stream music to Smart TVs via Media Station X",
   "codeowners": ["@TrudenBoy"],
   "requirements": [],
-  "documentation": "https://beta.music-assistant.io/player-support/msx-bridge",
+  "documentation": "https://music-assistant.io/player-support/msx-bridge",
   "multi_instance": false,
   "stage": "beta",
   "icon": "md:tv"
