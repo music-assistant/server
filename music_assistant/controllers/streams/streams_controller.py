@@ -2077,3 +2077,77 @@ class StreamsController(CoreController):
         else:
             self.smart_fades_analyzer.logger.setLevel(log_level)
             self.smart_fades_mixer.logger.setLevel(log_level)
+
+    async def cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
+        """
+        Clean up audio buffers for queue items that are no longer needed.
+
+        This clears buffers for items at index <= current_index - 2, keeping only:
+        - The previous track (current_index - 1)
+        - The current track (current_index)
+        - The next track (current_index + 1, handled by preloading)
+
+        :param queue_id: The queue ID to clean up buffers for.
+        :param current_index: The current playing index in the queue.
+        """
+        if current_index < 2:
+            return  # Nothing to clean up yet
+
+        queue_items = self.mass.player_queues._queue_items.get(queue_id, [])
+        cleanup_threshold = current_index - 2
+        buffers_cleared = 0
+
+        for idx, item in enumerate(queue_items):
+            if idx > cleanup_threshold:
+                break  # No need to check further
+            if item.streamdetails and item.streamdetails.buffer:
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
+                    item.name,
+                    idx,
+                    queue_id,
+                )
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d stale audio buffer(s) for queue %s (items before index %d)",
+                buffers_cleared,
+                queue_id,
+                cleanup_threshold + 1,
+            )
+
+    async def cleanup_queue_audio_data(self, queue_id: str) -> None:
+        """
+        Clean up all audio-related data for a queue when it is stopped or cleared.
+
+        This clears:
+        - All audio buffers attached to queue item streamdetails
+        - Any pending crossfade data for the queue
+
+        :param queue_id: The queue ID to clean up.
+        """
+        # Clear crossfade data for this queue
+        if queue_id in self._crossfade_data:
+            self.logger.debug("Clearing crossfade data for queue %s", queue_id)
+            del self._crossfade_data[queue_id]
+
+        # Clear all audio buffers for queue items
+        queue_items = self.mass.player_queues._queue_items.get(queue_id, [])
+        buffers_cleared = 0
+
+        for item in queue_items:
+            if item.streamdetails and item.streamdetails.buffer:
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d audio buffer(s) for stopped/cleared queue %s",
+                buffers_cleared,
+                queue_id,
+            )

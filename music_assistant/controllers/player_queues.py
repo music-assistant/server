@@ -714,6 +714,7 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
+        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -758,6 +759,7 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_stop(queue_id)
         finally:
             IN_QUEUE_COMMAND.reset(token)
+        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -1413,11 +1415,17 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError(msg)
         # store the index of the item that is currently (being) loaded in the buffer
         # which helps us a bit to determine how far the player has buffered ahead
-        queue.index_in_buffer = self.index_by_id(queue_id, item_id)
+        current_index = self.index_by_id(queue_id, item_id)
+        queue.index_in_buffer = current_index
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
+        # clean up stale audio buffers for old queue items to prevent memory leaks
+        if current_index is not None:
+            self.mass.create_task(
+                self.mass.streams.cleanup_stale_queue_buffers(queue_id, current_index)
+            )
 
     # Main queue manipulation methods
 
