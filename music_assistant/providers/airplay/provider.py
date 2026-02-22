@@ -280,11 +280,22 @@ class AirPlayProvider(PlayerProvider):
                 await self.mass.player_queues.set_shuffle(
                     active_queue.queue_id, not active_queue.shuffle_enabled
                 )
-            elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
-                # sometimes this request is sent by a device as confirmation of a play command
-                # we ignore this if the player is already playing
-                if player.playback_state == PlaybackState.PLAYING:
+            elif path == "/ctrl-int/1/pause":
+                if player.state.playback_state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.players.cmd_pause(player_id))
+            elif path == "/ctrl-int/1/discrete-pause":
+                # Some devices send discrete-pause right before device-prevent-playback=1
+                # when switching to another source. We debounce the pause to avoid
+                # unnecessary pause commands that would interfere with source switching
+                # so we only process the pause command if we don't receive a
+                # prevent-playback=1 within a short time window.
+                if player.state.playback_state == PlaybackState.PLAYING:
+                    self.mass.call_later(
+                        1.0,
+                        self.mass.players.cmd_pause,
+                        player_id,
+                        task_id=f"debounced_pause_{player_id}",
+                    )
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
@@ -299,13 +310,21 @@ class AirPlayProvider(PlayerProvider):
                 player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
+                # Cancel any pending debounced pause since prevent-playback takes precedence
+                self.mass.cancel_timer(f"debounced_pause_{player_id}")
                 # Ignore during stream transition (stale message from old CLI process)
                 if player._transitioning:
                     self.logger.debug("Ignoring prevent-playback during stream transition")
                 elif stream := player.stream:
                     stream.prevent_playback = True
                     if stream.session:
-                        self.mass.create_task(stream.session.remove_client(player))
+                        # send power off which will take care of stopping the stream
+                        # and removing this player from any sync groups, etc.
+                        self.logger.debug(
+                            "received prevent-playback from %s, powering off player",
+                            player.name,
+                        )
+                        self.mass.create_task(self.mass.players.cmd_power(player_id, False))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if stream := player.stream:
