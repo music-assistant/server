@@ -30,7 +30,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
 from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE
@@ -47,15 +47,17 @@ BASE_FEATURES = {
 }
 
 
-class UniversalGroupPlayer(GroupPlayer):
+class UniversalGroupPlayer(Player):
     """Universal Group Player implementation."""
+
+    _attr_type: PlayerType = PlayerType.GROUP
 
     def __init__(
         self,
         provider: UniversalGroupProvider,
         player_id: str,
     ) -> None:
-        """Initialize GroupPlayer instance."""
+        """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
         self._attr_name = self.config.name or f"Universal Group {player_id}"
@@ -87,6 +89,12 @@ class UniversalGroupPlayer(GroupPlayer):
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    @cached_property
+    def synced_to(self) -> str | None:
+        """Return the id of the player this player is synced to (sync leader)."""
+        # groups can't be synced
+        return None
 
     @property
     def can_group_with(self) -> set[str]:

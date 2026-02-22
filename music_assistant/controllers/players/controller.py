@@ -860,6 +860,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             # determine if the player has native announcements support
             # or if any linked protocol has announcement support
+            native_announce_support = False
             if announce_player := self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,

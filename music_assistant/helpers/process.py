@@ -171,10 +171,10 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             self.proc.stdin.write(data)
             with suppress(BrokenPipeError, ConnectionResetError):
@@ -182,10 +182,10 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             try:
                 if self.proc.stdin.can_write_eof():
@@ -260,10 +260,16 @@ class AsyncProcess:
                 self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                # Log unexpected exceptions from the stdin feeder before suppressing
+                LOGGER.warning(
+                    "Process stdin feeder task ended with error: %s",
+                    err,
+                )
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):
