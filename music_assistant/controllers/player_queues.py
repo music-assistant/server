@@ -2493,7 +2493,10 @@ class PlayerQueuesController(CoreController):
         ):
             if protocol_player.current_media.queue_item_id:
                 return protocol_player.current_media.queue_item_id
-            return protocol_player.current_media.uri.split(":")[-1]
+            current_item_id = protocol_player.current_media.uri.split(":")[-1]
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
+            return None
         # try to extract the item id from a mass stream url
         if (
             protocol_player.current_media.uri
