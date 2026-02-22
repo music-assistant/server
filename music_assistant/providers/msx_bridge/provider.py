@@ -113,6 +113,13 @@ class SharedGroupStream:
             logger.exception("[SharedStream:%s] Producer error", self.group_id)
         finally:
             self.finished = True
+            # Ensure subscribers waiting on `started` can proceed even if no chunks were produced
+            if not self.started.is_set():
+                self.started.set()
+                logger.debug(
+                    "[SharedStream:%s] Producer completed without first chunk, signaling started",
+                    self.group_id,
+                )
             # Signal EOF to all subscribers
             async with self._lock:
                 for player_id, q in list(self.subscribers.items()):

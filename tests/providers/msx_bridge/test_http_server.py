@@ -825,7 +825,7 @@ async def test_msx_queue_playlist_endpoint(provider: MSXBridgeProvider, mass_moc
 async def test_msx_queue_playlist_with_start_index(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
-    """GET /msx/queue-playlist with start=1 should use player:goto:index:1 action."""
+    """GET /msx/queue-playlist with start=1 should use player:play action."""
     qi = Mock()
     qi.name = "Track 1"
     qi.media_item = Mock()

@@ -160,7 +160,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         sendspinUrl = SENDSPIN_URL_PARAM || getDefaultSendspinUrl();
 
         try {
-            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@latest/dist/index.js';
+            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@1.0.0/dist/index.js';
             var module = await import(sdkUrl);
             var SendspinPlayer = module.SendspinPlayer;
 

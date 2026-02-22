@@ -398,7 +398,15 @@ class MSXPlayer(Player):
             if self._last_ws_position and (time.time() - self._last_ws_position) < 10:
                 return
             now = time.time()
-            self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
+            delta = now - self._attr_elapsed_time_last_updated
+            new_elapsed = max(0.0, float(self._attr_elapsed_time) + float(delta))
+            current_media = self._attr_current_media
+            duration = (
+                getattr(current_media, "duration", None) if current_media is not None else None
+            )
+            if isinstance(duration, (int, float)) and duration > 0:
+                new_elapsed = min(new_elapsed, float(duration))
+            self._attr_elapsed_time = new_elapsed
             self._attr_elapsed_time_last_updated = now
             self.update_state()
 
