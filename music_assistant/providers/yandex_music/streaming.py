@@ -335,7 +335,12 @@ class YandexMusicStreamingManager:
         nonce_16 = bytes(16)  # AES-256-CTR, zero IV
         decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce_16)).decryptor()
         async with self.mass.http_session.get(encrypted_url) as response:
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except Exception as err:
+                raise MediaNotFoundError(
+                    f"Failed to fetch encrypted stream: {err}"
+                ) from err
             async for chunk in response.content.iter_chunked(65536):
                 yield decryptor.update(chunk)
             final = decryptor.finalize()

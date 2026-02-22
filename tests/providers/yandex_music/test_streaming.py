@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from music_assistant_models.enums import ContentType
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
@@ -314,3 +318,116 @@ def test_get_audio_params_none(
 ) -> None:
     """None codec returns CD-quality defaults."""
     assert streaming_manager._get_audio_params(None) == (44100, 16)
+
+
+# --- get_audio_stream tests ---
+
+
+def _make_encrypted_stream_details(
+    key_hex: str,
+    url: str = "https://example.com/encrypted.flac",
+) -> StreamDetails:
+    """Build StreamDetails for encrypted FLAC stream tests."""
+    return StreamDetails(
+        item_id="test_track_123",
+        provider="yandex_music_instance",
+        audio_format=AudioFormat(content_type=ContentType.MP4),
+        stream_type=StreamType.CUSTOM,
+        data={
+            "encrypted_url": url,
+            "decryption_key": key_hex,
+            "codec": "flac-mp4",
+        },
+    )
+
+
+class _MockContent:
+    """Async iterable content for mock HTTP responses."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def iter_chunked(self, size: int) -> Any:  # noqa: ANN401
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _MockResponse:
+    """Fake aiohttp ClientResponse for streaming tests."""
+
+    def __init__(self, chunks: list[bytes], *, error: Exception | None = None) -> None:
+        self.content = _MockContent(chunks)
+        self._error = error
+
+    def raise_for_status(self) -> None:
+        """Raise stored error if set, simulating a non-2xx HTTP response."""
+        if self._error is not None:
+            raise self._error
+
+    async def __aenter__(self) -> _MockResponse:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _MockHttpSession:
+    """Fake aiohttp ClientSession for streaming tests."""
+
+    def __init__(self, response: _MockResponse) -> None:
+        self._response = response
+
+    def get(self, url: str) -> _MockResponse:  # noqa: ARG002
+        return self._response
+
+
+async def test_get_audio_stream_invalid_key_length(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Invalid AES key length raises MediaNotFoundError before any HTTP request."""
+    sd = _make_encrypted_stream_details("deadbeef")  # 4 bytes — invalid
+
+    with pytest.raises(MediaNotFoundError, match="Unsupported AES key length"):
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+
+async def test_get_audio_stream_http_error_raises_media_not_found(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """HTTP error from encrypted URL is converted to MediaNotFoundError."""
+    key = b"\x00" * 32
+    sd = _make_encrypted_stream_details(key.hex())
+    streaming_provider_stub.mass.http_session = _MockHttpSession(  # type: ignore[attr-defined]
+        _MockResponse([], error=RuntimeError("403 Forbidden"))
+    )
+
+    with pytest.raises(MediaNotFoundError, match="Failed to fetch encrypted stream"):
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+
+async def test_get_audio_stream_decrypts_aes_ctr_correctly(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """Encrypted stream is decrypted correctly with AES-256-CTR and zero IV."""
+    key = b"\x42" * 32
+    plaintext = b"Hello, Yandex Music FLAC data!\n" * 50
+
+    # Encrypt with the same algorithm used in get_audio_stream
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    sd = _make_encrypted_stream_details(key.hex())
+    streaming_provider_stub.mass.http_session = _MockHttpSession(  # type: ignore[attr-defined]
+        _MockResponse([ciphertext])
+    )
+
+    result = b""
+    async for chunk in streaming_manager.get_audio_stream(sd):
+        result += chunk
+
+    assert result == plaintext
