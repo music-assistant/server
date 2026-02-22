@@ -1686,8 +1686,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""
         # account for player that is synced (sync child)
-        if player.synced_to and player.synced_to != player.player_id:
-            if sync_leader := self.get_player(player.synced_to):
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.state.synced_to):
                 return self.get_active_queue(sync_leader)
         # handle active group player
         if player.state.active_group and player.state.active_group != player.player_id:
