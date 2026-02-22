@@ -15,7 +15,6 @@ from itertools import zip_longest
 from math import inf
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -58,12 +57,10 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
-    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
@@ -76,13 +73,6 @@ from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.smart_fades import (
-    ExtendedSmartFadesAnalysis,
-    MusicalKey,
-    PhraseBoundary,
-    SmartFadesAnalysis,
-    SmartFadesAnalysisFragment,
-)
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -1150,228 +1140,6 @@ class MusicController(CoreController):
             return None
         return int(row["analysis_version"])
 
-    async def set_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        analysis: SmartFadesAnalysis,
-    ) -> None:
-        """Store Smart Fades BPM analysis for a track in db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return
-        if (
-            analysis.duration <= 0.75 * SMART_CROSSFADE_DURATION
-            or analysis.bpm <= 0
-            or analysis.confidence < 0
-        ):
-            # skip invalid values, we skip analysis that were performed on
-            # a short amount of audio as those are often unreliable
-            return
-        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
-        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        values = {
-            "fragment": analysis.fragment.value,
-            "item_id": item_id,
-            "provider": prov_key,
-            "bpm": analysis.bpm,
-            "beats": beats_json,
-            "downbeats": downbeats_json,
-            "confidence": analysis.confidence,
-            "duration": analysis.duration,
-        }
-        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
-
-    async def get_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        fragment: SmartFadesAnalysisFragment,
-    ) -> SmartFadesAnalysis | None:
-        """Get Smart Fades BPM analysis for a track from db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        db_row = await self.database.get_row(
-            DB_TABLE_SMART_FADES_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "fragment": fragment.value,
-            },
-        )
-        if db_row and db_row["bpm"] > 0:
-            beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
-            downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
-            return SmartFadesAnalysis(
-                fragment=SmartFadesAnalysisFragment(db_row["fragment"]),
-                bpm=float(db_row["bpm"]),
-                beats=beats,
-                downbeats=downbeats,
-                confidence=float(db_row["confidence"]),
-                duration=float(db_row["duration"]),
-            )
-        return None
-
-    async def set_extended_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        analysis: ExtendedSmartFadesAnalysis,
-    ) -> None:
-        """Store Extended Smart Fades analysis for a track in db.
-
-        :param item_id: The track's item ID.
-        :param provider_instance_id_or_domain: Provider instance ID or domain.
-        :param analysis: Extended analysis data to store.
-        """
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return
-        if analysis.duration <= 0 or analysis.bpm <= 0 or analysis.confidence < 0:
-            # skip invalid values
-            return
-
-        # Serialize numpy arrays and complex types to JSON
-        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
-        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
-
-        # Serialize musical key
-        musical_key_json: str | None = None
-        if analysis.musical_key:
-            musical_key_json = json_dumps(analysis.musical_key.to_dict())
-
-        # Serialize phrase boundaries
-        phrase_boundaries_json: str | None = None
-        if analysis.phrase_boundaries:
-            phrase_boundaries_json = json_dumps([pb.to_dict() for pb in analysis.phrase_boundaries])
-
-        # Serialize energy curves
-        energy_curve_json: str | None = None
-        if analysis.energy_curve is not None:
-            energy_curve_json = await asyncio.to_thread(
-                lambda: json_dumps(analysis.energy_curve.tolist())
-            )
-
-        spectral_curve_json: str | None = None
-        if analysis.spectral_centroid_curve is not None:
-            spectral_curve_json = await asyncio.to_thread(
-                lambda: json_dumps(analysis.spectral_centroid_curve.tolist())
-            )
-
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        values = {
-            "fragment": SmartFadesAnalysisFragment.FULL_SONG.value,
-            "item_id": item_id,
-            "provider": prov_key,
-            "bpm": analysis.bpm,
-            "beats": beats_json,
-            "downbeats": downbeats_json,
-            "confidence": analysis.confidence,
-            "duration": analysis.duration,
-            "analysis_version": 2,
-            "musical_key": musical_key_json,
-            "phrase_boundaries": phrase_boundaries_json,
-            "energy_curve": energy_curve_json,
-            "spectral_centroid_curve": spectral_curve_json,
-            "full_song_analysis": 1,
-        }
-        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
-
-    async def get_extended_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> ExtendedSmartFadesAnalysis | None:
-        """Get Extended Smart Fades analysis for a track from db.
-
-        :param item_id: The track's item ID.
-        :param provider_instance_id_or_domain: Provider instance ID or domain.
-        :return: Extended analysis data, or None if not found.
-        """
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        db_row = await self.database.get_row(
-            DB_TABLE_SMART_FADES_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "fragment": SmartFadesAnalysisFragment.FULL_SONG.value,
-            },
-        )
-        if not db_row or db_row["bpm"] <= 0:
-            return None
-
-        # Helper to safely get optional columns from sqlite3.Row
-        db_keys = db_row.keys()
-
-        # Check analysis version - only version 2+ has extended data
-        analysis_version = db_row["analysis_version"] if "analysis_version" in db_keys else 1
-        if analysis_version < 2:
-            return None
-
-        # Deserialize numpy arrays
-        beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
-        downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
-
-        # Deserialize musical key
-        musical_key: MusicalKey | None = None
-        if "musical_key" in db_keys and db_row["musical_key"]:
-            key_data = json_loads(db_row["musical_key"])
-            musical_key = MusicalKey(
-                root=key_data["root"],
-                mode=key_data["mode"],
-                confidence=key_data["confidence"],
-            )
-
-        # Deserialize phrase boundaries
-        phrase_boundaries: list[PhraseBoundary] = []
-        if "phrase_boundaries" in db_keys and db_row["phrase_boundaries"]:
-            pb_list = json_loads(db_row["phrase_boundaries"])
-            phrase_boundaries = [
-                PhraseBoundary(
-                    time=pb["time"],
-                    confidence=pb["confidence"],
-                    boundary_type=pb["boundary_type"],
-                )
-                for pb in pb_list
-            ]
-
-        # Deserialize energy curves
-        energy_curve: np.ndarray | None = None
-        if "energy_curve" in db_keys and db_row["energy_curve"]:
-            energy_curve = await asyncio.to_thread(
-                lambda: np.array(json_loads(db_row["energy_curve"]), dtype=np.float32)
-            )
-
-        spectral_curve: np.ndarray | None = None
-        if "spectral_centroid_curve" in db_keys and db_row["spectral_centroid_curve"]:
-            spectral_curve = await asyncio.to_thread(
-                lambda: np.array(json_loads(db_row["spectral_centroid_curve"]), dtype=np.float32)
-            )
-
-        full_song = bool(db_row["full_song_analysis"]) if "full_song_analysis" in db_keys else False
-
-        return ExtendedSmartFadesAnalysis(
-            bpm=float(db_row["bpm"]),
-            beats=beats,
-            downbeats=downbeats,
-            confidence=float(db_row["confidence"]),
-            duration=float(db_row["duration"]),
-            musical_key=musical_key,
-            phrase_boundaries=phrase_boundaries,
-            energy_curve=energy_curve,
-            spectral_centroid_curve=spectral_curve,
-            full_song_analysis=full_song,
-            analysis_version=analysis_version,
-            item_id=item_id,
-            provider=prov_key,
-        )
-
     async def get_loudness(
         self,
         item_id: str,
@@ -2392,8 +2160,8 @@ class MusicController(CoreController):
                     raise
 
         if prev_version <= 21:
-            # drop table for smart fades analysis - it will be recreated with needed columns
-            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
+            # drop legacy smart fades analysis table
+            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
             await self.__create_database_tables()
 
         if prev_version <= 22:
@@ -2465,22 +2233,10 @@ class MusicController(CoreController):
                 "WHERE media_type = 'playlist' AND in_library = 0;"
             )
 
-        if prev_version <= 26:
-            # Add extended smart fades analysis columns
-            for col_def in [
-                "musical_key TEXT",
-                "phrase_boundaries TEXT",
-                "energy_curve TEXT",
-                "spectral_centroid_curve TEXT",
-                "full_song_analysis INTEGER DEFAULT 0",
-            ]:
-                try:
-                    await self._database.execute(
-                        f"ALTER TABLE {DB_TABLE_SMART_FADES_ANALYSIS} ADD COLUMN {col_def}"
-                    )
-                except Exception as err:
-                    if "duplicate column" not in str(err).lower():
-                        raise
+        if prev_version <= 27:
+            # drop the old smart_fades_analysis table, replaced by audio_analysis
+            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
+            await self.__create_database_tables()
 
         # save changes
         await self._database.commit()
@@ -2716,22 +2472,6 @@ class MusicController(CoreController):
         )
 
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [fragment] INTEGER NOT NULL,
-                    [bpm] REAL NOT NULL,
-                    [beats] TEXT NOT NULL,
-                    [downbeats] TEXT NOT NULL,
-                    [confidence] REAL NOT NULL,
-                    [duration] REAL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,fragment));"""
-        )
-
-        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [media_type] TEXT NOT NULL,
@@ -2848,11 +2588,6 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
             f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
-        )
-        # index on smart fades analysis table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
-            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider,fragment);"
         )
         # index on audio analysis table
         await self.database.execute(
