@@ -390,8 +390,14 @@ class PlayerQueuesController(CoreController):
                 self._enqueue_next_item(queue_id, next_item)
 
     @api_command("player_queues/set_playback_speed")
-    async def set_playback_speed(self, queue_id: str, speed: float) -> None:
-        """Set the playback speed for the given queue.
+    async def set_playback_speed(
+        self, queue_id: str, speed: float, queue_item_id: str | None = None
+    ) -> None:
+        """
+        Set the playback speed for the given queue item.
+
+        If queue_item_id is not provided,
+        the speed will be set for the current item in the queue.
 
         :param queue_id: queue_id of the queue to configure.
         :param speed: playback speed multiplier (0.5 to 2.0). 1.0 = normal speed.
@@ -399,10 +405,19 @@ class PlayerQueuesController(CoreController):
         if not (0.5 <= speed <= 2.0):
             raise InvalidDataError(f"Playback speed must be between 0.5 and 2.0, got {speed}")
         queue = self._queues[queue_id]
-        current_speed = float(queue.extra_attributes.get("playback_speed") or 1.0)
+        if not queue.current_item:
+            raise QueueEmpty("Cannot set playback speed: queue is empty")
+        queue_item_id = queue_item_id or queue.current_item.queue_item_id
+        queue_item = self.get_item(queue_id, queue_item_id)
+        if not queue_item:
+            raise InvalidDataError(f"Queue item {queue_item_id} not found in queue")
+        if not queue_item.duration or queue_item.media_type == MediaType.RADIO:
+            raise InvalidCommand("Cannot set playback speed for items with unknown duration")
+        current_speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
         if abs(current_speed - speed) < 0.001:
             return  # no change
-        queue.extra_attributes["playback_speed"] = speed
+        # use extra_attributes of the queue item to store the playback speed
+        queue_item.extra_attributes["playback_speed"] = speed
         self.signal_update(queue_id)
         if queue.state == PlaybackState.PLAYING:
             await self.resume(queue_id)

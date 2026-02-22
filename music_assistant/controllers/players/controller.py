@@ -1001,6 +1001,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_enqueue_next_media(player_id, media)
 
     @api_command("players/cmd/set_members")
+    @handle_player_command(lock=True)
     async def cmd_set_members(
         self,
         target_player: str,
@@ -1025,12 +1026,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
-        # guard edge case: player already synced to another player
-        if parent_player.state.synced_to:
-            raise PlayerCommandFailed(
-                f"Player {parent_player.name} is already synced to another player on its own, "
-                "you need to ungroup it first before you can join other players to it.",
-            )
+        # handle edge case: player already synced to another player
+        # automatically ungroup it first and wait for state to propagate
+        await self._auto_ungroup_if_synced(parent_player, "setting members")
         # handle dissolve sync group if the target player is currently
         # a sync leader and is being removed from itself
         should_stop = False
@@ -1074,6 +1072,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 and child_player_id in parent_player.state.group_members
             ):
                 continue  # already synced to this target
+
+            # handle edge case: child player is synced to a different player
+            # automatically ungroup it first and wait for state to propagate
+            if child_player.state.synced_to and child_player.state.synced_to != target_player:
+                await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
 
             # power on the player if needed
             if (
@@ -1148,6 +1151,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         If the target player itself is already synced to another player, this may fail.
         If the player can not be synced with the given target player, this may fail.
 
+        NOTE: This is a convenience helper for cmd_set_members.
+
         :param player_id: player_id of the player to handle the command.
         :param target_player: player_id of the syncgroup leader or group player.
 
@@ -1171,46 +1176,35 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/ungroup")
     @handle_player_command
     async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
+        """
+        Handle UNGROUP command for given player.
 
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
 
-        NOTE: This is a (deprecated) alias for cmd_set_members.
+        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
             return
 
-        if (
-            player.state.active_group
-            and (group_player := self.get_player(player.state.active_group))
-            and (PlayerFeature.SET_MEMBERS in group_player.state.supported_features)
-        ):
+        if player.state.active_group:
             # the player is part of a (permanent) groupplayer and the user tries to ungroup
-            if player_id in group_player.static_group_members:
-                raise UnsupportedFeaturedException(
-                    f"Player {player.name}  is a static member of group {group_player.name} "
-                    "and cannot be removed from that group!"
-                )
-            await group_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
             return
 
-        if player.state.synced_to and (synced_player := self.get_player(player.state.synced_to)):
+        if player.state.synced_to:
             # player is a sync member
-            await synced_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
             return
 
-        if not (player.state.synced_to or player.state.group_members):
-            return  # nothing to do
-
-        if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
-            self.logger.warning("Player %s does not support (un)group commands", player.name)
+        if player.state.group_members:
+            # player is a sync leader, so we ungroup all members from it
+            await self.cmd_set_members(
+                player.player_id, player_ids_to_remove=player.state.group_members
+            )
             return
-
-        # forward command to the player once all checks passed
-        await player.ungroup()
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
@@ -1692,8 +1686,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""
         # account for player that is synced (sync child)
-        if player.synced_to and player.synced_to != player.player_id:
-            if sync_leader := self.get_player(player.synced_to):
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.state.synced_to):
                 return self.get_active_queue(sync_leader)
         # handle active group player
         if player.state.active_group and player.state.active_group != player.player_id:
@@ -2397,6 +2391,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Each call resets the timer, so rapid registrations only trigger one update
         task_id = "update_all_players_on_registration"
         self.mass.call_later(delay, _update_all_players, task_id=task_id)
+
+    async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
+        """
+        Automatically ungroup a player if it's synced to another player.
+
+        :param player: The player to check and potentially ungroup.
+        :param log_context: Additional context for the log message (e.g., target player name).
+        """
+        if not player.state.synced_to:
+            return
+        self.logger.info(
+            "Player %s is already synced to %s, ungrouping it first before %s",
+            player.name,
+            player.state.synced_to,
+            log_context,
+        )
+        await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player.player_id])
+        await asyncio.sleep(2)
 
     async def _handle_set_members_with_protocols(
         self,

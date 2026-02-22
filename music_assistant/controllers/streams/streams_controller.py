@@ -518,6 +518,9 @@ class StreamsController(CoreController):
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 seek_position=queue_item.streamdetails.seek_position,
+                playback_speed=cast(
+                    "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                ),
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
@@ -934,6 +937,9 @@ class StreamsController(CoreController):
                 self.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
                 ),
                 buffer_size=10,
                 min_buffer_before_yield=2,
@@ -1053,6 +1059,9 @@ class StreamsController(CoreController):
                 queue_track,
                 pcm_format=pcm_format,
                 seek_position=queue_track.streamdetails.seek_position,
+                playback_speed=cast(
+                    "float", queue_track.extra_attributes.get("playback_speed", 1.0)
+                ),
                 raise_on_error=False,
             ):
                 total_chunks_received += 1
@@ -1356,6 +1365,7 @@ class StreamsController(CoreController):
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         seek_position: int = 0,
+        playback_speed: float = 1.0,
         raise_on_error: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         """Get the (PCM) audio stream for a single queue item."""
@@ -1402,6 +1412,10 @@ class StreamsController(CoreController):
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+
+        # handle playback speed
+        if playback_speed != 1.0:
+            filter_params.append(f"atempo={playback_speed}")
 
         allow_buffer = bool(
             self.mass.config.get_raw_core_config_value(
@@ -1611,7 +1625,10 @@ class StreamsController(CoreController):
         total_chunks_received = 0
         req_buffer_size = crossfade_buffer_size
         async for chunk in self.get_queue_item_stream(
-            queue_item, pcm_format, seek_position=discard_seconds
+            queue_item,
+            pcm_format,
+            seek_position=discard_seconds,
+            playback_speed=cast("float", queue_item.extra_attributes.get("playback_speed", 1.0)),
         ):
             total_chunks_received += 1
             if discard_leftover:
@@ -1768,7 +1785,11 @@ class StreamsController(CoreController):
             buffer = b""
             try:
                 async for chunk in self.get_queue_item_stream(
-                    next_queue_item, next_queue_item_pcm_format
+                    next_queue_item,
+                    next_queue_item_pcm_format,
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
                 ):
                     # append to buffer until we reach crossfade size
                     # we only need the first X seconds of the NEXT track so we can
