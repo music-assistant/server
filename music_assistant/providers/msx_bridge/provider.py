@@ -362,8 +362,10 @@ class MSXBridgeProvider(PlayerProvider):
         if not suffix:
             return prefix_label
         # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
-        if "_" in suffix and all(p.isdigit() for p in suffix.replace("_", " ").split()):
-            return f"{prefix_label} ({suffix.replace('_', '.')})"
+        if "_" in suffix:
+            parts = suffix.split("_")
+            if all(p.isdigit() for p in parts):
+                return f"{prefix_label} ({'.'.join(parts)})"
         # UUID-based: msx_msx_bc93ce1d_491d_4d95_9430_2fbeabb5ce1b → "MSX TV (bc93)"
         # Show only first 4 chars of UUID for readability, plus IP if available
         if suffix.startswith("msx_") and len(suffix) > 12:
