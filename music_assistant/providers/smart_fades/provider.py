@@ -45,6 +45,7 @@ class SmartFadesData:
     input_audio_format: AudioFormat
     block_samples: int
     features: AdvancedBeatFeatureExtractor
+    resampler: soxr.ResampleStream | None = None
     pcm_buffer: list[np.ndarray] = field(default_factory=list)
     pcm_samples: int = 0
     total_pcm_samples: int = 0
@@ -92,6 +93,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         block_seconds = 10.0
 
+        needs_resample = audio_format.sample_rate != ANALYSIS_SAMPLE_RATE
         self._data[session_id] = SmartFadesData(
             item_id=stream_details.item_id,
             provider=stream_details.provider,
@@ -101,6 +103,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 sample_rate=ANALYSIS_SAMPLE_RATE,
                 device=self._device,
             ),
+            resampler=soxr.ResampleStream(
+                in_rate=audio_format.sample_rate,
+                out_rate=ANALYSIS_SAMPLE_RATE,
+                num_channels=1,
+                dtype="float32",
+            )
+            if needs_resample
+            else None,
         )
         self.logger.debug("Started beat tracking session %s", session_id)
 
@@ -139,7 +149,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Flush remaining buffered PCM
         if data.pcm_samples:
-            await self._process_block(data)
+            await self._process_block(data, last=True)
 
         # Get final features with end padding
         final_feats = await data.features.finalize()
@@ -225,25 +235,21 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         return audio.numpy()
 
-    @staticmethod
-    def _resample_block_sync(pcm: np.ndarray, orig_sr: int) -> np.ndarray:
-        """Resample a full audio block to analysis sample rate using soxr. Runs synchronously."""
-        resampled: np.ndarray = soxr.resample(pcm, in_rate=orig_sr, out_rate=ANALYSIS_SAMPLE_RATE)
-        return resampled
-
-    async def _process_block(self, data: SmartFadesData) -> None:
+    async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
         """Resample accumulated PCM buffer and extract features.
 
-        Resamples the full block at once to avoid edge effects from
-        per-chunk resampling with a stateless filter.
+        Uses a stateful soxr resampler to eliminate block-boundary artifacts
+        from per-block stateless resampling.
+
+        :param data: Session data.
+        :param last: Set True for the final block to flush the resampler.
         """
         pcm_raw = np.concatenate(data.pcm_buffer)
         data.pcm_buffer.clear()
         data.pcm_samples = 0
 
-        orig_sr = data.input_audio_format.sample_rate
-        if orig_sr != ANALYSIS_SAMPLE_RATE:
-            pcm_22k = await asyncio.to_thread(self._resample_block_sync, pcm_raw, orig_sr)
+        if data.resampler is not None:
+            pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
         else:
             pcm_22k = pcm_raw
 
