@@ -6,6 +6,7 @@ from typing import Any
 
 CONF_OPENAI_API_KEY = "openai_api_key"
 CONF_ELEVENLABS_API_KEY = "elevenlabs_api_key"
+CONF_UI_AUTO_REFRESH_SECONDS = "ui_auto_refresh_seconds"
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"

@@ -11,6 +11,7 @@ from .constants import (
     AI_RADIO_WEB_BASE_PATH,
     CONF_ELEVENLABS_API_KEY,
     CONF_OPENAI_API_KEY,
+    CONF_UI_AUTO_REFRESH_SECONDS,
 )
 
 
@@ -42,6 +43,17 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="ElevenLabs API Key",
             required=False,
+        ),
+        ConfigEntry(
+            key=CONF_UI_AUTO_REFRESH_SECONDS,
+            type=ConfigEntryType.INTEGER,
+            default_value=2,
+            range=(1, 30),
+            label="Web UI Auto Refresh Interval (seconds)",
+            description=(
+                "How often the AI Radio web UI refreshes session/player status automatically."
+            ),
+            category="advanced",
         ),
     )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -12,7 +13,7 @@ from uuid import uuid4
 from aiohttp import web
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -20,10 +21,11 @@ from .constants import (
     AI_RADIO_WEB_FILES,
     CONF_ELEVENLABS_API_KEY,
     CONF_OPENAI_API_KEY,
+    CONF_UI_AUTO_REFRESH_SECONDS,
     DEFAULT_MAX_CONCURRENT_RUNS,
     SUPPORTED_FEATURES,
 )
-from .models import SessionState, utc_now_iso
+from .models import SessionState, coerce_int, utc_now_iso
 from .runtime import AIRadioRuntimeMixin
 from .storage import AIRadioStorageMixin
 
@@ -44,6 +46,19 @@ async def setup(
 
 class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
     """Implementation of the AI Radio plugin provider."""
+
+    def _set_log_level_from_config(self, config: ProviderConfig) -> None:
+        """Set log level and keep a stable logger namespace for this plugin."""
+        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
+        self.logger = mass_logger.getChild(self.domain)
+        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        if log_level == "GLOBAL":
+            self.logger.setLevel(mass_logger.level)
+        else:
+            self.logger.setLevel(log_level)
+        if logging.getLogger().level > self.logger.level:
+            logging.getLogger().setLevel(self.logger.level)
+        self.logger.debug("Log level configured to %s", log_level)
 
     def __init__(
         self,
@@ -100,6 +115,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             ("ai_radio/start", self.start_run),
             ("ai_radio/stop", self.stop_run),
             ("ai_radio/status", self.get_status),
+            ("ai_radio/ui_settings", self.get_ui_settings),
         )
         for command, handler in api_handlers:
             self._unregister_handles.append(
@@ -254,6 +270,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         source_playlist_id_override: str | None = None,
         source_playlist_provider_override: str | None = None,
         player_id_override: str | None = None,
+        dynamic_source_playtime_cap_override: float | None = None,
         dynamic_batch_size_override: int | None = None,
     ) -> dict[str, Any]:
         """Start a new AI Radio run."""
@@ -284,8 +301,24 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         for key, value in overrides.items():
             if value:
                 station[key] = value
+        if dynamic_source_playtime_cap_override is not None:
+            if float(dynamic_source_playtime_cap_override) < 0:
+                raise InvalidDataError("dynamic_source_playtime_cap_override must be >= 0")
+            if selected_mode == "playlist":
+                station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
         if dynamic_batch_size_override:
             station["dynamic_batch_size"] = max(1, int(dynamic_batch_size_override))
+        if selected_mode == "dynamic":
+            player_id = str(station.get("default_player_id") or "").strip()
+            if not player_id:
+                raise InvalidDataError("Dynamic mode requires a target player_id")
+            player = self.mass.players.get_player(player_id)
+            if player is None:
+                raise InvalidDataError(f"Unknown target player: {player_id}")
+            if player.available is False:
+                raise InvalidDataError(f"Target player is unavailable: {player_id}")
+            if player.enabled is False:
+                raise InvalidDataError(f"Target player is disabled: {player_id}")
 
         session_id = uuid4().hex
         session = SessionState(
@@ -334,6 +367,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             return {"sessions": [self._sessions[session_id].as_dict()]}
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
+
+    async def get_ui_settings(self) -> dict[str, int]:
+        """Return UI behavior settings for the plugin web page."""
+        value = self.config.get_value(CONF_UI_AUTO_REFRESH_SECONDS)
+        interval_seconds = max(1, coerce_int(value, 2))
+        return {"auto_refresh_seconds": interval_seconds}
 
     def _resolve_session_for_stop(
         self,

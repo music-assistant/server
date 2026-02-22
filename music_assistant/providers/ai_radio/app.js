@@ -2,12 +2,39 @@
 
 const TOKEN_STORAGE_KEY = 'ai_radio.plugin_token';
 const TOUR_SEEN_STORAGE_KEY = 'ai_radio.web_tour_seen_v2';
+const DEFAULT_UI_AUTO_REFRESH_SECONDS = 2;
 const RECOMMENDED_SECTION_IDS = [
   'Song_Introduction_Start',
   'Song_Transition',
   'Song_Introduction_End',
   'Weather_Short',
 ];
+const BUTTON_ICON_MAP = {
+  auth_use_token: 'key',
+  auth_clear: 'x',
+  login_submit: 'log-in',
+  control_create_station: 'plus',
+  control_refresh_status: 'refresh-cw',
+  station_new: 'plus-circle',
+  station_new_template: 'file-plus',
+  station_delete: 'trash-2',
+  station_validate: 'check-circle',
+  station_save: 'save',
+  station_export: 'download',
+  section_new: 'plus-circle',
+  section_delete: 'trash-2',
+  section_save: 'save',
+  section_export: 'download',
+  add_order_rule: 'plus',
+  wizard_select_recommended_sections: 'sparkles',
+  wizard_custom_section_add: 'plus',
+  wizard_back: 'arrow-left',
+  wizard_next: 'arrow-right',
+  wizard_save: 'save',
+  tour_back: 'arrow-left',
+  tour_next: 'arrow-right',
+  tour_done: 'check',
+};
 
 const TOUR_STEPS = [
   {
@@ -59,6 +86,21 @@ const TOUR_STEPS = [
   },
 ];
 
+const SESSION_PHASE_LABELS = {
+  fetch_source_tracks: 'Loading Source Tracks',
+  planning_sections: 'Planning Sections',
+  generating_llm: 'Generating LLM',
+  generating_tts: 'Generating TTS',
+  publishing_playlist: 'Publishing Playlist',
+  initializing_queue: 'Initializing Queue',
+  queueing_batch: 'Queueing Batch',
+  waiting_for_playback: 'Waiting For Playback',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+  stopped: 'Stopped',
+};
+
 const state = {
   token: '',
   stations: [],
@@ -66,6 +108,9 @@ const state = {
   players: [],
   playlists: [],
   sessions: [],
+  uiAutoRefreshSeconds: DEFAULT_UI_AUTO_REFRESH_SECONDS,
+  autoRefreshTimer: null,
+  lastAutoRefreshError: '',
   loadedStationId: '',
   loadedSectionId: '',
   stationTemplate: null,
@@ -80,6 +125,8 @@ const el = {};
 
 window.addEventListener('DOMContentLoaded', () => {
   cacheElements();
+  enhanceButtonIcons();
+  bindHelpTips();
   bindEvents();
   bootstrapAuth();
 });
@@ -102,11 +149,13 @@ function cacheElements() {
     'login_submit',
     'control_view',
     'control_station_id',
-    'control_mode',
     'control_source_playlist',
     'control_player_id',
+    'control_player_hint',
+    'control_dynamic_source_playtime_cap',
     'control_dynamic_batch_size',
-    'control_start',
+    'control_start_playlist',
+    'control_start_dynamic',
     'control_refresh_status',
     'control_create_station',
     'sessions_body',
@@ -130,6 +179,7 @@ function cacheElements() {
     'station_default_player_id',
     'station_max_duration_minutes',
     'station_dynamic_batch_size',
+    'station_dynamic_prefetch_remaining_tracks',
     'station_dynamic_poll_seconds',
     'station_clear_queue_on_start',
     'station_section_ids',
@@ -210,6 +260,34 @@ function cacheElements() {
   });
 }
 
+function refreshLucideIcons() {
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    window.lucide.createIcons();
+  }
+}
+
+function enhanceButtonIcons() {
+  Object.entries(BUTTON_ICON_MAP).forEach(([buttonId, iconName]) => {
+    const buttonEl = document.getElementById(buttonId);
+    if (!buttonEl || buttonEl.querySelector('.btn-label')) return;
+    const label = buttonEl.textContent ? buttonEl.textContent.trim() : '';
+    buttonEl.innerHTML = `<i data-lucide="${escapeAttr(iconName)}" class="lucide" aria-hidden="true"></i><span class="btn-label">${escapeHtml(label)}</span>`;
+  });
+  refreshLucideIcons();
+}
+
+function bindHelpTips() {
+  document.querySelectorAll('.help-tip').forEach((tipEl) => {
+    tipEl.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const helpText = String(tipEl.getAttribute('title') || '').trim();
+      if (!helpText) return;
+      setMessage(helpText, 'msg-info');
+    });
+  });
+}
+
 function bindEvents() {
   el.nav_control.addEventListener('click', () => showView('control'));
   el.nav_stations.addEventListener('click', () => showView('stations'));
@@ -223,9 +301,12 @@ function bindEvents() {
   el.auth_clear.addEventListener('click', clearToken);
   el.login_submit.addEventListener('click', loginWithCredentials);
 
-  el.control_start.addEventListener('click', startRun);
+  el.control_start_playlist.addEventListener('click', startPlaylistRun);
+  el.control_start_dynamic.addEventListener('click', startDynamicRun);
   el.control_refresh_status.addEventListener('click', refreshSessions);
   el.control_create_station.addEventListener('click', () => openStationWizard());
+  el.control_station_id.addEventListener('change', renderPlayerSelectors);
+  el.control_player_id.addEventListener('change', updateRunActionState);
   el.sessions_body.addEventListener('click', onSessionTableClick);
 
   el.station_selector.addEventListener('change', async () => {
@@ -329,7 +410,13 @@ function bindEvents() {
 
 function setAuthPanelVisible(visible) {
   el.auth_panel.classList.toggle('hidden', !visible);
-  el.auth_toggle.textContent = visible ? 'Hide Auth' : 'Auth';
+  const labelEl = el.auth_toggle.querySelector('.btn-label');
+  const label = visible ? 'Hide Auth' : 'Auth';
+  if (labelEl) {
+    labelEl.textContent = label;
+  } else {
+    el.auth_toggle.textContent = label;
+  }
 }
 
 function toggleAuthPanel() {
@@ -364,7 +451,7 @@ function applyInitialViewFromUrl() {
 
 function setMessage(text, level = '') {
   el.messages.textContent = text || '';
-  el.messages.classList.remove('msg-error', 'msg-ok', 'msg-warn');
+  el.messages.classList.remove('msg-error', 'msg-ok', 'msg-warn', 'msg-info');
   if (level) {
     el.messages.classList.add(level);
   }
@@ -401,6 +488,7 @@ function guessTokenCandidates() {
 }
 
 async function bootstrapAuth() {
+  stopAutoRefresh();
   const candidates = guessTokenCandidates();
   for (const token of candidates) {
     const success = await useToken(token, false);
@@ -434,12 +522,14 @@ async function useToken(token, notify = true) {
     if (notify) {
       setMessage(`Token rejected: ${errorMessage(err)}`, 'msg-error');
     }
+    stopAutoRefresh();
     state.token = '';
     return false;
   }
 }
 
 function clearToken() {
+  stopAutoRefresh();
   state.token = '';
   el.auth_token.value = '';
   localStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -517,12 +607,13 @@ function errorMessage(err) {
 
 async function loadAllData() {
   try {
-    const [stations, sections, players, playlists, status] = await Promise.all([
+    const [stations, sections, players, playlists, status, uiSettings] = await Promise.all([
       rpc('ai_radio/stations/list'),
       rpc('ai_radio/sections/list'),
       rpc('players/all'),
       rpc('music/playlists/library_items', { limit: 1000, offset: 0, order_by: 'sort_name' }),
       rpc('ai_radio/status'),
+      rpc('ai_radio/ui_settings'),
     ]);
 
     state.stations = Array.isArray(stations) ? stations : [];
@@ -530,6 +621,7 @@ async function loadAllData() {
     state.players = Array.isArray(players) ? players : [];
     state.playlists = Array.isArray(playlists) ? playlists : [];
     state.sessions = Array.isArray(status.sessions) ? status.sessions : [];
+    state.uiAutoRefreshSeconds = normalizeAutoRefreshSeconds(uiSettings?.auto_refresh_seconds);
 
     renderStationSelectors();
     renderSectionSelectors();
@@ -545,11 +637,38 @@ async function loadAllData() {
     if (!state.loadedSectionId && state.sections.length) {
       loadSectionIntoEditor(state.sections[0].id);
     }
+    updateRunActionState();
+    startAutoRefresh();
 
     setMessage('Data refreshed.', 'msg-ok');
   } catch (err) {
+    stopAutoRefresh();
     setMessage(`Failed to load data: ${errorMessage(err)}`, 'msg-error');
   }
+}
+
+function normalizeAutoRefreshSeconds(value) {
+  const parsed = parseInt(String(value ?? DEFAULT_UI_AUTO_REFRESH_SECONDS), 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
+    return DEFAULT_UI_AUTO_REFRESH_SECONDS;
+  }
+  return Math.max(1, Math.min(30, parsed));
+}
+
+function stopAutoRefresh() {
+  if (state.autoRefreshTimer !== null) {
+    window.clearInterval(state.autoRefreshTimer);
+    state.autoRefreshTimer = null;
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  const intervalSeconds = normalizeAutoRefreshSeconds(state.uiAutoRefreshSeconds);
+  state.uiAutoRefreshSeconds = intervalSeconds;
+  state.autoRefreshTimer = window.setInterval(() => {
+    void refreshRuntimeState(false);
+  }, intervalSeconds * 1000);
 }
 
 function renderStationSelectors() {
@@ -572,6 +691,7 @@ function renderStationSelectors() {
     el.control_station_id.value = state.loadedStationId;
     el.station_selector.value = state.loadedStationId;
   }
+  updateRunActionState();
 }
 
 function renderSectionSelectors() {
@@ -589,15 +709,54 @@ function renderSectionSelectors() {
 }
 
 function renderPlayerSelectors() {
-  const options = state.players
+  const previousOverride = String(el.control_player_id.value || '').trim();
+  const selectedStationId = String(el.control_station_id.value || '').trim();
+  const station = state.stations.find((item) => item.id === selectedStationId) || null;
+  const stationDefaultPlayerId = String(station?.default_player_id || '').trim();
+  const stationDefaultPlayer = stationDefaultPlayerId ? findPlayer(stationDefaultPlayerId) : null;
+  const stationDefaultPlayerLabel = stationDefaultPlayer
+    ? (stationDefaultPlayer.display_name || stationDefaultPlayer.name || stationDefaultPlayerId)
+    : stationDefaultPlayerId;
+  let stationDefaultOption = null;
+  if (stationDefaultPlayerId) {
+    if (stationDefaultPlayer && isPlayerAvailable(stationDefaultPlayer)) {
+      stationDefaultOption = {
+        value: '',
+        label: `Station Default - ${stationDefaultPlayerLabel}`,
+        disabled: false,
+      };
+    } else {
+      stationDefaultOption = {
+        value: '',
+        label: `Station Default - ${stationDefaultPlayerLabel} (Not available)`,
+        disabled: true,
+      };
+    }
+  }
+  const runOptions = state.players
+    .map((player) => ({
+      value: player.player_id,
+      label: `${player.display_name || player.name || player.player_id} (${player.player_id})${isPlayerAvailable(player) ? '' : ' (Not available)'}`,
+      disabled: !isPlayerAvailable(player),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const stationOptions = state.players
     .map((player) => ({
       value: player.player_id,
       label: `${player.display_name || player.name || player.player_id} (${player.player_id})`,
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
-  fillSelect(el.control_player_id, [{ value: '', label: 'Use station/default' }, ...options]);
-  fillSelect(el.station_default_player_id, [{ value: '', label: '-- None --' }, ...options]);
+  const controlPlayerOptions = stationDefaultOption ? [stationDefaultOption, ...runOptions] : runOptions;
+  fillSelect(el.control_player_id, controlPlayerOptions);
+  fillSelect(el.station_default_player_id, [{ value: '', label: '-- None --' }, ...stationOptions]);
+  if (previousOverride && runOptions.some((item) => item.value === previousOverride && !item.disabled)) {
+    el.control_player_id.value = previousOverride;
+  } else {
+    const defaultPlayerId = chooseLastPlayedAvailablePlayerId();
+    el.control_player_id.value = defaultPlayerId || '';
+  }
+  updateRunActionState();
 }
 
 function renderPlaylistSelectors() {
@@ -710,9 +869,10 @@ function fillSelect(selectEl, options) {
     const opt = document.createElement('option');
     opt.value = option.value;
     opt.textContent = option.label;
+    opt.disabled = Boolean(option.disabled);
     selectEl.appendChild(opt);
   });
-  if (options.some((option) => option.value === currentValue)) {
+  if (options.some((option) => option.value === currentValue && !option.disabled)) {
     selectEl.value = currentValue;
   }
 }
@@ -744,14 +904,123 @@ function splitComboValue(value) {
   return [provider || 'library', rest.join(':::')];
 }
 
+function isPlayerAvailable(player) {
+  if (!player || typeof player !== 'object') return false;
+  if (player.available === false) return false;
+  if (player.enabled === false) return false;
+  return true;
+}
+
+function findPlayer(playerId) {
+  if (!playerId) return null;
+  return state.players.find((player) => player.player_id === playerId) || null;
+}
+
+function playbackStateRank(player) {
+  const stateValue = String(player?.playback_state || '').trim().toLowerCase();
+  if (stateValue === 'playing') return 3;
+  if (stateValue === 'paused') return 2;
+  if (stateValue === 'buffering') return 1;
+  return 0;
+}
+
+function chooseLastPlayedAvailablePlayerId() {
+  const availablePlayers = state.players.filter((player) => isPlayerAvailable(player));
+  if (!availablePlayers.length) {
+    return '';
+  }
+  const sorted = [...availablePlayers].sort((a, b) => {
+    const rankDiff = playbackStateRank(b) - playbackStateRank(a);
+    if (rankDiff !== 0) return rankDiff;
+    const updatedDiff = Number(b.elapsed_time_last_updated || 0) - Number(a.elapsed_time_last_updated || 0);
+    if (updatedDiff !== 0) return updatedDiff;
+    return Number(b.elapsed_time || 0) - Number(a.elapsed_time || 0);
+  });
+  return String(sorted[0]?.player_id || '');
+}
+
+function updateRunActionState() {
+  const selectedStationId = String(el.control_station_id.value || '').trim();
+  const station = state.stations.find((item) => item.id === selectedStationId) || null;
+  const overridePlayerId = String(el.control_player_id.value || '').trim();
+  const stationDefaultPlayerId = String(station?.default_player_id || '').trim();
+  const effectivePlayerId = overridePlayerId || stationDefaultPlayerId;
+  const effectivePlayer = findPlayer(effectivePlayerId);
+  const availablePlayers = state.players.filter((player) => isPlayerAvailable(player));
+
+  let hint = '';
+  let hintLevel = '';
+  let disablePlaylistStart = false;
+  let disableDynamicStart = false;
+  if (!selectedStationId) {
+    hint = 'Select a station first.';
+    disablePlaylistStart = true;
+    disableDynamicStart = true;
+  } else if (!state.players.length || !availablePlayers.length) {
+    hint = 'No available playback device. Start playback once in the main MA UI, then click Refresh.';
+    hintLevel = 'warn';
+    disableDynamicStart = true;
+  } else if (overridePlayerId) {
+    if (!effectivePlayer) {
+      hint = `Selected override player '${overridePlayerId}' was not found.`;
+      disableDynamicStart = true;
+    } else if (!isPlayerAvailable(effectivePlayer)) {
+      hint = `Override player '${overridePlayerId}' is currently unavailable.`;
+      disableDynamicStart = true;
+    } else {
+      hint = `Override player '${overridePlayerId}' is available.`;
+    }
+  } else if (stationDefaultPlayerId) {
+    if (!effectivePlayer) {
+      hint = `Station default player '${stationDefaultPlayerId}' was not found.`;
+      disableDynamicStart = true;
+    } else if (!isPlayerAvailable(effectivePlayer)) {
+      hint = `Station default player '${stationDefaultPlayerId}' is currently unavailable.`;
+      disableDynamicStart = true;
+    } else {
+      hint = `Using station default player '${stationDefaultPlayerId}'.`;
+    }
+  } else {
+    hint = 'No player selected. A dynamic run requires a player.';
+    disableDynamicStart = true;
+  }
+
+  if (el.control_player_hint) {
+    el.control_player_hint.textContent = hint;
+    el.control_player_hint.classList.toggle('field-help-warn', hintLevel === 'warn');
+  }
+  el.control_start_playlist.disabled = disablePlaylistStart;
+  el.control_start_dynamic.disabled = disableDynamicStart;
+}
+
 async function refreshSessions() {
+  await refreshRuntimeState(true);
+}
+
+async function refreshRuntimeState(showMessage = false) {
   try {
-    const status = await rpc('ai_radio/status');
+    const [status, players] = await Promise.all([rpc('ai_radio/status'), rpc('players/all')]);
     state.sessions = Array.isArray(status.sessions) ? status.sessions : [];
+    state.players = Array.isArray(players) ? players : [];
     renderSessions();
-    setMessage('Session status refreshed.', 'msg-ok');
+    if (!el.control_view.classList.contains('hidden')) {
+      renderPlayerSelectors();
+      updateRunActionState();
+    }
+    state.lastAutoRefreshError = '';
+    if (showMessage) {
+      setMessage('Session status refreshed.', 'msg-ok');
+    }
   } catch (err) {
-    setMessage(`Failed to refresh status: ${errorMessage(err)}`, 'msg-error');
+    const msg = `Failed to refresh status: ${errorMessage(err)}`;
+    if (showMessage) {
+      setMessage(msg, 'msg-error');
+      return;
+    }
+    if (state.lastAutoRefreshError !== msg) {
+      state.lastAutoRefreshError = msg;
+      setMessage(`Auto refresh warning: ${errorMessage(err)}`, 'msg-warn');
+    }
   }
 }
 
@@ -766,21 +1035,120 @@ function renderSessions() {
   }
   state.sessions.forEach((session) => {
     const row = document.createElement('tr');
-    const info = session.error || JSON.stringify(session.result || session.progress || {});
+    const info = renderSessionInfo(session);
+    const status = String(session.status || '');
+    const statusClass = status.toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'unknown';
+    const stationLabel = byStationId[session.station_id] || session.station_id || '';
     const stopButton = session.status === 'running'
-      ? `<button type="button" data-action="stop-session" data-session-id="${session.session_id}">Stop</button>`
+      ? `<button type="button" data-action="stop-session" data-session-id="${escapeAttr(session.session_id)}">Stop</button>`
       : '';
     row.innerHTML = `
-      <td>${session.session_id}</td>
-      <td>${byStationId[session.station_id] || session.station_id}</td>
-      <td>${session.mode || ''}</td>
-      <td>${session.status || ''}</td>
-      <td>${session.created_at || ''}</td>
-      <td><code>${escapeHtml(info)}</code></td>
+      <td>${escapeHtml(session.session_id || '')}</td>
+      <td>${escapeHtml(stationLabel)}</td>
+      <td>${escapeHtml(session.mode || '')}</td>
+      <td><span class="session-status session-status-${escapeAttr(statusClass)}">${escapeHtml(status)}</span></td>
+      <td>${escapeHtml(session.created_at || '')}</td>
+      <td class="session-info-cell">${info}</td>
       <td>${stopButton}</td>
     `;
     el.sessions_body.appendChild(row);
   });
+}
+
+function renderSessionInfo(session) {
+  const progress = (session && typeof session.progress === 'object' && session.progress) || {};
+  const result = (session && typeof session.result === 'object' && session.result) || {};
+  const status = String(session.status || '').toLowerCase();
+  const payload = status === 'completed'
+    ? (Object.keys(result).length ? result : progress)
+    : progress;
+  const phaseKey = String(payload.phase || payload.step || status || '').trim();
+
+  const chips = [];
+  if (phaseKey) {
+    chips.push(`<span class="session-chip">${escapeHtml(getSessionPhaseLabel(phaseKey))}</span>`);
+  }
+  if (session.error) {
+    chips.push('<span class="session-chip session-chip-error">Error</span>');
+  }
+
+  const lines = [];
+  if (payload.queued_tracks !== undefined && payload.total_tracks !== undefined) {
+    lines.push(`Tracks queued: ${payload.queued_tracks}/${payload.total_tracks}`);
+  } else if (payload.source_tracks !== undefined) {
+    lines.push(`Source tracks: ${payload.source_tracks}`);
+  }
+  if (payload.sections_planned !== undefined) {
+    lines.push(`Sections planned: ${payload.sections_planned}`);
+  }
+  if (payload.sections !== undefined) {
+    lines.push(`Sections generated: ${payload.sections}`);
+  }
+  if (payload.generated_sections !== undefined) {
+    lines.push(`Audio sections: ${payload.generated_sections}`);
+  }
+  if (payload.entries !== undefined) {
+    lines.push(`Playlist entries: ${payload.entries}`);
+  }
+  if (payload.entries_added !== undefined) {
+    lines.push(`Playlist entries added: ${payload.entries_added}`);
+  }
+  if (payload.batch_index !== undefined) {
+    lines.push(`Batch: ${payload.batch_index}`);
+  }
+  if (payload.batch_size !== undefined) {
+    lines.push(`Batch size: ${payload.batch_size}`);
+  }
+  if (payload.prefetch_remaining_tracks !== undefined) {
+    lines.push(`Prefetch trigger: ${payload.prefetch_remaining_tracks} remaining track(s)`);
+  }
+  if (payload.batch_entries !== undefined) {
+    lines.push(`Batch queue entries: ${payload.batch_entries}`);
+  }
+  if (payload.queue_entries !== undefined) {
+    lines.push(`Queue entries: ${payload.queue_entries}`);
+  }
+  if (payload.wait_trigger_index !== undefined) {
+    lines.push(`Wait trigger index: ${payload.wait_trigger_index}`);
+  }
+  if (payload.queue_id) {
+    lines.push(`Queue: ${payload.queue_id}`);
+  }
+  if (payload.source_playlist_name) {
+    lines.push(`Source playlist: ${payload.source_playlist_name}`);
+  }
+  if (payload.target_playlist_name) {
+    lines.push(`Target playlist: ${payload.target_playlist_name}`);
+  }
+
+  if (session.error) {
+    lines.unshift(session.error);
+  }
+  if (!lines.length) {
+    lines.push('No details yet.');
+  }
+
+  const rawData = session.error
+    ? { error: session.error, progress }
+    : (status === 'completed' ? result : payload);
+  const rawJson = escapeHtml(JSON.stringify(rawData || {}, null, 2));
+
+  return `
+    <div class="session-info">
+      ${chips.length ? `<div class="session-chips">${chips.join('')}</div>` : ''}
+      <div class="session-lines">${lines.map((line) => `<div>${escapeHtml(String(line))}</div>`).join('')}</div>
+      <details class="session-raw">
+        <summary>Raw details</summary>
+        <pre>${rawJson}</pre>
+      </details>
+    </div>
+  `;
+}
+
+function getSessionPhaseLabel(phase) {
+  const key = String(phase || '').trim().toLowerCase();
+  if (!key) return '';
+  return SESSION_PHASE_LABELS[key] || key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 async function onSessionTableClick(event) {
@@ -797,16 +1165,36 @@ async function onSessionTableClick(event) {
   }
 }
 
-async function startRun() {
+function startPlaylistRun() {
+  return startRun('playlist');
+}
+
+function startDynamicRun() {
+  return startRun('dynamic');
+}
+
+async function startRun(mode) {
   const stationId = el.control_station_id.value;
   if (!stationId) {
     setMessage('Select a station first.', 'msg-error');
     return;
   }
+  updateRunActionState();
+  const normalizedMode = String(mode || 'playlist').trim().toLowerCase();
+  const startButton = normalizedMode === 'dynamic' ? el.control_start_dynamic : el.control_start_playlist;
+  if (startButton.disabled) {
+    setMessage(
+      normalizedMode === 'dynamic'
+        ? 'Cannot start run: select an available player for dynamic mode.'
+        : 'Cannot start run: select a station first.',
+      'msg-error'
+    );
+    return;
+  }
 
   const args = {
     station_id: stationId,
-    mode: el.control_mode.value,
+    mode: normalizedMode,
   };
 
   const playlistOverride = el.control_source_playlist.value;
@@ -816,14 +1204,22 @@ async function startRun() {
     args.source_playlist_id_override = itemId;
   }
 
-  const playerOverride = el.control_player_id.value;
-  if (playerOverride) {
-    args.player_id_override = playerOverride;
+  if (normalizedMode === 'playlist') {
+    const sourcePlaytimeCap = Number.parseFloat(el.control_dynamic_source_playtime_cap.value || '');
+    if (!Number.isNaN(sourcePlaytimeCap) && sourcePlaytimeCap >= 0) {
+      args.dynamic_source_playtime_cap_override = sourcePlaytimeCap;
+    }
   }
 
-  const batchSize = parseInt(el.control_dynamic_batch_size.value || '', 10);
-  if (!Number.isNaN(batchSize) && batchSize > 0) {
-    args.dynamic_batch_size_override = batchSize;
+  if (normalizedMode === 'dynamic') {
+    const playerOverride = el.control_player_id.value;
+    if (playerOverride) {
+      args.player_id_override = playerOverride;
+    }
+    const batchSize = parseInt(el.control_dynamic_batch_size.value || '', 10);
+    if (!Number.isNaN(batchSize) && batchSize > 0) {
+      args.dynamic_batch_size_override = batchSize;
+    }
   }
 
   try {
@@ -870,6 +1266,9 @@ function populateStationEditor(station) {
   el.station_default_player_id.value = station.default_player_id || '';
   el.station_max_duration_minutes.value = String(station.max_duration_minutes || 0);
   el.station_dynamic_batch_size.value = String(station.dynamic_batch_size || 1);
+  el.station_dynamic_prefetch_remaining_tracks.value = String(
+    station.dynamic_prefetch_remaining_tracks || 2
+  );
   el.station_dynamic_poll_seconds.value = String(station.dynamic_poll_seconds || 5);
   el.station_clear_queue_on_start.checked = station.clear_queue_on_start !== false;
 
@@ -928,6 +1327,7 @@ function populateStationEditor(station) {
   syncSourceModeUi();
   syncEditorTtsUi();
   refreshFlowSectionOptions();
+  updateRunActionState();
 }
 
 function collectStationFromEditor() {
@@ -948,6 +1348,8 @@ function collectStationFromEditor() {
     default_player_id: (el.station_default_player_id.value || '').trim(),
     max_duration_minutes: parseFloat(el.station_max_duration_minutes.value || '0') || 0,
     dynamic_batch_size: parseInt(el.station_dynamic_batch_size.value || '1', 10) || 1,
+    dynamic_prefetch_remaining_tracks:
+      parseInt(el.station_dynamic_prefetch_remaining_tracks.value || '2', 10) || 2,
     dynamic_poll_seconds: parseInt(el.station_dynamic_poll_seconds.value || '5', 10) || 5,
     clear_queue_on_start: Boolean(el.station_clear_queue_on_start.checked),
     section_ids: getSelectedMultiValues(el.station_section_ids),

@@ -11,6 +11,7 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -67,13 +68,27 @@ if TYPE_CHECKING:
 
 
 class AIRadioRuntimeMixin:
-    """Mixin with all heavy runtime logic for AI Radio runs."""
+    """Mixin with all runtime logic for AI Radio runs."""
 
     if TYPE_CHECKING:
         mass: MusicAssistant
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
+
+    def _set_session_progress(
+        self,
+        session: SessionState,
+        phase: str,
+        **details: Any,
+    ) -> None:
+        """Set progress payload with a stable phase key."""
+        session.progress = {
+            "phase": phase,
+            # Keep legacy key for compatibility with older UI code.
+            "step": phase,
+            **details,
+        }
 
     async def _run_session(self, session_id: str, station: dict[str, Any]) -> None:
         """Run one session in the background."""
@@ -126,12 +141,17 @@ class AIRadioRuntimeMixin:
             station.get("name", "AI Radio"),
             station.get("id", ""),
         )
+        self._set_session_progress(session, "fetch_source_tracks")
         runtime_tokens = await self._prepare_runtime_tokens(station)
         tracks, playlist_name = await self._fetch_source_tracks(station)
         tracks = self._apply_track_duration_limit(tracks, station)
         if not tracks:
             raise AIRadioError("No source tracks available after applying station limits")
-        session.progress = {"step": "planning", "source_tracks": len(tracks)}
+        self._set_session_progress(
+            session,
+            "planning_sections",
+            source_tracks=len(tracks),
+        )
 
         planned_sections, _history = self._plan_sections(
             tracks=tracks,
@@ -142,12 +162,19 @@ class AIRadioRuntimeMixin:
             allowed_slot_when=None,
             runtime_tokens=runtime_tokens,
         )
+        self._set_session_progress(
+            session,
+            "generating_llm",
+            source_tracks=len(tracks),
+            sections_planned=len(planned_sections),
+        )
         generated_sections = await self._generate_sections(station, planned_sections)
-        session.progress = {
-            "step": "tts",
-            "source_tracks": len(tracks),
-            "sections": len(generated_sections),
-        }
+        self._set_session_progress(
+            session,
+            "generating_tts",
+            source_tracks=len(tracks),
+            sections=len(generated_sections),
+        )
         run_id = session.session_id[:8]
         batch_id = "playlist"
         audio_sections = await self._synthesize_sections(
@@ -160,7 +187,12 @@ class AIRadioRuntimeMixin:
         entries, track_count = self._compose_entries(tracks=tracks, sections=audio_sections)
         if not entries:
             raise AIRadioError("No playlist entries were generated")
-        session.progress = {"step": "publishing", "entries": len(entries), "tracks": track_count}
+        self._set_session_progress(
+            session,
+            "publishing_playlist",
+            entries=len(entries),
+            tracks=track_count,
+        )
 
         target_provider = str(station.get("target_playlist_provider") or "builtin")
         if audio_sections and target_provider != "builtin":
@@ -212,6 +244,7 @@ class AIRadioRuntimeMixin:
             station.get("name", "AI Radio"),
             station.get("id", ""),
         )
+        self._set_session_progress(session, "fetch_source_tracks")
         runtime_tokens = await self._prepare_runtime_tokens(station)
         player_id = str(station.get("default_player_id") or "").strip()
         if not player_id:
@@ -226,8 +259,25 @@ class AIRadioRuntimeMixin:
 
         batch_size = max(1, int(station.get("dynamic_batch_size", 1) or 1))
         poll_seconds = max(1, int(station.get("dynamic_poll_seconds", 5) or 5))
+        prefetch_remaining_tracks = max(
+            1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)
+        )
+        self.logger.debug(
+            "Dynamic runtime settings: batch_size=%d poll_seconds=%d prefetch_remaining_tracks=%d",
+            batch_size,
+            poll_seconds,
+            prefetch_remaining_tracks,
+        )
         clear_queue = bool(station.get("clear_queue_on_start", True))
         queue_id = player_id
+        self._set_session_progress(
+            session,
+            "initializing_queue",
+            total_tracks=len(tracks),
+            batch_size=batch_size,
+            prefetch_remaining_tracks=prefetch_remaining_tracks,
+            queue_id=queue_id,
+        )
         if clear_queue:
             self.mass.player_queues.clear(queue_id)
 
@@ -242,9 +292,16 @@ class AIRadioRuntimeMixin:
         cursor = 0
         batch_index = 0
         total_entries_queued = 0
-        last_track_global_index = -1
+        wait_trigger_global_index = -1
         history_state: dict[str, list[tuple[int, float]]] = {}
-        session.progress = {"step": "running", "queued_tracks": 0, "total_tracks": len(tracks)}
+        self._set_session_progress(
+            session,
+            "running",
+            queued_tracks=0,
+            total_tracks=len(tracks),
+            batch_index=0,
+            queue_entries=0,
+        )
 
         while cursor < len(tracks):
             batch_tracks = tracks[cursor : cursor + batch_size]
@@ -262,6 +319,13 @@ class AIRadioRuntimeMixin:
             else:
                 allowed_slot_when = ["between_songs"]
 
+            self._set_session_progress(
+                session,
+                "planning_sections",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index + 1,
+            )
             planned_sections, history_state = self._plan_sections(
                 tracks=generation_tracks,
                 station=station,
@@ -278,9 +342,25 @@ class AIRadioRuntimeMixin:
                 and not (item.when == "start_of_playlist" and not is_first)
                 and not (item.when == "end_of_playlist" and not is_last)
             ]
+            self._set_session_progress(
+                session,
+                "generating_llm",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index + 1,
+                sections_planned=len(filtered_sections),
+            )
             generated_sections = await self._generate_sections(station, filtered_sections)
             run_id = session.session_id[:8]
             batch_id = f"dynamic_{batch_index:03d}"
+            self._set_session_progress(
+                session,
+                "generating_tts",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index + 1,
+                sections=len(generated_sections),
+            )
             audio_sections = await self._synthesize_sections(
                 station=station,
                 generated_sections=generated_sections,
@@ -291,6 +371,15 @@ class AIRadioRuntimeMixin:
             if not entries:
                 raise AIRadioError("Dynamic batch produced no queue entries")
 
+            self._set_session_progress(
+                session,
+                "queueing_batch",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index + 1,
+                batch_entries=len(entries),
+                queue_entries=total_entries_queued,
+            )
             option = QueueOption.REPLACE if is_first else QueueOption.ADD
             await self.mass.player_queues.play_media(
                 queue_id=queue_id,
@@ -301,14 +390,17 @@ class AIRadioRuntimeMixin:
                 with suppress(Exception):
                     await self.mass.player_queues.play(queue_id)
 
-            last_track_local_index = max(
-                (index for index, uri in enumerate(entries) if "://track/" in uri),
-                default=-1,
-            )
+            track_entry_local_indices = [
+                index for index, uri in enumerate(entries) if "://track/" in uri
+            ]
             batch_start_global = total_entries_queued
             total_entries_queued += len(entries)
-            if last_track_local_index >= 0:
-                last_track_global_index = batch_start_global + last_track_local_index
+            if track_entry_local_indices:
+                trigger_position = max(
+                    0, len(track_entry_local_indices) - prefetch_remaining_tracks
+                )
+                trigger_track_local_index = track_entry_local_indices[trigger_position]
+                wait_trigger_global_index = batch_start_global + trigger_track_local_index
 
             cursor += len(batch_tracks)
             batch_index += 1
@@ -318,16 +410,27 @@ class AIRadioRuntimeMixin:
                 cursor,
                 total_entries_queued,
             )
-            session.progress = {
-                "step": "running",
-                "queued_tracks": cursor,
-                "total_tracks": len(tracks),
-                "batch_index": batch_index,
-                "queue_entries": total_entries_queued,
-            }
+            self._set_session_progress(
+                session,
+                "running",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index,
+                queue_entries=total_entries_queued,
+            )
 
             if cursor >= len(tracks):
                 break
+            self._set_session_progress(
+                session,
+                "waiting_for_playback",
+                queued_tracks=cursor,
+                total_tracks=len(tracks),
+                batch_index=batch_index,
+                queue_entries=total_entries_queued,
+                wait_trigger_index=wait_trigger_global_index,
+                prefetch_remaining_tracks=prefetch_remaining_tracks,
+            )
             while True:
                 queue = self.mass.player_queues.get_active_queue(player_id)
                 if not queue:
@@ -335,7 +438,7 @@ class AIRadioRuntimeMixin:
                 if (
                     queue
                     and queue.current_index is not None
-                    and queue.current_index >= last_track_global_index
+                    and queue.current_index >= wait_trigger_global_index
                 ):
                     break
                 await asyncio.sleep(poll_seconds)
@@ -423,6 +526,12 @@ class AIRadioRuntimeMixin:
             updated["index"] = new_index
             updated["source_index"] = old_index
             result.append(updated)
+        self.logger.info(
+            "Applied source playtime cap: %.1f min requested, %d -> %d tracks selected",
+            max_duration,
+            len(tracks),
+            len(result),
+        )
         return result
 
     def _plan_sections(  # noqa: PLR0915
@@ -691,14 +800,43 @@ class AIRadioRuntimeMixin:
     ) -> list[GeneratedSection]:
         """Generate section texts from planning entries."""
         generated: list[GeneratedSection] = []
-        for item in sorted(planned_sections, key=lambda section: section.order):
-            text = await self._generate_text(
-                station=station,
-                prompt=item.prompt,
-                web_mode=item.web_search_mode,
+        sorted_sections = sorted(planned_sections, key=lambda section: section.order)
+        self.logger.info(
+            "LLM generation started: station=%s sections=%d",
+            station.get("id", "unknown"),
+            len(sorted_sections),
+        )
+        for index, item in enumerate(sorted_sections, start=1):
+            started = perf_counter()
+            self.logger.info(
+                "LLM section %d/%d: section=%s when=%s web_mode=%s",
+                index,
+                len(sorted_sections),
+                item.section_id,
+                item.when,
+                item.web_search_mode,
             )
+            try:
+                text = await self._generate_text(
+                    station=station,
+                    prompt=item.prompt,
+                    web_mode=item.web_search_mode,
+                )
+            except Exception:
+                self.logger.exception(
+                    "LLM generation failed: section=%s when=%s",
+                    item.section_id,
+                    item.when,
+                )
+                raise
             if item.max_chars > 0:
                 text = soft_limit_text(text, max_chars=item.max_chars)
+            self.logger.debug(
+                "LLM section done: section=%s chars=%d elapsed=%.2fs",
+                item.section_id,
+                len(text),
+                perf_counter() - started,
+            )
             generated.append(
                 GeneratedSection(
                     order=item.order,
@@ -709,6 +847,7 @@ class AIRadioRuntimeMixin:
                     text=text,
                 )
             )
+        self.logger.info("LLM generation finished: generated_sections=%d", len(generated))
         return generated
 
     async def _synthesize_sections(
@@ -722,6 +861,14 @@ class AIRadioRuntimeMixin:
         output: list[AudioSection] = []
         if not generated_sections:
             return output
+        provider = str(station.get("general", {}).get("tts_provider", DEFAULT_TTS_PROVIDER))
+        self.logger.info(
+            "TTS synthesis started: provider=%s sections=%d run=%s/%s",
+            provider,
+            len(generated_sections),
+            run_id,
+            batch_id,
+        )
         base_dir = await self._get_section_store_base_path(station)
         station_id = str(station.get("id", "station"))
         run_dir = base_dir / slugify(station_id) / run_id / batch_id
@@ -729,11 +876,35 @@ class AIRadioRuntimeMixin:
         for index, section in enumerate(generated_sections):
             file_stem = f"{index:03d}_{slugify(section.section_id)}"
             file_path = run_dir / f"{file_stem}.mp3"
-            audio_bytes = await self._render_tts(station=station, text=section.text)
+            started = perf_counter()
+            self.logger.info(
+                "TTS section %d/%d: section=%s chars=%d",
+                index + 1,
+                len(generated_sections),
+                section.section_id,
+                len(section.text),
+            )
+            try:
+                audio_bytes = await self._render_tts(station=station, text=section.text)
+            except Exception:
+                self.logger.exception(
+                    "TTS synthesis failed: section=%s run=%s/%s",
+                    section.section_id,
+                    run_id,
+                    batch_id,
+                )
+                raise
             async with aiofiles.open(file_path, "wb") as file_handle:
                 await file_handle.write(audio_bytes)
             title = f"{section.section_name} [{run_id}]"
             await asyncio.to_thread(write_id3_tags, str(file_path), title, "AI Radio")
+            self.logger.debug(
+                "TTS section done: section=%s bytes=%d elapsed=%.2fs file=%s",
+                section.section_id,
+                len(audio_bytes),
+                perf_counter() - started,
+                file_path,
+            )
             output.append(
                 AudioSection(
                     order=section.order,
@@ -744,8 +915,8 @@ class AIRadioRuntimeMixin:
                     uri=create_uri(MediaType.TRACK, "builtin", str(file_path)),
                 )
             )
-        self.logger.debug(
-            "Synthesized %d sections for run %s/%s",
+        self.logger.info(
+            "TTS synthesis finished: sections=%d run=%s/%s",
             len(output),
             run_id,
             batch_id,
@@ -1088,6 +1259,15 @@ class AIRadioRuntimeMixin:
             DEFAULT_MAX_TOKENS,
         )
         openai_base_url = str(general.get("openai_base_url") or DEFAULT_OPENAI_BASE_URL)
+        self.logger.debug(
+            "LLM request prepared: model=%s web_mode=%s prompt_chars=%d "
+            "temperature=%.2f max_tokens=%d",
+            model,
+            web_mode,
+            len(prompt),
+            temperature,
+            max_tokens,
+        )
         api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
         if not api_key:
             self.logger.error(
@@ -1118,6 +1298,10 @@ class AIRadioRuntimeMixin:
             content = message.get("content")
             if not isinstance(content, str) or not content.strip():
                 raise AIRadioError("OpenAI chat completion returned empty content")
+            self.logger.debug(
+                "LLM chat/completions response received: chars=%d",
+                len(content.strip()),
+            )
             return content.strip()
 
         payload = {
@@ -1143,6 +1327,10 @@ class AIRadioRuntimeMixin:
         )
         output_text = data.get("output_text") if isinstance(data, dict) else None
         if isinstance(output_text, str) and output_text.strip():
+            self.logger.debug(
+                "LLM responses API output_text received: chars=%d",
+                len(output_text.strip()),
+            )
             return output_text.strip()
         output = data.get("output", []) if isinstance(data, dict) else []
         chunks: list[str] = []
@@ -1161,6 +1349,12 @@ class AIRadioRuntimeMixin:
                         if isinstance(text, str) and text.strip():
                             chunks.append(text.strip())
         if chunks:
+            joined = "\n".join(chunks).strip()
+            self.logger.debug(
+                "LLM responses API output content received: chunks=%d chars=%d",
+                len(chunks),
+                len(joined),
+            )
             return "\n".join(chunks).strip()
         raise AIRadioError("OpenAI responses API returned no output text")
 
@@ -1168,6 +1362,7 @@ class AIRadioRuntimeMixin:
         """Render text to MP3 bytes."""
         general = cast("dict[str, Any]", station.get("general", {}))
         provider = str(general.get("tts_provider") or DEFAULT_TTS_PROVIDER).strip().lower()
+        self.logger.debug("TTS render prepared: provider=%s text_chars=%d", provider, len(text))
         if provider == "openai":
             api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
             if not api_key:
@@ -1187,13 +1382,20 @@ class AIRadioRuntimeMixin:
             }
             if instructions.strip():
                 payload["instructions"] = instructions.strip()
-            return await self._openai_request_bytes(
+            audio = await self._openai_request_bytes(
                 api_key=api_key,
                 path="/audio/speech",
                 payload=payload,
                 accept="audio/mpeg",
                 base_url=openai_base_url,
             )
+            self.logger.debug(
+                "OpenAI TTS rendered: model=%s voice=%s bytes=%d",
+                model,
+                voice,
+                len(audio),
+            )
+            return audio
 
         if provider == "elevenlabs":
             api_key = str(self.config.get_value(CONF_ELEVENLABS_API_KEY) or "").strip()
@@ -1220,8 +1422,15 @@ class AIRadioRuntimeMixin:
                     )
                 if not data:
                     raise AIRadioError("ElevenLabs TTS returned empty audio")
+                self.logger.debug(
+                    "ElevenLabs TTS rendered: model=%s voice_id=%s bytes=%d",
+                    model_id,
+                    voice_id,
+                    len(data),
+                )
                 return data
 
+        self.logger.error("AI Radio TTS failed: unsupported tts_provider '%s'", provider)
         raise AIRadioError(f"Unsupported tts_provider: {provider}")
 
     async def _openai_request_json(
@@ -1257,6 +1466,13 @@ class AIRadioRuntimeMixin:
     ) -> bytes:
         """Execute an OpenAI request and return raw bytes."""
         url = f"{base_url.rstrip('/')}{path}"
+        started = perf_counter()
+        self.logger.debug(
+            "OpenAI request: path=%s accept=%s payload_keys=%s",
+            path,
+            accept,
+            sorted(payload.keys()),
+        )
         async with self.mass.http_session.post(
             url,
             json=payload,
@@ -1272,6 +1488,13 @@ class AIRadioRuntimeMixin:
                     f"OpenAI request failed ({response.status}) for {path}: "
                     f"{data.decode(errors='ignore')}"
                 )
+            self.logger.debug(
+                "OpenAI request done: path=%s status=%d bytes=%d elapsed=%.2fs",
+                path,
+                response.status,
+                len(data),
+                perf_counter() - started,
+            )
             return data
 
     async def _get_section_store_base_path(self, station: dict[str, Any]) -> Path:

@@ -103,10 +103,29 @@ textarea {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 36px;
   padding: 7px 12px;
   font-weight: 500;
   cursor: pointer;
+}
+
+.lucide {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.btn-label {
+  line-height: 1;
 }
 
 button:hover {
@@ -183,6 +202,89 @@ textarea:focus-visible {
   margin-bottom: 12px;
 }
 
+.run-player-start {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 0;
+}
+
+.run-player-label {
+  margin: 0;
+}
+
+.station-primary-grid {
+  grid-template-columns: minmax(360px, 1fr) minmax(280px, 0.55fr);
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.station-primary-label {
+  font-size: 0.96rem;
+  color: var(--ma-text);
+}
+
+.station-primary-label select {
+  min-height: 44px;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.run-subsections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.run-subsection {
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in oklab, var(--ma-surface-soft) 84%, black 16%);
+}
+
+.run-subsection > h3 {
+  margin-top: 0;
+}
+
+.run-action-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: end;
+  gap: 10px;
+}
+
+.run-action-row .hint {
+  margin: 0;
+}
+
+.run-live-overrides {
+  margin-top: 10px;
+}
+
+.run-playlist-overrides {
+  margin-top: 10px;
+}
+
+.btn-primary {
+  border-color: color-mix(in oklab, var(--ma-primary) 72%, white 8%);
+  background: color-mix(in oklab, var(--ma-primary) 78%, black 22%);
+  color: white;
+}
+
+.btn-primary:hover {
+  border-color: color-mix(in oklab, var(--ma-primary) 86%, white 4%);
+  background: color-mix(in oklab, var(--ma-primary) 86%, black 14%);
+}
+
+.play-btn {
+  min-width: 170px;
+  font-weight: 600;
+  min-height: 40px;
+}
+
 .hint {
   margin: 0 0 12px;
   font-size: 0.88rem;
@@ -212,11 +314,61 @@ textarea:focus-visible {
   line-height: 1.35;
 }
 
+.field-help-warn {
+  color: var(--ma-warn);
+}
+
 label {
   display: grid;
   gap: 5px;
   font-size: 0.88rem;
   color: var(--ma-muted);
+}
+
+.is-important {
+  font-size: 0.98rem;
+  color: var(--ma-text);
+}
+
+.optional-field {
+  font-size: 0.8rem;
+  color: color-mix(in oklab, var(--ma-muted) 90%, var(--ma-bg) 10%);
+}
+
+.optional-field input,
+.optional-field select {
+  min-height: 34px;
+  font-size: 0.86rem;
+}
+
+.label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--ma-border);
+  color: var(--ma-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: help;
+  user-select: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.help-tip:hover,
+.help-tip:focus-visible,
+.help-tip:active {
+  border-color: var(--ma-primary);
+  background: color-mix(in oklab, var(--ma-primary) 18%, var(--ma-surface) 82%);
+  color: white;
 }
 
 input,
@@ -267,6 +419,99 @@ td {
 
 tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.session-info-cell {
+  min-width: 300px;
+}
+
+.session-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ma-border);
+  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.session-status-running {
+  border-color: color-mix(in oklab, var(--ma-primary) 52%, transparent);
+  color: color-mix(in oklab, var(--ma-primary) 86%, white 14%);
+}
+
+.session-status-completed {
+  border-color: color-mix(in oklab, var(--ma-ok) 60%, transparent);
+  color: color-mix(in oklab, var(--ma-ok) 88%, white 12%);
+}
+
+.session-status-failed,
+.session-status-stopped {
+  border-color: color-mix(in oklab, var(--ma-danger) 60%, transparent);
+  color: color-mix(in oklab, var(--ma-danger) 88%, white 12%);
+}
+
+.session-info {
+  display: grid;
+  gap: 6px;
+}
+
+.session-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--ma-primary) 44%, transparent);
+  background: color-mix(in oklab, var(--ma-primary) 18%, var(--ma-surface) 82%);
+  color: color-mix(in oklab, var(--ma-primary) 92%, white 8%);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.session-chip-error {
+  border-color: color-mix(in oklab, var(--ma-danger) 58%, transparent);
+  background: color-mix(in oklab, var(--ma-danger) 16%, var(--ma-surface) 84%);
+  color: color-mix(in oklab, var(--ma-danger) 90%, white 10%);
+}
+
+.session-lines {
+  display: grid;
+  gap: 2px;
+  color: var(--ma-text);
+  font-size: 0.82rem;
+}
+
+.session-raw {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.session-raw summary {
+  color: var(--ma-muted);
+  font-size: 0.78rem;
+}
+
+.session-raw pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--ma-surface-soft) 90%, black 10%);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .list {
@@ -365,6 +610,10 @@ tbody tr:last-child td {
 
 .msg-warn {
   color: var(--ma-warn);
+}
+
+.msg-info {
+  color: color-mix(in oklab, var(--ma-primary) 88%, white 12%);
 }
 
 .import-label input {
@@ -481,6 +730,10 @@ tbody tr:last-child td {
     grid-template-columns: 1fr;
   }
 
+  .station-primary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .section-item-head {
     grid-template-columns: 1fr;
   }
@@ -496,6 +749,18 @@ tbody tr:last-child td {
   .section-head {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .run-player-start {
+    grid-template-columns: 1fr;
+  }
+
+  .run-subsections {
+    grid-template-columns: 1fr;
+  }
+
+  .run-action-row {
+    grid-template-columns: 1fr;
   }
 
   .modal {

@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
-from typing import Any, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import aiofiles
@@ -33,9 +35,23 @@ from .models import slugify
 
 _slugify = slugify
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+
+    from music_assistant.mass import MusicAssistant
+
 
 class AIRadioStorageMixin:
     """Mixin with station/section persistence and normalization helpers."""
+
+    if TYPE_CHECKING:
+        mass: MusicAssistant
+        config: ProviderConfig
+        logger: logging.Logger
+        _sections_file: Path
+        _stations_file: Path
+        _sections: dict[str, dict[str, Any]]
+        _stations: dict[str, dict[str, Any]]
 
     async def _load_sections(self) -> None:
         """Load shared section definitions from disk."""
@@ -286,6 +302,9 @@ class AIRadioStorageMixin:
             "max_duration_minutes": float(station.get("max_duration_minutes", 0) or 0),
             "dynamic_batch_size": max(1, int(station.get("dynamic_batch_size", 1) or 1)),
             "dynamic_poll_seconds": max(1, int(station.get("dynamic_poll_seconds", 5) or 5)),
+            "dynamic_prefetch_remaining_tracks": max(
+                1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)
+            ),
             "clear_queue_on_start": bool(station.get("clear_queue_on_start", True)),
             "general": general,
             "section_ids": section_ids,
@@ -423,6 +442,7 @@ class AIRadioStorageMixin:
             "max_duration_minutes": 0,
             "dynamic_batch_size": 1,
             "dynamic_poll_seconds": 5,
+            "dynamic_prefetch_remaining_tracks": 2,
             "clear_queue_on_start": True,
             "general": {
                 "timezone": "UTC",

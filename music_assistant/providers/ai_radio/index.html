@@ -10,12 +10,30 @@
   <header class="topbar">
     <h1>AI Radio</h1>
     <nav>
-      <button id="nav_control" class="nav-btn active" type="button">Run</button>
-      <button id="nav_stations" class="nav-btn" type="button">Stations</button>
-      <button id="nav_sections" class="nav-btn" type="button">Sections</button>
-      <button id="tour_replay" type="button">Intro</button>
-      <button id="auth_toggle" type="button">Hide Auth</button>
-      <button id="refresh_all" type="button">Refresh</button>
+      <button id="nav_control" class="nav-btn active" type="button">
+        <i data-lucide="play-circle" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Run</span>
+      </button>
+      <button id="nav_stations" class="nav-btn" type="button">
+        <i data-lucide="radio" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Stations</span>
+      </button>
+      <button id="nav_sections" class="nav-btn" type="button">
+        <i data-lucide="list" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Sections</span>
+      </button>
+      <button id="tour_replay" type="button">
+        <i data-lucide="info" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Intro</span>
+      </button>
+      <button id="auth_toggle" type="button">
+        <i data-lucide="shield" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Hide Auth</span>
+      </button>
+      <button id="refresh_all" type="button">
+        <i data-lucide="refresh-cw" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">Refresh</span>
+      </button>
     </nav>
   </header>
 
@@ -57,33 +75,76 @@
       <button id="control_create_station" type="button">Create Station (Guided)</button>
     </div>
 
-    <div class="grid two-col">
-      <label>Station
+    <div class="grid station-primary-grid">
+      <label class="station-primary-label is-important">Station
         <select id="control_station_id"></select>
       </label>
-      <label>Run Mode
-        <select id="control_mode">
-          <option value="playlist">Playlist Mode (create target playlist)</option>
-          <option value="dynamic">Dynamic Mode (inject queue)</option>
-        </select>
-      </label>
-      <label>Source Playlist Override (optional)
+      <label class="optional-field">
+        <span class="label-row">
+          <span>Source Playlist Override</span>
+          <span class="help-tip" title="Optional: temporarily use another source playlist for this run.">?</span>
+        </span>
         <select id="control_source_playlist">
           <option value="">Use station default</option>
         </select>
       </label>
-      <label>Player Override (optional)
-        <select id="control_player_id">
-          <option value="">Use station/default</option>
-        </select>
-      </label>
-      <label>Dynamic Batch Size Override (optional)
-        <input id="control_dynamic_batch_size" type="number" min="1" step="1" placeholder="Use station default">
-      </label>
-      <div class="row control-actions">
-        <button id="control_start" type="button">Start</button>
-        <button id="control_refresh_status" type="button">Refresh Status</button>
+    </div>
+
+    <div class="run-subsections">
+      <div class="run-subsection">
+        <h3>Playlist Generation</h3>
+        <p class="hint compact">Generate a prepared playlist from station rules.</p>
+        <div class="run-action-row">
+          <button id="control_start_playlist" class="btn-primary play-btn" type="button">
+            <i data-lucide="sparkles" class="lucide" aria-hidden="true"></i>
+            <span class="btn-label">Create Playlist</span>
+          </button>
+        </div>
+        <div class="grid run-playlist-overrides">
+          <label class="optional-field">
+            <span class="label-row">
+              <span>Source Playtime Cap Override (minutes)</span>
+              <span class="help-tip" title="Optional: limits total source playtime (in minutes) used during playlist generation. 0 disables the cap for this run.">?</span>
+            </span>
+            <input id="control_dynamic_source_playtime_cap" type="number" min="0" step="1" placeholder="Use station default">
+          </label>
+        </div>
       </div>
+
+      <div class="run-subsection">
+        <h3>Live Radio</h3>
+        <p class="hint compact">Inject generated sections directly into the player queue.</p>
+        <div class="run-player-start">
+          <label class="run-player-label is-important">
+            <span class="label-row">
+              <span>Playback Device</span>
+              <span class="help-tip" title="Important for live mode: choose which player gets the injected queue items.">?</span>
+            </span>
+            <select id="control_player_id">
+              <option value="">Use station/default</option>
+            </select>
+            <span id="control_player_hint" class="field-help">Selecting an available player is required for dynamic mode.</span>
+          </label>
+          <button id="control_start_dynamic" class="btn-primary play-btn" type="button">
+            <i data-lucide="play" class="lucide" aria-hidden="true"></i>
+            <i data-lucide="sparkles" class="lucide" aria-hidden="true"></i>
+            <span class="btn-label">Start Radio</span>
+          </button>
+        </div>
+        <div class="grid run-live-overrides">
+          <label class="optional-field">
+            <span class="label-row">
+              <span>Dynamic Batch Size Override</span>
+              <span class="help-tip" title="Optional: number of source tracks generated per live cycle.">?</span>
+            </span>
+            <input id="control_dynamic_batch_size" type="number" min="1" step="1" placeholder="Use station default">
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="row control-actions">
+      <button id="control_refresh_status" type="button">Refresh Status</button>
     </div>
 
     <h3>Sessions</h3>
@@ -192,6 +253,10 @@
         </label>
         <label>Dynamic Batch Size
           <input id="station_dynamic_batch_size" type="number" min="1" step="1">
+        </label>
+        <label>Dynamic Prefetch Trigger (remaining tracks)
+          <input id="station_dynamic_prefetch_remaining_tracks" type="number" min="1" step="1">
+          <span class="field-help">Starts next batch generation when this many source tracks are left in current batch (including current track).</span>
         </label>
         <label>Dynamic Poll Interval (seconds)
           <input id="station_dynamic_poll_seconds" type="number" min="1" step="1">
@@ -486,6 +551,7 @@
     </div>
   </section>
 
+  <script src="https://unpkg.com/lucide@latest"></script>
   <script src="./app.js" defer></script>
 </body>
 </html>
