@@ -1,0 +1,12 @@
+{
+    "type": "plugin",
+    "stage": "alpha",
+    "domain": "ai_radio",
+    "name": "AI Radio",
+    "description": "Generate AI moderator sections for playlists and run dynamic radio-style queue generation. Go to <MA server>/plugin/ai_radio/ for the standalone UI.",
+    "codeowners": ["@swiftbird07"],
+    "requirements": [],
+    "documentation": "https://music-assistant.io/plugins/ai-radio",
+    "multi_instance": false,
+    "builtin": false
+}

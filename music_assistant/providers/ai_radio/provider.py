@@ -1,0 +1,316 @@
+"""AI Radio Plugin Provider for Music Assistant."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from copy import deepcopy
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
+
+from aiohttp import web
+from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.models.plugin import PluginProvider
+
+from .constants import (
+    AI_RADIO_WEB_BASE_PATH,
+    AI_RADIO_WEB_FILES,
+    DEFAULT_MAX_CONCURRENT_RUNS,
+    SUPPORTED_FEATURES,
+)
+from .models import SessionState, utc_now_iso
+from .runtime import AIRadioRuntimeMixin
+from .storage import AIRadioStorageMixin
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    return AIRadioProvider(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
+    """Implementation of the AI Radio plugin provider."""
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[Any],
+    ) -> None:
+        """Initialize the AI Radio provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._station_lock = asyncio.Lock()
+        self._unregister_handles: list[Callable[[], None]] = []
+        self._sessions: dict[str, SessionState] = {}
+        self._stations: dict[str, dict[str, Any]] = {}
+        self._sections: dict[str, dict[str, Any]] = {}
+        self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
+        self._stations_file = self._storage_dir / "stations.json"
+        self._sections_file = self._storage_dir / "sections.json"
+        self._web_dir = Path(__file__).parent
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
+        await self._load_sections()
+        await self._load_stations()
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        api_handlers = (
+            ("ai_radio/stations/list", self.list_stations),
+            ("ai_radio/stations/get", self.get_station),
+            ("ai_radio/stations/save", self.save_station),
+            ("ai_radio/stations/delete", self.delete_station),
+            ("ai_radio/stations/validate", self.validate_station),
+            ("ai_radio/stations/template", self.station_template),
+            ("ai_radio/sections/list", self.list_sections),
+            ("ai_radio/sections/get", self.get_section),
+            ("ai_radio/sections/save", self.save_section),
+            ("ai_radio/sections/delete", self.delete_section),
+            ("ai_radio/sections/template", self.section_template),
+            ("ai_radio/start", self.start_run),
+            ("ai_radio/stop", self.stop_run),
+            ("ai_radio/status", self.get_status),
+        )
+        for command, handler in api_handlers:
+            self._unregister_handles.append(
+                self.mass.register_api_command(command, handler, required_role="admin")
+            )
+        self._unregister_handles.append(
+            self.mass.webserver.register_dynamic_route(
+                f"{AI_RADIO_WEB_BASE_PATH}/*",
+                self._handle_web_route,
+                method="GET",
+            )
+        )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle close/cleanup of the provider."""
+        for session in self._sessions.values():
+            if session.task and not session.task.done():
+                session.task.cancel()
+        for handle in self._unregister_handles:
+            handle()
+        self._unregister_handles.clear()
+        await super().unload(is_removed)
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Apply config updates without forcing a provider reload."""
+        self.config = config
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
+            self._set_log_level_from_config(config)
+
+    async def _handle_web_route(self, request: web.Request) -> web.Response | web.StreamResponse:
+        """Serve AI Radio web app routes."""
+        relative_path = request.path[len(AI_RADIO_WEB_BASE_PATH) :]
+        if relative_path == "":
+            raise web.HTTPFound(f"{AI_RADIO_WEB_BASE_PATH}/")
+        filename = AI_RADIO_WEB_FILES.get(relative_path)
+        if not filename:
+            return web.Response(status=404, text="Not Found")
+        file_path = self._web_dir / filename
+        if not file_path.exists():
+            return web.Response(status=404, text="File not found")
+        return web.FileResponse(path=file_path, headers={"Cache-Control": "no-cache"})
+
+    async def list_stations(self) -> list[dict[str, Any]]:
+        """Return all configured AI Radio stations."""
+        return sorted(
+            (deepcopy(station) for station in self._stations.values()),
+            key=lambda station: station["name"],
+        )
+
+    async def get_station(self, station_id: str) -> dict[str, Any]:
+        """Return one station by id."""
+        if station_id not in self._stations:
+            raise KeyError(f"Unknown station id: {station_id}")
+        return deepcopy(self._stations[station_id])
+
+    async def save_station(self, station: dict[str, Any]) -> dict[str, Any]:
+        """Create or update a station."""
+        station_payload = deepcopy(station)
+        async with self._station_lock:
+            sections_changed = self._upsert_embedded_sections_from_station(station_payload)
+            normalized = self._normalize_station(station_payload)
+            self._stations[normalized["id"]] = normalized
+            if sections_changed:
+                await self._write_sections()
+            await self._write_stations()
+        return deepcopy(normalized)
+
+    async def delete_station(self, station_id: str) -> None:
+        """Delete a station."""
+        async with self._station_lock:
+            if station_id not in self._stations:
+                raise KeyError(f"Unknown station id: {station_id}")
+            self._stations.pop(station_id)
+            await self._write_stations()
+
+    async def validate_station(self, station: dict[str, Any]) -> dict[str, Any]:
+        """Validate station payload and return the normalized profile."""
+        station_payload = deepcopy(station)
+        self._upsert_embedded_sections_from_station(station_payload)
+        return self._normalize_station(station_payload)
+
+    async def station_template(self) -> dict[str, Any]:
+        """Return a default station template."""
+        return self._default_station_template()
+
+    async def list_sections(self) -> list[dict[str, Any]]:
+        """Return all shared section definitions."""
+        return sorted(
+            (deepcopy(section) for section in self._sections.values()),
+            key=lambda section: section["id"].lower(),
+        )
+
+    async def get_section(self, section_id: str) -> dict[str, Any]:
+        """Return one shared section by id."""
+        if section_id not in self._sections:
+            raise KeyError(f"Unknown section id: {section_id}")
+        return deepcopy(self._sections[section_id])
+
+    async def save_section(self, section: dict[str, Any]) -> dict[str, Any]:
+        """Create or update a shared section."""
+        normalized = self._normalize_section(section)
+        async with self._station_lock:
+            self._sections[normalized["id"]] = normalized
+            self._refresh_station_sections()
+            await self._write_sections()
+            await self._write_stations()
+        return deepcopy(normalized)
+
+    async def delete_section(self, section_id: str) -> None:
+        """Delete a shared section when unused by stations."""
+        async with self._station_lock:
+            if section_id not in self._sections:
+                raise KeyError(f"Unknown section id: {section_id}")
+            used_by = [
+                station["id"]
+                for station in self._stations.values()
+                if section_id in station.get("section_ids", [])
+            ]
+            if used_by:
+                used_list = ", ".join(sorted(used_by))
+                raise InvalidDataError(
+                    f"Section '{section_id}' is used by stations: {used_list}. "
+                    "Remove it from those stations first."
+                )
+            self._sections.pop(section_id)
+            await self._write_sections()
+
+    async def section_template(self) -> dict[str, Any]:
+        """Return default section template."""
+        defaults = self._default_sections_template()
+        return deepcopy(defaults[0])
+
+    async def start_run(
+        self,
+        station_id: str,
+        mode: str = "playlist",
+        source_playlist_id_override: str | None = None,
+        source_playlist_provider_override: str | None = None,
+        player_id_override: str | None = None,
+        dynamic_batch_size_override: int | None = None,
+    ) -> dict[str, Any]:
+        """Start a new AI Radio run."""
+        selected_mode = mode.strip().lower()
+        if selected_mode not in {"playlist", "dynamic"}:
+            raise InvalidDataError("mode must be 'playlist' or 'dynamic'")
+        if station_id not in self._stations:
+            raise KeyError(f"Unknown station id: {station_id}")
+
+        max_runs = DEFAULT_MAX_CONCURRENT_RUNS
+        running = [session for session in self._sessions.values() if session.status == "running"]
+        if len(running) >= max_runs:
+            raise InvalidDataError(
+                f"Max concurrent runs reached ({max_runs}). Stop an active run first."
+            )
+        if any(
+            session.status == "running" and session.station_id == station_id
+            for session in self._sessions.values()
+        ):
+            raise InvalidDataError(f"Station {station_id} already has an active run")
+
+        station = deepcopy(self._stations[station_id])
+        overrides = {
+            "source_playlist_id": source_playlist_id_override,
+            "source_playlist_provider": source_playlist_provider_override,
+            "default_player_id": player_id_override,
+        }
+        for key, value in overrides.items():
+            if value:
+                station[key] = value
+        if dynamic_batch_size_override:
+            station["dynamic_batch_size"] = max(1, int(dynamic_batch_size_override))
+
+        session_id = uuid4().hex
+        session = SessionState(
+            session_id=session_id,
+            station_id=station_id,
+            mode=selected_mode,
+        )
+        self._sessions[session_id] = session
+        session.task = self.mass.create_task(
+            self._run_session(session_id, station),
+            task_id=f"ai_radio_session_{session_id}",
+        )
+        return session.as_dict()
+
+    async def stop_run(
+        self,
+        session_id: str | None = None,
+        station_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Stop an active run."""
+        selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
+
+        if selected.task and not selected.task.done():
+            selected.task.cancel()
+        selected.status = "stopped"
+        selected.ended_at = utc_now_iso()
+        return selected.as_dict()
+
+    async def get_status(self, session_id: str | None = None) -> dict[str, Any]:
+        """Return run status information."""
+        if session_id:
+            if session_id not in self._sessions:
+                raise KeyError(f"Unknown session id: {session_id}")
+            return {"sessions": [self._sessions[session_id].as_dict()]}
+        sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
+        return {"sessions": [session.as_dict() for session in sessions]}
+
+    def _resolve_session_for_stop(
+        self,
+        session_id: str | None,
+        station_id: str | None,
+    ) -> SessionState:
+        """Resolve which running session should be stopped."""
+        if session_id:
+            selected = self._sessions.get(session_id)
+            if selected is None:
+                raise KeyError(f"Unknown session id: {session_id}")
+            return selected
+
+        running = [session for session in self._sessions.values() if session.status == "running"]
+        if station_id:
+            running = [session for session in running if session.station_id == station_id]
+            if not running:
+                raise KeyError(f"No active run found for station: {station_id}")
+        elif not running:
+            raise KeyError("No active AI Radio run found")
+
+        return max(running, key=lambda item: item.created_at)

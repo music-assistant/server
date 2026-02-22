@@ -1,0 +1,141 @@
+{
+  "id": "example_station",
+  "name": "Example AI Radio Station",
+  "source_playlist_id": "replace_with_playlist_id",
+  "source_playlist_provider": "library",
+  "target_playlist_provider": "builtin",
+  "default_player_id": "",
+  "max_duration_minutes": 0,
+  "dynamic_batch_size": 1,
+  "dynamic_poll_seconds": 5,
+  "clear_queue_on_start": true,
+  "general": {
+    "timezone": "UTC",
+    "location": {
+      "city": "Berlin",
+      "country": "Germany"
+    },
+    "weather_provider": "open_meteo",
+    "weather_timeout_seconds": 20,
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": 900,
+    "instructions": "On-air radio host style with concise spoken-word phrasing.",
+    "openai_base_url": "https://api.openai.com/v1",
+    "section_store_path": "ai_radio_sections",
+    "tts_provider": "openai",
+    "openai_tts_model": "gpt-4o-mini-tts",
+    "openai_tts_voice": "ballad",
+    "openai_tts_instructions": "Warm radio host delivery.",
+    "elevenlabs_model": "eleven_multilingual_v2",
+    "elevenlabs_voice_id": ""
+  },
+  "sections": [
+    {
+      "id": "Song_Introduction_Start",
+      "name": "Song Introduction Start",
+      "type": "ai_text",
+      "web_search": "disabled",
+      "prompt": "First track: <next_songinfo>. Open the show with energy and use weather mood from <weather_hourly> if available.",
+      "constraints": {
+        "max_chars": 650
+      }
+    },
+    {
+      "id": "Song_Transition",
+      "name": "Song Transition",
+      "type": "ai_text",
+      "web_search": "allow",
+      "prompt": "Transition from <prev_songinfo> to <next_songinfo>. Add one concise interesting detail when useful.",
+      "constraints": {
+        "max_chars": 450
+      }
+    },
+    {
+      "id": "Song_Fun_Fact",
+      "name": "Song Fun Fact",
+      "type": "ai_text",
+      "web_search": "force",
+      "prompt": "Give one verified fun fact about either <prev_songinfo> or <next_songinfo> and mention your source implicitly.",
+      "constraints": {
+        "max_chars": 500
+      }
+    },
+    {
+      "id": "Weather_Short",
+      "name": "Weather Short",
+      "type": "ai_text",
+      "web_search": "disabled",
+      "prompt": "Give a short radio weather update from <weather_hourly> and mention local time context from <timestamp>.",
+      "constraints": {
+        "max_chars": 450
+      }
+    },
+    {
+      "id": "Song_Introduction_End",
+      "name": "Song Introduction End",
+      "type": "ai_text",
+      "web_search": "disabled",
+      "prompt": "Last track: <prev_songinfo>. Leave a memorable close.",
+      "constraints": {
+        "max_chars": 650
+      }
+    },
+    {
+      "id": "Between_Songs_Smoother",
+      "name": "Between Songs Mix",
+      "type": "ai_meta",
+      "prompt": "Merge snippets into one coherent segment.\n<section_drafts>"
+    }
+  ],
+  "section_order": [
+    {
+      "when": "start_of_playlist",
+      "flow": [
+        {
+          "MUST": "Song_Introduction_Start"
+        }
+      ]
+    },
+    {
+      "when": "between_songs",
+      "flow": [
+        {
+          "ALTERNATIVE": {
+            "choices": [
+              {
+                "section": "Song_Transition",
+                "weight": 70
+              },
+              {
+                "section": "Song_Fun_Fact",
+                "weight": 30
+              }
+            ]
+          }
+        },
+        {
+          "OPTIONAL": {
+            "section": "Weather_Short",
+            "chance": 0.2,
+            "guards": {
+              "min_gap_songs": 3,
+              "max_per_60min": 1,
+              "require_placeholders_present": [
+                "<weather_hourly>"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "when": "end_of_playlist",
+      "flow": [
+        {
+          "MUST": "Song_Introduction_End"
+        }
+      ]
+    }
+  ]
+}
