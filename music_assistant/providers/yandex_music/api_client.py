@@ -95,6 +95,8 @@ class YandexMusicClient:
             LOGGER.info("Client disconnected, attempting to reconnect...")
             try:
                 await self.connect()
+            except LoginFailed:
+                raise
             except Exception as err:
                 raise ProviderUnavailableError("Client not connected and reconnect failed") from err
         return self._client
