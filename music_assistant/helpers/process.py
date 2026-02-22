@@ -171,10 +171,10 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             self.proc.stdin.write(data)
             with suppress(BrokenPipeError, ConnectionResetError):
@@ -182,10 +182,10 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             try:
                 if self.proc.stdin.can_write_eof():
