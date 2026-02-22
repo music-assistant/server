@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
@@ -330,8 +330,8 @@ class YandexMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         key_hex: str = streamdetails.data["decryption_key"]
         key_bytes = bytes.fromhex(key_hex)
-        nonce = bytes(12)
-        cipher = AES.new(key=key_bytes, nonce=nonce, mode=AES.MODE_CTR, initial_value=0)
+        nonce_16 = bytes(16)  # nonce(12 zeros) + initial_value=0(4 zeros)
+        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce_16)).decryptor()
         async with self.mass.http_session.get(encrypted_url) as response:
             async for chunk in response.content.iter_chunked(65536):
-                yield cipher.decrypt(chunk)
+                yield decryptor.update(chunk)
