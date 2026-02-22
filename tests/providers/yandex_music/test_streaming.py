@@ -70,10 +70,10 @@ def test_select_best_quality_lossless_returns_flac(
     assert result.direct_link == "https://example.com/track.flac"
 
 
-def test_select_best_quality_balanced_returns_medium_bitrate(
+def test_select_best_quality_balanced_falls_back_to_highest(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """When preferred is 'balanced' and no option in range, fallback to highest bitrate."""
+    """When preferred is 'balanced' and no option in 128-256kbps range, highest bitrate is used."""
     mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]

@@ -165,7 +165,7 @@ class YandexMusicStreamingManager:
         """Select the best quality download info based on user preference.
 
         :param download_infos: List of DownloadInfo objects.
-        :param preferred_quality: User's quality preference (efficient/balanced/superb).
+        :param preferred_quality: User's quality preference (efficient/high/balanced/superb).
         :return: Best matching DownloadInfo or None.
         """
         if not download_infos:
@@ -272,7 +272,7 @@ class YandexMusicStreamingManager:
         if codec_lower in ("aac-mp4", "he-aac-mp4"):
             return ContentType.MP4, ContentType.AAC
 
-        # Plain formats: container and codec are the same
+        # Plain single-codec formats: codec is implied by content_type, no separate codec_type
         if codec_lower == "flac":
             return ContentType.FLAC, ContentType.UNKNOWN
         if codec_lower in ("mp3", "mpeg"):
