@@ -115,7 +115,6 @@ async def get_config_entries(
             range=(10, 1000),
             default_value=150,
             required=False,
-            advanced=True,
         ),
         # Liked Tracks maximum tracks (advanced)
         ConfigEntry(
@@ -127,7 +126,6 @@ async def get_config_entries(
             range=(50, 5000),
             default_value=500,
             required=False,
-            advanced=True,
         ),
         # API Base URL (advanced)
         ConfigEntry(
@@ -139,6 +137,5 @@ async def get_config_entries(
             "Default: https://api.music.yandex.net",
             default_value=DEFAULT_BASE_URL,
             required=False,
-            advanced=True,
         ),
     )
