@@ -210,6 +210,10 @@ class SyncGroupPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
         if sync_leader := self.sync_leader:
+            if PlayerFeature.ENQUEUE not in sync_leader.state.supported_features:
+                # this may happen in race conditions where we just switched sync leaders
+                # and the new leader doesn't support enqueueing next media.
+                return
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
