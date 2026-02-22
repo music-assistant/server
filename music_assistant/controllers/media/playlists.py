@@ -233,10 +233,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # parse uri for further processing
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
 
-            # non-track items can only be added to builtin playlists
-            if media_type != MediaType.TRACK and playlist_prov.domain != "builtin":
+            if media_type not in playlist.supported_mediatypes:
                 self.logger.warning(
-                    "Not adding %s to playlist %s - only supported in builtin playlists",
+                    "Not adding %s to playlist %s, "
+                    "the target playlist doesn't support this media type.",
                     uri,
                     playlist.name,
                 )
