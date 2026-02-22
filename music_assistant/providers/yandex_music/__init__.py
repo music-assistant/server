@@ -122,8 +122,9 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             label="Liked Tracks maximum tracks",
             description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
+            "Higher values may significantly increase load time. "
             "Lower values load faster. Default: 500.",
-            range=(50, 5000),
+            range=(50, 2000),
             default_value=500,
             required=False,
         ),
