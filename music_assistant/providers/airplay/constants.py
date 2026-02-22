@@ -36,15 +36,17 @@ RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
 AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
-    2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
+    2000  # Read ahead buffer for cliraop. Default output buffer duration for cliap2.
 )
+AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250  # Minimum output buffer duration permitted.
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 3300  # Time in ms to allow AirPlay2 device to connect
 RAOP_CONNECT_TIME_MS: Final[int] = 1000  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
+CONF_AIRPLAY_LATENCY: Final[str] = "airplay_latency"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"

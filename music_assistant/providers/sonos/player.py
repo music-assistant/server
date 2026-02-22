@@ -309,7 +309,7 @@ class SonosPlayer(Player):
             media.queue_item_id = "announcement"
             self.sonos_queue.items = [media]
             self.sonos_queue.last_updated = time.time()
-            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
