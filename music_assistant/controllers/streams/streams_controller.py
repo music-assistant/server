@@ -1006,10 +1006,13 @@ class StreamsController(CoreController):
                     break
 
             if queue_track.streamdetails is None:
-                raise InvalidDataError(
-                    "No Streamdetails known for queue item %s",
+                self.logger.error(
+                    "No StreamDetails for queue item %s (%s) on queue %s - skipping track",
                     queue_track.queue_item_id,
+                    queue_track.name,
+                    queue.display_name,
                 )
+                continue
 
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",
@@ -1086,30 +1089,45 @@ class StreamsController(CoreController):
                     fadein_part = buffer[:crossfade_buffer_size]
                     remaining_bytes = buffer[crossfade_buffer_size:]
                     # Use the mixer to handle all crossfade logic
-                    crossfade_part = await self._smart_fades_mixer.mix(
-                        fade_in_part=fadein_part,
-                        fade_out_part=last_fadeout_part,
-                        fade_in_streamdetails=queue_track.streamdetails,
-                        fade_out_streamdetails=last_streamdetails,
-                        pcm_format=pcm_format,
-                        standard_crossfade_duration=standard_crossfade_duration,
-                        mode=smart_fades_mode,
-                    )
-                    # because the crossfade exists of both the fadein and fadeout part
-                    # we need to correct the bytes_written accordingly so the duration
-                    # calculations at the end of the track are correct
-                    crossfade_part_len = len(crossfade_part)
-                    bytes_written += int(crossfade_part_len / 2)
-                    if last_play_log_entry:
-                        assert last_play_log_entry.seconds_streamed is not None
-                        last_play_log_entry.seconds_streamed += (
-                            crossfade_part_len / 2 / pcm_sample_size
+                    try:
+                        crossfade_part = await self._smart_fades_mixer.mix(
+                            fade_in_part=fadein_part,
+                            fade_out_part=last_fadeout_part,
+                            fade_in_streamdetails=queue_track.streamdetails,
+                            fade_out_streamdetails=last_streamdetails,
+                            pcm_format=pcm_format,
+                            standard_crossfade_duration=standard_crossfade_duration,
+                            mode=smart_fades_mode,
                         )
-                    # yield crossfade_part (in pcm_sample_size chunks)
-                    for _chunk in divide_chunks(crossfade_part, pcm_sample_size):
-                        yield _chunk
-                        del _chunk
-                    del crossfade_part
+                    except Exception as mix_err:
+                        self.logger.warning(
+                            "Crossfade mixer failed for %s, falling back to simple concat: %s",
+                            queue_track.name,
+                            mix_err,
+                        )
+                        # Fallback: just output the fadeout part then the buffer
+                        for _chunk in divide_chunks(last_fadeout_part, pcm_sample_size):
+                            yield _chunk
+                            bytes_written += len(_chunk)
+                            del _chunk
+                        crossfade_part = b""
+                        remaining_bytes = buffer
+                    if crossfade_part:
+                        # because the crossfade exists of both the fadein and fadeout part
+                        # we need to correct the bytes_written accordingly so the duration
+                        # calculations at the end of the track are correct
+                        crossfade_part_len = len(crossfade_part)
+                        bytes_written += int(crossfade_part_len / 2)
+                        if last_play_log_entry:
+                            assert last_play_log_entry.seconds_streamed is not None
+                            last_play_log_entry.seconds_streamed += (
+                                crossfade_part_len / 2 / pcm_sample_size
+                            )
+                        # yield crossfade_part (in pcm_sample_size chunks)
+                        for _chunk in divide_chunks(crossfade_part, pcm_sample_size):
+                            yield _chunk
+                            del _chunk
+                        del crossfade_part
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
@@ -1127,6 +1145,18 @@ class StreamsController(CoreController):
                     buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
+            if not first_chunk_received:
+                # Track failed to stream - no chunks received at all
+                self.logger.warning(
+                    "Track %s (%s) on queue %s produced no audio data - skipping",
+                    queue_track.name,
+                    queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
+                    queue.display_name,
+                )
+                # Clean up and continue to next track
+                queue_track.streamdetails.stream_error = True
+                del buffer
+                continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
                 for _chunk in divide_chunks(last_fadeout_part, pcm_sample_size):
@@ -1455,6 +1485,21 @@ class StreamsController(CoreController):
             # so the outer stream can handle it gracefully
             self.logger.error(
                 "AudioError while streaming queue item %s (%s): %s",
+                queue_item.name,
+                streamdetails.uri,
+                err,
+            )
+        except asyncio.CancelledError:
+            # Don't swallow cancellation - let it propagate
+            raise
+        except Exception as err:
+            # Catch any other unexpected exceptions to prevent them from
+            # silently killing the entire queue stream
+            streamdetails.stream_error = True
+            if raise_on_error:
+                raise
+            self.logger.exception(
+                "Unexpected error while streaming queue item %s (%s): %s",
                 queue_item.name,
                 streamdetails.uri,
                 err,

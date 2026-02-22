@@ -260,10 +260,16 @@ class AsyncProcess:
                 self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                # Log unexpected exceptions from the stdin feeder before suppressing
+                LOGGER.warning(
+                    "Process stdin feeder task ended with error: %s",
+                    err,
+                )
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):

@@ -325,31 +325,39 @@ class SnapcastMAStream:
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
-
+        except asyncio.CancelledError:
+            self._logger.debug("Snapcast stream %s cancelled", self.stream_name)
+            raise
+        except Exception as err:
+            self._logger.error("Snapcast stream %s error: %s", self.stream_name, err, exc_info=err)
+            raise
         finally:
             self._is_streaming = False
             self._logger.debug("Finished streaming to %s", stream_path)
-            # Wait a bit for snap stream to become idle
-            try:
+            await self._wait_stream_idle()
 
-                async def wait_until_idle() -> None:
-                    while True:
-                        stream_is_idle = False
-                        with suppress(KeyError):
-                            snap_stream = self._provider._snapserver.stream(self.stream_name)
-                            stream_is_idle = snap_stream.status == "idle"
-                        if self._mass.closing or stream_is_idle:
-                            break
-                        await asyncio.sleep(0.25)
+    async def _wait_stream_idle(self) -> None:
+        """Wait for the Snapcast stream to become idle after streaming ends."""
+        try:
 
-                await asyncio.wait_for(wait_until_idle(), timeout=10.0)
-            except TimeoutError:
-                self._logger.warning(
-                    "Timeout waiting for stream %s to become idle",
-                    self.stream_name,
-                )
-            finally:
-                self._streaming_started_at = None
+            async def wait_until_idle() -> None:
+                while True:
+                    stream_is_idle = False
+                    with suppress(KeyError):
+                        snap_stream = self._provider._snapserver.stream(self.stream_name)
+                        stream_is_idle = snap_stream.status == "idle"
+                    if self._mass.closing or stream_is_idle:
+                        break
+                    await asyncio.sleep(0.25)
+
+            await asyncio.wait_for(wait_until_idle(), timeout=10.0)
+        except TimeoutError:
+            self._logger.warning(
+                "Timeout waiting for stream %s to become idle",
+                self.stream_name,
+            )
+        finally:
+            self._streaming_started_at = None
 
     def _on_streamer_done(self, t: asyncio.Task[None]) -> None:
         """Handle streamer task completion and optional cleanup."""
