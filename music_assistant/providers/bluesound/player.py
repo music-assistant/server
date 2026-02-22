@@ -150,12 +150,14 @@ class BluesoundPlayer(Player):
         await self.client.volume(level=volume_level, timeout=1)
         self.logger.debug("Set BluOS speaker volume to %s", volume_level)
         self._attr_volume_level = volume_level
+        self._set_polling_dynamic()
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to BluOS player."""
         await self.client.volume(mute=muted)
         self._attr_volume_muted = muted
+        self._set_polling_dynamic()
         self.update_state()
 
     async def next_track(self):
