@@ -201,7 +201,7 @@ class LocalFileSystemProvider(MusicProvider):
         }
         if self.write_access:
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
-            music_features.add(ProviderFeature.PLAYLIST_CREATE_TRACKS)
+            music_features.add(ProviderFeature.PLAYLIST_CREATE)
         return music_features
 
     @property

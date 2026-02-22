@@ -41,7 +41,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_CREATE_TRACKS,
+    ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,

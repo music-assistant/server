@@ -28,7 +28,7 @@ SUPPORTED_FEATURES = {
     # Playlist mixin
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_CREATE_TRACKS,
+    ProviderFeature.PLAYLIST_CREATE,
     # Explorer mixin
     ProviderFeature.SEARCH,
     ProviderFeature.RECOMMENDATIONS,
