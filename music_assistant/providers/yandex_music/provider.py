@@ -642,8 +642,15 @@ class YandexMusicProvider(MusicProvider):
         names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
-        # Validate seasonal tags directly (no landing dependency)
-        available_mixes = [t for t in TAG_MIXES if await self._validate_tag(t)]
+        # Validate seasonal tags in parallel (no landing dependency)
+        sem = asyncio.Semaphore(5)
+
+        async def _check(tag: str) -> str | None:
+            async with sem:
+                return tag if await self._validate_tag(tag) else None
+
+        results = await asyncio.gather(*[_check(t) for t in TAG_MIXES])
+        available_mixes = [t for t in results if t is not None]
 
         # mixes/ - show seasonal folders (only valid ones)
         if len(path_parts) == 1:

@@ -229,7 +229,7 @@ class YandexMusicClient:
 
         try:
             result = await self._call_with_retry(_post)
-            LOGGER.info(
+            LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
                 track_id,

@@ -63,8 +63,8 @@ class YandexMusicStreamingManager:
         # Check for superb (lossless) quality
         want_lossless = preferred_normalized in (QUALITY_SUPERB, "superb")
 
-        # Backward compatibility: also check old "lossless" value
-        if "lossless" in preferred_normalized:
+        # Backward compatibility: also check old "lossless" value (exact match)
+        if preferred_normalized == "lossless":
             want_lossless = True
 
         # When user wants lossless, try get-file-info first (FLAC; download-info often MP3 only)
@@ -330,9 +330,14 @@ class YandexMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         key_hex: str = streamdetails.data["decryption_key"]
         key_bytes = bytes.fromhex(key_hex)
-        nonce_16 = bytes(16)  # nonce(12 zeros) + initial_value=0(4 zeros)
+        if len(key_bytes) not in (16, 24, 32):
+            raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
+        nonce_16 = bytes(16)  # AES-256-CTR, zero IV
         decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce_16)).decryptor()
         async with self.mass.http_session.get(encrypted_url) as response:
             response.raise_for_status()
             async for chunk in response.content.iter_chunked(65536):
                 yield decryptor.update(chunk)
+            final = decryptor.finalize()
+            if final:
+                yield final
