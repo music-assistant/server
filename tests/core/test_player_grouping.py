@@ -124,45 +124,6 @@ class TestCanGroupWithBasics:
 class TestSyncedPlayers:
     """Test behavior with synced/grouped players."""
 
-    def test_synced_player_excluded_from_others(self, mock_mass: MagicMock) -> None:
-        """
-        Test that a player synced to another is excluded from other players' can_group_with.
-
-        Regression test for: Player synced to another showing up in third player's can_group_with.
-        """
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        # Sync leader
-        leader = MockPlayer(provider, "leader", "Leader")
-        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        leader._attr_can_group_with = {"synced", "other"}
-        leader._attr_group_members = ["leader", "synced"]
-        leader._attr_playback_state = PlaybackState.PLAYING  # Make it playing so it gets excluded
-
-        # Synced player
-        synced = MockPlayer(provider, "synced", "Synced")
-
-        # Third player
-        other = MockPlayer(provider, "other", "Other")
-        other._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        other._attr_can_group_with = {"leader", "synced"}
-
-        controller._players = {"leader": leader, "synced": synced, "other": other}
-        mock_mass.players = controller
-
-        # Trigger synced_to calculation
-        leader.update_state(signal_event=False)
-        synced.update_state(signal_event=False)
-        other.update_state(signal_event=False)
-
-        # The synced player should NOT appear in other's can_group_with
-        assert "synced" not in other.state.can_group_with
-        # The leader should also NOT appear (has group members)
-        assert "leader" not in other.state.can_group_with
-        # Other should only see itself as ungrouped
-        assert other.state.can_group_with == set()
-
     def test_sync_leader_excludes_itself_from_members_can_group_with(
         self, mock_mass: MagicMock
     ) -> None:

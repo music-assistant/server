@@ -1640,10 +1640,14 @@ class Player(ABC):
         # This handles cases where a native player (e.g., native AirPlay) has grouped
         # protocol players (e.g., Sonos AirPlay protocol players) that need translation
         members: list[str] = []
-        translated_members = self._translate_protocol_ids_to_visible(set(self.group_members))
-        for member in translated_members:
-            if member.player_id not in members:
-                members.append(member.player_id)
+        if self.type == PlayerType.PROTOCOL:
+            # protocol players use their own group members without translation
+            members.extend(self.group_members)
+        else:
+            translated_members = self._translate_protocol_ids_to_visible(set(self.group_members))
+            for member in translated_members:
+                if member.player_id not in members:
+                    members.append(member.player_id)
 
         # If there's an active linked protocol, include its group members (translated)
         if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
@@ -1730,7 +1734,6 @@ class Player(ABC):
 
         All protocol player IDs are translated to their visible parent player IDs.
         """
-        result: set[str] = set()
 
         def _should_include_player(player: Player) -> bool:
             """Check if a player should be included in the can-group-with set."""
@@ -1739,39 +1742,37 @@ class Player(ABC):
             if player.player_id == self.player_id:
                 return False  # Don't include self
             # Don't include (playing) players that have group members (they are group leaders)
-            if (
+            if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 and player.group_members
-                and player.type != PlayerType.PROTOCOL
             ):
-                return False  # Regular native group leader - exclude
-            # Don't include players that are currently grouped/synced to OTHER players
-            # But DO include players grouped to THIS player (so they can be ungrouped)
-            grouped_to = player.state.synced_to or player.state.active_group
-            return grouped_to is None or grouped_to == self.player_id
+                return False
+            return True
 
         if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
-            return result
+            return set()
 
-        # always start with the native can_group_with options (expanded for provider instance IDs)
-        for player in self._expand_can_group_with():
-            if player.type == PlayerType.PROTOCOL:
-                # Protocol player is hidden - translate to its visible parent player
-                if not player.protocol_parent_id:
-                    continue
-                visible_parent = self.mass.players.get_player(player.protocol_parent_id)
-                if not visible_parent or not _should_include_player(visible_parent):
-                    continue
-                result.add(visible_parent.player_id)
-            else:
-                if not _should_include_player(player):
-                    continue
-                result.add(player.player_id)
-
+        expanded_can_group_with = self._expand_can_group_with()
         # Scenario 1: Player is a protocol player - just return the (expanded) result
         if self.type == PlayerType.PROTOCOL:
-            return result
+            return {x.player_id for x in expanded_can_group_with}
+
+        result: set[str] = set()
+        # always start with the native can_group_with options (expanded from provider instance IDs)
+        # NOTE we need to translate protocol player IDs to visible player IDs here as well,
+        # to cover cases where a native player (e.g., native AirPlay) has grouped protocol players
+        # (e.g., Sonos AirPlay protocol players)
+        for player in expanded_can_group_with:
+            if player.type == PlayerType.PROTOCOL:
+                if not player.protocol_parent_id:
+                    continue
+                parent_player = self.mass.players.get_player(player.protocol_parent_id)
+                if not parent_player or not _should_include_player(parent_player):
+                    continue
+                result.add(parent_player.player_id)
+            elif _should_include_player(player):
+                result.add(player.player_id)
 
         # Scenario 2: External source is active - don't include protocol-based grouping
         # When an external source (e.g., Spotify Connect, TV) is active, grouping via
