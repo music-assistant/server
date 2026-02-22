@@ -1907,23 +1907,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
-        if not (player := self.get_player(player_id)):
+        if not self.get_player(player_id):
             return
-
-        if (
-            player.state.active_group
-            and (group := self.get_player(player.state.active_group))
-            and group.supports_feature(PlayerFeature.SET_MEMBERS)
-        ):
-            # Ungroup the player if its part of an active group, this will ignore
-            # static_group_members since that is only checked when using cmd_set_members
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await group.set_members(player_ids_to_remove=[player_id])
-        elif player.state.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
-            # Remove the player if it was synced, otherwise it will still show as
-            # synced to the other player after it gets registered again
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await player.ungroup()
+        with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
+            await self.cmd_ungroup(player_id)
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
