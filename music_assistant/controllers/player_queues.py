@@ -736,16 +736,7 @@ class PlayerQueuesController(CoreController):
                 uris.append(item.uri)
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
-        # this always targets the builtin provider
-        playlist = await self.mass.music.playlists.create_playlist(
-            name,
-            media_types={
-                MediaType.AUDIOBOOK,
-                MediaType.PODCAST_EPISODE,
-                MediaType.RADIO,
-                MediaType.TRACK,
-            },
-        )
+        playlist = await self.mass.music.playlists.create_playlist(name)
         await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
         return playlist
 

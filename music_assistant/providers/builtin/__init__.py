@@ -133,16 +133,6 @@ class BuiltinProvider(MusicProvider):
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
 
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Supported types in playlists, and if they can be mixed."""
-        return {
-            MediaType.AUDIOBOOK,
-            MediaType.PODCAST_EPISODE,
-            MediaType.RADIO,
-            MediaType.TRACK,
-        }, True
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         self._playlist_lock = asyncio.Lock()
@@ -457,7 +447,7 @@ class BuiltinProvider(MusicProvider):
             stored_item["last_updated"] = int(time.time())
             self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         item_id = shortuuid.random(8)
         stored_item = StoredItem(item_id=item_id, name=name)

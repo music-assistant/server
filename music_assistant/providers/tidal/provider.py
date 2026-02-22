@@ -86,11 +86,6 @@ class TidalProvider(MusicProvider):
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
 
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Supported types in playlists, and if they can be mixed."""
-        return {MediaType.TRACK}, False
-
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update auth config with new auth info."""
         self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
@@ -230,7 +225,7 @@ class TidalProvider(MusicProvider):
         """Remove item from library."""
         return await self.library.remove_item(prov_item_id, media_type)
 
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         return await self.playlists.create(name)
 

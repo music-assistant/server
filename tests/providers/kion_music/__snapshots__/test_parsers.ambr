@@ -250,12 +250,9 @@
         'url': 'https://music.mts.ru/users/12345/playlists/3',
       }),
     ]),
-    'sort_name': None,
-    'supported_mediatypes': list([
-      'track',
-    ]),
+    'sort_name': 'my playlist',
     'translation_key': None,
-    'uri': None,
+    'uri': 'kion_music_instance://playlist/12345:3',
     'version': '',
   })
 # ---
@@ -316,12 +313,9 @@
         'url': 'https://music.mts.ru/users/99999/playlists/1',
       }),
     ]),
-    'sort_name': None,
-    'supported_mediatypes': list([
-      'track',
-    ]),
+    'sort_name': 'shared playlist',
     'translation_key': None,
-    'uri': None,
+    'uri': 'kion_music_instance://playlist/99999:1',
     'version': '',
   })
 # ---

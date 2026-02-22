@@ -54,11 +54,6 @@ class ZvukMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._client
 
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Supported types in playlists, and if they can be mixed."""
-        return {MediaType.TRACK}, False
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
@@ -410,7 +405,7 @@ class ZvukMusicProvider(MusicProvider):
 
     # Playlist management
 
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist.
 
         :param name: Playlist name.

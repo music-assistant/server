@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import override
 
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Playlist, Track  # noqa: TC002 - used in @use_cache
 
@@ -21,11 +20,6 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 
 class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     """Mixin class for handling playlist-related operations in NicovideoMusicProvider."""
-
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Supported types in playlists, and if they can be mixed."""
-        return {MediaType.TRACK}, False
 
     @override
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -118,7 +112,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             self.logger.warning("Failed to remove tracks from playlist %s", prov_playlist_id)
 
     @override
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new mylist using niconico.py
         create_result = await self.service_manager.mylist.create_mylist(

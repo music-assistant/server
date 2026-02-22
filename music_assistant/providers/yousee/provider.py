@@ -5,9 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import (
-    MediaType,
-)
 from music_assistant_models.errors import (
     LoginFailed,
 )
@@ -36,6 +33,9 @@ from music_assistant.providers.yousee.recommendations import YouSeeRecommendatio
 from music_assistant.providers.yousee.streaming import YouSeeStreamingManager
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import (
+        MediaType,
+    )
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -52,11 +52,6 @@ class YouSeeMusikProvider(MusicProvider):
     """Provider implementation for YouSee Musik."""
 
     auth: YouSeeAuthManager
-
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Supported types in playlists, and if they can be mixed."""
-        return {MediaType.TRACK}, False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -176,7 +171,7 @@ class YouSeeMusikProvider(MusicProvider):
         """Remove track(s) from playlist."""
         return await self.playlist.remove_tracks(prov_playlist_id, positions_to_remove)
 
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         return await self.playlist.create(name)
 

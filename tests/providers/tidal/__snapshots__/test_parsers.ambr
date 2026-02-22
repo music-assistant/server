@@ -273,12 +273,9 @@
         'url': 'https://tidal.com/browse/mix/mix_123',
       }),
     ]),
-    'sort_name': None,
-    'supported_mediatypes': list([
-      'track',
-    ]),
+    'sort_name': 'my daily discovery',
     'translation_key': None,
-    'uri': None,
+    'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
   })
 # ---
@@ -346,12 +343,9 @@
         'url': 'https://tidal.com/browse/playlist/aabbcc-1122-3344-5566',
       }),
     ]),
-    'sort_name': None,
-    'supported_mediatypes': list([
-      'track',
-    ]),
+    'sort_name': 'test playlist',
     'translation_key': None,
-    'uri': None,
+    'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
   })
 # ---
