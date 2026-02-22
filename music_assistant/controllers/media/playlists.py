@@ -545,7 +545,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # Builtin provider overrides to return list[PlaylistPlayableItem],
             # others return list[Track]. Since Track is part of PlaylistPlayableItem union,
             # this is safe at runtime. Type ignore needed because list is invariant.
-            return await provider.get_playlist_tracks(item_id, page=page)  # type: ignore[return-value]
+            return await provider.get_playlist_tracks(item_id, page=page)
 
     async def radio_mode_base_tracks(
         self,

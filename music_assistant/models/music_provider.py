@@ -33,6 +33,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
+    PlaylistPlayableItem,
 )
 
 from .provider import Provider
@@ -210,7 +211,7 @@ class MusicProvider(Provider):
         self,
         prov_playlist_id: str,
         page: int = 0,
-    ) -> list[Track]:
+    ) -> list[PlaylistPlayableItem]:
         """Get all playlist tracks for given playlist id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
@@ -1029,8 +1030,13 @@ class MusicProvider(Provider):
             "Start sync of Playlist Tracks to Music Assistant library for playlist %s.",
             provider_playlist.name,
         )
-        async for prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
-            library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
+        async for _prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
+            prov_track = _prov_track
+            if isinstance(_prov_track, PodcastEpisode):
+                # In MA, only full podcasts can be synced to the library
+                prov_track = await self.get_podcast(_prov_track.podcast.item_id)
+            controller = self.mass.music.get_controller(prov_track.media_type)
+            library_track = await controller.get_library_item_by_prov_mappings(
                 prov_track.provider_mappings,
             )
             try:
@@ -1038,11 +1044,12 @@ class MusicProvider(Provider):
                     # add item to the library
                     for prov_map in prov_track.provider_mappings:
                         prov_map.in_library = True
-                    library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                    library_track = await controller.add_item_to_library(prov_track)  # type: ignore[arg-type]
                 elif not self._check_provider_mappings(library_track, prov_track, True):
                     # existing library track but provider mapping doesn't match
-                    library_track = await self.mass.music.tracks.update_item_in_library(
-                        library_track.item_id, prov_track
+                    library_track = await controller.update_item_in_library(
+                        library_track.item_id,
+                        prov_track,  # type: ignore[arg-type]
                     )
                 fallback_genres = (
                     set(prov_track.metadata.genres)
@@ -1284,7 +1291,7 @@ class MusicProvider(Provider):
     async def iter_playlist_tracks(
         self,
         prov_playlist_id: str,
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
         """Iterate playlist tracks for the given provider playlist id."""
         page = 0
         while True:
