@@ -89,7 +89,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE_TRACKS,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
