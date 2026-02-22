@@ -111,7 +111,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             page += 1
 
     async def create_playlist(
-        self, name: str, media_types: set[MediaType], provider_instance_or_domain: str | None = None
+        self,
+        name: str,
+        media_types: set[MediaType] | None = None,
+        provider_instance_or_domain: str | None = None,
     ) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick builtin provider
@@ -121,10 +124,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise ProviderUnavailableError
         else:
             provider = self.mass.get_provider("builtin")
+
+        if media_types is None:
+            media_types = {MediaType.TRACK}
+
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
-        if ProviderFeature.PLAYLIST_CREATE not in provider.supported_features:
+        mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
+        supported_types: set[MediaType] = set()
+        if ProviderFeature.PLAYLIST_CREATE_TRACKS in provider.supported_features:
+            supported_types.add(MediaType.TRACK)
+        if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
+            supported_types.add(MediaType.AUDIOBOOK)
+        if ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES in provider.supported_features:
+            supported_types.add(MediaType.PODCAST_EPISODE)
+        if ProviderFeature.PLAYLIST_CREATE_RADIOS in provider.supported_features:
+            supported_types.add(MediaType.RADIO)
+
+        if not supported_types:
             msg = f"Provider {provider.name} does not support creating playlists"
             raise InvalidDataError(msg)
 
@@ -132,7 +150,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
 
-        supported_types, mix_allowed = provider.playlist_create_support
         if len(media_types.difference(supported_types)) > 0:
             msg = f"Provider {provider.name} only supports {supported_types} in playlists."
             raise InvalidDataError(msg)
