@@ -99,11 +99,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-<<<<<<< HEAD
-DB_SCHEMA_VERSION: Final[int] = 28
-=======
-DB_SCHEMA_VERSION: Final[int] = 27
->>>>>>> dev
+DB_SCHEMA_VERSION: Final[int] = 29
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2299,12 +2295,6 @@ class MusicController(CoreController):
             )
 
         if prev_version <= 27:
-<<<<<<< HEAD
-            # drop the old smart_fades_analysis table, replaced by audio_analysis
-            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
-            await self.__create_database_tables()
-
-=======
             # set streaming provider mappings to in_library=True, but only for items
             # that do not already have any mapping with in_library=True
             # (to avoid overwriting explicit values in multi-instance setups)
@@ -2524,7 +2514,11 @@ class MusicController(CoreController):
                     await db.execute(full_query)
                     await db.commit()
 
->>>>>>> dev
+        if prev_version <= 29:
+            # drop the old smart_fades_analysis table, replaced by audio_analysis
+            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
+            await self.__create_database_tables()
+
         # save changes
         await self._database.commit()
 
@@ -2912,6 +2906,15 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}_idx "
             f"on {DB_TABLE_AUDIO_ANALYSIS}(item_id,provider,media_type);"
+        )
+        # indexes on genre_media_item_mapping table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_id,media_type);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(genre_id,alias);"
         )
         # indexes on genre_media_item_mapping table
         await self.database.execute(
