@@ -148,6 +148,11 @@ class QobuzProvider(MusicProvider):
     # so make it an instance attribute
     throttler = ThrottlerManager(rate_limit=1, period=2)
 
+    @property
+    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
+        """Supported types in playlists, and if they can be mixed."""
+        return {MediaType.TRACK}, False
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
@@ -283,7 +288,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on Qobuz with the given name."""
         playlist_obj = await self._get_data(
             "playlist/create",

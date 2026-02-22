@@ -1748,9 +1748,12 @@
         'url': None,
       }),
     ]),
-    'sort_name': "guns n' roses - use your illusion",
+    'sort_name': None,
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
-    'uri': 'opensubsonic://playlist/Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
+    'uri': None,
     'version': '',
   })
 # ---

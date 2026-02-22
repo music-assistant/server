@@ -250,9 +250,12 @@
         'url': 'https://music.yandex.ru/users/12345/playlists/3',
       }),
     ]),
-    'sort_name': 'my playlist',
+    'sort_name': None,
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
-    'uri': 'yandex_music_instance://playlist/12345:3',
+    'uri': None,
     'version': '',
   })
 # ---
@@ -313,9 +316,12 @@
         'url': 'https://music.yandex.ru/users/99999/playlists/1',
       }),
     ]),
-    'sort_name': 'shared playlist',
+    'sort_name': None,
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
-    'uri': 'yandex_music_instance://playlist/99999:1',
+    'uri': None,
     'version': '',
   })
 # ---

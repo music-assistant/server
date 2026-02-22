@@ -187,6 +187,17 @@ class MyDemoMusicprovider(MusicProvider):
         # For streaming providers return True here but for local file based providers return False.
         return True
 
+    @property
+    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
+        """Return the media_types supported for playlist creation and if they can be mixed.
+
+        Example: {MediaType.TRACK, MediaType.AUDIOBOOK}, False means, that the provider supports
+        playlist for both tracks and audiobooks, but a playlist may only target one of these types.
+
+        Supported media_types are: AUDIOBOOK, PODCAST_EPISODE, RADIO, TRACK
+        """
+        return set(), False
+
     async def search(  # type: ignore[empty-body]
         self,
         search_query: str,
@@ -422,7 +433,7 @@ class MyDemoMusicprovider(MusicProvider):
         # Remove track(s) from a playlist.
         # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[empty-body]
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:  # type: ignore[empty-body]
         """Create a new playlist on provider with given name."""
         # Create a new playlist on the provider.
         # This is only called if the provider supports the PLAYLIST_CREATE feature.

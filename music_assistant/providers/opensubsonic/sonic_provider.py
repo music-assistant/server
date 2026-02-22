@@ -99,6 +99,11 @@ class OpenSonicProvider(MusicProvider):
     _reco_limit: int = 10
     _pagination_size: int = 200
 
+    @property
+    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
+        """Supported types in playlists, and if they can be mixed."""
+        return {MediaType.TRACK}, False
+
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
         port = self.config.get_value(CONF_PORT)
@@ -559,7 +564,7 @@ class OpenSonicProvider(MusicProvider):
             tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new empty playlist on the server."""
         if not await self.conn.create_playlist(name=name):
             raise ProviderPermissionDenied(

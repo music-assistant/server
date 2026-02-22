@@ -157,6 +157,11 @@ class SpotifyProvider(MusicProvider):
             return str(self._sp_user["display_name"])
         return None
 
+    @property
+    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
+        """Supported types in playlists, and if they can be mixed."""
+        return {MediaType.TRACK}, False
+
     ## Library retrieval methods (generators)
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""
@@ -699,7 +704,7 @@ class SpotifyProvider(MusicProvider):
         data = {"tracks": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         if self._sp_user is None:
             raise LoginFailed("User info not available - not logged in")
