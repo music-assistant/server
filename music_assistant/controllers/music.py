@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
@@ -50,6 +51,8 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_GENRES,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
@@ -59,12 +62,13 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
+    DEFAULT_GENRE_MAPPING,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
-from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
@@ -95,7 +99,11 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
+<<<<<<< HEAD
 DB_SCHEMA_VERSION: Final[int] = 28
+=======
+DB_SCHEMA_VERSION: Final[int] = 27
+>>>>>>> dev
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -199,7 +207,7 @@ class MusicController(CoreController):
     async def on_provider_unload(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
         # make sure to stop any running sync tasks first
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider.instance_id:
                 if sync_task.task:
                     sync_task.task.cancel()
@@ -862,7 +870,7 @@ class MusicController(CoreController):
             if not prov_mapping.in_library:
                 continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
@@ -873,9 +881,12 @@ class MusicController(CoreController):
 
     @api_command("music/library/add_item")
     async def add_item_to_library(
-        self, item: str | MediaItemType, overwrite_existing: bool = False
+        self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, ItemMapping):
+            # handle browse results that are returned as ItemMappings
+            item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
             full_item = await self.get_item_by_uri(item)
@@ -892,15 +903,18 @@ class MusicController(CoreController):
             )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
+            # we optimistically set in library to True to prevent items
+            # from disappearing when the provider doesn't support library edit
+            # or 2-way sync is disabled.
+            prov_mapping.in_library = True
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider or not provider.library_edit_supported(full_item.media_type):
                 continue
             if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
             prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
-            prov_mapping.in_library = True
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
@@ -930,7 +944,18 @@ class MusicController(CoreController):
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
+
+        # genres are library-only items with no provider mappings, nothing to refresh
+        if media_type == MediaType.GENRE:
+            return media_item
+
         library_id = media_item.item_id if media_item.provider == "library" else None
+
+        # cache in_library state before the provider fetch overwrites media_item
+        in_library_cache: dict[tuple[str, str], bool] = {}
+        for m in media_item.provider_mappings:
+            if m.in_library is not None:
+                in_library_cache[(m.provider_instance, m.item_id)] = m.in_library
 
         available_providers = get_global_cache_value("available_providers")
         if TYPE_CHECKING:
@@ -984,6 +1009,11 @@ class MusicController(CoreController):
         # update library item if needed (including refresh of the metadata etc.)
         if library_id is None:
             return media_item
+        # restore in_library state from before the refresh
+        for prov_mapping in media_item.provider_mappings:
+            key = (prov_mapping.provider_instance, prov_mapping.item_id)
+            if prov_mapping.in_library is None and key in in_library_cache:
+                prov_mapping.in_library = in_library_cache[key]
         library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
@@ -1224,17 +1254,20 @@ class MusicController(CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        if user:
-            # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
-
         # update generic playlog table (when not playing)
         if not is_playing:
-            await self.database.insert(
-                DB_TABLE_PLAYLOG,
-                params,
-                allow_replace=True,
-            )
+            if user:
+                user_ids = [user.user_id]
+            else:
+                # NOTE: if no user was found, we will alter the playlog for all users
+                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+            for user_id in user_ids:
+                params["userid"] = user_id
+                await self.database.insert(
+                    DB_TABLE_PLAYLOG,
+                    params,
+                    allow_replace=True,
+                )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -1301,10 +1334,14 @@ class MusicController(CoreController):
             user = provider_user
 
         if user:
+            user_ids = [user.user_id]
+        else:
             # NOTE: if no user was found, we will alter the playlog for all users
-            params["userid"] = user.user_id
+            user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        for user_id in user_ids:
+            params["userid"] = user_id
+            await self.database.delete(DB_TABLE_PLAYLOG, params)
 
-        await self.database.delete(DB_TABLE_PLAYLOG, params)
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
             if (
@@ -1643,7 +1680,7 @@ class MusicController(CoreController):
             key = f"sync_{provider_instance_id}_{media_type.value}"
             self.mass.cancel_timer(key)
         # cancel any running sync tasks
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance == provider_instance_id:
                 sync_task.task.cancel()
 
@@ -1715,6 +1752,34 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         db_item = await ctrl.get_library_item(db_id)
         await ctrl.match_providers(db_item)
+
+    async def update_provider_mapping(
+        self,
+        media_type: MediaType,
+        db_id: str | int,
+        provider_instance_id: str,
+        provider_item_id: str,
+        *,
+        available: bool | Any = UNSET,
+        in_library: bool | Any = UNSET,
+        is_unique: bool | None | Any = UNSET,
+        url: str | None | Any = UNSET,
+        details: str | None | Any = UNSET,
+        audio_format: AudioFormat | Any = UNSET,
+    ) -> None:
+        """Update an existing provider mapping for a library item."""
+        ctrl = self.get_controller(media_type)
+        await ctrl.update_provider_mapping(
+            item_id=db_id,
+            provider_instance_id=provider_instance_id,
+            provider_item_id=provider_item_id,
+            available=available,
+            in_library=in_library,
+            is_unique=is_unique,
+            url=url,
+            details=details,
+            audio_format=audio_format,
+        )
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""
@@ -1817,7 +1882,7 @@ class MusicController(CoreController):
     def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
-        for sync_task in self.in_progress_syncs:
+        for sync_task in list(self.in_progress_syncs):
             if sync_task.provider_instance != provider.instance_id:
                 continue
             if sync_task.task.done():
@@ -2234,10 +2299,232 @@ class MusicController(CoreController):
             )
 
         if prev_version <= 27:
+<<<<<<< HEAD
             # drop the old smart_fades_analysis table, replaced by audio_analysis
             await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
             await self.__create_database_tables()
 
+=======
+            # set streaming provider mappings to in_library=True, but only for items
+            # that do not already have any mapping with in_library=True
+            # (to avoid overwriting explicit values in multi-instance setups)
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain NOT IN "
+                "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
+                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
+                "AND NOT EXISTS ("
+                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
+                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
+                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
+                "AND pm2.in_library = 1)"
+            )
+
+        if prev_version <= 28:
+            # create genre/alias tables
+            await self.__create_database_tables()
+
+            # Use raw aiosqlite connection for bulk operations.
+            db = self._database._db
+
+            empty_metadata = serialize_to_json({})
+            empty_external_ids = serialize_to_json(set())
+
+            def _normalize_name(raw_name: str) -> tuple[str, str, str, str]:
+                name = raw_name.strip()
+                sort_name = name
+                search_name = create_safe_string(name, True, True)
+                search_sort_name = create_safe_string(sort_name or "", True, True)
+                return name, sort_name, search_name, search_sort_name
+
+            genre_cache: dict[str, int] = {}
+
+            genre_insert_sql = (
+                f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
+                "(name, sort_name, translation_key, description, favorite, "
+                "metadata, external_ids, genre_aliases, play_count, last_played, "
+                "search_name, search_sort_name) "
+                "VALUES (?, ?, ?, NULL, 0, ?, ?, ?, 0, 0, ?, ?)"
+            )
+            genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
+
+            async def _get_or_create_genre(
+                raw_name: str,
+                aliases: list[str] | None = None,
+                translation_key: str | None = None,
+            ) -> int:
+                name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
+                if not search_name:
+                    return 0
+                if search_name in genre_cache:
+                    return genre_cache[search_name]
+                aliases_json = serialize_to_json(aliases or [name])
+                row_id = await db.execute_insert(
+                    genre_insert_sql,
+                    (
+                        name,
+                        sort_name,
+                        translation_key,
+                        empty_metadata,
+                        empty_external_ids,
+                        aliases_json,
+                        search_name,
+                        search_sort_name,
+                    ),
+                )
+                if row_id and row_id[0]:
+                    genre_cache[search_name] = row_id[0]
+                    return row_id[0]
+                async with db.execute(genre_select_sql, (search_name,)) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        genre_cache[search_name] = row[0]
+                        return row[0]
+                return 0
+
+            # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases.
+            # Build n:n lookup: normalized alias name -> list of genre_ids.
+            # One alias can belong to multiple genres (e.g. "funk" is both
+            # a standalone genre and an alias of Soul/R&B).
+            alias_to_genre: dict[str, list[int]] = {}
+            for entry in DEFAULT_GENRE_MAPPING:
+                genre_name = entry.get("genre")
+                if not genre_name:
+                    continue
+                all_aliases = [genre_name, *entry.get("aliases", [])]
+                genre_id = await _get_or_create_genre(
+                    genre_name,
+                    aliases=all_aliases,
+                    translation_key=entry.get("translation_key"),
+                )
+                if not genre_id:
+                    continue
+                for alias in all_aliases:
+                    norm = create_safe_string(alias.strip(), True, True)
+                    if norm:
+                        alias_to_genre.setdefault(norm, [])
+                        if genre_id not in alias_to_genre[norm]:
+                            alias_to_genre[norm].append(genre_id)
+            await db.commit()
+
+            # Phase 2: Discover unique genre names from all media items,
+            # create genres for unknown names, then bulk-insert mappings.
+            media_tables = (
+                (DB_TABLE_TRACKS, MediaType.TRACK),
+                (DB_TABLE_ALBUMS, MediaType.ALBUM),
+                (DB_TABLE_ARTISTS, MediaType.ARTIST),
+                (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
+                (DB_TABLE_RADIOS, MediaType.RADIO),
+                (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
+                (DB_TABLE_PODCASTS, MediaType.PODCAST),
+            )
+
+            # 2a: Extract all unique raw genre names from metadata
+            union_parts = [
+                f"SELECT DISTINCT TRIM(g.value) AS raw_name "
+                f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
+                f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+                for table, _ in media_tables
+            ]
+            unique_names_sql = " UNION ".join(union_parts)
+            self.logger.info("Genre migration - unique names query:\n%s", unique_names_sql)
+            async with db.execute(unique_names_sql) as cursor:
+                unique_raw_names = [row[0] for row in await cursor.fetchall() if row[0]]
+            self.logger.info(
+                "Genre migration - discovered %d unique genre names", len(unique_raw_names)
+            )
+
+            # 2b: Ensure genres exist for all discovered names.
+            # Names already covered by Phase 1 aliases just reuse those genre(s).
+            # New names get their own genre. One alias can map to multiple genres (n:n).
+            raw_name_to_genres: dict[str, list[int]] = {}
+            for raw_name in unique_raw_names:
+                norm = create_safe_string(raw_name.strip(), True, True)
+                if not norm:
+                    continue
+                if norm in alias_to_genre:
+                    raw_name_to_genres[raw_name] = list(alias_to_genre[norm])
+                    self.logger.debug(
+                        "Genre migration - resolved %r -> genre_ids %s (alias match)",
+                        raw_name,
+                        alias_to_genre[norm],
+                    )
+                else:
+                    genre_id = await _get_or_create_genre(raw_name)
+                    if genre_id:
+                        raw_name_to_genres[raw_name] = [genre_id]
+                        alias_to_genre[norm] = [genre_id]
+                        self.logger.debug(
+                            "Genre migration - resolved %r -> genre_id %d (new genre)",
+                            raw_name,
+                            genre_id,
+                        )
+            await db.commit()
+            self.logger.info(
+                "Genre migration - resolved %d unique genre names", len(raw_name_to_genres)
+            )
+
+            # 2c: Add discovered raw names as aliases to their resolved genres
+            # so that frontend searches by raw name find the parent genre.
+            genre_new_aliases: dict[int, list[str]] = {}
+            for raw_name, gids in raw_name_to_genres.items():
+                for gid in gids:
+                    genre_new_aliases.setdefault(gid, []).append(raw_name)
+            for gid, new_aliases in genre_new_aliases.items():
+                async with db.execute(
+                    f"SELECT genre_aliases FROM {DB_TABLE_GENRES} WHERE item_id = :gid",
+                    {"gid": gid},
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if not row:
+                    continue
+                existing = json_loads(row[0]) if row[0] else []
+                existing_norms = {create_safe_string(a, True, True) for a in existing}
+                to_add = [
+                    a
+                    for a in new_aliases
+                    if create_safe_string(a, True, True) not in existing_norms
+                ]
+                if to_add:
+                    merged = existing + to_add
+                    await db.execute(
+                        f"UPDATE {DB_TABLE_GENRES} SET genre_aliases = :aliases "
+                        "WHERE item_id = :gid",
+                        {"aliases": json_dumps(merged), "gid": gid},
+                    )
+            await db.commit()
+
+            # 2d: Build CTE with (raw_name, genre_id) and do one INSERT per
+            # media type using json_each to map media items directly to genres.
+            # One raw_name can map to multiple genre_ids (n:n).
+            if raw_name_to_genres:
+                cte_values = ", ".join(
+                    f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
+                    for name, gids in raw_name_to_genres.items()
+                    for gid in gids
+                )
+                cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
+
+                for table, media_type in media_tables:
+                    full_query = (
+                        f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
+                        f"(genre_id, media_id, media_type, alias) "
+                        f"SELECT gl.genre_id, {table}.item_id, "
+                        f"'{media_type.value}', TRIM(g.value) "
+                        f"FROM {table}, "
+                        f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                        f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
+                        f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
+                        f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+                    )
+                    self.logger.info(
+                        "Genre migration - %s query:\n%s", media_type.value, full_query
+                    )
+                    await db.execute(full_query)
+                    await db.commit()
+
+>>>>>>> dev
         # save changes
         await self._database.commit()
 
@@ -2413,6 +2700,37 @@ class MusicController(CoreController):
         )
         await self.database.execute(
             f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRES}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [translation_key] TEXT,
+            [description] TEXT,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [genre_aliases] json NOT NULL DEFAULT '[]',
+            [play_count] INTEGER NOT NULL DEFAULT 0,
+            [last_played] INTEGER NOT NULL DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+            [search_name] TEXT NOT NULL,
+            [search_sort_name] TEXT NOT NULL
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
+            [genre_id] INTEGER NOT NULL,
+            [media_id] INTEGER NOT NULL,
+            [media_type] TEXT NOT NULL,
+            [alias] TEXT NOT NULL,
+            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+            UNIQUE(genre_id, media_id, media_type)
+            );"""
+        )
+        await self.database.execute(
+            f"""
             CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [track_id] INTEGER NOT NULL,
@@ -2496,6 +2814,7 @@ class MusicController(CoreController):
             DB_TABLE_RADIOS,
             DB_TABLE_AUDIOBOOKS,
             DB_TABLE_PODCASTS,
+            DB_TABLE_GENRES,
         ):
             # index on favorite column
             await self.database.execute(
@@ -2594,6 +2913,15 @@ class MusicController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}_idx "
             f"on {DB_TABLE_AUDIO_ANALYSIS}(item_id,provider,media_type);"
         )
+        # indexes on genre_media_item_mapping table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_id,media_type);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(genre_id,alias);"
+        )
         # unique index on playlog table
         await self.database.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
@@ -2612,6 +2940,7 @@ class MusicController(CoreController):
             "radios",
             "audiobooks",
             "podcasts",
+            "genres",
         ):
             await self.database.execute(
                 f"""
@@ -2644,7 +2973,9 @@ class MusicController(CoreController):
             self.audiobooks,
             self.podcasts,
         ):
-            async for db_item in ctrl.iter_library_items(provider=list(multi_instance_providers)):
+            async for db_item in ctrl.iter_library_items(
+                provider=list(multi_instance_providers), library_items_only=False
+            ):
                 if self.match_provider_instances(db_item):
                     await ctrl.update_item_in_library(db_item.item_id, db_item)
                 # prevent overwhelming the event loop

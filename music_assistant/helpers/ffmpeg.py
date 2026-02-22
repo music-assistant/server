@@ -109,10 +109,17 @@ class FFMpeg(AsyncProcess):
                 self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                # Log unexpected exceptions from the stdin feeder before suppressing
+                # The audio source may have failed, and we need visibility into this
+                self.logger.warning(
+                    "FFMpeg stdin feeder task ended with error: %s",
+                    err,
+                )
         if self._stderr_reader_task:
             if not self._stderr_reader_task.done():
                 self._stderr_reader_task.cancel()

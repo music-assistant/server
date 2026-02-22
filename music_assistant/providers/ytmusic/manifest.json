@@ -7,7 +7,7 @@
   "codeowners": ["@MarvinSchenkel"],
   "credits": ["[ytmusicapi](https://github.com/sigma67/ytmusicapi)"],
   "requirements": [
-    "ytmusicapi==1.11.3",
+    "ytmusicapi==1.11.5",
     "duration-parser==1.0.1",
     "deno==2.6.3"
   ],

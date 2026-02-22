@@ -19,6 +19,7 @@ CONF_HOUSEHOLD_ID = "household_id"
 
 # Player Features
 PLAYER_FEATURES = (
+    PlayerFeature.PLAY_MEDIA,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,

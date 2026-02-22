@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import MASS_LOGO, SILENCE_FILE_LONG, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import (
+    DEFAULT_GENRES,
+    MASS_LOGO,
+    SILENCE_FILE_LONG,
+    VARIOUS_ARTISTS_FANART,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -144,13 +150,37 @@ class TestProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return False
 
+    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+        """Retrieve library genres from the provider."""
+        for genre in DEFAULT_GENRES:
+            yield genre
+
+    async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
+        """Return genre names for a single item."""
+        if media_type == MediaType.ARTIST:
+            seed = item_id
+        elif media_type == MediaType.ALBUM:
+            seed = item_id.split("_", 2)[0]
+        elif media_type == MediaType.TRACK:
+            seed = item_id.split("_", 3)[0]
+        elif media_type == MediaType.PODCAST:
+            seed = item_id
+        elif media_type == MediaType.PODCAST_EPISODE:
+            seed = item_id.split("_", 2)[0]
+        elif media_type == MediaType.AUDIOBOOK:
+            seed = item_id
+        else:
+            return set()
+        return {random.Random(seed).choice(DEFAULT_GENRES)}
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         artist_idx, album_idx, track_idx = prov_track_id.split("_", 3)
+        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)
         return Track(
             item_id=prov_track_id,
             provider=self.instance_id,
-            name=f"Test Track {artist_idx} - {album_idx} - {track_idx}",
+            name=f"{genre} Test Track {artist_idx} - {album_idx} - {track_idx}",
             duration=60,
             artists=UniqueList([await self.get_artist(artist_idx)]),
             album=await self.get_album(f"{artist_idx}_{album_idx}"),
@@ -161,18 +191,22 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 ),
             },
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
             disc_number=1,
             track_number=int(track_idx),
         )
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        genre = random.Random(prov_artist_id).choice(DEFAULT_GENRES)
         return Artist(
             item_id=prov_artist_id,
             provider=self.instance_id,
-            name=f"Test Artist {prov_artist_id}",
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART])),
+            name=f"{genre} Test Artist {prov_artist_id}",
+            metadata=MediaItemMetadata(
+                images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
+                genres={genre},
+            ),
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_artist_id,
@@ -185,10 +219,11 @@ class TestProvider(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full artist details by id."""
         artist_idx, album_idx = prov_album_id.split("_", 2)
+        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)
         return Album(
             item_id=prov_album_id,
             provider=self.instance_id,
-            name=f"Test Album {album_idx}",
+            name=f"{genre} Test Album {album_idx}",
             artists=UniqueList([await self.get_artist(artist_idx)]),
             provider_mappings={
                 ProviderMapping(
@@ -197,16 +232,17 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
         )
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
+        genre = random.Random(prov_podcast_id).choice(DEFAULT_GENRES)
         return Podcast(
             item_id=prov_podcast_id,
             provider=self.instance_id,
-            name=f"Test Podcast {prov_podcast_id}",
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
+            name=f"{genre} Test Podcast {prov_podcast_id}",
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_podcast_id,
@@ -219,10 +255,11 @@ class TestProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
+        genre = random.Random(prov_audiobook_id).choice(DEFAULT_GENRES)
         return Audiobook(
             item_id=prov_audiobook_id,
             provider=self.instance_id,
-            name=f"Test Audiobook {prov_audiobook_id}",
+            name=f"{genre} Test Audiobook {prov_audiobook_id}",
             metadata=MediaItemMetadata(
                 images=UniqueList([DEFAULT_THUMB]),
                 description="This is a description for Test Audiobook",
@@ -231,6 +268,7 @@ class TestProvider(MusicProvider):
                     MediaItemChapter(position=2, name="Chapter 2", start=20, end=40),
                     MediaItemChapter(position=2, name="Chapter 3", start=40),
                 ],
+                genres={genre},
             ),
             provider_mappings={
                 ProviderMapping(
@@ -303,10 +341,11 @@ class TestProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         podcast_id, episode_idx = prov_episode_id.split("_", 2)
+        genre = random.Random(podcast_id).choice(DEFAULT_GENRES)
         return PodcastEpisode(
             item_id=prov_episode_id,
             provider=self.instance_id,
-            name=f"Test PodcastEpisode {podcast_id}-{episode_idx}",
+            name=f"{genre} Test PodcastEpisode {podcast_id}-{episode_idx}",
             duration=60,
             podcast=ItemMapping(
                 item_id=podcast_id,
@@ -324,7 +363,8 @@ class TestProvider(MusicProvider):
             },
             metadata=MediaItemMetadata(
                 description="This is a description for "
-                f"Test PodcastEpisode {episode_idx} of Test Podcast {podcast_id}"
+                f"Test PodcastEpisode {episode_idx} of Test Podcast {podcast_id}",
+                genres={genre},
             ),
             position=int(episode_idx),
         )

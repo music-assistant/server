@@ -1,21 +1,41 @@
 """All constants for Music Assistant."""
 
+import json
 import pathlib
 from copy import deepcopy
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from music_assistant_models.config_entries import (
     MULTI_VALUE_SPLITTER,
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
+from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
 
+# Type alias for items that can be added to playlists
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
 
-API_SCHEMA_VERSION: Final[int] = 28
+# Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
+PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
+    MediaType.TRACK,
+    MediaType.RADIO,
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
+
+# API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
+# or small non-breaking changes to existing commands
+API_SCHEMA_VERSION: Final[int] = 29
+
+# MIN_SCHEMA_VERSION is the minimum API schema version that the current server
+# version can work with. Only bump when there are breaking changes to existing
+# API commands or models, such as removing fields or changing field types.
+# Note that doing so will break compatibility with all clients in the field
+# (including Home Assistant) that have not yet been updated to the new API
+# schema version, so only bump this when absolutely necessary.
 MIN_SCHEMA_VERSION: Final[int] = 28
 
 
@@ -33,6 +53,7 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
+GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genre_mapping.json")
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -91,6 +112,13 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
+CONF_LINKED_PROTOCOL_PLAYER_IDS: Final[str] = (
+    "linked_protocol_player_ids"  # cached for fast restart
+)
+CONF_PROTOCOL_PARENT_ID: Final[str] = (
+    "protocol_parent_id"  # cached native player ID for protocol player
+)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -100,6 +128,10 @@ CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
 CONF_AUTH_ALLOW_SELF_REGISTRATION: Final[str] = "auth_allow_self_registration"
 CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
+CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
+CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -124,6 +156,47 @@ DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
+DB_TABLE_GENRES: Final[str] = "genres"
+DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+
+
+def load_genre_mapping() -> list[dict[str, Any]]:
+    """Load default genre mapping from JSON file.
+
+    :return: List of genre mapping dictionaries with 'genre' and 'aliases' keys.
+    :raises FileNotFoundError: If genre_mapping.json is missing.
+    :raises ValueError: If JSON is malformed or missing required fields.
+    """
+    try:
+        content = GENRE_MAPPING_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except FileNotFoundError as err:
+        msg = f"Genre mapping file not found: {GENRE_MAPPING_FILE}"
+        raise FileNotFoundError(msg) from err
+    except json.JSONDecodeError as err:
+        msg = f"Invalid JSON in genre mapping file: {GENRE_MAPPING_FILE}"
+        raise ValueError(msg) from err
+
+    if not isinstance(data, list):
+        msg = f"Genre mapping must be a list, got {type(data).__name__}"
+        raise TypeError(msg)
+
+    for idx, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            msg = f"Genre mapping entry {idx} must be a dict, got {type(entry).__name__}"
+            raise TypeError(msg)
+        if "genre" not in entry:
+            msg = f"Genre mapping entry {idx} missing required field 'genre'"
+            raise ValueError(msg)
+        if "aliases" not in entry:
+            msg = f"Genre mapping entry {idx} missing required field 'aliases'"
+            raise ValueError(msg)
+
+    return cast("list[dict[str, Any]]", data)
+
+
+DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping()
+DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
 
 # all other
@@ -142,7 +215,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
-SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
+
 
 ####### REUSABLE CONFIG ENTRIES #######
 
@@ -220,7 +293,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
-    range=(-70, -5),
+    range=(-30, -5),
     default_value=-17,
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
@@ -701,6 +774,19 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     category="sync_options",
 )
 
+CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
+    key="library_sync_deletions",
+    type=ConfigEntryType.BOOLEAN,
+    label="Sync library deletions",
+    description="When enabled, items removed from the provider's library will also be "
+    "hidden from the Music Assistant library.\n\n"
+    "When disabled, items removed from the provider will remain visible in the "
+    "Music Assistant library.",
+    default_value=True,
+    category="sync_options",
+    advanced=True,
+)
+
 
 CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
     ConfigValueOption("Disable automatic sync for this mediatype", 0),
@@ -896,6 +982,8 @@ ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_MUTE_LOCK: Final[str] = "mute_lock"
+ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -916,8 +1004,50 @@ SOUNDTRACK_INDICATORS = [
     r"\boriginal.*cast.*recording\b",
 ]
 
+# how often we report the playback progress in the player_queues controller
+PLAYBACK_REPORT_INTERVAL_SECONDS = 30
+
 # List of providers that do not use HTTP streaming
 # but consume raw audio data over other protocols
 # for provider domains in this list, we won't show the default
 # http-streaming specific config options in player settings
 NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
+
+# Protocol priority values (lower = more preferred)
+PROTOCOL_PRIORITY: Final[dict[str, int]] = {
+    "sendspin": 10,
+    "squeezelite": 20,
+    "chromecast": 30,
+    "airplay": 40,
+    "dlna": 50,
+}
+
+PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from (inactive) protocol implementations
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
+    PlayerFeature.SET_MEMBERS,
+}
+
+ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the active output protocol
+    *PROTOCOL_FEATURES,
+    PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.MULTI_DEVICE_DSP,
+    PlayerFeature.PAUSE,
+}
+
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+    # list of providers that are setup by default once
+    # (and they can be removed/disabled by the user if they want to)
+    # the boolean value indicates whether it needs to be discovered on mdns
+    ("airplay", False),
+    ("chromecast", False),
+    ("dlna", False),
+    ("sonos", True),
+    ("bluesound", True),
+    ("heos", True),
+}
