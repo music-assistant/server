@@ -243,7 +243,7 @@ class AirPlayPlayer(Player):
                 range=(AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS, AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
                 label="Milliseconds of data to buffer",
                 description=(
-                    "The number of milliseconds of data to buffer in the CLI binary\n"
+                    "The number of milliseconds of data to buffer\n"
                     "NOTE: This adds to the latency experienced for commencement "
                     "of playback. \n"
                     "Try increasing value if playback is unreliable."
