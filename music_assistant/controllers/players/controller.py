@@ -1001,6 +1001,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_enqueue_next_media(player_id, media)
 
     @api_command("players/cmd/set_members")
+    @handle_player_command(lock=True)
     async def cmd_set_members(
         self,
         target_player: str,
