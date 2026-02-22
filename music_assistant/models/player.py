@@ -833,7 +833,7 @@ class Player(ABC):
         This is a convenience property that returns True if the player is set to be exposed
         to Home Assistant, based on the config entry.
         """
-        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
+        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
 
     @property
     @final
