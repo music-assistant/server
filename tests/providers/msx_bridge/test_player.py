@@ -117,11 +117,20 @@ async def test_wait_for_media_timeout(player: MSXPlayer) -> None:
     assert result is None
 
 
-async def test_stop_clears_media_ready_event(player: MSXPlayer) -> None:
-    """stop() should clear _media_ready event."""
+async def test_stop_does_not_clear_media_ready_event(player: MSXPlayer) -> None:
+    """stop() must NOT clear _media_ready (C1 fix).
+
+    Clearing it in stop() would race with a concurrent wait_for_media() call.
+    The wait_for_media() fast-path already guards on _attr_current_media, so
+    leaving the event set is safe.
+    """
     player._media_ready.set()
     await player.stop()
-    assert not player._media_ready.is_set()
+    # _attr_current_media is None after stop — wait_for_media returns None even
+    # though the event may still be set.
+    assert player._attr_current_media is None
+    result = await player.wait_for_media(timeout=0.05)
+    assert result is None
 
 
 async def test_play_resume(player: MSXPlayer) -> None:

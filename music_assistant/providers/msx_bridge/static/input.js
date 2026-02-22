@@ -496,7 +496,7 @@ function InputHandler() {
     var SPACE_CHAR = " ";
     var SPACE_INDICATOR_CHAR = "{ico:msx-black-soft:space-bar}";
     var SPACE_REGEX = / /g;
-    var INVALID_REGEX = /[{}\\]/g;
+    var INVALID_REGEX = /[{}\\<>]/g;
 
     var infoData = null;
 

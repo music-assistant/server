@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from html import escape as html_escape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -250,10 +251,14 @@ class MSXHTTPServer:
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve status dashboard."""
         players = self.provider.players
-        base = f"http://{request.host}"
+        base = self._get_prefix(request)
         player_rows = []
         for p in players:
-            row = f'<li class="player-row"><span>{p.display_name} — {p.playback_state.value}</span>'
+            row = (
+                f'<li class="player-row"><span>'
+                f"{html_escape(p.display_name)} — {html_escape(p.playback_state.value)}"
+                f"</span>"
+            )
             row += f'<form method="post" action="{base}/api/quick-stop/{p.player_id}" '
             row += 'style="display:inline">'
             row += '<button type="submit" class="btn">Quick stop</button></form></li>'
@@ -336,7 +341,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_start_json(self, request: web.Request) -> web.Response:
         """Return MSX start configuration pointing to the launcher menu."""
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         return web.json_response(
             {
                 "name": "Music Assistant",
@@ -347,7 +352,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_launcher_json(self, request: web.Request) -> web.Response:
         """Return MSX launcher page with MSX Player and Web Kiosk options."""
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         content = MsxContent(
             headline="Music Assistant",
             template=MsxTemplate(
@@ -410,7 +415,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_menu(self, request: web.Request) -> web.Response:
         """Return the main library menu as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         items = [
             (
                 "Recently played",
@@ -449,10 +454,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_albums(self, request: web.Request) -> web.Response:
         """Return albums as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        albums = await self.provider.mass.music.albums.library_items(limit=limit, offset=offset)
+        try:
+            albums = await asyncio.wait_for(
+                self.provider.mass.music.albums.library_items(limit=limit, offset=offset),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.exception("Failed to fetch albums")
+            albums = []
 
         items = await asyncio.gather(
             *(map_album_to_msx(a, prefix, self.provider, device_param) for a in albums)
@@ -471,10 +483,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_artists(self, request: web.Request) -> web.Response:
         """Return artists as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        artists = await self.provider.mass.music.artists.library_items(limit=limit, offset=offset)
+        try:
+            artists = await asyncio.wait_for(
+                self.provider.mass.music.artists.library_items(limit=limit, offset=offset),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.exception("Failed to fetch artists")
+            artists = []
 
         items = [map_artist_to_msx(a, prefix, self.provider, device_param) for a in artists]
         content = MsxContent(
@@ -491,12 +510,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_playlists(self, request: web.Request) -> web.Response:
         """Return playlists as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        playlists = await self.provider.mass.music.playlists.library_items(
-            limit=limit, offset=offset
-        )
+        try:
+            playlists = await asyncio.wait_for(
+                self.provider.mass.music.playlists.library_items(limit=limit, offset=offset),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.exception("Failed to fetch playlists")
+            playlists = []
 
         items = [map_playlist_to_msx(p, prefix, self.provider, device_param) for p in playlists]
         content = MsxContent(
@@ -513,10 +537,17 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_tracks(self, request: web.Request) -> web.Response:
         """Return tracks as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
+        try:
+            tracks = await asyncio.wait_for(
+                self.provider.mass.music.tracks.library_items(limit=limit, offset=offset),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.exception("Failed to fetch tracks")
+            tracks = []
 
         playlist_base = f"{prefix}/msx/playlist/tracks.json?limit={limit}&offset={offset}"
         playlist_base = append_device_param(playlist_base, device_param)
@@ -546,10 +577,15 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_recently_played(self, request: web.Request) -> web.Response:
         """Return recently played tracks as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
-        tracks = await self.provider.mass.music.tracks.library_items(
-            limit=50, order_by="last_played"
-        )
+        prefix = self._get_prefix(request)
+        try:
+            tracks = await asyncio.wait_for(
+                self.provider.mass.music.tracks.library_items(limit=50, order_by="last_played"),
+                timeout=10.0,
+            )
+        except Exception:
+            logger.exception("Failed to fetch recently played tracks")
+            tracks = []
         playlist_base = f"{prefix}/msx/playlist/recently-played.json"
         playlist_base = append_device_param(playlist_base, device_param)
         items = [
@@ -578,7 +614,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_search_page(self, request: web.Request) -> web.Response:
         """Return a content page whose page-level action launches the Input Plugin keyboard."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         search_url = append_device_param(
             f"{prefix}/msx/search-input.json?q={{INPUT}}", device_param
         )
@@ -609,7 +645,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_search_input(self, request: web.Request) -> web.Response:
         """Return search results for the MSX Input Plugin (search keyboard)."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         query = request.query.get("q", "")
         if not query:
             content = MsxContent(
@@ -648,7 +684,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_search(self, request: web.Request) -> web.Response:
         """Return search results as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         query = request.query.get("q", "")
         if not query:
             return web.json_response(
@@ -720,7 +756,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_album_tracks(self, request: web.Request) -> web.Response:
         """Return tracks for an album as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         item_id = request.match_info["item_id"]
         provider = request.query.get("provider", "library")
         try:
@@ -758,7 +794,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_artist_albums(self, request: web.Request) -> web.Response:
         """Return albums for an artist as an MSX content page."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         item_id = request.match_info["item_id"]
         try:
             albums = await self.provider.mass.music.artists.albums(item_id, "library")
@@ -784,7 +820,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_playlist_tracks(self, request: web.Request) -> web.Response:
         """Return tracks for a playlist as an MSX content page."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         item_id = request.match_info["item_id"]
         try:
             tracks = [
@@ -823,7 +859,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_album_playlist(self, request: web.Request) -> web.Response:
         """Return album tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         item_id = request.match_info["item_id"]
         provider_name = request.query.get("provider", "library")
         start = _int_param(request.query, "start", 0)
@@ -847,7 +883,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_playlist_playlist(self, request: web.Request) -> web.Response:
         """Return playlist tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         item_id = request.match_info["item_id"]
         start = _int_param(request.query, "start", 0)
         try:
@@ -870,7 +906,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_tracks_playlist(self, request: web.Request) -> web.Response:
         """Return library tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
         start = _int_param(request.query, "start", 0)
@@ -888,7 +924,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_recently_played_playlist(self, request: web.Request) -> web.Response:
         """Return recently played tracks as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(
             limit=50, order_by="last_played"
@@ -906,7 +942,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_msx_search_playlist(self, request: web.Request) -> web.Response:
         """Return search track results as an MSX playlist JSON."""
         player_id, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         query = request.query.get("q", "")
         start = _int_param(request.query, "start", 0)
         if not query:
@@ -930,7 +966,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_queue_playlist(self, request: web.Request) -> web.Response:
         """Return the current MA queue as an MSX native playlist."""
         _, device_param, _ = await self._ensure_player_for_request(request)
-        prefix = f"http://{request.host}"
+        prefix = self._get_prefix(request)
         player_id = request.match_info["player_id"]
         queue_id = request.query.get("queue_id", player_id)
         start = _int_param(request.query, "start", 0)
@@ -1066,7 +1102,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             "Accept-Ranges": "none",
         }
         if duration and bytes_per_sec:
-            headers["Content-Length"] = str(int(duration * bytes_per_sec))
+            capped_duration = min(float(duration), 43200)  # cap at 12h
+            headers["Content-Length"] = str(int(capped_duration * bytes_per_sec))
         return pcm_format, out_format, headers
 
     async def _serve_audio_stream(
@@ -1491,7 +1528,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def broadcast_playlist(self, player_id: str, playlist_url: str) -> None:
         """Notify subscribed WebSocket clients to load an MSX native playlist."""
@@ -1517,7 +1554,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def broadcast_goto_index(self, player_id: str, index: int) -> None:
         """Notify subscribed WebSocket clients to jump to a playlist index."""
@@ -1534,7 +1571,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def cancel_streams_for_player(self, player_id: str) -> None:
         """Cancel stream tasks and abort connections for the given player."""
@@ -1590,7 +1627,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps({"type": "pause"})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def broadcast_resume(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to resume playback."""
@@ -1605,7 +1642,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps({"type": "resume"})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def broadcast_stop(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to stop playback."""
@@ -1632,7 +1669,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
         """Notify subscribed WebSocket clients to seek to a position."""
@@ -1643,14 +1680,18 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg = json.dumps({"type": "seek", "position": position_seconds})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg))
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
-    async def _ws_send(self, ws: web.WebSocketResponse, text: str) -> None:
-        """Send text to WebSocket, ignore errors."""
+    async def _ws_send(
+        self, ws: web.WebSocketResponse, text: str, player_id: str | None = None
+    ) -> None:
+        """Send text to WebSocket; on failure warn and remove the stale client."""
         try:
             await ws.send_str(text)
         except Exception as exc:
-            logger.debug("WebSocket send failed: %s", exc)
+            logger.warning("WebSocket send failed (player=%s): %s", player_id, exc)
+            if player_id:
+                self._ws_clients.get(player_id, set()).discard(ws)
 
     async def _cmd_pause_no_echo(self, player_id: str) -> None:
         """Pause player without echoing back to MSX."""
@@ -1685,7 +1726,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         msg_type = msg.get("type")
         if msg_type == "position":
             position = msg.get("position")
-            if position is not None:
+            if position is not None and isinstance(position, (int, float)):
                 player = self.provider.mass.players.get_player(player_id)
                 if player and isinstance(player, MSXPlayer):
                     player.update_position(float(position))
@@ -1694,7 +1735,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
                 position = msg.get("position")
-                if position is not None:
+                if position is not None and isinstance(position, (int, float)):
                     player.update_position(float(position))
                 self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
@@ -2007,21 +2048,21 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         """Pause playback."""
-        player_id = request.match_info["player_id"]
+        player_id = _strip_known_extension(request.match_info["player_id"])
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_pause(player_id)
         return web.json_response({"status": "ok"})
 
     async def _handle_stop(self, request: web.Request) -> web.Response:
         """Stop playback."""
-        player_id = request.match_info["player_id"]
+        player_id = _strip_known_extension(request.match_info["player_id"])
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_stop(player_id)
         return web.json_response({"status": "ok"})
 
     async def _handle_quick_stop(self, request: web.Request) -> web.Response:
         """Stop playback on MSX immediately (same signal as Disable)."""
-        player_id = request.match_info["player_id"]
+        player_id = _strip_known_extension(request.match_info["player_id"])
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_stop(player_id)
         self.provider.notify_play_stopped(player_id)
@@ -2032,19 +2073,29 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_next(self, request: web.Request) -> web.Response:
         """Skip to next track."""
-        player_id = request.match_info["player_id"]
+        player_id = _strip_known_extension(request.match_info["player_id"])
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_next_track(player_id)
         return web.json_response({"status": "ok"})
 
     async def _handle_previous(self, request: web.Request) -> web.Response:
         """Skip to previous track."""
-        player_id = request.match_info["player_id"]
+        player_id = _strip_known_extension(request.match_info["player_id"])
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_previous_track(player_id)
         return web.json_response({"status": "ok"})
 
     # --- Helpers ---
+
+    def _get_prefix(self, request: web.Request) -> str:
+        """Build URL prefix for JSON content, using our known port.
+
+        Strips any port from the Host header and substitutes self.port to prevent
+        a spoofed Host header from redirecting generated URLs to a foreign host.
+        The IP portion is preserved so the TV can reach us by the correct address.
+        """
+        host_addr = request.host.split(":")[0]
+        return f"http://{host_addr}:{self.port}"
 
     def _get_player_id_and_device_param(self, request: web.Request) -> tuple[str, str]:
         """

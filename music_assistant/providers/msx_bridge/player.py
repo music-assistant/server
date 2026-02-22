@@ -116,6 +116,7 @@ class MSXPlayer(Player):
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self.current_stream_url = media.uri
         self._attr_current_media = media
+        self._media_ready.clear()
         self._media_ready.set()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0.0
@@ -330,7 +331,6 @@ class MSXPlayer(Player):
         self.logger.info("stop on %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
-        self._media_ready.clear()
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self._last_ws_position = None
@@ -414,9 +414,10 @@ class MSXPlayer(Player):
         """Wait for play_media() to set current_media, with timeout.
 
         Fast path: current_media already set — return immediately.
-        Slow path: wait for play_media() to signal. The event is reset only by stop(),
-        so we never clear it here (avoids a race where play_media() sets the event
-        between the fast-path check and a clear() call).
+        Slow path: wait for play_media() to signal. The event is cleared at the start
+        of play_media() (not in stop()), so it can never be left set with stale data.
+        After stop(), _attr_current_media is None — this method returns None even if
+        the event happens to still be set.
         """
         if self._attr_current_media is not None and self._media_ready.is_set():
             return self._attr_current_media

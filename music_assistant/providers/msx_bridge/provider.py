@@ -49,6 +49,7 @@ class SharedGroupStream:
         self.producer_task: asyncio.Task[None] | None = None
         self.started = asyncio.Event()
         self.finished = False
+        self.producer_error: Exception | None = None
         self._lock = asyncio.Lock()
         self._total_bytes = 0
         self._start_time: float = 0
@@ -109,8 +110,9 @@ class SharedGroupStream:
         except asyncio.CancelledError:
             logger.debug("[SharedStream:%s] Producer cancelled", self.group_id)
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("[SharedStream:%s] Producer error", self.group_id)
+            self.producer_error = exc
         finally:
             self.finished = True
             # Ensure subscribers waiting on `started` can proceed even if no chunks were produced
@@ -155,6 +157,15 @@ class SharedGroupStream:
                     player_id,
                 )
                 raise
+
+            if self.producer_error is not None:
+                logger.error(
+                    "[SharedStream:%s] Producer failed before subscriber %s could join: %s",
+                    self.group_id,
+                    player_id,
+                    self.producer_error,
+                )
+                raise self.producer_error
 
             # Phase 1: Snapshot buffer and register for live chunks atomically.
             # Holding the lock ensures the producer cannot distribute a new chunk
@@ -244,6 +255,7 @@ class MSXBridgeProvider(PlayerProvider):
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
+    _unregister_tasks: set[asyncio.Task[None]]  # fire-and-forget unregister tasks
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
@@ -251,10 +263,20 @@ class MSXBridgeProvider(PlayerProvider):
         self._player_last_activity = {}
         self._pending_unregisters = {}
         self._shared_streams = {}
+        self._unregister_tasks = set()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""
-        port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
+        raw_port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
+        port = max(1, min(65535, int(raw_port)))
+        raw_timeout = cast(
+            "int", self.config.get_value(CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT)
+        )
+        if raw_timeout != int(raw_timeout) or raw_timeout < 1 or raw_timeout > 1440:
+            self.logger.warning(
+                "player_idle_timeout value %s is out of range [1, 1440], clamping",
+                raw_timeout,
+            )
         self.grouping_enabled = bool(
             self.config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING)
         )
@@ -283,6 +305,14 @@ class MSXBridgeProvider(PlayerProvider):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._timeout_task
             self._timeout_task = None
+
+        # Cancel and await any in-flight unregister tasks before proceeding
+        for task in list(self._unregister_tasks):
+            if not task.done():
+                task.cancel()
+        if self._unregister_tasks:
+            await asyncio.gather(*self._unregister_tasks, return_exceptions=True)
+        self._unregister_tasks.clear()
 
         # Cleanup shared streams
         await self.cleanup_shared_streams()
@@ -503,9 +533,19 @@ class MSXBridgeProvider(PlayerProvider):
 
     async def _run_idle_timeout_loop(self) -> None:
         """Background task: unregister players idle longer than configured timeout."""
-        timeout_minutes = cast(
-            "int",
-            self.config.get_value(CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT),
+        timeout_minutes = max(
+            1,
+            min(
+                1440,
+                int(
+                    cast(
+                        "int",
+                        self.config.get_value(
+                            CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT
+                        ),
+                    )
+                ),
+            ),
         )
         interval_seconds = 60
         while not self.mass.closing:
@@ -525,7 +565,9 @@ class MSXBridgeProvider(PlayerProvider):
                         player.player_id,
                         timeout_minutes,
                     )
-                    self.mass.create_task(self._handle_player_unregister(player.player_id))
+                    task = self.mass.create_task(self._handle_player_unregister(player.player_id))
+                    self._unregister_tasks.add(task)
+                    task.add_done_callback(self._unregister_tasks.discard)
 
     # --- Group Stream Management ---
 
@@ -624,7 +666,9 @@ class MSXBridgeProvider(PlayerProvider):
         """Remove and cleanup shared stream for a group."""
         if stream := self._shared_streams.pop(group_id, None):
             logger.info("[GroupStream] Removed shared stream for group %s", group_id)
-            self.mass.create_task(stream.stop())
+            task = self.mass.create_task(stream.stop())
+            self._unregister_tasks.add(task)
+            task.add_done_callback(self._unregister_tasks.discard)
 
     async def get_ma_stream_url(
         self,

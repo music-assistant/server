@@ -284,11 +284,9 @@
                 return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);
             });
         }
-        console.warn("MSX Bridge: crypto API unavailable, falling back to Math.random() for device ID generation");
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            var r = Math.random() * 16 | 0;
-            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-        });
+        // Crypto API completely unavailable — generate a timestamp-based fallback.
+        // This is non-secure but prevents cross-TV player ID collisions better than Math.random().
+        return 'msx-' + Date.now().toString(36) + '-' + Math.floor(performance.now() * 1000).toString(36);
     }
 
     // Try multiple methods to get a device ID from MSX/TVX
