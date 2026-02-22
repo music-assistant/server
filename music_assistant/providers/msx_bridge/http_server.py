@@ -1654,21 +1654,25 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _cmd_pause_no_echo(self, player_id: str) -> None:
         """Pause player without echoing back to MSX."""
+        player = self.provider.mass.players.get_player(player_id)
+        if not (player and isinstance(player, MSXPlayer)):
+            return
+        player._skip_ws_notify = True
         try:
             await self.provider.mass.players.cmd_pause(player_id)
         finally:
-            player = self.provider.mass.players.get_player(player_id)
-            if player and isinstance(player, MSXPlayer):
-                player._skip_ws_notify = False
+            player._skip_ws_notify = False
 
     async def _cmd_play_no_echo(self, player_id: str) -> None:
         """Resume player without echoing back to MSX."""
+        player = self.provider.mass.players.get_player(player_id)
+        if not (player and isinstance(player, MSXPlayer)):
+            return
+        player._skip_ws_notify = True
         try:
             await self.provider.mass.players.cmd_play(player_id)
         finally:
-            player = self.provider.mass.players.get_player(player_id)
-            if player and isinstance(player, MSXPlayer):
-                player._skip_ws_notify = False
+            player._skip_ws_notify = False
 
     def _handle_ws_message(self, player_id: str, data: str) -> None:
         """Process an inbound WebSocket message from MSX."""
@@ -1692,14 +1696,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 position = msg.get("position")
                 if position is not None:
                     player.update_position(float(position))
-                # Skip WS notify to avoid echo back to MSX
-                player._skip_ws_notify = True
                 self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "resume":
             player = self.provider.mass.players.get_player(player_id)
             if player and isinstance(player, MSXPlayer):
-                player._skip_ws_notify = True
                 self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         else:

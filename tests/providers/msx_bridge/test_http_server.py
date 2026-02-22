@@ -915,7 +915,8 @@ async def test_ws_pause_message(provider: MSXBridgeProvider, mass_mock: Mock) ->
     provider.http_server._handle_ws_message("msx_test", '{"type": "pause", "position": 30.5}')
 
     assert player._attr_elapsed_time == 30.5
-    assert player._skip_ws_notify is True
+    # Flag is now managed inside _cmd_pause_no_echo; verify the task was scheduled
+    mass_mock.create_task.assert_called_once()
 
 
 async def test_ws_resume_message(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
@@ -928,7 +929,8 @@ async def test_ws_resume_message(provider: MSXBridgeProvider, mass_mock: Mock) -
 
     provider.http_server._handle_ws_message("msx_test", '{"type": "resume"}')
 
-    assert player._skip_ws_notify is True
+    # Flag is now managed inside _cmd_play_no_echo; verify the task was scheduled
+    mass_mock.create_task.assert_called_once()
 
 
 async def test_ws_unknown_message_type(provider: MSXBridgeProvider) -> None:

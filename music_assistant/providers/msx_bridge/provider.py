@@ -80,17 +80,6 @@ class SharedGroupStream:
                 self._total_bytes += len(chunk)
                 async with self._lock:
                     self.buffer.append(chunk)
-
-                if not self.started.is_set():
-                    # Signal that stream has started (first chunk received)
-                    self.started.set()
-                    logger.debug(
-                        "[SharedStream:%s] First chunk received, signaling started",
-                        self.group_id,
-                    )
-
-                # Distribute to all active subscribers
-                async with self._lock:
                     for player_id, q in list(self.subscribers.items()):
                         try:
                             q.put_nowait(chunk)
@@ -101,6 +90,14 @@ class SharedGroupStream:
                                 player_id,
                                 chunk_count,
                             )
+
+                if not self.started.is_set():
+                    # Signal that stream has started (first chunk received)
+                    self.started.set()
+                    logger.debug(
+                        "[SharedStream:%s] First chunk received, signaling started",
+                        self.group_id,
+                    )
 
             logger.info(
                 "[SharedStream:%s] Producer finished: %d chunks, %d bytes, %.1fs",
