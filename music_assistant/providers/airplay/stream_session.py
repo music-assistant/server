@@ -73,7 +73,14 @@ class AirPlayStreamSession:
         has_airplay2_client = any(
             p.protocol == StreamingProtocol.AIRPLAY2 for p in self.sync_clients
         )
-        wait_start = AIRPLAY2_CONNECT_TIME_MS if has_airplay2_client else RAOP_CONNECT_TIME_MS
+        max_output_buffer_ms: int = 0
+        if has_airplay2_client:
+            max_output_buffer_ms = max(p.output_buffer_duration_ms for p in self.sync_clients)
+        wait_start = (
+            AIRPLAY2_CONNECT_TIME_MS + max_output_buffer_ms
+            if has_airplay2_client
+            else RAOP_CONNECT_TIME_MS
+        )
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds

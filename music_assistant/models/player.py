@@ -1988,26 +1988,3 @@ __all__ = [
     "PlayerSource",
     "PlayerState",
 ]
-
-
-class GroupPlayer(Player):
-    """Helper class for a (generic) group player."""
-
-    _attr_type: PlayerType = PlayerType.GROUP
-
-    @cached_property
-    def synced_to(self) -> str | None:
-        """Return the id of the player this player is synced to (sync leader)."""
-        # default implementation: groups can't be synced
-        return None
-
-    async def volume_set(self, volume_level: int) -> None:
-        """
-        Handle VOLUME_SET command on the player.
-
-        :param volume_level: volume level (0..100) to set on the player.
-        """
-        # Default implementation:
-        # This will set the (relative) volume level on all child players.
-        # free to override if you want to handle this differently.
-        await self.mass.players.set_group_volume(self, volume_level)

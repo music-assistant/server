@@ -389,6 +389,24 @@ class PlayerQueuesController(CoreController):
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
+    @api_command("player_queues/set_playback_speed")
+    async def set_playback_speed(self, queue_id: str, speed: float) -> None:
+        """Set the playback speed for the given queue.
+
+        :param queue_id: queue_id of the queue to configure.
+        :param speed: playback speed multiplier (0.5 to 2.0). 1.0 = normal speed.
+        """
+        if not (0.5 <= speed <= 2.0):
+            raise InvalidDataError(f"Playback speed must be between 0.5 and 2.0, got {speed}")
+        queue = self._queues[queue_id]
+        current_speed = float(queue.extra_attributes.get("playback_speed") or 1.0)
+        if abs(current_speed - speed) < 0.001:
+            return  # no change
+        queue.extra_attributes["playback_speed"] = speed
+        self.signal_update(queue_id)
+        if queue.state == PlaybackState.PLAYING:
+            await self.resume(queue_id)
+
     @api_command("player_queues/play_media")
     async def play_media(
         self,
