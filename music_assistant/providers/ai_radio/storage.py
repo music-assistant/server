@@ -222,10 +222,7 @@ class AIRadioStorageMixin:
         }
 
     def _upsert_embedded_sections_from_station(self, station: dict[str, Any]) -> bool:
-        """Upsert embedded station sections into shared section storage.
-
-        Returns True when shared sections changed.
-        """
+        """Upsert embedded station sections and return whether shared sections changed."""
         changed = False
         raw_sections = station.get("sections")
         if not isinstance(raw_sections, list):

@@ -16,5 +16,10 @@
       "name": "music_assistant_models",
       "depth": 2
     }
-  ]
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"],
+  "python.testing.autoTestDiscoverOnSaveEnabled": true,
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
 }

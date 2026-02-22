@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections import defaultdict
 from contextlib import suppress
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import aiofiles
+from aiohttp import ClientTimeout
 from music_assistant_models.enums import MediaType, QueueOption
 
 from music_assistant.helpers.json import json_loads
@@ -58,16 +60,31 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import PlayableMediaItemType
+
+    from music_assistant.mass import MusicAssistant
 
 
 class AIRadioRuntimeMixin:
     """Mixin with all heavy runtime logic for AI Radio runs."""
 
+    if TYPE_CHECKING:
+        mass: MusicAssistant
+        config: ProviderConfig
+        logger: logging.Logger
+        _sessions: dict[str, SessionState]
+
     async def _run_session(self, session_id: str, station: dict[str, Any]) -> None:
         """Run one session in the background."""
         session = self._sessions[session_id]
         session.started_at = utc_now_iso()
+        self.logger.info(
+            "AI Radio run started: session=%s station=%s mode=%s",
+            session.session_id,
+            session.station_id,
+            session.mode,
+        )
         try:
             if session.mode == "playlist":
                 result = await self._run_playlist_mode(session, station)
@@ -75,8 +92,20 @@ class AIRadioRuntimeMixin:
                 result = await self._run_dynamic_mode(session, station)
             session.result = result
             session.status = "completed"
+            self.logger.info(
+                "AI Radio run completed: session=%s station=%s mode=%s",
+                session.session_id,
+                session.station_id,
+                session.mode,
+            )
         except asyncio.CancelledError:
             session.status = "stopped"
+            self.logger.info(
+                "AI Radio run cancelled: session=%s station=%s mode=%s",
+                session.session_id,
+                session.station_id,
+                session.mode,
+            )
             raise
         except Exception as err:
             session.status = "failed"
@@ -92,6 +121,11 @@ class AIRadioRuntimeMixin:
     ) -> dict[str, Any]:
         """Generate one target playlist run."""
         station = deepcopy(station)
+        self.logger.debug(
+            "Playlist mode starting for station '%s' (%s)",
+            station.get("name", "AI Radio"),
+            station.get("id", ""),
+        )
         runtime_tokens = await self._prepare_runtime_tokens(station)
         tracks, playlist_name = await self._fetch_source_tracks(station)
         tracks = self._apply_track_duration_limit(tracks, station)
@@ -150,6 +184,12 @@ class AIRadioRuntimeMixin:
             provider_instance_or_domain=target_provider,
         )
         await self.mass.music.playlists.add_playlist_tracks(int(playlist.item_id), entries)
+        self.logger.info(
+            "Playlist mode published '%s' (%s entries, %s generated sections)",
+            target_playlist_name,
+            len(entries),
+            len(audio_sections),
+        )
         return {
             "mode": "playlist",
             "source_playlist_name": playlist_name,
@@ -167,6 +207,11 @@ class AIRadioRuntimeMixin:
     ) -> dict[str, Any]:
         """Run dynamic generation mode."""
         station = deepcopy(station)
+        self.logger.debug(
+            "Dynamic mode starting for station '%s' (%s)",
+            station.get("name", "AI Radio"),
+            station.get("id", ""),
+        )
         runtime_tokens = await self._prepare_runtime_tokens(station)
         player_id = str(station.get("default_player_id") or "").strip()
         if not player_id:
@@ -267,6 +312,12 @@ class AIRadioRuntimeMixin:
 
             cursor += len(batch_tracks)
             batch_index += 1
+            self.logger.debug(
+                "Dynamic batch %d queued (%d tracks processed, %d queue entries total)",
+                batch_index,
+                cursor,
+                total_entries_queued,
+            )
             session.progress = {
                 "step": "running",
                 "queued_tracks": cursor,
@@ -693,6 +744,12 @@ class AIRadioRuntimeMixin:
                     uri=create_uri(MediaType.TRACK, "builtin", str(file_path)),
                 )
             )
+        self.logger.debug(
+            "Synthesized %d sections for run %s/%s",
+            len(output),
+            run_id,
+            batch_id,
+        )
         return output
 
     def _compose_entries(
@@ -836,8 +893,21 @@ class AIRadioRuntimeMixin:
                 selected = candidate
                 break
 
-        lat = float(selected.get("latitude"))
-        lon = float(selected.get("longitude"))
+        if not isinstance(selected, dict):
+            raise AIRadioError(f"No valid geocoding result for {city}, {country}")
+        latitude_value: object = selected.get("latitude")
+        longitude_value: object = selected.get("longitude")
+        if not isinstance(latitude_value, (int, float, str)) or not isinstance(
+            longitude_value, (int, float, str)
+        ):
+            raise AIRadioError(f"Geocoding result for {city}, {country} has invalid coordinates")
+        try:
+            lat = float(latitude_value)
+            lon = float(longitude_value)
+        except ValueError as err:
+            raise AIRadioError(
+                f"Geocoding result for {city}, {country} has invalid coordinates"
+            ) from err
         timezone_name = str(selected.get("timezone") or "UTC")
         forecast = await self._open_meteo_get_json(
             "https://api.open-meteo.com/v1/forecast",
@@ -867,7 +937,7 @@ class AIRadioRuntimeMixin:
         async with self.mass.http_session.get(
             base_url,
             params=params,
-            timeout=timeout_seconds,
+            timeout=ClientTimeout(total=timeout_seconds),
         ) as response:
             payload = await response.read()
             if response.status >= 400:
@@ -1020,6 +1090,9 @@ class AIRadioRuntimeMixin:
         openai_base_url = str(general.get("openai_base_url") or DEFAULT_OPENAI_BASE_URL)
         api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
         if not api_key:
+            self.logger.error(
+                "AI Radio text generation failed: OpenAI API key is missing in plugin config"
+            )
             raise AIRadioError("OpenAI API key is missing in plugin config")
 
         if web_mode == "disabled":
@@ -1098,6 +1171,7 @@ class AIRadioRuntimeMixin:
         if provider == "openai":
             api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
             if not api_key:
+                self.logger.error("AI Radio TTS failed: OpenAI API key is missing in plugin config")
                 raise AIRadioError("OpenAI API key is missing in plugin config")
             openai_base_url = str(general.get("openai_base_url") or DEFAULT_OPENAI_BASE_URL)
             model = str(general.get("openai_tts_model") or DEFAULT_OPENAI_TTS_MODEL)
@@ -1124,9 +1198,13 @@ class AIRadioRuntimeMixin:
         if provider == "elevenlabs":
             api_key = str(self.config.get_value(CONF_ELEVENLABS_API_KEY) or "").strip()
             if not api_key:
+                self.logger.error(
+                    "AI Radio TTS failed: ElevenLabs API key is missing in plugin config"
+                )
                 raise AIRadioError("ElevenLabs API key is missing in plugin config")
             voice_id = str(general.get("elevenlabs_voice_id") or "").strip()
             if not voice_id:
+                self.logger.error("AI Radio TTS failed: no ElevenLabs voice_id configured")
                 raise AIRadioError("No ElevenLabs voice_id configured")
             model_id = str(general.get("elevenlabs_model") or DEFAULT_ELEVENLABS_MODEL)
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
@@ -1142,7 +1220,7 @@ class AIRadioRuntimeMixin:
                     )
                 if not data:
                     raise AIRadioError("ElevenLabs TTS returned empty audio")
-                return cast("bytes", data)
+                return data
 
         raise AIRadioError(f"Unsupported tts_provider: {provider}")
 
@@ -1194,7 +1272,7 @@ class AIRadioRuntimeMixin:
                     f"OpenAI request failed ({response.status}) for {path}: "
                     f"{data.decode(errors='ignore')}"
                 )
-            return cast("bytes", data)
+            return data
 
     async def _get_section_store_base_path(self, station: dict[str, Any]) -> Path:
         """Resolve the section output base path."""

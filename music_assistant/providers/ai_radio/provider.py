@@ -18,6 +18,8 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import (
     AI_RADIO_WEB_BASE_PATH,
     AI_RADIO_WEB_FILES,
+    CONF_ELEVENLABS_API_KEY,
+    CONF_OPENAI_API_KEY,
     DEFAULT_MAX_CONCURRENT_RUNS,
     SUPPORTED_FEATURES,
 )
@@ -67,6 +69,19 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
         await self._load_sections()
         await self._load_stations()
+        openai_key_set = bool(str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip())
+        elevenlabs_key_set = bool(str(self.config.get_value(CONF_ELEVENLABS_API_KEY) or "").strip())
+        if not (openai_key_set or elevenlabs_key_set):
+            self.logger.warning(
+                "AI Radio has no TTS/LLM API keys configured yet. "
+                "Set OpenAI and/or ElevenLabs keys in plugin settings before running stations."
+            )
+        self.logger.info(
+            "AI Radio initialized for instance '%s' with %d stations and %d sections",
+            self.instance_id,
+            len(self._stations),
+            len(self._sections),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -97,15 +112,26 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
                 method="GET",
             )
         )
+        self.logger.info(
+            "AI Radio API/web routes registered (%d handlers)",
+            len(self._unregister_handles),
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        cancelled = 0
         for session in self._sessions.values():
             if session.task and not session.task.done():
                 session.task.cancel()
+                cancelled += 1
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
+        self.logger.info(
+            "AI Radio unloaded (removed=%s, cancelled_sessions=%d)",
+            is_removed,
+            cancelled,
+        )
         await super().unload(is_removed)
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
@@ -150,6 +176,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             if sections_changed:
                 await self._write_sections()
             await self._write_stations()
+        self.logger.info("AI Radio station saved: %s (%s)", normalized["id"], normalized["name"])
         return deepcopy(normalized)
 
     async def delete_station(self, station_id: str) -> None:
@@ -159,6 +186,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
                 raise KeyError(f"Unknown station id: {station_id}")
             self._stations.pop(station_id)
             await self._write_stations()
+        self.logger.info("AI Radio station deleted: %s", station_id)
 
     async def validate_station(self, station: dict[str, Any]) -> dict[str, Any]:
         """Validate station payload and return the normalized profile."""
@@ -191,6 +219,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             self._refresh_station_sections()
             await self._write_sections()
             await self._write_stations()
+        self.logger.info("AI Radio section saved: %s", normalized["id"])
         return deepcopy(normalized)
 
     async def delete_section(self, section_id: str) -> None:
@@ -211,6 +240,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
                 )
             self._sections.pop(section_id)
             await self._write_sections()
+        self.logger.info("AI Radio section deleted: %s", section_id)
 
     async def section_template(self) -> dict[str, Any]:
         """Return default section template."""
@@ -268,6 +298,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             self._run_session(session_id, station),
             task_id=f"ai_radio_session_{session_id}",
         )
+        self.logger.info(
+            "AI Radio session started: session=%s station=%s mode=%s",
+            session_id,
+            station_id,
+            selected_mode,
+        )
         return session.as_dict()
 
     async def stop_run(
@@ -282,6 +318,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             selected.task.cancel()
         selected.status = "stopped"
         selected.ended_at = utc_now_iso()
+        self.logger.info(
+            "AI Radio session stopped: session=%s station=%s mode=%s",
+            selected.session_id,
+            selected.station_id,
+            selected.mode,
+        )
         return selected.as_dict()
 
     async def get_status(self, session_id: str | None = None) -> dict[str, Any]:
