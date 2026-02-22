@@ -190,7 +190,7 @@ class BandcampConverters:
                 )
             },
         )
-        if output.track_number is not None:
+        if track.track_number is not None:
             output.track_number = track.track_number
 
         if album_id:
