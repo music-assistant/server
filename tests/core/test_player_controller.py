@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
@@ -66,7 +66,7 @@ class TestSetMembersValidation:
         mock_mass.players = controller
 
         # Should raise exception because leader doesn't support SET_MEMBERS
-        with pytest.raises(UnsupportedFeaturedException):
+        with pytest.raises(PlayerCommandFailed):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
 
     def test_cannot_group_incompatible_players(self, mock_mass: MagicMock) -> None:
@@ -88,9 +88,13 @@ class TestSetMembersValidation:
         }
         mock_mass.players = controller
 
-        # Should raise exception because players are incompatible
-        with pytest.raises(UnsupportedFeaturedException):
-            asyncio.run(controller.cmd_set_members("player_a", player_ids_to_add=["player_b"]))
+        # Update state so state.supported_features reflects _attr changes
+        player_a.update_state(signal_event=False)
+        player_b.update_state(signal_event=False)
+
+        # Should silently skip because players are incompatible
+        asyncio.run(controller.cmd_set_members("player_a", player_ids_to_add=["player_b"]))
+        assert "player_b" not in player_a._attr_group_members
 
 
 class TestCacheInvalidationAfterGrouping:
