@@ -66,19 +66,6 @@ class MusicProvider(Provider):
         """
         return True
 
-    @property
-    def playlist_create_support(self) -> tuple[set[MediaType], bool]:
-        """Return the media_types supported for playlist creation and if they can be mixed.
-
-        Example: {MediaType.TRACK, MediaType.AUDIOBOOK}, False means, that the provider supports
-        playlist for both tracks and audiobooks, but a playlist may only target one of these types.
-
-        Supported media_types are: AUDIOBOOK, PODCAST_EPISODE, RADIO, TRACK
-        """
-        if ProviderFeature.PLAYLIST_CREATE in self.supported_features:
-            raise NotImplementedError
-        return set(), False
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 
