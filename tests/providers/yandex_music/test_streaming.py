@@ -377,7 +377,7 @@ class _MockHttpSession:
     def __init__(self, response: _MockResponse) -> None:
         self._response = response
 
-    def get(self, url: str) -> _MockResponse:
+    def get(self, url: str, **kwargs: object) -> _MockResponse:
         return self._response
 
 
