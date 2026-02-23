@@ -130,7 +130,7 @@ class YandexMusicClient:
                 await self._reconnect()
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
-            client = await self._ensure_connected()
+            client = cast("ClientAsync", self._client)
             return await func(client)
 
     # Rotor (radio station) methods
@@ -299,7 +299,7 @@ class YandexMusicClient:
             batch = album_ids[i : i + batch_size]
             try:
                 batch_result = await self._call_with_retry(
-                    lambda c, _batch=batch: c.albums(_batch)  # type: ignore[misc]
+                    lambda c, _b=batch: c.albums(_b)  # type: ignore[misc]
                 )
                 if batch_result:
                     full_albums.extend(batch_result)
@@ -461,7 +461,8 @@ class YandexMusicClient:
                 return None, False
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
-            is_synced = bool(re.match(r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text.strip()))
+            # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
+            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:

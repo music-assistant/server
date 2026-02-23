@@ -148,8 +148,14 @@ def test_get_content_type_flac_mp4_returns_mp4_container_with_flac_codec(
     """flac-mp4 codec from get-file-info is mapped to MP4 container with FLAC codec."""
     assert streaming_manager._get_content_type("flac-mp4") == (ContentType.MP4, ContentType.FLAC)
     assert streaming_manager._get_content_type("FLAC-MP4") == (ContentType.MP4, ContentType.FLAC)
-    # Plain FLAC returns FLAC container with UNKNOWN codec
+
+
+def test_get_content_type_flac_returns_flac_container_with_unknown_codec(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """Plain FLAC codec is mapped to FLAC container with UNKNOWN codec."""
     assert streaming_manager._get_content_type("flac") == (ContentType.FLAC, ContentType.UNKNOWN)
+    assert streaming_manager._get_content_type("FLAC") == (ContentType.FLAC, ContentType.UNKNOWN)
 
 
 def test_get_content_type_aac_variants_return_aac(

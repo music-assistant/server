@@ -1352,6 +1352,7 @@ class YandexMusicProvider(MusicProvider):
         """
         playlists = await self.client.get_tag_playlists(mood_tag)
         if not playlists:
+            self.logger.debug("No playlists for mood tag %s, skipping recommendation", mood_tag)
             return None
         items: list[Playlist] = []
         for playlist in playlists[:8]:
@@ -1382,6 +1383,9 @@ class YandexMusicProvider(MusicProvider):
         """
         playlists = await self.client.get_tag_playlists(activity_tag)
         if not playlists:
+            self.logger.debug(
+                "No playlists for activity tag %s, skipping recommendation", activity_tag
+            )
             return None
         items: list[Playlist] = []
         for playlist in playlists[:8]:

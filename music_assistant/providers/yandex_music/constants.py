@@ -49,6 +49,7 @@ PROVIDER_DISPLAY_NAME_RU: Final[str] = "Яндекс Музыка"
 PROVIDER_DISPLAY_NAME_EN: Final[str] = "Yandex Music"
 
 # Known API-returned system owner name variants (all locales/capitalizations)
+# All entries are lowercase; compare with owner_name.lower() for case-insensitive lookup
 YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
         "яндекс музыка",

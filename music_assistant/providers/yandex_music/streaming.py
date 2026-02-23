@@ -378,6 +378,8 @@ class YandexMusicStreamingManager:
                         yield final
                     return  # stream completed normally
 
+            except asyncio.CancelledError:
+                raise  # propagate cancellation immediately, do not retry
             except ClientPayloadError as err:
                 if attempt < max_retries:
                     self.logger.warning(
