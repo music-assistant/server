@@ -9,6 +9,7 @@ filter_params for each client.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -16,8 +17,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.ugp_stream")
 
 
 class UGPStream:
@@ -96,17 +100,24 @@ class UGPStream:
     async def _runner(self) -> None:
         """Run the stream for the given audio source."""
         await asyncio.sleep(0.25)  # small delay to allow subscribers to connect
-        async for chunk in get_ffmpeg_stream(
-            audio_input=self.audio_source,
-            input_format=self.input_format,
-            output_format=self.base_pcm_format,
-            # we don't allow the player to buffer too much ahead so we use readrate limiting
-            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
-        ):
-            await asyncio.gather(
-                *[sub(chunk) for sub in self.subscribers],
-                return_exceptions=True,
-            )
-        # empty chunk when done
-        await asyncio.gather(*[sub(b"") for sub in self.subscribers], return_exceptions=True)
-        self._done.set()
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=self.audio_source,
+                input_format=self.input_format,
+                output_format=self.base_pcm_format,
+                # we don't allow the player to buffer too much ahead so we use readrate limiting
+                extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
+            ):
+                await asyncio.gather(
+                    *[sub(chunk) for sub in self.subscribers],
+                    return_exceptions=True,
+                )
+        except asyncio.CancelledError:
+            LOGGER.debug("UGP stream runner cancelled")
+            raise
+        except Exception as err:
+            LOGGER.error("UGP stream runner error: %s", err, exc_info=err)
+        finally:
+            # empty chunk when done
+            await asyncio.gather(*[sub(b"") for sub in self.subscribers], return_exceptions=True)
+            self._done.set()
