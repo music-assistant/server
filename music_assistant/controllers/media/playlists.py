@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -111,7 +111,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             page += 1
 
     async def create_playlist(
-        self, name: str, provider_instance_or_domain: str | None = None
+        self,
+        name: str,
+        media_types: set[MediaType] | None = None,
+        provider_instance_or_domain: str | None = None,
     ) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick builtin provider
@@ -121,14 +124,44 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise ProviderUnavailableError
         else:
             provider = self.mass.get_provider("builtin")
+
+        if media_types is None:
+            media_types = {MediaType.TRACK}
+        if not provider_instance_or_domain and not media_types:
+            # builtin can handle all media_types
+            media_types.update((MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO))
+
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
+
+        mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
+        supported_types: set[MediaType] = set()
+        if ProviderFeature.PLAYLIST_CREATE in provider.supported_features:
+            supported_types.add(MediaType.TRACK)
+        if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
+            supported_types.add(MediaType.AUDIOBOOK)
+        if ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES in provider.supported_features:
+            supported_types.add(MediaType.PODCAST_EPISODE)
+        if ProviderFeature.PLAYLIST_CREATE_RADIOS in provider.supported_features:
+            supported_types.add(MediaType.RADIO)
+
+        if not supported_types:
+            msg = f"Provider {provider.name} does not support creating playlists"
+            raise InvalidDataError(msg)
 
         if not is_safe_name(name):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
+
+        if len(media_types.difference(supported_types)) > 0:
+            msg = f"Provider {provider.name} only supports {supported_types} in playlists."
+            raise InvalidDataError(msg)
+        if len(media_types) > 1 and not mix_allowed:
+            msg = f"Provider {provider.name} does not support mixed media_types in playlists."
+            raise InvalidDataError(msg)
+
         # create playlist on the provider
-        playlist = await provider.create_playlist(name)
+        playlist = await provider.create_playlist(name, media_types=media_types)
         for prov_mapping in playlist.provider_mappings:
             # when manually creating a playlist, it's always in the library
             prov_mapping.in_library = True
@@ -160,6 +193,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist_prov or not playlist_prov.available:
             raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
         playlist_prov = cast("MusicProvider", playlist_prov)
+
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT not in playlist_prov.supported_features:
+            msg = f"Provider {playlist_prov.name} does not support editing playlists"
+            raise InvalidDataError(msg)
 
         # sets to track existing tracks
         cur_playlist_track_ids: set[str] = set()
@@ -224,10 +261,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # parse uri for further processing
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
 
-            # non-track items can only be added to builtin playlists
-            if media_type != MediaType.TRACK and playlist_prov.domain != "builtin":
+            if media_type not in playlist.supported_mediatypes:
                 self.logger.warning(
-                    "Not adding %s to playlist %s - only supported in builtin playlists",
+                    "Not adding %s to playlist %s, "
+                    "the target playlist doesn't support this media type.",
                     uri,
                     playlist.name,
                 )
@@ -501,7 +538,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
-    ) -> list[PlaylistPlayableItem]:
+    ) -> Sequence[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):

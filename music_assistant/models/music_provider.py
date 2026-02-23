@@ -211,7 +211,7 @@ class MusicProvider(Provider):
         self,
         prov_playlist_id: str,
         page: int = 0,
-    ) -> list[PlaylistPlayableItem]:
+    ) -> Sequence[PlaylistPlayableItem]:
         """Get all playlist tracks for given playlist id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
@@ -378,8 +378,8 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def create_playlist(self, name: str) -> Playlist:
-        """Create a new playlist on provider with given name.
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+        """Create a new playlist on provider with given name and targeting media_types.
 
         Only called if provider supports ProviderFeature.PLAYLIST_CREATE.
         """
@@ -1031,7 +1031,7 @@ class MusicProvider(Provider):
             provider_playlist.name,
         )
         async for _prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
-            prov_track = _prov_track
+            prov_track: PlaylistPlayableItem | Podcast = _prov_track
             if isinstance(_prov_track, PodcastEpisode):
                 # In MA, only full podcasts can be synced to the library
                 prov_track = await self.get_podcast(_prov_track.podcast.item_id)

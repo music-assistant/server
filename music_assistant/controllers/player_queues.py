@@ -389,6 +389,24 @@ class PlayerQueuesController(CoreController):
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
+    @api_command("player_queues/set_playback_speed")
+    async def set_playback_speed(self, queue_id: str, speed: float) -> None:
+        """Set the playback speed for the given queue.
+
+        :param queue_id: queue_id of the queue to configure.
+        :param speed: playback speed multiplier (0.5 to 2.0). 1.0 = normal speed.
+        """
+        if not (0.5 <= speed <= 2.0):
+            raise InvalidDataError(f"Playback speed must be between 0.5 and 2.0, got {speed}")
+        queue = self._queues[queue_id]
+        current_speed = float(queue.extra_attributes.get("playback_speed") or 1.0)
+        if abs(current_speed - speed) < 0.001:
+            return  # no change
+        queue.extra_attributes["playback_speed"] = speed
+        self.signal_update(queue_id)
+        if queue.state == PlaybackState.PLAYING:
+            await self.resume(queue_id)
+
     @api_command("player_queues/play_media")
     async def play_media(
         self,
@@ -696,6 +714,7 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
+        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -740,6 +759,7 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_stop(queue_id)
         finally:
             IN_QUEUE_COMMAND.reset(token)
+        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -1395,11 +1415,17 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError(msg)
         # store the index of the item that is currently (being) loaded in the buffer
         # which helps us a bit to determine how far the player has buffered ahead
-        queue.index_in_buffer = self.index_by_id(queue_id, item_id)
+        current_index = self.index_by_id(queue_id, item_id)
+        queue.index_in_buffer = current_index
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
+        # clean up stale audio buffers for old queue items to prevent memory leaks
+        if current_index is not None:
+            self.mass.create_task(
+                self.mass.streams.cleanup_stale_queue_buffers(queue_id, current_index)
+            )
 
     # Main queue manipulation methods
 
@@ -2475,7 +2501,10 @@ class PlayerQueuesController(CoreController):
         ):
             if protocol_player.current_media.queue_item_id:
                 return protocol_player.current_media.queue_item_id
-            return protocol_player.current_media.uri.split(":")[-1]
+            current_item_id = protocol_player.current_media.uri.split(":")[-1]
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
+            return None
         # try to extract the item id from a mass stream url
         if (
             protocol_player.current_media.uri
