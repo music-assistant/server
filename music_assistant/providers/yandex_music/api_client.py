@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from yandex_music.landing.chart_info import ChartInfo
     from yandex_music.landing.landing import Landing
     from yandex_music.landing.landing_list import LandingList
+    from yandex_music.rotor.station_result import StationResult
 
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
@@ -860,6 +861,55 @@ class YandexMusicClient:
                     if slug:
                         tags.append((slug, entity.data.title))
         return tags
+
+    async def get_wave_stations(
+        self, language: str | None = None
+    ) -> list[tuple[str, str, str, str | None]]:
+        """Get available rotor wave stations grouped by category.
+
+        Calls rotor_stations_list() — the underlying endpoint for landing-blocks/waves.
+        Filters out personal stations (type 'user') since My Wave is handled separately.
+
+        :param language: Language for station names (e.g. 'ru', 'en'). Defaults to API default.
+        :return: List of (station_id, category, name, image_url) tuples,
+                 e.g. ('genre:rock', 'genre', 'Рок', 'https://...').
+        """
+        try:
+            results: list[StationResult] = await self._call_with_retry(
+                lambda c: c.rotor_stations_list(language)
+            )
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.warning("Error fetching wave stations: %s", err)
+            return []
+
+        stations: list[tuple[str, str, str, str | None]] = []
+        for result in results or []:
+            station = result.station
+            if station is None or station.id is None:
+                continue
+            category = station.id.type
+            tag = station.id.tag
+            if not category or not tag:
+                continue
+            if category == "user":
+                # Skip personal stations (My Wave is already a separate feature)
+                continue
+            station_id = f"{category}:{tag}"
+            name = station.name or result.rup_title or tag
+            image_url: str | None = None
+            raw_url = station.full_image_url or (station.icon.image_url if station.icon else None)
+            if raw_url:
+                # Yandex avatar URIs use '%%' as a size placeholder; replace it with
+                # the desired size. If no placeholder, append the size as a suffix
+                # since these URLs return HTTP 400 without a size component.
+                if not raw_url.startswith("http"):
+                    raw_url = f"https://{raw_url}"
+                if "%%" in raw_url:
+                    image_url = raw_url.replace("%%", "400x400")
+                else:
+                    image_url = f"{raw_url}/400x400"
+            stations.append((station_id, category, name, image_url))
+        return stations
 
     # Library modifications
 

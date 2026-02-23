@@ -135,6 +135,11 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "mood_mix": "Настроение",
     "activity_mix": "Активность",
     "seasonal_mix": "Сезонное",
+    # Waves by tag (rotor station categories)
+    "waves": "Волны",
+    "genre": "Жанры",
+    "epoch": "Эпоха",
+    "local": "Местное",
 }
 BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "my_wave": "My Wave",
@@ -195,6 +200,11 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "mood_mix": "Mood Mix",
     "activity_mix": "Activity Mix",
     "seasonal_mix": "Seasonal",
+    # Waves by tag (rotor station categories)
+    "waves": "Waves",
+    "genre": "Genres",
+    "epoch": "Era",
+    "local": "Local",
 }
 
 # Tag categories for Picks and Recommendations
@@ -293,3 +303,15 @@ TAG_SEASONAL_MAP: Final[dict[int, str]] = {
 
 # Tags for Mixes (seasonal collections)
 TAG_MIXES: Final[list[str]] = ["winter", "spring", "summer", "autumn", "newyear"]
+
+# Waves by tag (rotor stations)
+WAVES_FOLDER_ID: Final[str] = "waves"
+
+# Preferred display order for wave categories (rotor station types)
+WAVE_CATEGORY_DISPLAY_ORDER: Final[list[str]] = [
+    "genre",
+    "mood",
+    "activity",
+    "epoch",
+    "local",
+]
