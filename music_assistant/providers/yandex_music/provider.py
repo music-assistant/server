@@ -723,9 +723,7 @@ class YandexMusicProvider(MusicProvider):
         :param station_id: Rotor station ID (e.g. 'genre:rock', 'mood:chill').
         :return: _WaveState instance for this station.
         """
-        if station_id not in self._wave_states:
-            self._wave_states[station_id] = _WaveState()
-        return self._wave_states[station_id]
+        return self._wave_states.setdefault(station_id, _WaveState())
 
     async def _browse_waves(
         self, path: str, path_parts: list[str]

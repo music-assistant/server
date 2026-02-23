@@ -190,9 +190,14 @@ async def test_send_rotor_station_feedback_posts() -> None:
 
 
 def test_lrc_regex_matches_valid_synced_lyrics() -> None:
-    """LRC regex matches valid synced lyrics with proper format [mm:ss.xx]."""
-    # LRC timestamp regex pattern used by the client implementation
-    pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
+    """LRC regex matches valid synced lyrics with proper format [mm:ss.xx].
+
+    Uses re.search (no ^ anchor) matching the implementation in api_client.py,
+    which intentionally allows timestamps anywhere in the text so that LRC
+    metadata lines like [ar:Artist] before the first timestamp don't prevent
+    detection.
+    """
+    pattern = r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
 
     # Valid LRC formats that should match
     valid_cases = [
@@ -201,15 +206,16 @@ def test_lrc_regex_matches_valid_synced_lyrics() -> None:
         "[00:12.345]",  # With milliseconds (3-digit fractional part — upper bound of \d{2,3})
         "[12:34]",  # Another basic format
         "[99:59.99]",  # Edge case
+        "Some [00:12] text",  # Timestamp embedded in text — re.search finds it
     ]
 
     for case in valid_cases:
-        assert re.match(pattern, case), f"Should match: {case}"
+        assert re.search(pattern, case), f"Should match: {case}"
 
 
 def test_lrc_regex_rejects_invalid_formats() -> None:
     """LRC regex rejects invalid formats (no closing bracket, wrong format)."""
-    pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
+    pattern = r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
 
     # Invalid formats that should NOT match
     invalid_cases = [
@@ -217,13 +223,12 @@ def test_lrc_regex_rejects_invalid_formats() -> None:
         "00:12]",  # Missing opening bracket
         "[0:12]",  # Single digit minute
         "[00:1]",  # Single digit second
-        "Some [00:12] text",  # Text before timestamp
         "[00:12.1]",  # Single digit centiseconds (should be 2-3 digits)
         "[00:12.1234]",  # Four digit milliseconds
     ]
 
     for case in invalid_cases:
-        assert not re.match(pattern, case), f"Should NOT match: {case}"
+        assert not re.search(pattern, case), f"Should NOT match: {case}"
 
 
 # -- HMAC sign construction tests --------------------------------------------
