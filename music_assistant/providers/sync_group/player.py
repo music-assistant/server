@@ -231,9 +231,9 @@ class SyncGroupPlayer(Player):
         if prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
             # We're removing the current sync leader while the group is active
             # We need to select a new leader before we can handle the member changes
-            self.logger.debug(
+            self.logger.info(
                 "Removing current sync leader %s from group %s while it is active, "
-                "selecting a new leader and dissolving the current syncgroup",
+                "dissolving the current syncgroup and will re-form it with a new leader",
                 prev_leader.display_name,
                 self.display_name,
             )
@@ -282,16 +282,15 @@ class SyncGroupPlayer(Player):
         if needs_restart:
             await self.play()
             return
-        if not was_playing:
+        if not was_playing or not cur_leader:
             # Don't need to do anything else if the group is not active
             # The syncing will be done once playback starts
             return
-        if cur_leader:
-            await self.mass.players.cmd_set_members(
-                cur_leader.player_id,
-                player_ids_to_add=final_players_to_add,
-                player_ids_to_remove=final_players_to_remove,
-            )
+        await self.mass.players.cmd_set_members(
+            cur_leader.player_id,
+            player_ids_to_add=final_players_to_add,
+            player_ids_to_remove=final_players_to_remove,
+        )
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
@@ -314,6 +313,11 @@ class SyncGroupPlayer(Player):
             if x != self.sync_leader.player_id and x not in self.sync_leader.state.group_members
         ]
         if members_to_sync:
+            # If the sync leader is playing something independently, stop it first
+            # to prevent protocol switching from trying to resume the previous playback
+            # (we're about to start new playback on the syncgroup)
+            if self.sync_leader.state.playback_state == PlaybackState.PLAYING:
+                await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
     async def _dissolve_syncgroup(self) -> None:
