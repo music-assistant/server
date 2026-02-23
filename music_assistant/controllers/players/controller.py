@@ -46,7 +46,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
+from music_assistant_models.player import OutputProtocol, PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -195,6 +195,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for player in list(self._players.values())
             if (player.state.available or return_unavailable)
             and (player.state.enabled or return_disabled)
+            and player.initialized.is_set()
             and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (
                 not user_filter
@@ -899,12 +900,38 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
-        - player_id: player_id of the player to handle the command.
-        - media: The Media that needs to be played on the player.
+        :param player_id: player_id of the player to handle the command.
+        :param media: The Media that needs to be played on the player.
         """
         player = self._get_player_with_redirect(player_id)
         # Delegate to internal handler for actual implementation
         await self._handle_play_media(player.player_id, media)
+
+    def select_output_protocol(self, player_id: str) -> Player:
+        """
+        Select and set the best output protocol for a player.
+
+        This method determines the optimal output protocol for playback and sets it
+        on the player. Should be called before evaluating protocol-dependent properties
+        like flow_mode.
+
+        :param player_id: player_id of the player to select protocol for.
+        :return: The target player that will handle playback (may be a protocol player).
+        """
+        player = self.get_player(player_id, raise_unavailable=True)
+        assert player is not None
+
+        target_player, output_protocol = self._select_best_output_protocol(player)
+
+        if target_player.player_id != player.player_id:
+            # Playing via linked protocol
+            assert output_protocol is not None
+            player.set_active_output_protocol(output_protocol.output_protocol_id)
+        else:
+            # Native playback
+            player.set_active_output_protocol("native")
+
+        return target_player
 
     @api_command("players/cmd/select_sound_mode")
     @handle_player_command
@@ -1240,13 +1267,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.extra_data[ATTR_FAKE_POWER] = cached_value
 
             # finally actually register it
-            self._players[player_id] = player
-            # update state without signaling event first (ensure all attributes are set)
-            player.update_state(signal_event=False)
 
+            # Despite the fact that the player is not fully ready yet
+            # (config not loaded, protocol links not evaluated),
+            # we already add it to the _players dict here because we
+            # want to make sure the player is available in the controller
+            # during the rest of the registration process
+            # (such as when fetching config or evaluating protocol links).
+            # We use the 'initialized' attribute to indicate that the player
+            # is still in the process of being registered so we can filter it out where needed.
+            self._players[player_id] = player
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
             player.set_config(player_config)
+            # update state without signaling event first (ensures all attributes are set)
+            player.update_state(signal_event=False)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
 
@@ -1255,6 +1290,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self._enrich_player_identifiers(player)
             self._evaluate_protocol_links(player)
 
+            # now we're ready to signal the player is added and available
+            player.set_initialized()
             self.logger.info(
                 "Player (type %s) registered: %s/%s",
                 player.state.type.value,
@@ -1262,26 +1299,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             # signal event that a player was added
-
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player
                 )
-
-            # register playerqueue for this player
-            # Skip if this is a protocol player pending evaluation (queue created when promoted)
-            if (
-                player.state.type != PlayerType.PROTOCOL
-                and player.player_id not in self._pending_protocol_evaluations
-            ):
+            # register playerqueue for this player (if not a protocol player)
+            if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
-
-        # always call update to fix special attributes like display name, group volume etc.
-        player.update_state()
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players()
+        self._schedule_update_all_players(5)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -2747,8 +2775,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # Select best output protocol for playback
-        target_player, output_protocol = self._select_best_output_protocol(player)
+        # Check if active output protocol was already set (e.g., by select_output_protocol)
+        # and is still valid. If so, reuse it to avoid re-selecting.
+        target_player: Player | None = None
+        output_protocol: OutputProtocol | None = None
+        if active_protocol_id := player.active_output_protocol:
+            if active_protocol_id in ("native", player.player_id):
+                target_player = player
+            elif protocol_player := self.get_player(active_protocol_id):
+                if protocol_player.available:
+                    target_player = protocol_player
+                    # Find the matching OutputProtocol
+                    for linked in player.linked_output_protocols:
+                        if linked.output_protocol_id == active_protocol_id:
+                            output_protocol = linked
+                            break
+
+        # If no valid pre-selected protocol, select the best one now
+        if target_player is None:
+            target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol

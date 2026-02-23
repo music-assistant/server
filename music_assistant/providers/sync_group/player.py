@@ -56,7 +56,7 @@ class SyncGroupPlayer(Player):
         return None
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
         default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
