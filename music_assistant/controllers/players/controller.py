@@ -1036,9 +1036,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if lock_key not in self._player_command_locks:
             self._player_command_locks[lock_key] = asyncio.Lock()
         async with self._player_command_locks[lock_key]:
-            await self._handle_set_members(
-                parent_player, target_player, player_ids_to_add, player_ids_to_remove
-            )
+            await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")
     @handle_player_command
@@ -1805,10 +1803,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
-        if not self.get_player(player_id):
+        if not (player := self.get_player(player_id)):
             return
         with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
-            await self.cmd_ungroup(player_id)
+            if parent_id := (player.state.active_group or player.state.synced_to):
+                # the player is part of a (permanent) groupplayer and the user tries to ungroup
+                if parent_player := self.get_player(parent_id):
+                    await self._handle_set_members(parent_player, player_ids_to_remove=[player_id])
+                return
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
@@ -2298,9 +2300,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def _handle_set_members(
         self,
         parent_player: Player,
-        target_player: str,
-        player_ids_to_add: list[str] | None,
-        player_ids_to_remove: list[str] | None,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """
         Handle the actual set_members logic.
@@ -2308,10 +2309,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Skips the permission checks (internal use only).
 
         :param parent_player: The parent player to add/remove members to/from.
-        :param target_player: player_id of the syncgroup leader or group player.
-        :param player_ids_to_add: List of player_id's to add to the target player.
-        :param player_ids_to_remove: List of player_id's to remove from the target player.
+        :param player_ids_to_add: List of player_id's to add to the parent player.
+        :param player_ids_to_remove: List of player_id's to remove from the parent player.
         """
+        target_player = parent_player.player_id
         # handle dissolve sync group if the target player is currently
         # a sync leader and is being removed from itself
         should_stop = False
