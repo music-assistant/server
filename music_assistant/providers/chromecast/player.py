@@ -326,7 +326,7 @@ class ChromecastPlayer(Player):
         ]
 
     async def on_config_updated(self) -> None:
-        """Handle config updates - resend Sendspin config if needed."""
+        """Handle config load/update - resend Sendspin config if needed."""
         if not self.sendspin_mode_enabled:
             return
 

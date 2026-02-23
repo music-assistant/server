@@ -238,7 +238,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if resume_info_db_row["seconds_played"]:
                 episode.resume_position_ms = int(resume_info_db_row["seconds_played"] * 1000)
             if resume_info_db_row["fully_played"] is not None:
-                episode.fully_played = resume_info_db_row["fully_played"]
+                episode.fully_played = bool(resume_info_db_row["fully_played"])
 
         # grab the episodes from the provider
         # note that we do not cache any of this because its

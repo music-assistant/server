@@ -216,6 +216,7 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         pcm_sample_size = self.pcm_format.pcm_sample_size
         watchdog_task = asyncio.create_task(self._silence_watchdog(pcm_sample_size))
+        stream_error: BaseException | None = None
         try:
             async for chunk in audio_source:
                 if not self._first_chunk_received.is_set():
@@ -232,11 +233,26 @@ class AirPlayStreamSession:
                     self.prov.logger.debug("No running clients remaining, stopping audio streamer")
                     break
                 self.seconds_streamed += len(chunk) / pcm_sample_size
+        except asyncio.CancelledError:
+            self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
+            raise
+        except Exception as err:
+            stream_error = err
+            self.prov.logger.error(
+                "Audio source error after %.1fs of streaming: %s",
+                self.seconds_streamed,
+                err,
+                exc_info=err,
+            )
         finally:
             if not watchdog_task.done():
                 watchdog_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await watchdog_task
+            if stream_error:
+                self.prov.logger.warning(
+                    "Stream ended prematurely due to error - notifying players"
+                )
         async with self._lock:
             await asyncio.gather(
                 *[

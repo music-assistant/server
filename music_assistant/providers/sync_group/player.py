@@ -56,17 +56,16 @@ class SyncGroupPlayer(Player):
         return None
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
-            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
-            self._attr_static_group_members = default_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
-        self._attr_group_members = default_members.copy()
+        self._attr_group_members = static_members.copy()
 
     @cached_property
     def supported_features(self) -> set[PlayerFeature]:
@@ -117,13 +116,12 @@ class SyncGroupPlayer(Player):
         # if we already have a sync leader, we use its can_group_with as reference
         if self.sync_leader:
             return {self.sync_leader.player_id, *self.sync_leader.state.can_group_with}
-        # If we have no members, but we do have default members in the config,
-        # we can group with players that are compatible with those
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        for member_id in default_members:
+        # If we have no syncleader, but we do have group members
+        # grab 'can_group_with' from the first available member
+        for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
-                return {*default_members, *member_player.state.can_group_with}
+                return {*self._attr_group_members, *member_player.state.can_group_with}
         # Dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
         temp_can_group_with = set()
@@ -210,6 +208,10 @@ class SyncGroupPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
         if sync_leader := self.sync_leader:
+            if PlayerFeature.ENQUEUE not in sync_leader.state.supported_features:
+                # this may happen in race conditions where we just switched sync leaders
+                # and the new leader doesn't support enqueueing next media.
+                return
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
@@ -331,8 +333,7 @@ class SyncGroupPlayer(Player):
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        group_members = self.group_members or default_members or new_members or []
+        group_members = self.group_members or new_members or []
         for member_id in group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:

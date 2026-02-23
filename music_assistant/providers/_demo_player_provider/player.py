@@ -32,7 +32,7 @@ class DemoPlayer(Player):
         self._set_attributes()
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # OPTIONAL
         # This method is optional and should be implemented if you need to handle
         # any initialization logic after the config was initially loaded or updated.
