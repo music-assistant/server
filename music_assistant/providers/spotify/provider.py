@@ -610,7 +610,12 @@ class SpotifyProvider(MusicProvider):
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
+        total = spotify_result.get("total", 0)
         for index, item in enumerate(spotify_result["items"], 1):
+            # Spotify wraps/recycles items for offsets beyond the playlist size,
+            # so we need to break when we've reached the total.
+            if (offset + index) > total:
+                break
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             track = parse_track(item["track"], self)
@@ -830,7 +835,7 @@ class SpotifyProvider(MusicProvider):
         except LoginFailed as err:
             if "revoked" in str(err):
                 # clear refresh token if it's invalid
-                self.update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                 if self.available:
                     self.unload_with_error(str(err))
             elif self.available:
@@ -841,7 +846,7 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_global = auth_info
-        self.update_config_value(
+        self._update_config_value(
             CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
         )
 
@@ -889,8 +894,8 @@ class SpotifyProvider(MusicProvider):
         except LoginFailed as err:
             if "revoked" in str(err):
                 # clear refresh token if it's invalid
-                self.update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                self.update_config_value(CONF_CLIENT_ID, None)
+                self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
+                self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -898,7 +903,9 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
-        self.update_config_value(CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True)
+        self._update_config_value(
+            CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True
+        )
 
         # Setup librespot with dev token (preferred over global token)
         await self._setup_librespot_auth(auth_info["access_token"])

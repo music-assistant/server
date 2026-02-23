@@ -21,14 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_DEPRECATED_CROSSFADE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -274,6 +267,7 @@ class AlexaPlayer(Player):
         super().__init__(provider, player_id)
         self.device = device
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
@@ -281,6 +275,11 @@ class AlexaPlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_powered = False
         self._attr_available = True
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
 
     @property
     def api(self) -> AlexaAPI:
@@ -322,12 +321,14 @@ class AlexaPlayer(Player):
         if username is not None and password is not None:
             auth = BasicAuth(str(username), str(password))
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
                     f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
                     json={
-                        "streamUrl": media.uri,
+                        "streamUrl": stream_url,
                         "title": media.title,
                         "artist": media.artist,
                         "album": media.album,
@@ -378,21 +379,6 @@ class AlexaPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_current_media = media
         self.update_state()
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
 
 
 class AlexaProvider(PlayerProvider):

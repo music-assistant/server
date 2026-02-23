@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -47,6 +48,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -69,6 +71,7 @@ from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.apple_music.helpers import browse_playlists
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -104,12 +107,12 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
-
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
+MAX_ARTWORK_DIMENSION = 1000
 
 
 async def setup(
@@ -256,7 +259,7 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Manual Music User Token",
             required=False,
-            category="advanced",
+            advanced=True,
             description=(
                 "Authenticate with a manual Music User Token in case the Authentication flow"
                 " is unsupported (e.g. when using child accounts)."
@@ -355,8 +358,18 @@ class AppleMusicProvider(MusicProvider):
             ]
         return searchresult
 
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Apple Music with support for playlist folders."""
+        if not path or "://" not in path:
+            return await super().browse(path)
+        sub_path = path.split("://", 1)[1]
+        path_parts = [part for part in sub_path.split("/") if part]
+        if path_parts and path_parts[0] == "playlists":
+            return await browse_playlists(self, path, path_parts)
+        return await super().browse(path)
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from spotify."""
+        """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self._get_all_items(endpoint, include="catalog", extend="editorialNotes"):
             if item and item["id"]:
@@ -403,8 +416,8 @@ class AppleMusicProvider(MusicProvider):
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
-        # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
-        max_limit = 200
+        # Obtain catalog info per 150 songs, the documented limit of 300 results in a 504 timeout
+        max_limit = 150
         for i in range(0, len(song_catalog_ids), max_limit):
             catalog_ids = song_catalog_ids[i : i + max_limit]
             catalog_endpoint = f"catalog/{self._storefront}/songs"
@@ -478,7 +491,6 @@ class AppleMusicProvider(MusicProvider):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}"
-        endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 
@@ -720,7 +732,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -800,7 +815,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -895,7 +913,10 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=artwork["url"].format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    ),
                     remotely_accessible=True,
                 )
             )
@@ -934,7 +955,10 @@ class AppleMusicProvider(MusicProvider):
         if artwork := attributes.get("artwork"):
             url = artwork["url"]
             if artwork["width"] and artwork["height"]:
-                url = url.format(w=artwork["width"], h=artwork["height"])
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             playlist.metadata.add_image(
                 MediaItemImage(
                     provider=self.instance_id,
@@ -1117,7 +1141,7 @@ class AppleMusicProvider(MusicProvider):
         """Check a library ID matches known format."""
         if not isinstance(library_id, str):
             return False
-        valid = re.findall(r"^(?:[a|i|l|p]{1}\.|pl\.u\-)[a-zA-Z0-9]+$", library_id)
+        valid = re.findall(r"^(?:[ailp]\.)[a-zA-Z0-9]+$", library_id)
         return bool(valid)
 
     def _is_catalog_id(self, catalog_id: str) -> bool:

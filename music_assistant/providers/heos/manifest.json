@@ -1,0 +1,17 @@
+{
+  "type": "player",
+  "domain": "heos",
+  "stage": "beta",
+  "name": "HEOS",
+  "description": "Play to Denon & Marantz devices via HEOS.",
+  "codeowners": [
+    "@Tommatheussen"
+  ],
+  "requirements": [
+    "pyheos==1.0.6"
+  ],
+  "documentation": "https://music-assistant.io/player-support/heos/",
+  "mdns_discovery": [
+    "_heos-audio._tcp.local."
+  ]
+}

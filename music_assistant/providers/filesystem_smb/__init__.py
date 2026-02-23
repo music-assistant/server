@@ -122,7 +122,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="SMB Version",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="3.0",
             options=[
                 ConfigValueOption("Auto", ""),
@@ -140,7 +140,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Cache Mode",
             required=False,
-            category="advanced",
+            advanced=True,
             default_value="loose",
             options=[
                 ConfigValueOption("Strict", "strict"),
@@ -236,8 +236,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 server, username, password_str, share, subfolder
             )
         elif platform.system() == "Linux":
-            mount_cmd = self._build_linux_mount_cmd(
-                server, username, password_str, share, subfolder
+            mount_cmd, env_vars = self._build_linux_mount_cmd(
+                server, username, password_str, share, subfolder, env_vars
             )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
@@ -279,16 +279,35 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         ]
 
     def _build_linux_mount_cmd(
-        self, server: str, username: str, password: str | None, share: str, subfolder: str
-    ) -> list[str]:
-        """Build mount command for Linux."""
+        self,
+        server: str,
+        username: str,
+        password: str | None,
+        share: str,
+        subfolder: str,
+        env_vars: dict[str, str],
+    ) -> tuple[list[str], dict[str, str]]:
+        """Build mount command for Linux.
+
+        Uses the PASSWD environment variable to handle passwords with special characters
+        (commas, etc.) that cannot be escaped on the command line.
+
+        :param server: The SMB server hostname or IP.
+        :param username: The username for authentication.
+        :param password: The password for authentication (can contain special chars).
+        :param share: The share name on the server.
+        :param subfolder: Optional subfolder path within the share.
+        :param env_vars: Environment variables dict to modify with PASSWD if needed.
+        :returns: Tuple of (mount command args, modified env vars).
+        """
         options = ["rw"]  # read-write access
 
-        # Handle username and password
+        # We pass the password via the PASSWD environment variable to avoid
+        # improperly escaped passwords with special characters.
         if username and username.lower() != "guest":
             options.append(f"username={username}")
             if password:
-                options.append(f"password={password}")
+                env_vars["PASSWD"] = password
         else:
             # Guest/anonymous access
             options.append("guest")
@@ -302,15 +321,18 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         cache_mode = str(self.config.get_value(CONF_CACHE_MODE) or "loose")
         options.append(f"cache={cache_mode}")
 
-        # Case insensitive by default (standard for SMB) and other performance options
+        # Case insensitive by default (standard for SMB) and other performance options.
+        # Note: emoji and other 4-byte UTF-8 characters (U+10000+) in folder/file names
+        # are NOT supported due to a Linux kernel limitation in the CIFS client's NLS layer.
+        # Items with such characters will be skipped during library sync.
         options.extend(
             [
+                "iocharset=utf8",
                 "nocase",
                 "file_mode=0755",
                 "dir_mode=0755",
                 "uid=0",
                 "gid=0",
-                "iocharset=utf8",
                 "noperm",
                 "nobrl",
                 "mfsymlinks",
@@ -319,7 +341,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             ]
         )
 
-        return [
+        mount_cmd = [
             "mount",
             "-t",
             "cifs",
@@ -328,6 +350,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             f"//{server}/{share}{subfolder}",
             self.base_path,
         ]
+        return mount_cmd, env_vars
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""

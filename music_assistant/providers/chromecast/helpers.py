@@ -43,6 +43,7 @@ class ChromecastInfo:
     is_dynamic_group: bool | None = None
     is_multichannel_group: bool = False  # group created for e.g. stereo pair
     is_multichannel_child: bool = False  # speaker that is part of multichannel setup
+    mac_address: str | None = None  # MAC address from eureka_info API
 
     @property
     def is_audio_group(self) -> bool:
@@ -91,6 +92,10 @@ class ChromecastInfo:
         ):
             self.is_multichannel_child = True
 
+        # Get MAC address for device matching (not available for groups)
+        if self.mac_address is None and self.cast_type != "group":
+            self.mac_address = get_mac_address(self.services, zconf)
+
 
 def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30):
     """Get multizone info from eureka endpoint."""
@@ -121,6 +126,35 @@ def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
         pass
     return (dynamic_groups, multichannel_groups)
+
+
+def get_mac_address(services: list[ServiceInfo], zconf: Zeroconf, timeout: int = 10) -> str | None:
+    """Get MAC address from Chromecast eureka_info API.
+
+    :param services: List of zeroconf service info.
+    :param zconf: Zeroconf instance.
+    :param timeout: Request timeout in seconds.
+    :return: MAC address string or None if not available.
+    """
+    try:
+        _, status = dial._get_status(
+            services,
+            zconf,
+            "/setup/eureka_info?options=detail",
+            True,
+            timeout,
+            None,
+        )
+        if mac_address := status.get("mac_address"):
+            # Normalize to uppercase with colons
+            mac = mac_address.upper().replace("-", ":")
+            # Ensure proper format
+            if ":" not in mac and len(mac) == 12:
+                mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
+            return mac
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
+        pass
+    return None
 
 
 class CastStatusListener:
@@ -193,7 +227,7 @@ class CastStatusListener:
     def multizone_new_cast_status(self, group_uuid, cast_status) -> None:
         """Handle reception of a new CastStatus for a group."""
         mass = self.castplayer.mass
-        if group_player := mass.players.get(group_uuid):
+        if group_player := mass.players.get_player(group_uuid):
             if TYPE_CHECKING:
                 assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:

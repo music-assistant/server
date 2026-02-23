@@ -98,7 +98,7 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
                 ),
             ],
@@ -263,14 +263,14 @@ class SpotifyConnectProvider(PluginProvider):
         # If there's an active player (source was selected on a player), use it
         if self._active_player_id:
             # Validate that the active player still exists
-            if self.mass.players.get(self._active_player_id):
+            if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             # Active player no longer exists, clear it
             self._active_player_id = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all(False, False))
+            all_players = list(self.mass.players.all_players(False, False))
             # First, try to find a playing player
             for player in all_players:
                 if player.state.playback_state == PlaybackState.PLAYING:
@@ -287,7 +287,7 @@ class SpotifyConnectProvider(PluginProvider):
             return None
 
         # Use the specific default player if configured and it still exists
-        if self.mass.players.get(self._default_player_id):
+        if self.mass.players.get_player(self._default_player_id):
             return self._default_player_id
         self.logger.warning(
             "Configured default player '%s' no longer exists", self._default_player_id
@@ -647,7 +647,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Get initial volume from default player if available, or use 20 as fallback
             initial_volume = 20
             if self._default_player_id and self._default_player_id != PLAYER_ID_AUTO:
-                if _player := self.mass.players.get(self._default_player_id):
+                if _player := self.mass.players.get_player(self._default_player_id):
                     if _player.volume_level:
                         initial_volume = _player.volume_level
             args: list[str] = [
@@ -678,6 +678,9 @@ class SpotifyConnectProvider(PluginProvider):
                 str(EVENTS_SCRIPT),
                 "--emit-sink-events",
             ]
+            bind_ip = self.mass.streams.bind_ip
+            if bind_ip and bind_ip != "0.0.0.0":
+                args.extend(["--zeroconf-interface", bind_ip])
             self._librespot_proc = librespot = AsyncProcess(
                 args, stdout=False, stderr=True, name=f"librespot[{self.name}]", env=env
             )

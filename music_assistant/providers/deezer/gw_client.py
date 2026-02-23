@@ -5,11 +5,13 @@ cookie based on the api_token.
 """
 
 import datetime
+import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
 from typing import Any, cast
 
 from aiohttp import ClientSession, ClientTimeout
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
@@ -35,6 +37,7 @@ class GWClient:
     _gw_csrf_token: str | None
     _license: str | None
     _license_expiration_timestamp: int
+    _user_id: int
     session: ClientSession
     formats: list[dict[str, str]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
@@ -66,6 +69,7 @@ class GWClient:
             raise DeezerGWError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
+        self._user_id = int(user_data["results"]["USER"]["USER_ID"])
         self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
@@ -126,6 +130,38 @@ class GWClient:
             raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
+    async def get_user_radio(self, config_id: str) -> list[dict[str, Any]]:
+        """Get personalized Flow tracks for a specific mood or genre.
+
+        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        """
+        result = await self._gw_api_call(
+            "radio.getUserRadio",
+            args={"config_id": config_id, "user_id": self._user_id},
+        )
+        if "data" not in result["results"]:
+            return []
+        return cast("list[dict[str, Any]]", result["results"]["data"])
+
+    async def get_home_flows(self) -> list[dict[str, Any]]:
+        """Discover available Flow variants from the Deezer home page."""
+        gateway_input = json.dumps(
+            {
+                "PAGE": "home",
+                "VERSION": "2.5",
+                "SUPPORT": {"filterable-grid": ["flow"]},
+            }
+        )
+        result = await self._gw_api_call(
+            "page.get",
+            params={"gateway_input": gateway_input},
+        )
+        sections = result["results"].get("sections", [])
+        for section in sections:
+            if section.get("layout") == "filterable-grid":
+                return cast("list[dict[str, Any]]", section["items"])
+        return []
+
     async def get_song_data(self, track_id: str) -> dict[str, Any]:
         """Get data such as the track token for a given track."""
         return await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
@@ -166,7 +202,11 @@ class GWClient:
             msg = "Received an error from API"
             raise DeezerGWError(msg, error)
 
-        return result_json["data"][0]["media"][0], song_data
+        media_list = result_json["data"][0].get("media", [])
+        if not media_list:
+            raise MediaNotFoundError(f"No media available for track {track_id}")
+
+        return media_list[0], song_data
 
     async def log_listen(
         self, next_track: str | None = None, last_track: StreamDetails | None = None

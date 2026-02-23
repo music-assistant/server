@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import pathlib
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -31,10 +33,12 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZerocon
 
 from music_assistant.constants import (
     API_SCHEMA_VERSION,
+    CONF_DEFAULT_PROVIDERS_SETUP,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONF_ZEROCONF_INTERFACES,
     CONFIGURABLE_CORE_CONTROLLERS,
+    DEFAULT_PROVIDERS,
     MASS_LOGGER_NAME,
     MIN_SCHEMA_VERSION,
     VERBOSE_LOG_LEVEL,
@@ -44,7 +48,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.players.player_controller import PlayerController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -101,6 +105,15 @@ def is_player_provider(provider: ProviderInstanceType) -> TypeGuard[PlayerProvid
     return provider.type == ProviderType.PLAYER
 
 
+class CoreState(Enum):
+    """Enum representing the core state of the Music Assistant server."""
+
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
 class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
@@ -118,6 +131,7 @@ class MusicAssistant:
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
+        self._state = CoreState.STARTING
         self.storage_path = storage_path
         self.cache_path = cache_path
         self.safe_mode = safe_mode
@@ -128,9 +142,9 @@ class MusicAssistant:
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
         self._tracked_timers: dict[str, asyncio.TimerHandle] = {}
-        self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.logger = LOGGER
         self.dev_mode = (
             os.environ.get("PYTHONDEVMODE") == "1"
             or pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath(".venv").exists()
@@ -149,15 +163,14 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         # create shared zeroconf instance
-        # TODO: enumerate interfaces and enable IPv6 support
         zeroconf_interfaces = self.config.get_raw_core_config_value(
-            "streams", CONF_ZEROCONF_INTERFACES, "default"
+            "players", CONF_ZEROCONF_INTERFACES, "default"
         )
+        # IPv6 requires InterfaceChoice.All, so only enable when zeroconf_interfaces is "all"
+        use_all_interfaces = zeroconf_interfaces == "all"
         self.aiozc = AsyncZeroconf(
-            ip_version=IPVersion.V4Only,
-            interfaces=InterfaceChoice.All
-            if zeroconf_interfaces == "all"
-            else InterfaceChoice.Default,
+            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
+            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
         )
         # load all available providers from manifest files
         await self.__load_provider_manifests()
@@ -182,30 +195,43 @@ class MusicAssistant:
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
             self._provider_manifests[controller.domain] = controller.manifest
-        await self.cache.setup(await self.config.get_core_config("cache"))
-        # load streams controller early so we can abort if we can't load it
-        await self.streams.setup(await self.config.get_core_config("streams"))
-        await self.music.setup(await self.config.get_core_config("music"))
-        await self.metadata.setup(await self.config.get_core_config("metadata"))
-        await self.players.setup(await self.config.get_core_config("players"))
-        await self.player_queues.setup(await self.config.get_core_config("player_queues"))
-        # load webserver/api last so the api/frontend is
-        # not yet available while we're starting (or performing migrations)
+
+        # setup all core controllers in parallel
+        async def setup_controller(controller: CoreController) -> None:
+            await controller.setup(await self.config.get_core_config(controller.domain))
+            controller.initialized.set()
+
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(setup_controller(self.cache))
+            tg.create_task(setup_controller(self.streams))
+            tg.create_task(setup_controller(self.music))
+            tg.create_task(setup_controller(self.metadata))
+            tg.create_task(setup_controller(self.players))
+            tg.create_task(setup_controller(self.player_queues))
+
+        # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
         await self.webserver.setup(await self.config.get_core_config("webserver"))
+        # load builtin providers (always needed, also in safe mode)
+        await self._load_builtin_providers()
         # setup discovery
         await self._setup_discovery()
-        # load providers
+        # load regular providers (skip when in safe mode)
+        # providers are loaded in background tasks so they won't block
+        # the startup if they fail or take a long time to load
         if not self.safe_mode:
             await self._load_providers()
+        # at this point we are fully up and running,
+        # set state to running to signal we're ready
+        self._state = CoreState.RUNNING
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         LOGGER.info("Stop called, cleaning up...")
         self.signal_event(EventType.SHUTDOWN)
-        self.closing = True
+        self._state = CoreState.STOPPING
         # cancel all running tasks
-        for task in self._tracked_tasks.values():
+        for task in list(self._tracked_tasks.values()):
             task.cancel()
         # cleanup all providers
         await asyncio.gather(
@@ -231,6 +257,17 @@ class MusicAssistant:
             self._http_session_no_ssl.detach()
             if self._http_session_no_ssl.connector:
                 await self._http_session_no_ssl.connector.close()
+        self._state = CoreState.STOPPED
+
+    @property
+    def state(self) -> CoreState:
+        """Return current state of the core."""
+        return self._state
+
+    @property
+    def closing(self) -> bool:
+        """Return true if the server is (in the process of) closing."""
+        return self._state in (CoreState.STOPPING, CoreState.STOPPED)
 
     @property
     def server_id(self) -> str:
@@ -280,9 +317,13 @@ class MusicAssistant:
         return list(self._provider_manifests.values())
 
     @api_command("providers/manifests/get")
-    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+    def get_provider_manifest(self, instance_id_or_domain: str) -> ProviderManifest:
         """Return Provider manifests of single provider(domain)."""
-        return self._provider_manifests[domain]
+        if instance_id_or_domain in self._provider_manifests:
+            return self._provider_manifests[instance_id_or_domain]
+        if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
+            return provider.manifest
+        raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
     @api_command("providers")
     def get_providers(
@@ -300,7 +341,7 @@ class MusicAssistant:
         )
         return [
             x
-            for x in self._providers.values()
+            for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
             # apply user provider filter
             and (
@@ -364,7 +405,7 @@ class MusicAssistant:
                 return None
             provider_instance_or_domain = prov.domain
         # fallback to match on domain
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if prov.domain != provider_instance_or_domain:
                 continue
             if return_unavailable or prov.available:
@@ -384,7 +425,7 @@ class MusicAssistant:
         """
         return [
             prov
-            for prov in self._providers.values()
+            for prov in list(self._providers.values())
             if (provider_type is None or provider_type == prov.type)
             and prov.domain == domain
             and (return_unavailable or prov.available)
@@ -407,12 +448,12 @@ class MusicAssistant:
             LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
-        for cb_func, event_filter, id_filter in self._subscribers:
+        for cb_func, event_filter, id_filter in list(self._subscribers):
             if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if asyncio.iscoroutinefunction(cb_func):
+            if inspect.iscoroutinefunction(cb_func):
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -452,11 +493,21 @@ class MusicAssistant:
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,
+        eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
+
+        :param target: Coroutine function or awaitable to run as a task.
+        :param args: Arguments to pass to the coroutine function.
+        :param task_id: Optional ID to track and deduplicate tasks.
+        :param abort_existing: If True, cancel existing task with same task_id.
+        :param eager_start: If True (default), start task immediately without waiting
+                           for next event loop iteration. This ensures proper ordering
+                           when creating multiple tasks in sequence.
+        :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
@@ -466,16 +517,19 @@ class MusicAssistant:
                 return existing
         self.verify_event_loop_thread("create_task")
 
-        if asyncio.iscoroutinefunction(target):
+        if inspect.iscoroutinefunction(target):
             # coroutine function
-            task = self.loop.create_task(target(*args, **kwargs))
-        elif asyncio.iscoroutine(target):
+            coro = target(*args, **kwargs)
+        elif inspect.iscoroutine(target):
             # coroutine
-            task = self.loop.create_task(target)
+            coro = target
         elif callable(target):
             raise RuntimeError("Function is not a coroutine or coroutine function")
         else:
             raise RuntimeError("Target is missing")
+
+        # Use asyncio.Task directly with eager_start for immediate execution
+        task: asyncio.Task[_R] = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
 
         if task_id is None:
             task_id = uuid4().hex
@@ -526,16 +580,20 @@ class MusicAssistant:
             self._tracked_timers.pop(task_id)
             self.create_task(_target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
-        if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
+        def _call_sync(_target: Callable[..., _R]) -> None:
+            self._tracked_timers.pop(task_id)
+            _target(*args, **kwargs)
+
+        if inspect.iscoroutinefunction(target) or inspect.iscoroutine(target):
             # coroutine function
             if TYPE_CHECKING:
                 target = cast("Coroutine[Any, Any, _R]", target)
             handle = self.loop.call_later(delay, _create_task, target)
         else:
-            # regular callable
+            # regular sync callable
             if TYPE_CHECKING:
                 target = cast("Callable[..., _R]", target)
-            handle = self.loop.call_later(delay, target, *args)
+            handle = self.loop.call_later(delay, _call_sync, target)
         self._tracked_timers[task_id] = handle
         return handle
 
@@ -704,6 +762,31 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
 
+    async def run_provider_discovery(self, instance_id: str) -> None:
+        """
+        Run mDNS discovery for a given provider.
+
+        In case of a PlayerProvider, will also call its own discovery method.
+        """
+        provider = self.get_provider(instance_id, return_unavailable=False)
+        if not provider:
+            raise KeyError(f"Provider with instance ID {instance_id} not found")
+        if provider.manifest.mdns_discovery:
+            if provider.instance_id not in self._mdns_locks:
+                self._mdns_locks[provider.instance_id] = asyncio.Lock()
+            async with self._mdns_locks[provider.instance_id]:
+                for mdns_type in provider.manifest.mdns_discovery or []:
+                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                        if mdns_type not in mdns_name or mdns_type == mdns_name:
+                            continue
+                        info = AsyncServiceInfo(mdns_type, mdns_name)
+                        if await info.async_request(self.aiozc.zeroconf, 3000):
+                            await provider.on_mdns_service_state_change(
+                                mdns_name, ServiceStateChange.Added, info
+                            )
+        if isinstance(provider, PlayerProvider):
+            await provider.discover_players()
+
     def verify_event_loop_thread(self, what: str) -> None:
         """Report and raise if we are not running in the event loop thread."""
         if self.loop_thread_id != threading.get_ident():
@@ -737,9 +820,14 @@ class MusicAssistant:
                     required_role = getattr(obj, "api_required_role", None)
                     self.register_api_command(obj.api_cmd, obj, authenticated, required_role)
 
-    async def _load_providers(self) -> None:
-        """Load providers from config."""
-        # create default config for any 'builtin' providers (e.g. URL provider)
+    async def _load_builtin_providers(self) -> None:
+        """
+        Load all builtin providers.
+
+        Builtin providers are always needed (also in safe mode) and are fully awaited.
+        On error, setup will fail.
+        """
+        # create default config for any 'builtin' providers
         for prov_manifest in self._provider_manifests.values():
             if prov_manifest.type == ProviderType.CORE:
                 # core controllers are not real providers
@@ -748,16 +836,81 @@ class MusicAssistant:
                 continue
             await self.config.create_builtin_provider_config(prov_manifest.domain)
 
-        # load all configured (and enabled) providers
+        # load all configured (and enabled) builtin providers
         prov_configs = await self.config.get_provider_configs(include_values=True)
-        for prov_conf in prov_configs:
-            if not prov_conf.enabled:
+        builtin_configs: list[ProviderConfig] = [
+            prov_conf
+            for prov_conf in prov_configs
+            if (manifest := self._provider_manifests.get(prov_conf.domain))
+            and manifest.builtin
+            and (prov_conf.enabled or manifest.allow_disable is False)
+        ]
+
+        # load builtin providers and wait for them to complete
+        async with asyncio.TaskGroup() as tg:
+            for conf in builtin_configs:
+                tg.create_task(self.load_provider(conf.instance_id, allow_retry=True))
+
+    async def _load_providers(self) -> None:
+        """
+        Load regular (non-builtin) providers from config.
+
+        Regular providers are loaded in background tasks
+        and can fail without affecting core setup.
+        """
+        # handle default providers setup
+        self.config.set_default(CONF_DEFAULT_PROVIDERS_SETUP, set())
+        default_providers_setup = cast("set[str]", self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
+        changes_made = False
+        for default_provider, require_mdns in DEFAULT_PROVIDERS:
+            if default_provider in default_providers_setup:
+                # already processed/setup before, skip
                 continue
+            if not (manifest := self._provider_manifests.get(default_provider)):
+                continue
+            if require_mdns:
+                # if mdns discovery is required, check if we have seen any mdns entries
+                # for this provider before setting it up
+                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                    if manifest.mdns_discovery and any(
+                        mdns_type in mdns_name for mdns_type in manifest.mdns_discovery
+                    ):
+                        break
+                else:
+                    continue
+            await self.config.create_builtin_provider_config(manifest.domain)
+            changes_made = True
+            # TEMP: migration - to be removed after 2.8 release
+            # enable all existing players of the default providers if they are not already enabled
+            # due to the linked protocol feature we introduced
+            for player_config in await self.config.get_player_configs(
+                provider=default_provider, include_disabled=True
+            ):
+                if player_config.enabled:
+                    continue
+                await self.config.save_player_config(player_config.player_id, {"enabled": True})
+            default_providers_setup.add(default_provider)
+        if changes_made:
+            self.config.set(CONF_DEFAULT_PROVIDERS_SETUP, default_providers_setup)
+            self.config.save(True)
+        # load all configured (and enabled) regular (non-builtin) providers
+        prov_configs = await self.config.get_provider_configs(include_values=True)
+        other_configs: list[ProviderConfig] = [
+            prov_conf
+            for prov_conf in prov_configs
+            if prov_conf.enabled
+            and (
+                not (manifest := self._provider_manifests.get(prov_conf.domain))
+                or not manifest.builtin
+            )
+        ]
+        # load providers concurrently via tasks
+        for prov_conf in other_configs:
             # Use a task so we can load multiple providers at once.
             # If a provider fails, that will not block the loading of other providers.
             self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
-    async def _load_provider(self, conf: ProviderConfig) -> None:  # noqa: PLR0915
+    async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -812,24 +965,16 @@ class MusicAssistant:
         )
         provider.available = True
 
+        # adapt logging name if needed
+        provider._set_log_level_from_config(provider.config)
+
         # execute post load actions
         async def _on_provider_loaded() -> None:
             await provider.loaded_in_mass()
-            if provider.type != ProviderType.PLAYER:
-                return
-            # add mdns discovery if needed
-            if provider.instance_id not in self._mdns_locks:
-                self._mdns_locks[provider.instance_id] = asyncio.Lock()
-            async with self._mdns_locks[provider.instance_id]:
-                for mdns_type in provider.manifest.mdns_discovery or []:
-                    for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                        if mdns_type not in mdns_name or mdns_type == mdns_name:
-                            continue
-                        info = AsyncServiceInfo(mdns_type, mdns_name)
-                        if await info.async_request(self.aiozc.zeroconf, 3000):
-                            await provider.on_mdns_service_state_change(
-                                mdns_name, ServiceStateChange.Added, info
-                            )
+            await self.run_provider_discovery(provider.instance_id)
+            # push instance name to config (to persist it if it was autogenerated)
+            if provider.default_name != conf.default_name:
+                self.config.set_provider_default_name(provider.instance_id, provider.default_name)
 
         self.create_task(_on_provider_loaded())
 
@@ -877,7 +1022,9 @@ class MusicAssistant:
                         provider_manifest.allow_disable = False
 
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
-                    LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
+                    LOGGER.log(
+                        VERBOSE_LOG_LEVEL, "Loaded manifest for provider %s", provider_manifest.name
+                    )
                 except Exception as exc:
                     LOGGER.exception(
                         "Error while loading manifest for provider %s",
@@ -897,6 +1044,7 @@ class MusicAssistant:
                 if not await isdir(dir_path):
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))
+        self.logger.debug("Loaded %s provider manifests", len(self._provider_manifests))
 
     async def _setup_discovery(self) -> None:
         """Handle setup of MDNS discovery."""
@@ -963,7 +1111,7 @@ class MusicAssistant:
             service_type,
             state_change,
         )
-        for prov in self._providers.values():
+        for prov in list(self._providers.values()):
             if not prov.manifest.mdns_discovery:
                 continue
             if not prov.available:

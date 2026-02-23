@@ -174,6 +174,10 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        # wait for dependencies to be ready (streams and music)
+        await self.mass.streams.initialized.wait()
+        await self.mass.music.initialized.wait()
+
         self.config = config
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
@@ -753,7 +757,12 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images.append(track.image)
             if track.metadata.genres:
                 genres = track.metadata.genres
-            elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+            elif (
+                isinstance(track, Track)
+                and track.album
+                and isinstance(track.album, Album)
+                and track.album.metadata.genres
+            ):
                 genres = track.album.metadata.genres
             else:
                 genres = set()

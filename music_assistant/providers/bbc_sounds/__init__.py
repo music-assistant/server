@@ -125,14 +125,14 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
-            category="advanced",
+            advanced=True,
             type=ConfigEntryType.BOOLEAN,
             label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
-            category="advanced",
+            advanced=True,
             label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
