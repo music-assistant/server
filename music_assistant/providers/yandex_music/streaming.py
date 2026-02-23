@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import ClientPayloadError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
@@ -320,8 +322,8 @@ class YandexMusicStreamingManager:
         """Return the audio stream for the provider item with on-the-fly decryption.
 
         Downloads and decrypts the encrypted stream chunk-by-chunk without buffering.
-        Seeking is handled externally by ffmpeg (-ss flag); can_seek=False means
-        seek_position is always 0 here.
+        On connection drop, reconnects using a Range header and resumes AES-CTR
+        decryption from the correct block boundary (up to 3 retries).
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :param seek_position: Always 0 (seeking delegated to ffmpeg via allow_seek=True).
@@ -332,15 +334,63 @@ class YandexMusicStreamingManager:
         key_bytes = bytes.fromhex(key_hex)
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
-        nonce_16 = bytes(16)  # AES-256-CTR, zero IV
-        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce_16)).decryptor()
-        async with self.mass.http_session.get(encrypted_url) as response:
+
+        block_size = 16  # AES-CTR block size in bytes
+        max_retries = 3
+        bytes_yielded = 0  # total decrypted bytes delivered to caller
+
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                await asyncio.sleep(min(2**attempt, 8))  # 2s, 4s, 8s
+
+            # Align resume position to AES-CTR block boundary
+            block_start = (bytes_yielded // block_size) * block_size
+            block_skip = bytes_yielded - block_start  # overlap bytes to discard in first chunk
+
+            # AES-CTR: original nonce is 0x00..00, so counter = block number
+            nonce = (block_start // block_size).to_bytes(block_size, "big")
+            decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce)).decryptor()
+            headers = {"Range": f"bytes={block_start}-"} if block_start > 0 else {}
+
             try:
-                response.raise_for_status()
-            except Exception as err:
-                raise MediaNotFoundError(f"Failed to fetch encrypted stream: {err}") from err
-            async for chunk in response.content.iter_chunked(65536):
-                yield decryptor.update(chunk)
-            final = decryptor.finalize()
-            if final:
-                yield final
+                async with self.mass.http_session.get(encrypted_url, headers=headers) as response:
+                    try:
+                        response.raise_for_status()
+                    except Exception as err:
+                        raise MediaNotFoundError(
+                            f"Failed to fetch encrypted stream: {err}"
+                        ) from err
+
+                    carry_skip = block_skip
+                    async for chunk in response.content.iter_chunked(65536):
+                        decrypted = decryptor.update(chunk)
+                        if carry_skip > 0:
+                            skip = min(carry_skip, len(decrypted))
+                            decrypted = decrypted[skip:]
+                            carry_skip -= skip
+                        if decrypted:
+                            bytes_yielded += len(decrypted)
+                            yield decrypted
+
+                    final = decryptor.finalize()
+                    if final:
+                        bytes_yielded += len(final)
+                        yield final
+                    return  # stream completed normally
+
+            except ClientPayloadError as err:
+                if attempt < max_retries:
+                    self.logger.warning(
+                        "Encrypted stream dropped at %d bytes (attempt %d/%d): %s — retrying",
+                        bytes_yielded,
+                        attempt + 1,
+                        max_retries,
+                        err,
+                    )
+                else:
+                    self.logger.warning(
+                        "Encrypted stream ended early after %d retries at %d bytes: %s",
+                        max_retries,
+                        bytes_yielded,
+                        err,
+                    )
