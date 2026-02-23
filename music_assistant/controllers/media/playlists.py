@@ -127,6 +127,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         if media_types is None:
             media_types = {MediaType.TRACK}
+        if not provider_instance_or_domain and not media_types:
+            # builtin can handle all media_types
+            media_types.update((MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO))
 
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)

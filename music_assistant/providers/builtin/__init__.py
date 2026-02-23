@@ -90,6 +90,10 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS,
+    ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES,
+    ProviderFeature.PLAYLIST_CREATE_RADIOS,
+    ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
@@ -242,6 +246,12 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            supported_mediatypes={
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+                MediaType.RADIO,
+                MediaType.TRACK,
+            },
             is_editable=True,
         )
         if image_url := stored_item.get("image_url"):
