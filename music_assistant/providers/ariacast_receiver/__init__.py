@@ -406,18 +406,16 @@ class AriaCastBridge(PluginProvider):
                         self.logger.info(
                             "Artwork downloaded successfully, size: %d bytes", len(img_data)
                         )
-
                         image = MediaItemImage(
                             type=ImageType.THUMB,
-                            path="artwork",
+                            path=f"artwork_{self._artwork_timestamp}",
                             provider=self.instance_id,
                             remotely_accessible=False,
                         )
-                        base_url = self.mass.metadata.get_image_url(image)
 
                         if self._source_details.metadata:
                             self._source_details.metadata.image_url = (
-                                f"{base_url}&t={self._artwork_timestamp}"
+                                self.mass.metadata.get_image_url(image)
                             )
 
                         if self._source_details.in_use_by:
@@ -429,7 +427,7 @@ class AriaCastBridge(PluginProvider):
 
     async def resolve_image(self, path: str) -> bytes:
         """Return raw image bytes to Music Assistant."""
-        if path == "artwork" and self._artwork_bytes:
+        if path.startswith("artwork") and self._artwork_bytes:
             return self._artwork_bytes
         return b""
 
