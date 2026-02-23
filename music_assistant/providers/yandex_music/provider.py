@@ -440,9 +440,8 @@ class YandexMusicProvider(MusicProvider):
         """Get validated tags for a category (only those with playlists).
 
         Combines hardcoded tags from the category lists with any landing-discovered
-        tags, validates each via :meth:`_validate_tag` (which calls
-        ``client.get_tag_playlists()`` and may trigger playlist fetching), and
-        returns only those tags that have at least one playlist.
+        tags, validates each by calling client.tags(), and returns only those with
+        playlists.
 
         :param category: Category name ('mood', 'activity', 'era', 'genres').
         :return: List of valid tag slugs.
