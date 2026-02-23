@@ -2306,13 +2306,17 @@ class MusicController(CoreController):
                 if search_name in genre_cache:
                     return genre_cache[search_name]
                 aliases_json = serialize_to_json(aliases or [name])
+                icon_metadata = GenreController._get_genre_icon_metadata(translation_key)
+                metadata_json = (
+                    serialize_to_json(icon_metadata.to_dict()) if icon_metadata else empty_metadata
+                )
                 row_id = await db.execute_insert(
                     genre_insert_sql,
                     (
                         name,
                         sort_name,
                         translation_key,
-                        empty_metadata,
+                        metadata_json,
                         empty_external_ids,
                         aliases_json,
                         search_name,
