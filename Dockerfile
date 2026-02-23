@@ -38,6 +38,9 @@ RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
+# Pre-compile Python bytecode for faster startup
+RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
+
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root
 # IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
