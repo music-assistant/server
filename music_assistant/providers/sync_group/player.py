@@ -59,14 +59,13 @@ class SyncGroupPlayer(Player):
         """Handle logic when the PlayerConfig is first loaded or updated."""
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
         if self.is_dynamic:
-            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
-            self._attr_static_group_members = default_members.copy()
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
-        self._attr_group_members = default_members.copy()
+        self._attr_group_members = static_members.copy()
 
     @cached_property
     def supported_features(self) -> set[PlayerFeature]:
@@ -117,13 +116,12 @@ class SyncGroupPlayer(Player):
         # if we already have a sync leader, we use its can_group_with as reference
         if self.sync_leader:
             return {self.sync_leader.player_id, *self.sync_leader.state.can_group_with}
-        # If we have no members, but we do have default members in the config,
-        # we can group with players that are compatible with those
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        for member_id in default_members:
+        # If we have no syncleader, but we do have group members
+        # grab 'can_group_with' from the first available member
+        for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
-                return {*default_members, *member_player.state.can_group_with}
+                return {*self._attr_group_members, *member_player.state.can_group_with}
         # Dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
         temp_can_group_with = set()
@@ -233,9 +231,9 @@ class SyncGroupPlayer(Player):
         if prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
             # We're removing the current sync leader while the group is active
             # We need to select a new leader before we can handle the member changes
-            self.logger.debug(
+            self.logger.info(
                 "Removing current sync leader %s from group %s while it is active, "
-                "selecting a new leader and dissolving the current syncgroup",
+                "dissolving the current syncgroup and will re-form it with a new leader",
                 prev_leader.display_name,
                 self.display_name,
             )
@@ -284,16 +282,15 @@ class SyncGroupPlayer(Player):
         if needs_restart:
             await self.play()
             return
-        if not was_playing:
+        if not was_playing or not cur_leader:
             # Don't need to do anything else if the group is not active
             # The syncing will be done once playback starts
             return
-        if cur_leader:
-            await self.mass.players.cmd_set_members(
-                cur_leader.player_id,
-                player_ids_to_add=final_players_to_add,
-                player_ids_to_remove=final_players_to_remove,
-            )
+        await self.mass.players.cmd_set_members(
+            cur_leader.player_id,
+            player_ids_to_add=final_players_to_add,
+            player_ids_to_remove=final_players_to_remove,
+        )
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
@@ -316,6 +313,11 @@ class SyncGroupPlayer(Player):
             if x != self.sync_leader.player_id and x not in self.sync_leader.state.group_members
         ]
         if members_to_sync:
+            # If the sync leader is playing something independently, stop it first
+            # to prevent protocol switching from trying to resume the previous playback
+            # (we're about to start new playback on the syncgroup)
+            if self.sync_leader.state.playback_state == PlaybackState.PLAYING:
+                await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
     async def _dissolve_syncgroup(self) -> None:
@@ -335,8 +337,7 @@ class SyncGroupPlayer(Player):
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
-        default_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        group_members = self.group_members or default_members or new_members or []
+        group_members = self.group_members or new_members or []
         for member_id in group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:

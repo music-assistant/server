@@ -1010,6 +1010,7 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
+        self.mass.cancel_timer(f"set_output_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:
@@ -1346,6 +1347,12 @@ class Player(ABC):
             # before the timer is up, using the task_id
             self.mass.call_later(
                 2, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+            )
+            self.mass.call_later(
+                2,
+                self.set_active_output_protocol,
+                None,
+                task_id=f"set_output_protocol_{self.player_id}",
             )
 
         return get_changed_dataclass_values(
