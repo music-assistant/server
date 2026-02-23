@@ -388,9 +388,6 @@ class YandexMusicStreamingManager:
                         err,
                     )
                 else:
-                    self.logger.warning(
-                        "Encrypted stream ended early after %d retries at %d bytes: %s",
-                        max_retries,
-                        bytes_yielded,
-                        err,
-                    )
+                    raise MediaNotFoundError(
+                        "Encrypted stream ended early after retries were exhausted"
+                    ) from err

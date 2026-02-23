@@ -189,7 +189,7 @@ async def test_send_rotor_station_feedback_posts() -> None:
 # -- LRC regex tests ---------------------------------------------------------
 
 
-async def test_lrc_regex_matches_valid_synced_lyrics() -> None:
+def test_lrc_regex_matches_valid_synced_lyrics() -> None:
     """LRC regex matches valid synced lyrics with proper format [mm:ss.xx]."""
     # LRC timestamp regex pattern used by the client implementation
     pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
@@ -207,7 +207,7 @@ async def test_lrc_regex_matches_valid_synced_lyrics() -> None:
         assert re.match(pattern, case), f"Should match: {case}"
 
 
-async def test_lrc_regex_rejects_invalid_formats() -> None:
+def test_lrc_regex_rejects_invalid_formats() -> None:
     """LRC regex rejects invalid formats (no closing bracket, wrong format)."""
     pattern = r"^\[\d{2}:\d{2}(?:\.\d{2,3})?\]"
 
@@ -229,7 +229,7 @@ async def test_lrc_regex_rejects_invalid_formats() -> None:
 # -- HMAC sign construction tests --------------------------------------------
 
 
-async def test_hmac_sign_construction_explicit() -> None:
+def test_hmac_sign_construction_explicit() -> None:
     """HMAC sign is constructed explicitly with commas stripped from codecs."""
     # Simulate the parameters
     timestamp = 1234567890

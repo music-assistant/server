@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import unittest.mock
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from aiohttp import ClientPayloadError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
@@ -344,19 +346,28 @@ def _make_encrypted_stream_details(
 class _MockContent:
     """Async iterable content for mock HTTP responses."""
 
-    def __init__(self, chunks: list[bytes]) -> None:
+    def __init__(self, chunks: list[bytes], *, drop_payload_error: bool = False) -> None:
         self._chunks = chunks
+        self._drop = drop_payload_error
 
     async def iter_chunked(self, size: int) -> Any:
         for chunk in self._chunks:
             yield chunk
+        if self._drop:
+            raise ClientPayloadError("connection reset by peer")
 
 
 class _MockResponse:
     """Fake aiohttp ClientResponse for streaming tests."""
 
-    def __init__(self, chunks: list[bytes], *, error: Exception | None = None) -> None:
-        self.content = _MockContent(chunks)
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        error: Exception | None = None,
+        drop_payload_error: bool = False,
+    ) -> None:
+        self.content = _MockContent(chunks, drop_payload_error=drop_payload_error)
         self._error = error
 
     def raise_for_status(self) -> None:
@@ -379,6 +390,18 @@ class _MockHttpSession:
 
     def get(self, url: str, **kwargs: object) -> _MockResponse:
         return self._response
+
+
+class _MultiCallHttpSession:
+    """Fake aiohttp ClientSession returning successive responses and recording calls."""
+
+    def __init__(self, responses: list[_MockResponse]) -> None:
+        self._responses = responses
+        self.calls: list[dict[str, Any]] = []
+
+    def get(self, url: str, **kwargs: object) -> _MockResponse:
+        self.calls.append({"url": url, "headers": kwargs.get("headers", {})})
+        return self._responses[len(self.calls) - 1]
 
 
 async def test_get_audio_stream_invalid_key_length(
@@ -429,3 +452,37 @@ async def test_get_audio_stream_decrypts_aes_ctr_correctly(
         result += chunk
 
     assert result == plaintext
+
+
+async def test_get_audio_stream_reconnects_with_range_header(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """On ClientPayloadError, reconnects with correct Range header and full plaintext restored."""
+    key = b"\x11" * 32
+    # 96 bytes = 6 AES-CTR blocks; split at byte 48 (block boundary)
+    plaintext = b"AAAAAAAAAAAAAAAA" * 3 + b"BBBBBBBBBBBBBBBB" * 3
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    drop_at = 48  # exactly 3 blocks — clean block boundary
+
+    # First request drops after 48 bytes; second serves the remainder
+    first_resp = _MockResponse([ciphertext[:drop_at]], drop_payload_error=True)
+    second_resp = _MockResponse([ciphertext[drop_at:]])
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch("asyncio.sleep"):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 2
+    assert session.calls[0].get("headers") == {}
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-"}
