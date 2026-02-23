@@ -262,13 +262,17 @@ class AriaCastBridge(PluginProvider):
         if not artwork_url:
             return
 
+        # The binary often sends a static local URL (like http://127.0.0.1/image/artwork).
+        # We combine it with the track title to detect actual song/artwork changes.
+        current_identifier = f"{artwork_url}_{meta.title}_{meta.artist}"
+
         last_artwork_identifier = getattr(self, "_last_artwork_identifier", None)
-        if artwork_url != last_artwork_identifier:
+        if current_identifier != last_artwork_identifier:
             # New artwork detected
             self.logger.debug(
-                "New artwork detected: %s (was: %s)", artwork_url, last_artwork_identifier
+                "New artwork detected for track: %s (was: %s)", meta.title, last_artwork_identifier
             )
-            self._last_artwork_identifier = artwork_url
+            self._last_artwork_identifier = current_identifier
             # Clear old artwork data to prevent serving stale image
             self._artwork_bytes = None
             if meta:
