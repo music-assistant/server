@@ -21,15 +21,23 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.tags import AudioTags
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local.constants import AUDIOBOOK_EXTENSIONS, IsChapterFile
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
-from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
+from .constants import (
+    CONF_CONTENT_TYPE,
+    CONF_URL,
+    CONF_VERIFY_SSL,
+)
 from .helpers import build_webdav_url, webdav_propfind, webdav_test_connection
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import MediaType
+    from music_assistant_models.media_items import Audiobook
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -345,3 +353,23 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self.logger.warning(f"WebDAV client error scanning path {path}: {err}")
         except Exception as err:
             self.logger.warning(f"Failed to scan WebDAV path {path}: {err}")
+
+    async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
+        """Parse Audiobook details from file tags."""
+        # Skip files that aren't the first chapter
+        track_tag = tags.tags.get("track")
+        if track_tag:
+            track_num = try_parse_int(str(track_tag).split("/")[0], None)
+            if track_num and track_num > 1:
+                raise IsChapterFile
+        else:
+            # No track tag - only process the first file alphabetically
+            for item in await self._scandir_impl(file_item.parent_path):
+                if item.is_dir or item.ext not in AUDIOBOOK_EXTENSIONS:
+                    continue
+                if item.absolute_path != file_item.absolute_path:
+                    raise IsChapterFile
+                break
+
+        # Call parent for the rest
+        return await super()._parse_audiobook(file_item, tags)
