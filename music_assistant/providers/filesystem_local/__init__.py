@@ -741,7 +741,7 @@ class LocalFileSystemProvider(MusicProvider):
         await self.mass.cache.set(
             key=cache_key,
             data=result,
-            expiration=3600 * 24,  # Cache for 24 hours
+            expiration=3600 * 24 * 365,  # Cache for 1 year
             provider=self.instance_id,
             checksum=cache_checksum,
             category=0,
@@ -1153,10 +1153,10 @@ class LocalFileSystemProvider(MusicProvider):
                 raise IsChapterFile
         else:
             # No track tag - only process the first file alphabetically
-            abs_path = self.get_absolute_path(file_item.parent_path)
-            for item in await asyncio.to_thread(
-                sorted_scandir, self.base_path, abs_path, sort=True
-            ):
+            items = await self._scandir_impl(file_item.parent_path)
+            # Sort by filename for alphabetical ordering
+            items.sort(key=lambda x: x.filename.lower())
+            for item in items:
                 if item.is_dir or item.ext not in AUDIOBOOK_EXTENSIONS:
                     continue
                 if item.absolute_path != file_item.absolute_path:
@@ -1785,9 +1785,14 @@ class LocalFileSystemProvider(MusicProvider):
         total_duration = 0.0
 
         # Scan folder for chapter files, separating tagged from untagged
-        chapter_file_tags: list[AudioTags] = []
-        untagged_file_tags: list[AudioTags] = []
-        for item in await self._scandir_impl(audiobook_file_item.parent_path):
+        chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
+        untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
+
+        items = await self._scandir_impl(audiobook_file_item.parent_path)
+        # Sort by filename for consistent alphabetical ordering
+        items.sort(key=lambda x: x.filename.lower())
+
+        for item in items:
             if "." not in item.relative_path or item.is_dir:
                 continue
             if item.ext not in AUDIOBOOK_EXTENSIONS:
@@ -1796,21 +1801,21 @@ class LocalFileSystemProvider(MusicProvider):
             if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
                 continue
             if item_tags.tags.get("track") is None:
-                untagged_file_tags.append(item_tags)
+                untagged_file_items.append((item, item_tags))
             else:
-                chapter_file_tags.append(item_tags)
+                chapter_file_items.append((item, item_tags))
 
         # Determine chapter source
         use_embedded = False
         use_alphabetical = False
 
-        if len(chapter_file_tags) > 1:
-            chapter_file_tags.sort(key=lambda x: (x.disc or 0, x.track or 0))
-        elif len(chapter_file_tags) <= 1 and tags.chapters:
+        if len(chapter_file_items) > 1:
+            chapter_file_items.sort(key=lambda x: (x[1].disc or 0, x[1].track or 0))
+        elif len(chapter_file_items) <= 1 and tags.chapters:
             use_embedded = True
-        elif len(untagged_file_tags) > 1:
+        elif len(untagged_file_items) > 1:
             use_alphabetical = True
-            chapter_file_tags = untagged_file_tags
+            chapter_file_items = untagged_file_items
             self.logger.info(
                 "Audiobook files have no track tags, using alphabetical order: %s",
                 tags.album,
@@ -1835,13 +1840,14 @@ class LocalFileSystemProvider(MusicProvider):
                 int(total_duration),
             )
         else:
-            for position, chapter_tags in enumerate(chapter_file_tags, start=1):
+            for position, (chapter_item, chapter_tags) in enumerate(chapter_file_items, start=1):
                 if chapter_tags.duration is None:
                     self.logger.warning(
                         "Chapter file has no duration, skipping: %s",
-                        chapter_tags.filename,
+                        chapter_item.relative_path,
                     )
                     continue
+                self.logger.debug(f"Chapter filename: {chapter_item.relative_path}")
                 chapters.append(
                     MediaItemChapter(
                         position=position,
@@ -1852,7 +1858,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 all_chapter_files.append(
                     (
-                        get_relative_path(self.base_path, chapter_tags.filename),
+                        f"{self.instance_id}://audiobook/{chapter_item.relative_path}",
                         chapter_tags.duration,
                     )
                 )
@@ -1866,7 +1872,13 @@ class LocalFileSystemProvider(MusicProvider):
                 sort_method,
                 int(total_duration),
             )
-
+        # Cache chapter files for streaming
+        await self.cache.set(
+            key=audiobook_file_item.relative_path,
+            data=all_chapter_files,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+        )
         return int(total_duration), chapters
 
     async def _get_podcast_metadata(self, podcast_folder: str) -> dict[str, Any]:

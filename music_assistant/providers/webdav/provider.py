@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
@@ -21,10 +21,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.tags import AudioTags
-from music_assistant.helpers.util import try_parse_int
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
-from music_assistant.providers.filesystem_local.constants import AUDIOBOOK_EXTENSIONS, IsChapterFile
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 from .constants import (
@@ -37,7 +34,6 @@ from .helpers import build_webdav_url, webdav_propfind, webdav_test_connection
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import MediaType
-    from music_assistant_models.media_items import Audiobook
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -170,7 +166,17 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             raise MediaNotFoundError(f"Failed to resolve WebDAV path {file_path}: {err}") from err
 
     async def _scandir_impl(self, path: str) -> list[FileSystemItem]:
-        """List WebDAV directory contents."""
+        """List WebDAV directory contents with caching."""
+        # Check cache FIRST
+        cache_key = f"scandir_{path}"
+        if cached := await self.cache.get(
+            key=cache_key,
+            provider=self.instance_id,
+            category=0,
+        ):
+            self.logger.debug(f"Using cached scan results for {path}")
+            return cast("list[FileSystemItem]", cached)
+
         # Handle case where absolute URL is passed (from parent's code)
         if path.startswith("http"):
             parsed = urlparse(path)
@@ -184,72 +190,20 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         try:
             webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
-            self.logger.debug(f"WebDAV returned {len(webdav_items)} items for {path}")  # ADD THIS
+            self.logger.debug(f"WebDAV returned {len(webdav_items)} items for {path}")
 
-            filesystem_items: list[FileSystemItem] = []
+            filesystem_items = self._process_webdav_items(webdav_items, webdav_url, path)
 
-            # Parse base path component for comparison
-            base_parsed = urlparse(self.base_url)
-            base_path = base_parsed.path.rstrip("/")
+            self.logger.debug(f"Parsed {len(filesystem_items)} filesystem items for {path}")
 
-            for webdav_item in webdav_items:
-                self.logger.debug(
-                    f"Processing item: name={webdav_item.name}, "
-                    f"href={webdav_item.href[:100]}, is_dir={webdav_item.is_dir}"
-                )
-
-                if "#recycle" in webdav_item.name.lower():
-                    continue
-                decoded_name = unquote(webdav_item.name)
-                decoded_href = unquote(webdav_item.href)
-
-                # If href is a full URL, extract just the path component
-                if decoded_href.startswith("http"):
-                    href_parsed = urlparse(decoded_href)
-                    href_path = href_parsed.path
-                else:
-                    href_path = decoded_href
-
-                # Skip the directory itself
-                current_path = urlparse(webdav_url).path.rstrip("/")
-                if href_path.rstrip("/") == current_path:
-                    self.logger.debug(f"Skipping directory itself: {href_path}")
-
-                    continue
-                self.logger.debug(f"After skip check, processing: {webdav_item.name}")
-
-                # Calculate relative path by stripping base path
-                if href_path.startswith((base_path + "/", base_path)):
-                    relative_path = href_path[len(base_path) :].strip("/")
-                else:
-                    # Fallback: construct from current path + name
-                    relative_path = (
-                        str(PurePosixPath(path) / decoded_name) if path else decoded_name
-                    )
-                self.logger.debug(
-                    f"Item: {decoded_name}, href: {decoded_href[:80]}, "
-                    f"relative_path: {relative_path}"
-                )
-                self.logger.debug(
-                    f"Calculated relative_path: '{relative_path}' for {webdav_item.name}"
-                )
-
-                decoded_name = unquote(webdav_item.name)
-
-                filesystem_items.append(
-                    FileSystemItem(
-                        filename=decoded_name,
-                        relative_path=relative_path,
-                        absolute_path=self._build_authenticated_url(relative_path),
-                        is_dir=webdav_item.is_dir,
-                        checksum=webdav_item.last_modified or "unknown",
-                        file_size=webdav_item.size,
-                    )
-                )
-                self.logger.debug(f"Added to filesystem_items: {decoded_name}")
-            self.logger.debug(
-                f"Parsed {len(filesystem_items)} filesystem items for {path}"
-            )  # ADD THIS
+            # Cache the results for 5 minutes
+            await self.cache.set(
+                key=cache_key,
+                data=filesystem_items,
+                provider=self.instance_id,
+                category=0,
+                expiration=300,
+            )
 
             return filesystem_items
 
@@ -263,8 +217,82 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             raise ProviderUnavailableError(f"WebDAV server connection failed: {err}") from err
         except Exception as err:
             self.logger.exception(f"Failed to list WebDAV directory {path}: {err}")
-
             return []
+
+    def _process_webdav_items(
+        self,
+        webdav_items: list[Any],
+        webdav_url: str,
+        path: str,
+    ) -> list[FileSystemItem]:
+        """Process WebDAV items into FileSystemItems."""
+        filesystem_items: list[FileSystemItem] = []
+
+        # Parse base path component for comparison
+        base_parsed = urlparse(self.base_url)
+        base_path = base_parsed.path.rstrip("/")
+        current_path = urlparse(webdav_url).path.rstrip("/")
+
+        for webdav_item in webdav_items:
+            if item := self._process_single_webdav_item(webdav_item, base_path, current_path, path):
+                filesystem_items.append(item)
+
+        return filesystem_items
+
+    def _process_single_webdav_item(
+        self,
+        webdav_item: Any,
+        base_path: str,
+        current_path: str,
+        scan_path: str,
+    ) -> FileSystemItem | None:
+        """Process a single WebDAV item."""
+        self.logger.debug(
+            f"Processing item: name={webdav_item.name}, "
+            f"href={webdav_item.href[:100]}, is_dir={webdav_item.is_dir}"
+        )
+
+        if "#recycle" in webdav_item.name.lower():
+            return None
+
+        decoded_name = unquote(webdav_item.name)
+        decoded_href = unquote(webdav_item.href)
+
+        # If href is a full URL, extract just the path component
+        if decoded_href.startswith("http"):
+            href_parsed = urlparse(decoded_href)
+            href_path = href_parsed.path
+        else:
+            href_path = decoded_href
+
+        # Skip the directory itself
+        if href_path.rstrip("/") == current_path:
+            self.logger.debug(f"Skipping directory itself: {href_path}")
+            return None
+
+        self.logger.debug(f"After skip check, processing: {webdav_item.name}")
+
+        # Calculate relative path by stripping base path
+        if href_path.startswith((base_path + "/", base_path)):
+            relative_path = href_path[len(base_path) :].strip("/")
+        else:
+            # Fallback: construct from current path + name
+            relative_path = (
+                str(PurePosixPath(scan_path) / decoded_name) if scan_path else decoded_name
+            )
+
+        self.logger.debug(
+            f"Item: {decoded_name}, href: {decoded_href[:80]}, relative_path: {relative_path}"
+        )
+
+        return FileSystemItem(
+            filename=decoded_name,
+            relative_path=relative_path,
+            absolute_path=self._build_authenticated_url(relative_path),
+            is_dir=webdav_item.is_dir,
+            checksum=webdav_item.last_modified or "unknown",
+            file_size=webdav_item.size,
+        )
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
@@ -354,22 +382,34 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         except Exception as err:
             self.logger.warning(f"Failed to scan WebDAV path {path}: {err}")
 
-    async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
-        """Parse Audiobook details from file tags."""
-        # Skip files that aren't the first chapter
-        track_tag = tags.tags.get("track")
-        if track_tag:
-            track_num = try_parse_int(str(track_tag).split("/")[0], None)
-            if track_num and track_num > 1:
-                raise IsChapterFile
-        else:
-            # No track tag - only process the first file alphabetically
-            for item in await self._scandir_impl(file_item.parent_path):
-                if item.is_dir or item.ext not in AUDIOBOOK_EXTENSIONS:
-                    continue
-                if item.absolute_path != file_item.absolute_path:
-                    raise IsChapterFile
-                break
+    async def _get_chapters_for_audiobook(
+        self, audiobook_file_item: FileSystemItem, tags: AudioTags
+    ) -> tuple[int, list[MediaItemChapter]]:
+        """Return chapters for an audiobook - WebDAV override."""
+        # Call parent to get chapters and duration
+        total_duration, chapters = await super()._get_chapters_for_audiobook(
+            audiobook_file_item, tags
+        )
 
-        # Call parent for the rest
-        return await super()._parse_audiobook(file_item, tags)
+        # Get the chapter files that parent cached
+        chapter_files = await self.cache.get(
+            key=audiobook_file_item.relative_path,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+        )
+
+        if chapter_files:
+            # Convert relative paths to authenticated URLs
+            authenticated_files = [
+                (self._build_authenticated_url(path), duration) for path, duration in chapter_files
+            ]
+
+            # Re-cache with authenticated URLs
+            await self.cache.set(
+                key=audiobook_file_item.relative_path,
+                data=authenticated_files,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+            )
+
+        return total_duration, chapters
