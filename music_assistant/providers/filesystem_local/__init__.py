@@ -1858,7 +1858,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 all_chapter_files.append(
                     (
-                        f"{self.instance_id}://audiobook/{chapter_item.relative_path}",
+                        self._build_authenticated_url(chapter_item.relative_path),
                         chapter_tags.duration,
                     )
                 )
