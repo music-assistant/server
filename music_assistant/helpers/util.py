@@ -515,7 +515,12 @@ async def get_package_version(pkg_name: str) -> str | None:
 
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
+    # Fast path: check for HA supervisor token environment variable
+    # This is always set when running inside the HA supervisor
+    if not os.environ.get("SUPERVISOR_TOKEN"):
+        return False
 
+    # Token exists, verify the supervisor is actually reachable
     def _check() -> bool:
         try:
             urllib.request.urlopen("http://supervisor/core", timeout=1)
