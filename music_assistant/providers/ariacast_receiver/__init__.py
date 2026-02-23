@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections import deque
 from collections.abc import AsyncGenerator
@@ -406,9 +407,11 @@ class AriaCastBridge(PluginProvider):
                         self.logger.info(
                             "Artwork downloaded successfully, size: %d bytes", len(img_data)
                         )
+                        # Use a content-derived hash to prevent unbounded cache growth
+                        img_hash = hashlib.md5(img_data).hexdigest()[:8]
                         image = MediaItemImage(
                             type=ImageType.THUMB,
-                            path=f"artwork_{self._artwork_timestamp}",
+                            path=f"artwork_{img_hash}",
                             provider=self.instance_id,
                             remotely_accessible=False,
                         )
