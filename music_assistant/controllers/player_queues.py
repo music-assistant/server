@@ -1057,6 +1057,9 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
+            # Select and set the output protocol before evaluating flow_mode,
+            # since flow_mode depends on the active output protocol
+            self.mass.players.select_output_protocol(queue_id)
             # work out if we need to use flow mode
             flow_mode = target_player.flow_mode and queue_item.media_type not in (
                 # don't use flow mode for duration-less streams
