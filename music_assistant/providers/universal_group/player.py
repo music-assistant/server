@@ -257,7 +257,7 @@ class UniversalGroupPlayer(Player):
             await self.stream.stop()
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT)
+        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT, self.player_id)
 
         # start the stream task
         self.stream = UGPStream(
