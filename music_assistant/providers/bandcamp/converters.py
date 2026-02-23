@@ -119,7 +119,7 @@ class BandcampConverters:
         )
         output.metadata.add_image(
             MediaItemImage(
-                type=ImageType.LANDSCAPE,
+                type=ImageType.THUMB,
                 path=item.image_url,
                 provider=self.instance_id,
                 remotely_accessible=True,
@@ -148,7 +148,7 @@ class BandcampConverters:
             output.metadata.description = item.url
         output.metadata.add_image(
             MediaItemImage(
-                type=ImageType.LANDSCAPE,
+                type=ImageType.THUMB,
                 path=item.image_url,
                 provider=self.instance_id,
                 remotely_accessible=True,
@@ -221,7 +221,7 @@ class BandcampConverters:
         if album_image_url:
             output.metadata.add_image(
                 MediaItemImage(
-                    type=ImageType.LANDSCAPE,
+                    type=ImageType.THUMB,
                     path=album_image_url,
                     provider=self.instance_id,
                     remotely_accessible=True,
@@ -248,7 +248,7 @@ class BandcampConverters:
         output.metadata.description = f"{artist.url}\n{artist.bio or ''}".strip()
         output.metadata.add_image(
             MediaItemImage(
-                type=ImageType.LANDSCAPE,
+                type=ImageType.THUMB,
                 path=artist.image_url,
                 provider=self.instance_id,
                 remotely_accessible=True,
@@ -272,7 +272,7 @@ class BandcampConverters:
                         name=album.artist.name,
                         image=MediaItemImage(
                             path=album.art_url,
-                            type=ImageType.LANDSCAPE,
+                            type=ImageType.THUMB,
                             provider=self.instance_id,
                             remotely_accessible=True,
                         ),
@@ -291,7 +291,7 @@ class BandcampConverters:
         )
         output.metadata.add_image(
             MediaItemImage(
-                type=ImageType.LANDSCAPE,
+                type=ImageType.THUMB,
                 path=album.art_url,
                 provider=self.instance_id,
                 remotely_accessible=True,
