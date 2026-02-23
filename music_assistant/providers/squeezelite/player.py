@@ -265,7 +265,7 @@ class SqueezelitePlayer(Player):
         # select audio source, we force flow mode
         # because multi-client streaming does not support enqueueing
         audio_source = self.mass.streams.get_stream(
-            media, master_audio_format, force_flow_mode=True
+            media, master_audio_format, player_id=self.player_id, force_flow_mode=True
         )
 
         # start the stream task

@@ -374,22 +374,47 @@ class StreamsController(CoreController):
         player_id: str,
         media: PlayerMedia,
     ) -> str:
-        """Resolve the stream URL for the given PlayerMedia."""
-        conf_output_codec = await self.mass.config.get_player_config_value(
-            player_id, CONF_OUTPUT_CODEC, default="flac", return_type=str
+        """
+        Resolve the stream URL for the given PlayerMedia.
+
+        :param player_id: The (protocol) player ID requesting the stream.
+        :param media: The PlayerMedia object for which to resolve the stream URL.
+        :return: The resolved stream URL as a string.
+        """
+        protocol_player = self.mass.players.get_player(player_id)
+        conf_output_codec = cast(
+            "str",
+            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+            if protocol_player
+            else "flac",
         )
-        output_codec = ContentType.try_parse(conf_output_codec or "flac")
+        output_codec = ContentType.try_parse(conf_output_codec)
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
         extra_data = media.custom_data or {}
-        flow_mode = extra_data.get("flow_mode", False)
         session_id = extra_data.get("session_id")
         queue_item_id = media.queue_item_id
         if not session_id or not queue_item_id:
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
+        crossfade_needs_flow_mode = (
+            # if the player(queue) has crossfade enabled but the player(protocol) does not support
+            # gapless playback, we need to enforce flow mode
+            queue_id
+            and (queue_player := self.mass.players.get_player(queue_id))
+            and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+            and protocol_player
+            and not protocol_player.supports_gapless
+        )
+        # Determine flow_mode based on the actual player's capabilities.
+        # This is done here (just-in-time) because the player's protocol determines this
+        flow_mode = (
+            protocol_player is not None
+            and (protocol_player.flow_mode or crossfade_needs_flow_mode)
+            and media.media_type not in (MediaType.RADIO, MediaType.PLUGIN_SOURCE)
+        )
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"  # noqa: E501
 
@@ -867,37 +892,47 @@ class StreamsController(CoreController):
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     def get_stream(
-        self, media: PlayerMedia, pcm_format: AudioFormat, force_flow_mode: bool = False
+        self,
+        media: PlayerMedia,
+        pcm_format: AudioFormat,
+        player_id: str | None = None,
+        force_flow_mode: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
 
         This is used as helper for player providers that can consume the raw PCM
         audio stream directly (e.g. AirPlay) and not rely on HTTP transport.
+
+        :param media: The PlayerMedia to stream.
+        :param pcm_format: The desired output PCM format.
+        :param player_id: The player ID requesting the stream. Used to determine
+            if flow mode should be used based on the player's capabilities.
+        :param force_flow_mode: Force flow mode regardless of player capabilities.
+            Used for multi-client streaming scenarios that require continuous streams.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             assert media.custom_data
-            audio_source = self.get_announcement_stream(
+            return self.get_announcement_stream(
                 media.custom_data["announcement_url"],
                 output_format=pcm_format,
                 pre_announce=media.custom_data["pre_announce"],
                 pre_announce_url=media.custom_data["pre_announce_url"],
             )
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
+        if media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
             assert media.custom_data
-            audio_source = self.get_plugin_source_stream(
+            return self.get_plugin_source_stream(
                 plugin_source_id=media.custom_data["source_id"],
                 output_format=pcm_format,
                 # need to pass player_id from the PlayerMedia object
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif (
-            media.media_type == MediaType.FLOW_STREAM
-            and media.source_id
+        if (
+            media.source_id
             and media.source_id.startswith(UGP_PREFIX)
             and media.uri
             and "/ugp/" in media.uri
@@ -909,31 +944,47 @@ class StreamsController(CoreController):
             assert ugp_stream is not None  # for type checker
             if ugp_stream.base_pcm_format == pcm_format:
                 # no conversion needed
-                audio_source = ugp_stream.subscribe_raw()
-            else:
-                audio_source = ugp_stream.get_stream(output_format=pcm_format)
-        elif (
-            media.source_id
-            and media.queue_item_id
-            and (media.media_type == MediaType.FLOW_STREAM or force_flow_mode)
-        ):
-            # regular queue (flow) stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            assert queue
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
+                return ugp_stream.subscribe_raw()
+            return ugp_stream.get_stream(output_format=pcm_format)
+        if media.source_id and media.queue_item_id:
+            # Queue stream request - determine flow_mode based on player capabilities
+            # or force it if explicitly requested (e.g., for multi-client streaming)
+            protocol_player = self.mass.players.get_player(player_id) if player_id else None
+            queue_id = media.source_id
+            crossfade_needs_flow_mode = (
+                # if the player(queue) has crossfade enabled but the player(protocol)
+                # does not support gapless playback, we need to enforce flow mode
+                queue_id
+                and (queue_player := self.mass.players.get_player(queue_id))
+                and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+                and protocol_player
+                and not protocol_player.supports_gapless
             )
-            assert start_queue_item
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=pcm_format,
+            flow_mode = (
+                force_flow_mode
+                or (protocol_player is not None and protocol_player.flow_mode)
+                or crossfade_needs_flow_mode
             )
-        elif media.source_id and media.queue_item_id:
-            # single item stream (e.g. radio)
+            if media.media_type == MediaType.RADIO:
+                # flow_mode for radio is pointless
+                flow_mode = False
+            if flow_mode:
+                # flow stream request
+                queue = self.mass.player_queues.get(media.source_id)
+                assert queue
+                start_queue_item = self.mass.player_queues.get_item(
+                    media.source_id, media.queue_item_id
+                )
+                assert start_queue_item
+                return self.mass.streams.get_queue_flow_stream(
+                    queue=queue,
+                    start_queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                )
+            # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
-            audio_source = buffered(
+            return buffered(
                 self.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
@@ -944,15 +995,13 @@ class StreamsController(CoreController):
                 buffer_size=10,
                 min_buffer_before_yield=2,
             )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=pcm_format,
-            )
-        return audio_source
+        # assume url or some other direct path
+        # NOTE: this will fail if its an uri not playable by ffmpeg
+        return get_ffmpeg_stream(
+            audio_input=media.uri,
+            input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
+            output_format=pcm_format,
+        )
 
     @use_buffer(buffer_size=30, min_buffer_before_yield=2)
     async def get_queue_flow_stream(
