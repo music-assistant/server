@@ -195,28 +195,35 @@ class MusicAssistant:
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
             self._provider_manifests[controller.domain] = controller.manifest
-        # load webserver/api first so the api/frontend is available as soon as possible,
-        # other controllers are not yet available while we're starting (or performing migrations)
+
+        # setup all core controllers in parallel
+        async def setup_controller(controller: CoreController) -> None:
+            await controller.setup(await self.config.get_core_config(controller.domain))
+            controller.initialized.set()
+
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(setup_controller(self.cache))
+            tg.create_task(setup_controller(self.streams))
+            tg.create_task(setup_controller(self.music))
+            tg.create_task(setup_controller(self.metadata))
+            tg.create_task(setup_controller(self.players))
+            tg.create_task(setup_controller(self.player_queues))
+
+        # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
         await self.webserver.setup(await self.config.get_core_config("webserver"))
-        await self.cache.setup(await self.config.get_core_config("cache"))
-        await self.streams.setup(await self.config.get_core_config("streams"))
-        await self.music.setup(await self.config.get_core_config("music"))
-        await self.metadata.setup(await self.config.get_core_config("metadata"))
-        await self.players.setup(await self.config.get_core_config("players"))
-        await self.player_queues.setup(await self.config.get_core_config("player_queues"))
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
         # setup discovery
         await self._setup_discovery()
-        # at this point we are fully up and running,
-        # set state to running to signal we're ready
-        self._state = CoreState.RUNNING
         # load regular providers (skip when in safe mode)
         # providers are loaded in background tasks so they won't block
         # the startup if they fail or take a long time to load
         if not self.safe_mode:
             await self._load_providers()
+        # at this point we are fully up and running,
+        # set state to running to signal we're ready
+        self._state = CoreState.RUNNING
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -840,9 +847,9 @@ class MusicAssistant:
         ]
 
         # load builtin providers and wait for them to complete
-        await asyncio.gather(
-            *[self.load_provider(conf.instance_id, allow_retry=True) for conf in builtin_configs]
-        )
+        async with asyncio.TaskGroup() as tg:
+            for conf in builtin_configs:
+                tg.create_task(self.load_provider(conf.instance_id, allow_retry=True))
 
     async def _load_providers(self) -> None:
         """

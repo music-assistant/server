@@ -174,6 +174,10 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        # wait for dependencies to be ready (streams and music)
+        await self.mass.streams.initialized.wait()
+        await self.mass.music.initialized.wait()
+
         self.config = config
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
