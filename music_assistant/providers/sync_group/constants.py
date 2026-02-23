@@ -32,7 +32,6 @@ SUPPORT_DYNAMIC_LEADER = {
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.PAUSE,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.MULTI_DEVICE_DSP,

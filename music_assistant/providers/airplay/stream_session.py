@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
@@ -72,7 +73,14 @@ class AirPlayStreamSession:
         has_airplay2_client = any(
             p.protocol == StreamingProtocol.AIRPLAY2 for p in self.sync_clients
         )
-        wait_start = AIRPLAY2_CONNECT_TIME_MS if has_airplay2_client else RAOP_CONNECT_TIME_MS
+        max_output_buffer_ms: int = 0
+        if has_airplay2_client:
+            max_output_buffer_ms = max(p.output_buffer_duration_ms for p in self.sync_clients)
+        wait_start = (
+            AIRPLAY2_CONNECT_TIME_MS + max_output_buffer_ms
+            if has_airplay2_client
+            else RAOP_CONNECT_TIME_MS
+        )
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds
@@ -105,6 +113,7 @@ class AirPlayStreamSession:
                 return
             self.sync_clients.remove(airplay_player)
         await self.stop_client(airplay_player)
+        airplay_player.set_state_from_stream(PlaybackState.IDLE)
         # If this was the last client, stop the session
         if not self.sync_clients:
             await self.stop()
@@ -151,8 +160,19 @@ class AirPlayStreamSession:
             return
 
         async with self._lock:
-            # Get all buffered chunks to send
-            buffered_chunks = list(self._chunk_buffer)
+            # Get buffered chunks to send, but limit to ~5 seconds to avoid
+            # blocking real-time streaming to other players (causes packet loss)
+            max_late_join_buffer_seconds = 5.0
+            all_buffered = list(self._chunk_buffer)
+
+            # Filter to only include chunks within the time limit
+            if all_buffered:
+                min_position = self.seconds_streamed - max_late_join_buffer_seconds
+                buffered_chunks = [
+                    (chunk, pos) for chunk, pos in all_buffered if pos >= min_position
+                ]
+            else:
+                buffered_chunks = []
 
             if buffered_chunks:
                 # Calculate how much buffer we're sending
@@ -196,6 +216,7 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         pcm_sample_size = self.pcm_format.pcm_sample_size
         watchdog_task = asyncio.create_task(self._silence_watchdog(pcm_sample_size))
+        stream_error: BaseException | None = None
         try:
             async for chunk in audio_source:
                 if not self._first_chunk_received.is_set():
@@ -207,13 +228,31 @@ class AirPlayStreamSession:
                 if not self.sync_clients:
                     break
 
-                await self._write_chunk_to_all_players(chunk)
+                has_running_clients = await self._write_chunk_to_all_players(chunk)
+                if not has_running_clients:
+                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
+                    break
                 self.seconds_streamed += len(chunk) / pcm_sample_size
+        except asyncio.CancelledError:
+            self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
+            raise
+        except Exception as err:
+            stream_error = err
+            self.prov.logger.error(
+                "Audio source error after %.1fs of streaming: %s",
+                self.seconds_streamed,
+                err,
+                exc_info=err,
+            )
         finally:
             if not watchdog_task.done():
                 watchdog_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await watchdog_task
+            if stream_error:
+                self.prov.logger.warning(
+                    "Stream ended prematurely due to error - notifying players"
+                )
         async with self._lock:
             await asyncio.gather(
                 *[
@@ -235,7 +274,9 @@ class AirPlayStreamSession:
             silence_duration = 0.1
             silence_bytes = int(pcm_sample_size * silence_duration)
             silence_chunk = bytes(silence_bytes)
-            await self._write_chunk_to_all_players(silence_chunk)
+            has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
+            if not has_running_clients:
+                break
             self.seconds_streamed += silence_duration
             silence_inserted += silence_duration
             await asyncio.sleep(0.05)
@@ -246,12 +287,15 @@ class AirPlayStreamSession:
                 silence_inserted,
             )
 
-    async def _write_chunk_to_all_players(self, chunk: bytes) -> None:
-        """Write a chunk to all connected players."""
+    async def _write_chunk_to_all_players(self, chunk: bytes) -> bool:
+        """Write a chunk to all connected players.
+
+        :return: True if there are still running clients, False otherwise.
+        """
         async with self._lock:
             sync_clients = [x for x in self.sync_clients if x.stream and x.stream.running]
             if not sync_clients:
-                return
+                return False
 
             # Add chunk to ring buffer for late joiners (before seconds_streamed is updated)
             chunk_position = self.seconds_streamed
@@ -284,6 +328,10 @@ class AirPlayStreamSession:
 
             for player in players_to_remove:
                 self.mass.create_task(self.remove_client(player))
+
+            # Return False if all clients were removed (or scheduled for removal)
+            remaining_clients = len(sync_clients) - len(players_to_remove)
+            return remaining_clients > 0
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""

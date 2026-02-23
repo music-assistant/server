@@ -12,7 +12,6 @@ from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PLAYERS, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CONF_NETWORK_SCAN
@@ -23,8 +22,8 @@ from .player import DLNAPlayer
 class DLNAPlayerProvider(PlayerProvider):
     """DLNA Player provider."""
 
-    dlnaplayers: dict[str, DLNAPlayer] = {}
     _discovery_running: bool = False
+    _ignored_udns: set[str]
 
     lock: asyncio.Lock
     requester: UpnpRequester
@@ -34,6 +33,7 @@ class DLNAPlayerProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.lock = asyncio.Lock()
+        self._ignored_udns = set()
         # silence the async_upnp_client logger
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
@@ -50,10 +50,7 @@ class DLNAPlayerProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
-
-        async with TaskManager(self.mass) as tg:
-            for dlna_player in self.dlnaplayers.values():
-                tg.create_task(self._device_disconnect(dlna_player))
+        self._ignored_udns = set()
 
     async def discover_players(self, use_multicast: bool = False) -> None:
         """Discover DLNA players on the network."""
@@ -105,30 +102,16 @@ class DLNAPlayerProvider(PlayerProvider):
             # reschedule self once finished
             self.mass.loop.call_later(300, reschedule)
 
-    async def _device_disconnect(self, dlna_player: DLNAPlayer) -> None:
-        """
-        Destroy connections to the device now that it's not available.
-
-        Also call when removing this entity from MA to clean up connections.
-        """
-        async with dlna_player.lock:
-            if not dlna_player.device:
-                self.logger.debug("Disconnecting from device that's not connected")
-                return
-
-            self.logger.debug("Disconnecting from %s", dlna_player.device.name)
-
-            dlna_player.device.on_event = None
-            old_device = dlna_player.device
-            dlna_player.device = None
-            dlna_player.set_available(False)
-            await old_device.async_unsubscribe_services()
-
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
         async with self.lock:
-            if dlna_player := self.dlnaplayers.get(udn):
+            # skip devices that we've already determined should be ignored
+            if udn in self._ignored_udns:
+                return
+
+            if dlna_player := self.mass.players.get_player(udn):
                 # existing player
+                assert isinstance(dlna_player, DLNAPlayer)
                 if dlna_player.description_url == description_url and dlna_player.available:
                     # nothing to do, device is already connected
                     return
@@ -153,9 +136,7 @@ class DLNAPlayerProvider(PlayerProvider):
                     model="unknown",
                     manufacturer="unknown",
                 )
-                self.dlnaplayers[udn] = dlna_player
 
             # Setup will return False if the device should be ignored (e.g., passive speaker)
             if not await dlna_player.setup():
-                # Remove from dict if it was just added
-                self.dlnaplayers.pop(udn, None)
+                self._ignored_udns.add(udn)

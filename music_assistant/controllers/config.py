@@ -803,20 +803,33 @@ class ConfigController:
         """Save/update PlayerConfig."""
         values = await self._update_output_protocol_config(values)
         config = await self.get_player_config(player_id)
-        old_config = deepcopy(config)
         changed_keys = config.update(values)
         if not changed_keys:
             # no changes
             return config
         # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        self.set(conf_key, config.to_raw())
+        # Get existing raw config to preserve values that don't have config entries.
+        # This can happen when config entries are dynamic (e.g., protocol settings depend on
+        # player.available and linked protocols). If save_player_config is called before
+        # the player is fully available, those entries won't exist and their stored values
+        # would be lost without this preservation.
+        existing_raw = self.get(conf_key) or {}
+        existing_values = existing_raw.get("values", {})
+        new_raw = config.to_raw()
+        new_values = new_raw.get("values", {})
+        # Preserve values from storage that don't have config entries in current context
+        for key, value in existing_values.items():
+            if key not in new_values:
+                new_values[key] = value
+        new_raw["values"] = new_values
+        self.set(conf_key, new_raw)
         try:
             # validate/handle the update in the player manager
             await self.mass.players.on_player_config_change(config, changed_keys)
         except Exception:
-            # rollback on error
-            self.set(conf_key, old_config.to_raw())
+            # rollback on error - use existing_raw to preserve all values
+            self.set(conf_key, existing_raw)
             raise
         # send config updated event
         self.mass.signal_event(

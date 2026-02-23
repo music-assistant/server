@@ -62,6 +62,7 @@ from music_assistant.helpers.util import get_changed_dataclass_values
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
 
@@ -127,7 +128,7 @@ class Player(ABC):
         self._extra_data: dict[str, Any] = {}
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
-        self.__active_mass_source = player_id
+        self.__active_mass_source: str | None = None
         # The PlayerState is the (snapshotted) final state of the player
         # after applying any config overrides and other transformations,
         # such as the display name and player controls.
@@ -832,7 +833,7 @@ class Player(ABC):
         This is a convenience property that returns True if the player is set to be exposed
         to Home Assistant, based on the config entry.
         """
-        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
+        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
 
     @property
     @final
@@ -1068,6 +1069,21 @@ class Player(ABC):
                     available=current_available,
                     is_native=False,
                 )
+        return None
+
+    @final
+    def get_output_protocol_by_domain(self, protocol_domain: str) -> OutputProtocol | None:
+        """
+        Get an output protocol by domain, including native protocol.
+
+        Unlike get_linked_protocol, this also checks if the player's native protocol
+        matches the requested domain.
+
+        :param protocol_domain: The protocol domain to search for (e.g., "airplay", "sonos").
+        """
+        for output_protocol in self.output_protocols:
+            if output_protocol.protocol_domain == protocol_domain:
+                return output_protocol
         return None
 
     @final
@@ -1319,7 +1335,13 @@ class Player(ABC):
             and self._state.playback_state == PlaybackState.IDLE
         ):
             self.__stop_called = True
-            self.__active_mass_source = None
+            # when we're going to idle,
+            # we want to reset the active mass source after a short delay
+            # this is done using a timer which gets reset if the player starts playing again
+            # before the timer is up, using the task_id
+            self.mass.call_later(
+                2, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+            )
 
         return get_changed_dataclass_values(
             prev_state,
@@ -1342,14 +1364,17 @@ class Player(ABC):
             and (
                 protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
             )
+            and protocol_player.playback_state != PlaybackState.IDLE
         ):
             return (
                 protocol_player.state.playback_state,
                 protocol_player.state.elapsed_time,
                 protocol_player.state.elapsed_time_last_updated,
             )
-        # if we're synced/grouped, use the parent player's state
-        parent_id = self.__final_synced_to or self.__final_active_group
+        # If we're synced, use the syncleader state for playback state and elapsed time
+        # NOTE: Don't do this for the active group player,
+        # because the group player relies on the sync leader for state info.
+        parent_id = self.__final_synced_to
         if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
             return (
                 parent_player.state.playback_state,
@@ -1456,6 +1481,7 @@ class Player(ABC):
                 parent_player := self.mass.players.get_player(parent_player_id)
             ):
                 return parent_player.state.current_media
+            return None  # if parent player not found, return None for current media
         # if this is a protocol player, use the current_media of the parent player
         if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
             if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
@@ -1480,14 +1506,11 @@ class Player(ABC):
                 elapsed_time_last_updated=source.metadata.elapsed_time_last_updated,
             )
         # if MA queue is active, return those details
-        active_queue = None
-        if self.current_media and self.current_media.source_id:
-            active_queue = self.mass.player_queues.get(self.current_media.source_id)
+        active_queue: PlayerQueue | None = None
         if not active_queue and active_source:
             active_queue = self.mass.player_queues.get(active_source)
         if not active_queue and self.active_source is None:
             active_queue = self.mass.player_queues.get(self.player_id)
-
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
@@ -1613,7 +1636,19 @@ class Player(ABC):
             # If player is synced to another player, it has no group members itself
             return []
 
-        members = self.group_members.copy()
+        # Start by translating native group_members to visible player IDs
+        # This handles cases where a native player (e.g., native AirPlay) has grouped
+        # protocol players (e.g., Sonos AirPlay protocol players) that need translation
+        members: list[str] = []
+        if self.type == PlayerType.PROTOCOL:
+            # protocol players use their own group members without translation
+            members.extend(self.group_members)
+        else:
+            translated_members = self._translate_protocol_ids_to_visible(set(self.group_members))
+            for member in translated_members:
+                if member.player_id not in members:
+                    members.append(member.player_id)
+
         # If there's an active linked protocol, include its group members (translated)
         if self.__attr_active_output_protocol and self.__attr_active_output_protocol != "native":
             if protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol):
@@ -1653,9 +1688,13 @@ class Player(ABC):
             if protocol_player.synced_to:
                 # Protocol player is synced, translate to visible player
                 if proto_sync_parent := self.mass.players.get_player(protocol_player.synced_to):
+                    if proto_sync_parent.type != PlayerType.PROTOCOL:
+                        # Sync parent is already a visible player (e.g., native AirPlay player)
+                        return proto_sync_parent.player_id
                     if proto_sync_parent.protocol_parent_id and (
                         parent := self.mass.players.get_player(proto_sync_parent.protocol_parent_id)
                     ):
+                        # Sync parent is a protocol player, return its visible parent
                         return parent.player_id
 
         return None
@@ -1695,7 +1734,6 @@ class Player(ABC):
 
         All protocol player IDs are translated to their visible parent player IDs.
         """
-        result: set[str] = set()
 
         def _should_include_player(player: Player) -> bool:
             """Check if a player should be included in the can-group-with set."""
@@ -1704,29 +1742,42 @@ class Player(ABC):
             if player.player_id == self.player_id:
                 return False  # Don't include self
             # Don't include (playing) players that have group members (they are group leaders)
-            if (
+            if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 and player.group_members
-                and player.type != PlayerType.PROTOCOL
             ):
-                return False  # Regular native group leader - exclude
-            # Don't include players that are currently grouped/synced to OTHER players
-            # But DO include players grouped to THIS player (so they can be ungrouped)
-            grouped_to = player.state.synced_to or player.state.active_group
-            return grouped_to is None or grouped_to == self.player_id
+                return False
+            return True
 
         if self.__final_synced_to:
             # player is already synced/grouped, cannot group with others
-            return result
+            return set()
 
-        # always start with the native can_group_with options (expanded for provider instance IDs)
-        for player in self._expand_can_group_with():
-            if not _should_include_player(player):
-                continue
-            result.add(player.player_id)
-
+        expanded_can_group_with = self._expand_can_group_with()
         # Scenario 1: Player is a protocol player - just return the (expanded) result
         if self.type == PlayerType.PROTOCOL:
+            return {x.player_id for x in expanded_can_group_with}
+
+        result: set[str] = set()
+        # always start with the native can_group_with options (expanded from provider instance IDs)
+        # NOTE we need to translate protocol player IDs to visible player IDs here as well,
+        # to cover cases where a native player (e.g., native AirPlay) has grouped protocol players
+        # (e.g., Sonos AirPlay protocol players)
+        for player in expanded_can_group_with:
+            if player.type == PlayerType.PROTOCOL:
+                if not player.protocol_parent_id:
+                    continue
+                parent_player = self.mass.players.get_player(player.protocol_parent_id)
+                if not parent_player or not _should_include_player(parent_player):
+                    continue
+                result.add(parent_player.player_id)
+            elif _should_include_player(player):
+                result.add(player.player_id)
+
+        # Scenario 2: External source is active - don't include protocol-based grouping
+        # When an external source (e.g., Spotify Connect, TV) is active, grouping via
+        # protocols (AirPlay, Sendspin, etc.) wouldn't work - only native grouping is available.
+        if self._has_external_source_active():
             return result
 
         # Translate can_group_with from active linked protocol(s) and add to result
@@ -1754,19 +1805,34 @@ class Player(ABC):
         if parent_player_id := (self.__final_synced_to or self.__final_active_group):
             if parent_player := self.mass.players.get_player(parent_player_id):
                 return parent_player.state.active_source
-        # always prioritize active MA source
-        # (it is set on playback start and cleared on stop)
-        if self.__active_mass_source:
-            return self.__active_mass_source
+            return None  # should not happen but just in case
+        if self.type == PlayerType.PROTOCOL:
+            if self.protocol_parent_id and (
+                parent_player := self.mass.players.get_player(self.protocol_parent_id)
+            ):
+                # if this is a protocol player, use the active source of the parent player
+                return parent_player.state.active_source
+            # fallback to None here if parent player not found,
+            # protocol players should not have an active source themselves
+            return None
         # if a plugin source is active that belongs to this player, return that
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        # active source as reported by the player itself, but only if playing/paused
-        if self.playback_state != PlaybackState.IDLE and self.active_source:
+        output_protocol_domain: str | None = None
+        if self.active_output_protocol and self.active_output_protocol != "native":
+            if protocol_player := self.mass.players.get_player(self.active_output_protocol):
+                output_protocol_domain = protocol_player.provider.domain
+        # active source as reported by the player itself
+        if (
+            self.active_source
+            # try to catch cases where player reports an active source
+            # that is actually from an active output protocol (e.g. AirPlay)
+            and self.active_source.lower() != output_protocol_domain
+        ):
             return self.active_source
-        # return the (last) known MA source
-        return self.__last_active_mass_source
+        # return the (last) known MA source - fallback to player's own queue source if none
+        return self.__active_mass_source or self.player_id
 
     @final
     def _translate_protocol_ids_to_visible(self, player_ids: set[str]) -> set[Player]:
@@ -1777,7 +1843,7 @@ class Player(ABC):
         (native or universal). This method translates protocol player IDs
         back to the visible (parent) players.
 
-        :param player_ids: Set of player IDs (protocol player IDs).
+        :param player_ids: Set of player IDs.
         :return: Set of visible players.
         """
         result: set[Player] = set()
@@ -1785,7 +1851,11 @@ class Player(ABC):
             return result
         for player_id in player_ids:
             target_player = self.mass.players.get_player(player_id)
-            if not target_player or target_player.type != PlayerType.PROTOCOL:
+            if not target_player:
+                continue
+            if target_player.type != PlayerType.PROTOCOL:
+                # Non-protocol player is already visible - include directly
+                result.add(target_player)
                 continue
             # This is a protocol player - find its visible parent
             if not target_player.protocol_parent_id:
@@ -1795,6 +1865,34 @@ class Player(ABC):
                 continue
             result.add(parent_player)
         return result
+
+    @final
+    def _has_external_source_active(self) -> bool:
+        """
+        Check if an external (non-MA-managed) source is currently active.
+
+        External sources include things like Spotify Connect, TV input, etc.
+        When an external source is active, protocol-based grouping is not available.
+
+        :return: True if an external source is active, False otherwise.
+        """
+        active_source = self.__final_active_source
+        if active_source is None:
+            return False
+
+        # Player's own ID means MA queue is (or was) active
+        if active_source == self.player_id:
+            return False
+
+        # Check if it's a known queue ID
+        if self.mass.player_queues.get(active_source):
+            return False
+
+        # Check if it's a plugin source - if not, it's an external source
+        return not any(
+            plugin_source.id == active_source
+            for plugin_source in self.mass.players.get_plugin_sources()
+        )
 
     @final
     def _expand_can_group_with(self) -> set[Player]:
@@ -1826,18 +1924,17 @@ class Player(ABC):
     # This is to keep track of the last active MA source for the player,
     # so we can restore it when needed (e.g. after switching to a plugin source).
     __active_mass_source: str | None = None
-    __last_active_mass_source: str | None = None
 
     @final
-    def set_active_mass_source(self, value: str) -> None:
+    def set_active_mass_source(self, value: str | None) -> None:
         """
-        Set the id of the active mass source.
+        Set the id of the (last) active mass source.
 
         This is to keep track of the last active MA source for the player,
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
+        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self.__active_mass_source = value
-        self.__last_active_mass_source = value
         self.update_state()
 
     __stop_called: bool = False
@@ -1846,7 +1943,6 @@ class Player(ABC):
     def mark_stop_called(self) -> None:
         """Mark that the STOP command was called on the player."""
         self.__stop_called = True
-        self.__active_mass_source = None
 
     @property
     @final
@@ -1893,26 +1989,3 @@ __all__ = [
     "PlayerSource",
     "PlayerState",
 ]
-
-
-class GroupPlayer(Player):
-    """Helper class for a (generic) group player."""
-
-    _attr_type: PlayerType = PlayerType.GROUP
-
-    @cached_property
-    def synced_to(self) -> str | None:
-        """Return the id of the player this player is synced to (sync leader)."""
-        # default implementation: groups can't be synced
-        return None
-
-    async def volume_set(self, volume_level: int) -> None:
-        """
-        Handle VOLUME_SET command on the player.
-
-        :param volume_level: volume level (0..100) to set on the player.
-        """
-        # Default implementation:
-        # This will set the (relative) volume level on all child players.
-        # free to override if you want to handle this differently.
-        await self.mass.players.set_group_volume(self, volume_level)

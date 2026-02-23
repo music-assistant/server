@@ -11,12 +11,7 @@ from typing import TYPE_CHECKING, cast
 from aiosendspin.models import AudioCodec, MediaCommand
 from aiosendspin.models.types import PlaybackStateType
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
-from aiosendspin.server import (
-    ClientEvent,
-    GroupEvent,
-    SendspinGroup,
-    VolumeChangedEvent,
-)
+from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.client import DisconnectBehaviour
 from aiosendspin.server.events import (
@@ -60,9 +55,7 @@ from music_assistant.constants import (
     CONF_ENTRY_SAMPLE_RATES,
 )
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.sendspin.playback import (
-    SendspinPlaybackSession,
-)
+from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -205,6 +198,9 @@ class SendspinPlayer(Player):
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
         self._attr_hidden_by_default = self.is_web_player
+        # register web/app player as native player type because it doesn't need to be linked
+        # every web/app player is just a standalone player.
+        self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
 
     @property
     def _artwork_role(self) -> ArtworkGroupRole | None:

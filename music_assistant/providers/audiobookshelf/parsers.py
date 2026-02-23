@@ -66,7 +66,7 @@ def parse_podcast(
         },
     )
     mass_podcast.metadata.description = abs_podcast.media.metadata.description
-    if token is not None:
+    if token is not None and abs_podcast.media.cover_path is not None:
         image_url = f"{base_url}/api/items/{abs_podcast.id_}/cover?token={token}"
         mass_podcast.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=instance_id)]
@@ -102,6 +102,7 @@ def parse_podcast_episode(
     token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
+    add_cover: bool = False,
 ) -> MassPodcastEpisode:
     """Translate ABSPodcastEpisode to MassPodcastEpisode.
 
@@ -167,7 +168,7 @@ def parse_podcast_episode(
     mass_episode.metadata.release_date = release_date
 
     # cover image
-    if token is not None:
+    if token is not None and add_cover:
         url_api = f"/api/items/{prov_podcast_id}/cover?token={token}"
         url_cover = f"{base_url}{url_api}"
         mass_episode.metadata.images = UniqueList(
@@ -234,7 +235,7 @@ def parse_audiobook(
     mass_audiobook.metadata.explicit = abs_audiobook.media.metadata.explicit
 
     # cover
-    if token is not None:
+    if token is not None and abs_audiobook.media.cover_path is not None:
         api_url = f"/api/items/{abs_audiobook.id_}/cover?token={token}"
         cover_url = f"{base_url}{api_url}"
         mass_audiobook.metadata.images = UniqueList(

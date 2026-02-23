@@ -159,6 +159,62 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is False
 
+    def test_mac_address_locally_administered_bit_match(self, mock_mass: MagicMock) -> None:
+        """Test that MAC addresses differing only in locally-administered bit match.
+
+        Some protocols (like AirPlay) report a MAC with the locally-administered
+        bit set (bit 1 of first octet), while other protocols report the real
+        hardware MAC. These should match as the same device.
+
+        Example: 54:78:C9:E6:0D:A0 (hardware) vs 56:78:C9:E6:0D:A0 (AirPlay)
+        """
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        # Real hardware MAC (first byte 0x54 = 01010100, bit 1 = 0)
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "WiiM Pro (DLNA)",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+        # AirPlay MAC with locally-administered bit set (first byte 0x56 = 01010110, bit 1 = 1)
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "WiiM Pro (AirPlay)",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
+        )
+
+        # These should match because they differ only in the locally-administered bit
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_mac_address_locally_administered_bit_different_devices_no_match(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that different devices with locally-administered MACs don't match.
+
+        Only the locally-administered bit should be ignored, not other differences.
+        """
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Device A",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Device B",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A1"},  # Different last byte
+        )
+
+        # These should NOT match - they differ in more than just the locally-administered bit
+        assert controller._identifiers_match(player_a, player_b) is False
+
     def test_ip_address_no_match(self, mock_mass: MagicMock) -> None:
         """Test that IP addresses don't match (IP is excluded as it's not stable)."""
         controller = PlayerController(mock_mass)
@@ -342,20 +398,63 @@ class TestGetDeviceKeyFromPlayers:
     """Tests for device key generation."""
 
     def test_device_key_from_mac(self, mock_mass: MagicMock) -> None:
-        """Test device key generation from MAC address."""
+        """Test device key generation from MAC address.
+
+        Note: Device keys are normalized to clear the locally-administered bit
+        (bit 1 of first octet) to ensure consistent keys across protocols.
+        """
         universal_provider = create_mock_universal_provider(mock_mass)
 
         provider = MockProvider("airplay")
+        # Use a MAC without locally-administered bit set for cleaner test
+        # 00:BB:CC:DD:EE:FF has first byte 0x00, bit 1 = 0
         player = MockPlayer(
             provider,
             "ap_123456",
             "Test Player",
-            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+            identifiers={IdentifierType.MAC_ADDRESS: "00:BB:CC:DD:EE:FF"},
         )
 
         device_key = universal_provider._get_device_key_from_players([player])
 
-        assert device_key == "aabbccddeeff"
+        assert device_key == "00bbccddeeff"
+
+    def test_device_key_normalizes_locally_administered_mac(self, mock_mass: MagicMock) -> None:
+        """Test that device key normalizes locally-administered MACs.
+
+        A device with hardware MAC 54:78:C9:E6:0D:A0 and AirPlay MAC 56:78:C9:E6:0D:A0
+        should generate the same device key, allowing them to be merged into
+        the same universal player.
+        """
+        universal_provider = create_mock_universal_provider(mock_mass)
+
+        provider_dlna = MockProvider("dlna")
+        provider_airplay = MockProvider("airplay")
+
+        # DLNA player with real hardware MAC
+        player_dlna = MockPlayer(
+            provider_dlna,
+            "dlna_123456",
+            "WiiM Pro (DLNA)",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
+        )
+
+        # AirPlay player with locally-administered MAC (bit 1 set)
+        player_airplay = MockPlayer(
+            provider_airplay,
+            "ap_123456",
+            "WiiM Pro (AirPlay)",
+            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
+        )
+
+        # Both should generate the same device key
+        key_dlna = universal_provider._get_device_key_from_players([player_dlna])
+        key_airplay = universal_provider._get_device_key_from_players([player_airplay])
+
+        # Keys should be identical (both normalized to clear locally-administered bit)
+        assert key_dlna == key_airplay
+        # The normalized MAC should have bit 1 cleared (0x54 not 0x56)
+        assert key_dlna == "5478c9e60da0"
 
     def test_device_key_from_uuid_fallback(self, mock_mass: MagicMock) -> None:
         """Test device key generation falls back to UUID when no MAC available."""
@@ -1168,6 +1267,7 @@ class TestPlayerGrouping:
             ]
         )
 
+        mock_mass.players = controller
         controller._players = {
             "sonos_123": sonos_player,
             "wiim_456": wiim_player,
@@ -1186,6 +1286,8 @@ class TestPlayerGrouping:
         }
 
         # Update state after modifying attributes
+        sonos_dlna.update_state(signal_event=False)
+        wiim_dlna.update_state(signal_event=False)
         sonos_airplay.update_state(signal_event=False)
         wiim_airplay.update_state(signal_event=False)
 
@@ -1564,6 +1666,147 @@ class TestCanGroupWith:
         # DLNA players should not be shown since DLNA doesn't support SET_MEMBERS
 
 
+class TestNativePlayerProtocolGrouping:
+    """Tests for grouping between native PLAYER type and PROTOCOL type AirPlay players."""
+
+    def test_native_airplay_player_sees_protocol_players_as_visible_parents(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a native PLAYER type translates protocol players to visible parents."""
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # HomePod: native AirPlay PLAYER (not PROTOCOL)
+        homepod = MockPlayer(airplay_provider, "homepod_1", "Office")
+        homepod._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        homepod._attr_can_group_with = {"airplay"}  # Provider instance ID
+        homepod._cache.clear()
+
+        # Sonos native player (visible to the user)
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Kitchen")
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for the Sonos (hidden, linked to sonos_player)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos_1",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        mock_mass.get_provider = MagicMock(return_value=airplay_provider)
+
+        controller._players = {
+            "homepod_1": homepod,
+            "sonos_1": sonos_player,
+            "airplay_sonos_1": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "homepod_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos_1": Throttler(1, 0.05),
+        }
+
+        # Update protocol players first, then parents
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        homepod.update_state(signal_event=False)
+
+        groupable = homepod.state.can_group_with
+
+        # HomePod should see Sonos's VISIBLE player, not the hidden protocol player
+        assert "sonos_1" in groupable
+        assert "airplay_sonos_1" not in groupable  # Hidden protocol ID must NOT appear
+
+    def test_protocol_linked_player_sees_native_airplay_player(self, mock_mass: MagicMock) -> None:
+        """Test that a player with linked AirPlay protocol sees native PLAYER type players."""
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # HomePod: native AirPlay PLAYER
+        homepod = MockPlayer(airplay_provider, "homepod_1", "Office")
+        homepod._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        homepod._attr_can_group_with = {"airplay"}
+        homepod._cache.clear()
+
+        # Sonos native player (visible to the user)
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Kitchen")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = set()  # No native Sonos grouping peers
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for the Sonos (hidden, linked to sonos_player)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos_1",
+            "Kitchen (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay"}  # Provider instance ID
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        mock_mass.get_provider = MagicMock(return_value=airplay_provider)
+
+        controller._players = {
+            "homepod_1": homepod,
+            "sonos_1": sonos_player,
+            "airplay_sonos_1": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "homepod_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos_1": Throttler(1, 0.05),
+        }
+
+        # Update protocol players first, then parents
+        sonos_airplay.update_state(signal_event=False)
+        homepod.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+
+        groupable = sonos_player.state.can_group_with
+
+        # Sonos should see HomePod via its linked AirPlay protocol's can_group_with
+        assert "homepod_1" in groupable
+
+
 class TestProtocolSwitchingDuringPlayback:
     """Tests for dynamic protocol switching when group members change during playback."""
 
@@ -1707,3 +1950,320 @@ class TestProtocolSwitchingDuringPlayback:
         assert selected_player == sonos_airplay
         assert output_protocol is not None
         assert output_protocol.output_protocol_id == "airplay_sonos"
+
+
+class TestNativeProtocolPlayerGrouping:
+    """Tests for grouping with native protocol players (e.g., native AirPlay like Apple TV)."""
+
+    def test_native_airplay_groups_with_protocol_linked_player(self, mock_mass: MagicMock) -> None:
+        """Test grouping a native AirPlay player (Apple TV) with a protocol-linked player (Sonos).
+
+        This tests the scenario where:
+        - Apple TV is a native AirPlay PLAYER (not PROTOCOL type)
+        - Sonos has AirPlay as a linked protocol
+        - Apple TV groups with Sonos via the common AirPlay protocol
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # Apple TV: native AirPlay PLAYER (supports grouping via AirPlay)
+        apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV Slaapkamer")
+        apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        apple_tv._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        apple_tv._attr_can_group_with = {"airplay"}  # Provider instance ID
+        apple_tv._cache.clear()
+
+        # Sonos native player (visible)
+        sonos_player = MockPlayer(sonos_provider, "sonos_badkamer", "Badkamer")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for Sonos (hidden, linked to sonos)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Badkamer (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay"}
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_badkamer")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "apple_tv_1": apple_tv,
+            "sonos_badkamer": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "apple_tv_1": Throttler(1, 0.05),
+            "sonos_badkamer": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        # Update states
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        apple_tv.update_state(signal_event=False)
+
+        # Translate members for grouping Sonos to Apple TV
+        protocol_members, _native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=apple_tv,
+                player_ids=["sonos_badkamer"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # Should find common AirPlay protocol
+        assert len(protocol_members) == 1
+        assert "airplay_sonos" in protocol_members
+        assert protocol_domain == "airplay"
+        # For native AirPlay player, protocol_player should be the Apple TV itself
+        assert protocol_player == apple_tv
+
+    def test_get_output_protocol_by_domain_finds_native(self, mock_mass: MagicMock) -> None:
+        """Test that get_output_protocol_by_domain finds native protocol."""
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+
+        # Native AirPlay player
+        apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV")
+        apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        apple_tv._cache.clear()
+
+        mock_mass.players = controller
+        controller._players = {"apple_tv_1": apple_tv}
+
+        apple_tv.update_state(signal_event=False)
+
+        # Should find native AirPlay protocol
+        protocol = apple_tv.get_output_protocol_by_domain("airplay")
+        assert protocol is not None
+        assert protocol.output_protocol_id == "native"
+        assert protocol.protocol_domain == "airplay"
+        assert protocol.is_native is True
+
+
+class TestFinalGroupMembersTranslation:
+    """Tests for __final_group_members translation of protocol player IDs."""
+
+    def test_final_group_members_translates_protocol_ids(self, mock_mass: MagicMock) -> None:
+        """Test that __final_group_members translates protocol player IDs to visible IDs.
+
+        When a native AirPlay player (Apple TV) has protocol players in its group_members,
+        the final state should show the visible parent player IDs instead.
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # Apple TV with group members containing a protocol player ID
+        apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV")
+        apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        apple_tv._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        apple_tv._attr_group_members = ["apple_tv_1", "airplay_sonos"]
+        apple_tv._cache.clear()
+
+        # Sonos visible player
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Sonos")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for Sonos
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Sonos (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        mock_mass.players = controller
+        controller._players = {
+            "apple_tv_1": apple_tv,
+            "sonos_1": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "apple_tv_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        apple_tv.update_state(signal_event=False)
+
+        # Final group_members should show visible player IDs
+        final_members = apple_tv.state.group_members
+        assert "apple_tv_1" in final_members
+        assert "sonos_1" in final_members
+        # Protocol player ID should NOT appear in final state
+        assert "airplay_sonos" not in final_members
+
+
+class TestFinalSyncedToWithNativeProtocolParent:
+    """Tests for __final_synced_to when sync parent is a native protocol player."""
+
+    def test_synced_to_native_airplay_player(self, mock_mass: MagicMock) -> None:
+        """Test that synced_to correctly shows native AirPlay player as parent.
+
+        When a Sonos player's AirPlay protocol player is synced to a native AirPlay
+        player (Apple TV), the Sonos's final synced_to should show the Apple TV.
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # Apple TV: native AirPlay PLAYER (the group leader)
+        apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV")
+        apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        apple_tv._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        apple_tv._cache.clear()
+
+        # Sonos visible player
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Sonos")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for Sonos - synced to Apple TV
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Sonos (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        # Set group_members with Apple TV first to indicate synced_to Apple TV
+        sonos_airplay._attr_group_members = ["apple_tv_1", "airplay_sonos"]
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "apple_tv_1": apple_tv,
+            "sonos_1": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "apple_tv_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        apple_tv.update_state(signal_event=False)
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+
+        # Sonos's final synced_to should be Apple TV (visible player)
+        assert sonos_player.state.synced_to == "apple_tv_1"
+
+
+class TestUngroupTranslation:
+    """Tests for translation when ungrouping from native protocol players."""
+
+    def test_ungroup_translates_visible_to_protocol_id(self, mock_mass: MagicMock) -> None:
+        """Test that ungrouping correctly translates visible ID to protocol ID.
+
+        When ungrouping Sonos from Apple TV, the visible Sonos ID should be
+        translated to its AirPlay protocol player ID for the removal.
+        """
+        controller = PlayerController(mock_mass)
+
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        # Apple TV with Sonos's AirPlay protocol player in group_members
+        apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV")
+        apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        apple_tv._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        apple_tv._attr_group_members = ["apple_tv_1", "airplay_sonos"]
+        apple_tv._cache.clear()
+
+        # Sonos visible player
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Sonos")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        # AirPlay protocol player for Sonos
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Sonos (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay._cache.clear()
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "apple_tv_1": apple_tv,
+            "sonos_1": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "apple_tv_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+        apple_tv.update_state(signal_event=False)
+
+        # Translate members for removal - visible ID should become protocol ID
+        _protocol_members, native_members = controller._translate_members_to_remove_for_protocols(
+            parent_player=apple_tv,
+            player_ids=["sonos_1"],  # Visible player ID
+            parent_protocol_player=None,
+            parent_protocol_domain=None,
+        )
+
+        # Should translate to the protocol player ID for native removal
+        assert "airplay_sonos" in native_members
+        assert "sonos_1" not in native_members

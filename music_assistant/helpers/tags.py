@@ -17,6 +17,7 @@ import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from mutagen._vorbis import VCommentDict
+from mutagen.apev2 import APEv2
 from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -1065,10 +1066,138 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     return result
 
 
+def _apev2_get_values(tags: APEv2, key: str) -> list[str]:
+    """Get values from an APEv2 tag, splitting on null bytes for multi-value fields.
+
+    :param tags: APEv2 tags object.
+    :param key: Tag key (case-insensitive in APEv2).
+    """
+    if key not in tags:
+        return []
+    val = str(tags[key])
+    # APEv2 uses null byte as separator for multiple values
+    if "\x00" in val:
+        return [v.strip() for v in val.split("\x00") if v.strip()]
+    return [val] if val else []
+
+
+def _apev2_get_single(tags: APEv2, key: str) -> str | None:
+    """Get a single value from an APEv2 tag.
+
+    :param tags: APEv2 tags object.
+    :param key: Tag key.
+    """
+    values = _apev2_get_values(tags, key)
+    return values[0] if values else None
+
+
+def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
+    """Get multiple values from an APEv2 tag.
+
+    :param tags: APEv2 tags object.
+    :param key: Tag key.
+    """
+    values = _apev2_get_values(tags, key)
+    return values if values else None
+
+
+def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
+    r"""Parse APEv2 tags into a normalized dictionary.
+
+    APEv2 tags are used by WavPack, Musepack, Monkey's Audio, OptimFROG, and TAK.
+    Multi-value fields use null byte (\x00) as separator.
+
+    :param tags: APEv2 tags object from mutagen.
+    """
+    result: dict[str, Any] = {}
+
+    # Basic text tags
+    if title := _apev2_get_single(tags, "Title"):
+        result["title"] = title
+    if artist := _apev2_get_single(tags, "Artist"):
+        result["artist"] = artist
+    if albumartist := _apev2_get_single(tags, "Album Artist"):
+        result["albumartist"] = albumartist
+    if album := _apev2_get_single(tags, "Album"):
+        result["album"] = album
+
+    # Genre (can be multi-value)
+    if genre := _apev2_get_multi(tags, "Genre"):
+        result["genre"] = genre
+
+    # Multi-artist support (ARTISTS tag)
+    if artists := _apev2_get_multi(tags, "Artists"):
+        result["artists"] = artists
+
+    # MusicBrainz IDs - single value
+    if mb_albumid := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMID"):
+        result["musicbrainzalbumid"] = mb_albumid
+    if mb_releasegroupid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASEGROUPID"):
+        result["musicbrainzreleasegroupid"] = mb_releasegroupid
+    if mb_trackid := _apev2_get_single(tags, "MUSICBRAINZ_TRACKID"):
+        # MUSICBRAINZ_TRACKID in APEv2 is actually the recording ID
+        result["musicbrainzrecordingid"] = mb_trackid
+    if mb_releasetrackid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
+        result["musicbrainztrackid"] = mb_releasetrackid
+
+    # MusicBrainz IDs - multi-value (can have multiple artist IDs)
+    if mb_artistid := _apev2_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
+        result["musicbrainzartistid"] = mb_artistid
+    if mb_albumartistid := _apev2_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
+        result["musicbrainzalbumartistid"] = mb_albumartistid
+
+    # Additional tags
+    if barcode := _apev2_get_single(tags, "Barcode"):
+        result["barcode"] = barcode
+    if isrc := _apev2_get_multi(tags, "ISRC"):
+        result["isrc"] = isrc
+
+    # Track and disc numbers
+    if track := _apev2_get_single(tags, "Track"):
+        result["track"] = track
+    if disc := _apev2_get_single(tags, "Disc"):
+        result["disc"] = disc
+
+    # Date
+    if date := _apev2_get_single(tags, "Year"):
+        result["date"] = date
+
+    # Lyrics
+    if lyrics := _apev2_get_single(tags, "Lyrics"):
+        result["lyrics"] = lyrics
+
+    # Compilation
+    if compilation := _apev2_get_single(tags, "Compilation"):
+        result["compilation"] = compilation
+
+    # Album type
+    if albumtype := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = albumtype
+
+    # ReplayGain tags
+    if rg_track := _apev2_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
+        result["replaygaintrackgain"] = rg_track
+    if rg_album := _apev2_get_single(tags, "REPLAYGAIN_ALBUM_GAIN"):
+        result["replaygainalbumgain"] = rg_album
+
+    # Sort tags
+    if artistsort := _apev2_get_multi(tags, "ARTISTSORT"):
+        result["artistsort"] = artistsort
+    if albumartistsort := _apev2_get_multi(tags, "ALBUMARTISTSORT"):
+        result["albumartistsort"] = albumartistsort
+    if titlesort := _apev2_get_single(tags, "TITLESORT"):
+        result["titlesort"] = titlesort
+    if albumsort := _apev2_get_single(tags, "ALBUMSORT"):
+        result["albumsort"] = albumsort
+
+    return result
+
+
 def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
     """Parse tags from an audio file using Mutagen.
 
-    Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), and MP4 tags (AAC/M4A/ALAC).
+    Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), MP4 tags (AAC/M4A/ALAC),
+    and APEv2 tags (WavPack, Musepack, Monkey's Audio).
 
     :param input_file: Path to the audio file.
     """
@@ -1084,10 +1213,11 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
         # Check if Vorbis comments (FLAC, OGG Vorbis, OGG Opus, etc.)
         elif isinstance(audio.tags, VCommentDict):
             result = _parse_vorbis_tags(audio.tags)
+        # Check if APEv2 tags (WavPack, Musepack, Monkey's Audio, etc.)
+        elif isinstance(audio.tags, APEv2):
+            result = _parse_apev2_tags(audio.tags)
         else:
             # ID3 tags (MP3) and other formats
-            # TODO: Add _parse_apev2_tags() for WavPack/Musepack/Monkey's Audio to extract
-            # MusicBrainz IDs and multi-artist tags (APEv2 uses different tag names than ID3).
             tags_dict = dict(audio.tags)
             result = _parse_id3_tags(tags_dict)
 
