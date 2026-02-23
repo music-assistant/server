@@ -111,7 +111,7 @@ class UniversalGroupPlayer(Player):
         }
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_static_group_members = static_members.copy()
         if not self.powered:

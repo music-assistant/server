@@ -195,6 +195,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for player in list(self._players.values())
             if (player.state.available or return_unavailable)
             and (player.state.enabled or return_disabled)
+            and player.initialized.is_set()
             and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (
                 not user_filter
@@ -1240,13 +1241,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.extra_data[ATTR_FAKE_POWER] = cached_value
 
             # finally actually register it
-            self._players[player_id] = player
-            # update state without signaling event first (ensure all attributes are set)
-            player.update_state(signal_event=False)
 
+            # Despite the fact that the player is not fully ready yet
+            # (config not loaded, protocol links not evaluated),
+            # we already add it to the _players dict here because we
+            # want to make sure the player is available in the controller
+            # during the rest of the registration process
+            # (such as when fetching config or evaluating protocol links).
+            # We use the 'initialized' attribute to indicate that the player
+            # is still in the process of being registered so we can filter it out where needed.
+            self._players[player_id] = player
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
             player.set_config(player_config)
+            # update state without signaling event first (ensures all attributes are set)
+            player.update_state(signal_event=False)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
 
@@ -1255,6 +1264,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self._enrich_player_identifiers(player)
             self._evaluate_protocol_links(player)
 
+            # now we're ready to signal the player is added and available
+            player.set_initialized()
             self.logger.info(
                 "Player (type %s) registered: %s/%s",
                 player.state.type.value,
@@ -1262,26 +1273,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             # signal event that a player was added
-
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player
                 )
-
-            # register playerqueue for this player
-            # Skip if this is a protocol player pending evaluation (queue created when promoted)
-            if (
-                player.state.type != PlayerType.PROTOCOL
-                and player.player_id not in self._pending_protocol_evaluations
-            ):
+            # register playerqueue for this player (if not a protocol player)
+            if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
-
-        # always call update to fix special attributes like display name, group volume etc.
-        player.update_state()
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players()
+        self._schedule_update_all_players(5)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""

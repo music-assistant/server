@@ -1850,11 +1850,6 @@ class ConfigController:
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
 
-        if not player.available:
-            # if player is not available, we cannot reliably determine the available protocols
-            # so we return no options to avoid confusion
-            return all_entries
-
         # Build options from available output protocols, sorted by priority
         options: list[ConfigValueOption] = []
         default_value: str | None = None

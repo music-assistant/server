@@ -12,6 +12,7 @@ The final active source can be retrieved by using the 'state' property.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC
 from collections.abc import Callable
@@ -129,6 +130,7 @@ class Player(ABC):
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.__active_mass_source: str | None = None
+        self.__initialized = asyncio.Event()
         # The PlayerState is the (snapshotted) final state of the player
         # after applying any config overrides and other transformations,
         # such as the display name and player controls.
@@ -728,6 +730,16 @@ class Player(ABC):
         return self._config.enabled
 
     @property
+    @final
+    def initialized(self) -> asyncio.Event:
+        """
+        Return if the player is initialized.
+
+        Used by player controller to indicate initial registration completed.
+        """
+        return self.__initialized
+
+    @property
     def corrected_elapsed_time(self) -> float | None:
         """Return the corrected/realtime elapsed time."""
         if self.elapsed_time is None or self.elapsed_time_last_updated is None:
@@ -1196,7 +1208,11 @@ class Player(ABC):
         """
         # TODO: validate that caller is the PlayerController ?
         self._config = config
-        self.mass.players.trigger_player_update(self.player_id)
+
+    @final
+    def set_initialized(self) -> None:
+        """Set the player as initialized."""
+        self.__initialized.set()
 
     @final
     def to_dict(self) -> dict[str, Any]:
