@@ -6,6 +6,7 @@ import asyncio
 import collections
 import logging
 import os
+import pathlib
 import random
 import urllib.parse
 from base64 import b64encode
@@ -51,7 +52,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.images import create_collage, get_image_thumb
+from music_assistant.helpers.images import create_collage, get_image_data, get_image_thumb
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
@@ -63,6 +64,18 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+
+
+def _detect_image_format(path: str) -> str:
+    """Detect image format from file path extension, defaulting to jpg."""
+    match pathlib.PurePath(path).suffix.lower():
+        case ".svg":
+            return "svg"
+        case ".png":
+            return "png"
+        case _:
+            return "jpg"
+
 
 LOCALES = {
     "af_ZA": "African",
@@ -404,7 +417,10 @@ class MetaDataController(CoreController):
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if image_format is None:
-            image_format = "png" if image.path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(image.path)
+        if image_format == "svg":
+            # SVGs don't need resizing
+            size = 0
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
@@ -430,13 +446,19 @@ class MetaDataController(CoreController):
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             raise ProviderUnavailableError
         if image_format is None:
-            image_format = "png" if path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.split("/collage/")[-1]
             if not is_safe_path(collage_rel):
                 raise FileNotFoundError("Invalid collage path")
             path = os.path.join(self._collage_images_dir, collage_rel)
+        if image_format == "svg":
+            svg_bytes = await get_image_data(self.mass, path, provider)
+            if base64:
+                enc_image = b64encode(svg_bytes).decode()
+                return f"data:image/svg+xml;base64,{enc_image}"
+            return svg_bytes
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )
@@ -455,7 +477,7 @@ class MetaDataController(CoreController):
         size = int(request.query.get("size", "0"))
         image_format = request.query.get("fmt", None)
         if image_format is None:
-            image_format = "png" if path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(path)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         if "%" in path:
@@ -467,10 +489,11 @@ class MetaDataController(CoreController):
             )
             # we set the cache header to 1 year (forever)
             # assuming that images do not/rarely change
+            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=f"image/{image_format}",
+                content_type=content_type,
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler

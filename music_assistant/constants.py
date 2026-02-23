@@ -53,7 +53,8 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
+GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
