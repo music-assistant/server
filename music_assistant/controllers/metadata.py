@@ -6,6 +6,7 @@ import asyncio
 import collections
 import logging
 import os
+import pathlib
 import random
 import urllib.parse
 from base64 import b64encode
@@ -63,6 +64,18 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+
+
+def _detect_image_format(path: str) -> str:
+    """Detect image format from file path extension, defaulting to jpg."""
+    match pathlib.PurePath(path).suffix.lower():
+        case ".svg":
+            return "svg"
+        case ".png":
+            return "png"
+        case _:
+            return "jpg"
+
 
 LOCALES = {
     "af_ZA": "African",
@@ -404,12 +417,9 @@ class MetaDataController(CoreController):
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if image_format is None:
-            if image.path.lower().endswith(".svg"):
-                image_format = "svg"
-            else:
-                image_format = "png" if image.path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(image.path)
         if image_format == "svg":
-            # SVGs don't need resizing, ignore size parameter
+            # SVGs don't need resizing
             size = 0
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
@@ -436,10 +446,7 @@ class MetaDataController(CoreController):
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             raise ProviderUnavailableError
         if image_format is None:
-            if path.lower().endswith(".svg"):
-                image_format = "svg"
-            else:
-                image_format = "png" if path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.split("/collage/")[-1]
@@ -447,7 +454,6 @@ class MetaDataController(CoreController):
                 raise FileNotFoundError("Invalid collage path")
             path = os.path.join(self._collage_images_dir, collage_rel)
         if image_format == "svg":
-            # SVGs are vector graphics, serve raw bytes directly
             svg_bytes = await get_image_data(self.mass, path, provider)
             if base64:
                 enc_image = b64encode(svg_bytes).decode()
@@ -471,10 +477,7 @@ class MetaDataController(CoreController):
         size = int(request.query.get("size", "0"))
         image_format = request.query.get("fmt", None)
         if image_format is None:
-            if path.lower().endswith(".svg"):
-                image_format = "svg"
-            else:
-                image_format = "png" if path.lower().endswith(".png") else "jpg"
+            image_format = _detect_image_format(path)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         if "%" in path:
