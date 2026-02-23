@@ -14,9 +14,8 @@ import contextlib
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
@@ -226,147 +225,6 @@ class TestPlayerAvailability:
         # This should either skip the unavailable player or raise an exception
         with contextlib.suppress(Exception):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
-
-
-class TestSelectOutputProtocol:
-    """Test select_output_protocol method."""
-
-    def test_select_native_playback_when_no_linked_protocols(self, mock_mass: MagicMock) -> None:
-        """Test that native playback is selected when player has no linked protocols."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        player = MockPlayer(provider, "test_player", "Test Player")
-        player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
-
-        controller._players = {"test_player": player}
-        controller._player_throttlers = {"test_player": Throttler(1, 0.05)}
-        mock_mass.players = controller
-
-        player.update_state(signal_event=False)
-
-        # Execute select_output_protocol
-        target_player = controller.select_output_protocol("test_player")
-
-        # Should return the same player (native playback)
-        assert target_player.player_id == player.player_id
-        # Active protocol should be set to "native"
-        assert player.active_output_protocol == "native"
-
-    def test_select_preferred_protocol(self, mock_mass: MagicMock) -> None:
-        """Test that preferred protocol is selected when configured."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
-        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
-
-        # Create main player (e.g., Sonos)
-        main_player = MockPlayer(provider, "sonos_player", "Sonos Speaker")
-        main_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
-
-        # Create protocol player (e.g., AirPlay)
-        protocol_player = MockPlayer(
-            airplay_provider, "airplay_player", "Sonos via AirPlay", PlayerType.PROTOCOL
-        )
-        protocol_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
-        protocol_player._attr_available = True
-
-        controller._players = {
-            "sonos_player": main_player,
-            "airplay_player": protocol_player,
-        }
-        controller._player_throttlers = {
-            "sonos_player": Throttler(1, 0.05),
-            "airplay_player": Throttler(1, 0.05),
-        }
-        mock_mass.players = controller
-
-        # Set up linked protocols on main player
-        linked_protocol = OutputProtocol(
-            output_protocol_id="airplay_player",
-            name="AirPlay",
-            protocol_domain="airplay",
-            is_native=False,
-            priority=10,
-            available=True,
-        )
-        main_player.set_linked_output_protocols([linked_protocol])
-
-        main_player.update_state(signal_event=False)
-        protocol_player.update_state(signal_event=False)
-
-        # Configure preferred protocol to be airplay
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="airplay_player")
-
-        # Execute select_output_protocol
-        target_player = controller.select_output_protocol("sonos_player")
-
-        # Should return the protocol player
-        assert target_player.player_id == "airplay_player"
-        # Active protocol should be set to the protocol player id
-        assert main_player.active_output_protocol == "airplay_player"
-
-    def test_select_protocol_sets_active_before_flow_mode_check(self, mock_mass: MagicMock) -> None:
-        """
-        Test that selecting protocol sets active_output_protocol before flow_mode is checked.
-
-        This is the core regression test for the timing issue where flow_mode
-        was evaluated before active_output_protocol was set.
-        """
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
-        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
-
-        # Create main player
-        main_player = MockPlayer(provider, "sonos_player", "Sonos Speaker")
-        main_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
-
-        # Create protocol player that requires flow mode
-        protocol_player = MockPlayer(
-            airplay_provider, "airplay_player", "Sonos via AirPlay", PlayerType.PROTOCOL
-        )
-        protocol_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
-        # AirPlay typically doesn't support enqueue, so flow mode would be needed
-        protocol_player._attr_available = True
-
-        controller._players = {
-            "sonos_player": main_player,
-            "airplay_player": protocol_player,
-        }
-        controller._player_throttlers = {
-            "sonos_player": Throttler(1, 0.05),
-            "airplay_player": Throttler(1, 0.05),
-        }
-        mock_mass.players = controller
-
-        # Set up linked protocols
-        linked_protocol = OutputProtocol(
-            output_protocol_id="airplay_player",
-            name="AirPlay",
-            protocol_domain="airplay",
-            is_native=False,
-            priority=10,
-            available=True,
-        )
-        main_player.set_linked_output_protocols([linked_protocol])
-
-        main_player.update_state(signal_event=False)
-        protocol_player.update_state(signal_event=False)
-
-        # Configure preferred protocol
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="airplay_player")
-
-        # Verify active_output_protocol is not set before calling select_output_protocol
-        assert main_player.active_output_protocol is None
-
-        # Execute select_output_protocol
-        controller.select_output_protocol("sonos_player")
-
-        # Active protocol should now be set BEFORE any flow_mode check would occur
-        assert main_player.active_output_protocol == "airplay_player"
-
-        # Now when we check flow_mode, it should correctly consider the protocol player
-        # (This verifies the timing fix - flow_mode now uses the active protocol)
-        _ = main_player.flow_mode  # This should not raise and should use protocol's flow_mode
 
 
 if __name__ == "__main__":

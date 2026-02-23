@@ -54,7 +54,6 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
-    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -173,20 +172,9 @@ class Player(ABC):
 
     @property
     def requires_flow_mode(self) -> bool:
-        """
-        Return if the player needs flow mode.
-
-        Default implementation: True if the player does not support PlayerFeature.ENQUEUE
-        or has crossfade enabled without gapless support. Can be overridden by providers if needed.
-        """
-        if PlayerFeature.ENQUEUE not in self.supported_features:
-            # without enqueue support, flow mode is required
-            return True
-        return (
-            # player has crossfade enabled without gapless support - flow mode is required
-            PlayerFeature.GAPLESS_PLAYBACK not in self.supported_features
-            and str(self._config.get_value(CONF_SMART_FADES_MODE)) != "disabled"
-        )
+        """Return if the player needs flow mode for (queue) playback."""
+        # Default implementation: True if the player does not support PlayerFeature.ENQUEUE
+        return PlayerFeature.ENQUEUE not in self.supported_features
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -862,22 +850,11 @@ class Player(ABC):
     @final
     def flow_mode(self) -> bool:
         """
-        Return if the player needs flow mode.
+        Return if the player(protocol) needs flow mode.
 
         Will use 'requires_flow_mode' unless overridden by flow_mode config.
-        Considers the active output protocol's flow_mode if a protocol is active.
         """
-        # If an output protocol is active (and not native), use the protocol player's flow_mode
-        # The protocol player will handle its own config check
-        if (
-            self.__attr_active_output_protocol
-            and self.__attr_active_output_protocol != "native"
-            and (
-                protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
-            )
-        ):
-            return protocol_player.flow_mode
-        # Check native player's config override
+        # Check config override
         if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
             # flow mode explicitly enabled in config
             return True
@@ -894,6 +871,18 @@ class Player(ABC):
         Otherwise checks the native player's ENQUEUE feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.ENQUEUE)
+
+    @property
+    @final
+    def supports_gapless(self) -> bool:
+        """
+        Return if the player supports gapless playback.
+
+        This considers the active output protocol's capabilities if one is active.
+        If a protocol player is active, checks that protocol's GAPLESS_PLAYBACK feature.
+        Otherwise checks the native player's GAPLESS_PLAYBACK feature.
+        """
+        return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
 
     @property
     @final

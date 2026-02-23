@@ -338,6 +338,10 @@ class TestFindMatchingProtocolPlayers:
             "cc_aabbccddee": Throttler(1, 0.05),
         }
 
+        # Mark players as initialized so they are returned by all_players()
+        airplay_player.set_initialized()
+        chromecast_player.set_initialized()
+
         # Find matching players for AirPlay player
         matches = controller._find_matching_protocol_players(airplay_player)
 
@@ -1727,6 +1731,11 @@ class TestNativePlayerProtocolGrouping:
             "airplay_sonos_1": Throttler(1, 0.05),
         }
 
+        # Mark players as initialized so they are returned by all_players()
+        homepod.set_initialized()
+        sonos_player.set_initialized()
+        sonos_airplay.set_initialized()
+
         # Update protocol players first, then parents
         sonos_airplay.update_state(signal_event=False)
         sonos_player.update_state(signal_event=False)
@@ -1795,6 +1804,11 @@ class TestNativePlayerProtocolGrouping:
             "sonos_1": Throttler(1, 0.05),
             "airplay_sonos_1": Throttler(1, 0.05),
         }
+
+        # Mark players as initialized so they are returned by all_players()
+        homepod.set_initialized()
+        sonos_player.set_initialized()
+        sonos_airplay.set_initialized()
 
         # Update protocol players first, then parents
         sonos_airplay.update_state(signal_event=False)

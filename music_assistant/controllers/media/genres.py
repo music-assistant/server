@@ -8,11 +8,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import EventType, ImageType, MediaType
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    MediaItemImage,
+    MediaItemMetadata,
     RecommendationFolder,
     Track,
 )
@@ -29,6 +31,7 @@ from music_assistant.constants import (
     DB_TABLE_RADIOS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
+    GENRE_ICONS_DIR,
 )
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -130,6 +133,24 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_sync_tasks_updated, EventType.SYNC_TASKS_UPDATED)
+
+    @staticmethod
+    def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
+        """Build metadata with genre icon image if an SVG exists for the translation key.
+
+        :param translation_key: The genre's translation key (matches SVG filename).
+        """
+        if not translation_key:
+            return None
+        icon_path = GENRE_ICONS_DIR / f"{translation_key}.svg"
+        if not icon_path.is_file():
+            return None
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=str(icon_path),
+            provider="builtin",
+        )
+        return MediaItemMetadata(images=UniqueList([image]))
 
     @staticmethod
     def _dedup_aliases(existing: list[str], new: list[str]) -> list[str]:
@@ -489,15 +510,17 @@ class GenreController(MediaControllerBase[Genre]):
                 continue
 
             # Create new genre
+            translation_key = entry.get("translation_key")
+            icon_metadata = self._get_genre_icon_metadata(translation_key)
             genre_id = await self.mass.music.database.insert(
                 DB_TABLE_GENRES,
                 {
                     "name": name_value,
                     "sort_name": sort_name,
-                    "translation_key": entry.get("translation_key"),
+                    "translation_key": translation_key,
                     "description": None,
                     "favorite": 0,
-                    "metadata": serialize_to_json({}),
+                    "metadata": serialize_to_json(icon_metadata.to_dict() if icon_metadata else {}),
                     "external_ids": serialize_to_json(set()),
                     "genre_aliases": serialize_to_json(all_aliases),
                     "play_count": 0,
