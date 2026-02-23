@@ -18,6 +18,7 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -316,7 +317,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # abort if nothing changed
         if (
             cur_entry
-            and cur_entry["fully_played"] == media_item.fully_played
+            and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
             and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
         ):
             return

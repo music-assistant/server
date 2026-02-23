@@ -26,7 +26,6 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - name: Check out code from GitHub
@@ -64,7 +63,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

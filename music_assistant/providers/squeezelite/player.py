@@ -109,7 +109,7 @@ class SqueezelitePlayer(Player):
         )
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is registered or the config was updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # set presets and display
         await self._set_preset_items()
         await self._set_display()

@@ -75,7 +75,7 @@ from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import TaskManager, parse_title_and_version
+from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
@@ -1446,7 +1446,7 @@ class MusicController(CoreController):
             params["userid"] = userid
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            ma_fully_played = db_entry["fully_played"]
+            ma_fully_played = parse_optional_bool(db_entry["fully_played"])
 
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:

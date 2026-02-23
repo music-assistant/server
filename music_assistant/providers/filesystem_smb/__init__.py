@@ -321,11 +321,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         cache_mode = str(self.config.get_value(CONF_CACHE_MODE) or "loose")
         options.append(f"cache={cache_mode}")
 
-        # Case insensitive by default (standard for SMB) and other performance options
-        # Note: iocharset is omitted to allow CIFS native Unicode handling for emoji
-        # and other 4-byte UTF-8 characters.
+        # Case insensitive by default (standard for SMB) and other performance options.
+        # Note: emoji and other 4-byte UTF-8 characters (U+10000+) in folder/file names
+        # are NOT supported due to a Linux kernel limitation in the CIFS client's NLS layer.
+        # Items with such characters will be skipped during library sync.
         options.extend(
             [
+                "iocharset=utf8",
                 "nocase",
                 "file_mode=0755",
                 "dir_mode=0755",
