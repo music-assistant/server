@@ -1681,10 +1681,8 @@ class AuthenticationManager:
             conditions.append("provider_name = :provider_name")
             params["provider_name"] = provider_name
 
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
         cursor = await self.database.execute(
-            f"DELETE FROM join_codes {where_clause}", params or None
+            f"DELETE FROM join_codes WHERE {' AND '.join(conditions)}", params
         )
         await self.database.commit()
 
@@ -1694,16 +1692,20 @@ class AuthenticationManager:
         return count
 
     async def _cleanup_expired_join_codes(self) -> None:
-        """Delete expired join codes from the database."""
+        """Delete expired and exhausted join codes from the database."""
         now = utc()
         cursor = await self.database.execute(
-            "DELETE FROM join_codes WHERE expires_at < :now",
+            """
+            DELETE FROM join_codes
+            WHERE expires_at < :now
+               OR (max_uses > 0 AND use_count >= max_uses)
+            """,
             {"now": now.isoformat()},
         )
         await self.database.commit()
         count = int(cursor.rowcount)
         if count > 0:
-            self.logger.debug("Cleaned up %d expired join code(s)", count)
+            self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
 
     def _schedule_join_code_cleanup(self) -> None:
         """Schedule periodic cleanup of expired join codes."""
@@ -1748,7 +1750,7 @@ class AuthenticationManager:
 
     @api_command("auth/join_codes", required_role="admin")
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """List active join codes, optionally filtered by user (admin only).
+        """List join codes, optionally filtered by user (admin only).
 
         :param user_id: Optional user ID to filter codes for.
         :return: List of join code records.
