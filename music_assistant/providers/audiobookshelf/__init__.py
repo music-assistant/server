@@ -424,6 +424,7 @@ for more details.
         if len(self.libraries.audiobooks) > 1 or len(self.libraries.podcasts) > 1:
             return features
         features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
+        features.add(ProviderFeature.LIBRARY_PLAYLISTS_EDIT)
         if len(self.libraries.audiobooks) == 1:
             features.add(ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS)
         if len(self.libraries.podcasts) == 1:
@@ -451,15 +452,14 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
+    @handle_refresh_token
+    async def _get_playlists(self) -> list[AbsPlaylistExpanded]:
+        # This method has a proper type hint in the lib, why the mypy any?
+        return await self._client.get_all_playlists()  # type: ignore[no-any-return]
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
-
-        @self.handle_refresh_token
-        async def _get_playlists() -> list[AbsPlaylistExpanded]:
-            # This method has a proper type hint in the lib, why the mypy any?
-            return await self._client.get_all_playlists()  # type: ignore[no-any-return]
-
-        abs_playlists = await _get_playlists()
+        abs_playlists = await self._get_playlists()
         for abs_playlist in abs_playlists:
             if abs_playlist.library_id in self.libraries.audiobooks:
                 media_type = MediaType.AUDIOBOOK

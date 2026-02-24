@@ -53,6 +53,7 @@ def parse_playlist(
         item_id=abs_playlist.id_,
         provider=instance_id,
         name=abs_playlist.name,
+        sort_name=abs_playlist.name,
         provider_mappings={
             ProviderMapping(
                 item_id=abs_playlist.id_, provider_domain=domain, provider_instance=instance_id
