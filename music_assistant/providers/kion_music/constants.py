@@ -52,10 +52,10 @@ PROVIDER_DISPLAY_NAME_EN: Final[str] = "KION Music"
 # All entries are lowercase; compare with owner_name.lower() for case-insensitive lookup
 YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
-        "яндекс музыка",
-        "яндекс.музыка",
+        "кион музыка",
+        "кион.музыка",
         "kion.music",
-        "yandexmusic",
+        "kionmusic",
         "kion music",
     }
 )
