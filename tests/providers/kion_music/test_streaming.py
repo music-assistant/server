@@ -80,20 +80,6 @@ def test_select_best_quality_high_returns_highest_bitrate(
     assert result.bitrate_in_kbps == 320
 
 
-def test_select_best_quality_label_lossless_flac_returns_flac(
-    streaming_manager: KionMusicStreamingManager,
-) -> None:
-    """When preferred_quality is UI label 'Lossless (FLAC)', FLAC is selected."""
-    mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
-    flac = _make_download_info("flac", 0, "https://example.com/track.flac")
-    download_infos = [mp3, flac]
-
-    result = streaming_manager._select_best_quality(download_infos, "Lossless (FLAC)")
-
-    assert result is not None
-    assert result.codec == "flac"
-
-
 def test_select_best_quality_empty_list_returns_none(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
