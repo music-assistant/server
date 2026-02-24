@@ -1331,13 +1331,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self._players.get(player_id)
         if player is None:
             return
-        await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
             # and signal PLAYER_REMOVED event
+            await self._cleanup_player_memberships(player_id)
             self._cleanup_protocol_links(player)
             self.delete_player_config(player_id)
             self.logger.info("Player removed: %s", player.name)
@@ -2592,6 +2592,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
+            player.set_active_output_protocol(None)  # also clear active protocol if any
 
         # always stop player at power off
         if (
