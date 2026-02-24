@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from aiohttp import ClientPayloadError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -24,13 +24,50 @@ from .constants import (
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-    from .provider import KionMusicProvider
+
+@runtime_checkable
+class _StreamingProviderProto(Protocol):
+    """Minimal interface required by KionMusicStreamingManager."""
+
+    @property
+    def domain(self) -> str:
+        """Provider domain."""
+        ...
+
+    @property
+    def instance_id(self) -> str:
+        """Provider instance ID."""
+        ...
+
+    @property
+    def client(self) -> Any:
+        """API client."""
+        ...
+
+    @property
+    def mass(self) -> Any:
+        """Music Assistant instance."""
+        ...
+
+    @property
+    def logger(self) -> Any:
+        """Logger."""
+        ...
+
+    @property
+    def config(self) -> Any:
+        """Provider config."""
+        ...
+
+    async def get_track(self, prov_track_id: str) -> Any:
+        """Get track by provider track ID."""
+        ...
 
 
 class KionMusicStreamingManager:
     """Manages KION Music streaming operations."""
 
-    def __init__(self, provider: KionMusicProvider) -> None:
+    def __init__(self, provider: _StreamingProviderProto) -> None:
         """Initialize streaming manager.
 
         :param provider: The KION Music provider instance.
