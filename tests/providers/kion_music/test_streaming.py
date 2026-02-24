@@ -120,6 +120,10 @@ def test_select_best_quality_none_preferred_returns_highest_bitrate(
 def test_get_content_type_flac_mp4_returns_flac(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
-    """flac-mp4 codec from get-file-info is mapped to ContentType.FLAC as codec."""
-    assert streaming_manager._get_content_type("flac-mp4")[1] == ContentType.FLAC
-    assert streaming_manager._get_content_type("FLAC-MP4")[1] == ContentType.FLAC
+    """flac-mp4 codec from get-file-info is mapped to MP4 container and FLAC codec."""
+    content_type = streaming_manager._get_content_type("flac-mp4")
+    assert content_type[0] == ContentType.MP4
+    assert content_type[1] == ContentType.FLAC
+    content_type_upper = streaming_manager._get_content_type("FLAC-MP4")
+    assert content_type_upper[0] == ContentType.MP4
+    assert content_type_upper[1] == ContentType.FLAC

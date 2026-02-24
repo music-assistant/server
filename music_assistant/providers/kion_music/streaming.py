@@ -220,7 +220,7 @@ class KionMusicStreamingManager:
         )
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
+        if preferred_normalized in (QUALITY_LOSSLESS, "lossless"):
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):

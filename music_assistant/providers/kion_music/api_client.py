@@ -328,12 +328,14 @@ class KionMusicClient:
             return []
         # Fetch full album details in batches to get cover_uri and other metadata
         full_albums: list[YandexAlbum] = []
+
+        def _make_albums_caller(batch_ids: list[str]) -> Callable[[ClientAsync], Any]:
+            return lambda c: c.albums(batch_ids)
+
         for i in range(0, len(album_ids), batch_size):
             batch = album_ids[i : i + batch_size]
             try:
-                batch_result = await self._call_with_retry(
-                    lambda c, _b=batch: c.albums(_b)  # type: ignore[misc]
-                )
+                batch_result = await self._call_with_retry(_make_albums_caller(batch))
                 if batch_result:
                     full_albums.extend(batch_result)
             except (BadRequestError, NetworkError, ProviderUnavailableError) as batch_err:
@@ -495,7 +497,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -699,9 +701,9 @@ class KionMusicClient:
                 hashlib.sha256,
             )
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
-            # Kion API expects exactly 43 chars (one "=" removed).
+            # Kion API expects no "=" padding (43 chars).
             # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
             url = f"{client.base_url}/get-file-info"
             return url, params
 
