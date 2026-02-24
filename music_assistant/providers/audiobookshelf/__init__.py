@@ -378,6 +378,11 @@ for more details.
             on_refresh_token_expired=self._socket_abs_refresh_token_expired
         )
 
+        self._client_socket.set_playlist_callbacks(
+            on_playlist_added=self._socket_abs_playlist_added,
+            on_playlist_removed=self._socket_abs_playlist_removed,
+        )
+
         self._client_socket.set_stream_callbacks(on_stream_open=self._socket_stream_open)
 
         # progress guard
@@ -386,6 +391,10 @@ for more details.
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
+
+        # safe guard playlist updates
+        self.playlist_lock = asyncio.Lock()
+        self.playlist_last = 0.0
 
         # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
@@ -538,14 +547,16 @@ for more details.
         abs_playlist = await self._client.create_playlist(
             parameters=AbsCreatePlaylistParameters(name=name, library_id=library_id)
         )
-        return parse_playlist(
-            abs_playlist=abs_playlist,
-            instance_id=self.instance_id,
-            domain=self.domain,
-            token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
-            media_type=media_type,
-        )
+        async with self.playlist_lock:
+            self.playlist_last = time.time()
+            return parse_playlist(
+                abs_playlist=abs_playlist,
+                instance_id=self.instance_id,
+                domain=self.domain,
+                token=self._client.token,
+                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                media_type=media_type,
+            )
 
     @handle_refresh_token
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -558,7 +569,11 @@ for more details.
             return AbsPlaylistItem(library_item_id=abs_item_id, episode_id=episode_id)
 
         abs_items = [get_playlist_item(ma_id) for ma_id in prov_track_ids]
-        await self._client.add_item_to_playlist_batch(playlist_id=prov_playlist_id, items=abs_items)
+        async with self.playlist_lock:
+            self.playlist_last = time.time()
+            await self._client.add_item_to_playlist_batch(
+                playlist_id=prov_playlist_id, items=abs_items
+            )
 
     @handle_refresh_token
     async def remove_playlist_tracks(
@@ -575,16 +590,20 @@ for more details.
                     )
                 )
         if items_to_remove:
-            await self._client.remove_item_to_playlist_batch(
-                playlist_id=prov_playlist_id, items=items_to_remove
-            )
+            async with self.playlist_lock:
+                self.playlist_last = time.time()
+                await self._client.remove_item_to_playlist_batch(
+                    playlist_id=prov_playlist_id, items=items_to_remove
+                )
 
     @handle_refresh_token
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from ABS."""
         assert media_type == MediaType.PLAYLIST
-        await self._client.delete_playlist(playlist_id=prov_item_id)
-        return True
+        async with self.playlist_lock:
+            self.playlist_last = time.time()
+            await self._client.delete_playlist(playlist_id=prov_item_id)
+            return True
 
     @handle_refresh_token
     async def library_add(self, item: MediaItemType) -> bool:
@@ -1714,6 +1733,39 @@ for more details.
             await self._update_playlog_book(progress)
             return
         await self._update_playlog_episode(progress)
+
+    async def _socket_abs_playlist_added(self, abs_playlist: AbsPlaylistExpanded) -> None:
+        if time.time() - self.playlist_last < 5:
+            return
+        if abs_playlist.library_id in self.libraries.audiobooks:
+            media_type = MediaType.AUDIOBOOK
+        elif abs_playlist.library_id in self.libraries.podcasts:
+            media_type = MediaType.PODCAST_EPISODE
+        else:
+            return
+        async with self.playlist_lock:
+            await self.mass.music.playlists.add_item_to_library(
+                item=parse_playlist(
+                    abs_playlist=abs_playlist,
+                    instance_id=self.instance_id,
+                    domain=self.domain,
+                    token=self._client.token,
+                    base_url=str(self.config.get_value(CONF_URL)),
+                    media_type=media_type,
+                ),
+                overwrite_existing=True,
+            )
+
+    async def _socket_abs_playlist_removed(self, abs_playlist: AbsPlaylistExpanded) -> None:
+        if time.time() - self.playlist_last < 5:
+            return
+        if mass_item := await self.mass.music.get_library_item_by_prov_id(
+            media_type=MediaType.PLAYLIST,
+            item_id=abs_playlist.id_,
+            provider_instance_id_or_domain=self.instance_id,
+        ):
+            async with self.playlist_lock:
+                await self.mass.music.playlists.remove_item_from_library(item_id=mass_item.item_id)
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()
