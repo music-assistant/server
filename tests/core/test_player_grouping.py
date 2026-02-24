@@ -234,6 +234,10 @@ class TestCircularDependency:
         controller._players = {"leader": leader, "member": member}
         mock_mass.players = controller
 
+        # Mark players as initialized so they are returned by all_players()
+        leader.set_initialized()
+        member.set_initialized()
+
         # Trigger synced_to calculation via update_state
         leader.update_state(signal_event=False)
         member.update_state(signal_event=False)
@@ -304,6 +308,11 @@ class TestProviderInstanceIdExpansion:
         mock_mass.players = controller
         # Set up get_provider to return the provider for instance ID
         mock_mass.get_provider = MagicMock(return_value=provider)
+
+        # Mark players as initialized so they are returned by all_players()
+        player_a.set_initialized()
+        player_b.set_initialized()
+        player_c.set_initialized()
 
         # Trigger state calculation
         player_a.update_state(signal_event=False)

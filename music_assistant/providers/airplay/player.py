@@ -525,7 +525,7 @@ class AirPlayPlayer(Player):
             self.stream = None
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
+        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id)
 
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()

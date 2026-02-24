@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -23,8 +24,9 @@ class CoreController:
     manifest: ProviderManifest  # some info for the UI only
 
     def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize MusicProvider."""
+        """Initialize core controller."""
         self.mass = mass
+        self.initialized = asyncio.Event()
         self._set_logger()
         self.manifest = ProviderManifest(
             type=ProviderType.CORE,
