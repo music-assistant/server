@@ -294,7 +294,9 @@ class SnapcastMAStream:
                 DEFAULT_SNAPCAST_FORMAT,
                 DEFAULT_SNAPCAST_FORMAT,
             )
-        audio_source = self._mass.streams.get_stream(self.media, DEFAULT_SNAPCAST_FORMAT)
+        audio_source = self._mass.streams.get_stream(
+            self.media, DEFAULT_SNAPCAST_FORMAT, self._filter_settings_owner
+        )
         try:
             async with FFMpeg(
                 audio_input=audio_source,

@@ -46,7 +46,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import OutputProtocol, PlayerOptionValueType  # noqa: TC002
+from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -907,32 +907,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_play_media(player.player_id, media)
 
-    def select_output_protocol(self, player_id: str) -> Player:
-        """
-        Select and set the best output protocol for a player.
-
-        This method determines the optimal output protocol for playback and sets it
-        on the player. Should be called before evaluating protocol-dependent properties
-        like flow_mode.
-
-        :param player_id: player_id of the player to select protocol for.
-        :return: The target player that will handle playback (may be a protocol player).
-        """
-        player = self.get_player(player_id, raise_unavailable=True)
-        assert player is not None
-
-        target_player, output_protocol = self._select_best_output_protocol(player)
-
-        if target_player.player_id != player.player_id:
-            # Playing via linked protocol
-            assert output_protocol is not None
-            player.set_active_output_protocol(output_protocol.output_protocol_id)
-        else:
-            # Native playback
-            player.set_active_output_protocol("native")
-
-        return target_player
-
     @api_command("players/cmd/select_sound_mode")
     @handle_player_command
     async def select_sound_mode(self, player_id: str, sound_mode: str) -> None:
@@ -1357,13 +1331,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self._players.get(player_id)
         if player is None:
             return
-        await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
             # and signal PLAYER_REMOVED event
+            await self._cleanup_player_memberships(player_id)
             self._cleanup_protocol_links(player)
             self.delete_player_config(player_id)
             self.logger.info("Player removed: %s", player.name)
@@ -2618,6 +2592,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
+            player.set_active_output_protocol(None)  # also clear active protocol if any
 
         # always stop player at power off
         if (
@@ -2775,25 +2750,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # Check if active output protocol was already set (e.g., by select_output_protocol)
-        # and is still valid. If so, reuse it to avoid re-selecting.
-        target_player: Player | None = None
-        output_protocol: OutputProtocol | None = None
-        if active_protocol_id := player.active_output_protocol:
-            if active_protocol_id in ("native", player.player_id):
-                target_player = player
-            elif protocol_player := self.get_player(active_protocol_id):
-                if protocol_player.available:
-                    target_player = protocol_player
-                    # Find the matching OutputProtocol
-                    for linked in player.linked_output_protocols:
-                        if linked.output_protocol_id == active_protocol_id:
-                            output_protocol = linked
-                            break
-
-        # If no valid pre-selected protocol, select the best one now
-        if target_player is None:
-            target_player, output_protocol = self._select_best_output_protocol(player)
+        # Select best output protocol for playback
+        target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol

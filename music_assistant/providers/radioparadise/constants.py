@@ -6,7 +6,7 @@ from music_assistant_models.enums import ContentType
 
 # Base URL for station icons
 STATION_ICONS_BASE_URL = (
-    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/docs/assets/icons"
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/public/assets/icons"
 )
 
 # Radio Paradise channel configurations with hardcoded channels

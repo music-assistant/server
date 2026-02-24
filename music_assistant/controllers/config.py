@@ -810,17 +810,15 @@ class ConfigController:
         # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         # Get existing raw config to preserve values that don't have config entries.
-        # This can happen when config entries are dynamic (e.g., protocol settings depend on
-        # player.available and linked protocols). If save_player_config is called before
-        # the player is fully available, those entries won't exist and their stored values
-        # would be lost without this preservation.
+        # e.g. protocol links etc.
         existing_raw = self.get(conf_key) or {}
         existing_values = existing_raw.get("values", {})
         new_raw = config.to_raw()
         new_values = new_raw.get("values", {})
-        # Preserve values from storage that don't have config entries in current context
+        # Preserve values from storage that don't have config entries in current context.
+        config_entry_keys = set(config.values.keys())
         for key, value in existing_values.items():
-            if key not in new_values:
+            if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)

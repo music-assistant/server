@@ -596,7 +596,9 @@ class SendspinPlaybackSession:
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
-            audio_source = self.player.mass.streams.get_stream(media, _PCM_FORMAT)
+            audio_source = self.player.mass.streams.get_stream(
+                media, _PCM_FORMAT, self.player.player_id
+            )
             async for chunk in audio_source:
                 if not chunk:
                     continue
