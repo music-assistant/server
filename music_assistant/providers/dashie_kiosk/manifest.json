@@ -9,8 +9,7 @@
     "[Dashie Kiosk](https://dashieapp.com/dashie-kiosk)"
   ],
   "requirements": [],
-  "documentation": "https://dashieapp.com/guides/music-assistant-setup",
-  "depends_on": "hass",
+  "documentation": "https://music-assistant.io/player-support/dashie-kiosk/",
   "multi_instance": false,
   "builtin": false
 }

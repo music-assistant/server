@@ -2,7 +2,8 @@
 Dashie Kiosk Player provider for Music Assistant.
 
 Plays audio directly on Dashie Kiosk tablets via their REST API.
-Requires the Home Assistant Plugin and the Dashie HA integration.
+Supports automatic discovery via the Home Assistant Plugin and the Dashie HA
+integration, or manual configuration by IP address.
 """
 
 from __future__ import annotations
@@ -11,11 +12,10 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.hass import DOMAIN as HASS_DOMAIN
 
-from .constants import CONF_PLAYERS, DASHIE_HA_DOMAIN
+from .constants import CONF_MANUAL_PLAYERS, CONF_PLAYERS, DASHIE_HA_DOMAIN
 from .provider import DashieKioskProvider
 
 if TYPE_CHECKING:
@@ -31,11 +31,8 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    hass_prov = mass.get_provider(HASS_DOMAIN)
-    if not hass_prov:
-        msg = "The Home Assistant Plugin needs to be set-up first"
-        raise SetupFailedError(msg)
-    hass_prov = cast("HomeAssistantProvider", hass_prov)
+    raw_prov = mass.get_provider(HASS_DOMAIN)
+    hass_prov = cast("HomeAssistantProvider", raw_prov) if raw_prov else None
     return DashieKioskProvider(mass, manifest, config, hass_prov)
 
 
@@ -66,10 +63,21 @@ async def get_config_entries(
             key=CONF_PLAYERS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Dashie Kiosk devices",
-            required=True,
+            label="Dashie Kiosk devices (via Home Assistant)",
+            required=False,
             options=player_entities,
-            description="Select which Dashie Kiosk tablets to use as "
-            "direct audio players in Music Assistant.",
+            description="Select Dashie Kiosk tablets discovered through the "
+            "Dashie HA integration. Requires the Home Assistant Plugin.",
+        ),
+        ConfigEntry(
+            key=CONF_MANUAL_PLAYERS,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            label="Manual Dashie Kiosk addresses",
+            required=False,
+            description="Manually add Dashie Kiosk tablets by IP address and port "
+            "(e.g. 192.168.1.100:2323). Use this if you don't have the "
+            "Dashie HA integration installed.",
+            advanced=True,
         ),
     )

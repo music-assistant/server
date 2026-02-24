@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
@@ -42,6 +42,7 @@ class DashieKioskPlayer(Player):
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
             PlayerFeature.SEEK,
+            PlayerFeature.PLAY_MEDIA,
         }
         self._attr_name = self.client.device_info.get("deviceName", "Dashie Kiosk")
         self._attr_device_info = DeviceInfo(
@@ -49,8 +50,9 @@ class DashieKioskPlayer(Player):
                 "model", self.client.device_info.get("deviceModel", "Android")
             ),
             manufacturer=(dev_info or {}).get("manufacturer", "Dashie"),
+            software_version=(dev_info or {}).get("software_version"),
         )
-        self._attr_device_info.ip_address = address
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_available = True
         self._attr_needs_poll = True
         self._attr_poll_interval = 10
@@ -114,7 +116,8 @@ class DashieKioskPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media on the device."""
-        await self.client.play_sound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self.client.play_sound(url, AUDIOMANAGER_STREAM_MUSIC)
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
