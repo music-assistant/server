@@ -1587,8 +1587,12 @@ class AuthenticationManager:
             try:
                 await self.database.insert("join_codes", code_data)
                 await self.database.commit()
-                self.logger.debug(
-                    "Generated join code (expires: %s, max_uses: %s)", expires_at, max_uses
+                self.logger.info(
+                    "Join code generated for user %s (expires: %s, max_uses: %s, provider: %s)",
+                    user.username,
+                    expires_at,
+                    max_uses,
+                    provider_name,
                 )
                 return code, expires_at
             except IntegrityError:
@@ -1624,6 +1628,7 @@ class AuthenticationManager:
         await self.database.commit()
 
         if not row:
+            self.logger.warning("Join code exchange rejected (code=%s)", code.upper())
             return None
 
         user = await self.get_user(row["user_id"])
@@ -1641,7 +1646,11 @@ class AuthenticationManager:
             provider_name=row["provider_name"],
         )
 
-        self.logger.debug("Join code exchanged for token (user=%s)", user.username)
+        self.logger.info(
+            "Join code exchanged for token (user=%s, provider=%s)",
+            user.username,
+            row["provider_name"],
+        )
         return token
 
     async def revoke_join_codes(
