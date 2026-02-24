@@ -917,7 +917,7 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="joincodeuser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="joincodeuser", role=UserRole.GUEST)
 
     code, expires_at = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -932,6 +932,21 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     assert code.isalnum()
     assert expires_at is not None
     assert expires_at > utc()
+
+
+async def test_generate_join_code_non_guest_rejected(auth_manager: AuthenticationManager) -> None:
+    """Test that generating a join code for non-guest users is rejected.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="joinadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="joinuser", role=UserRole.USER)
+
+    with pytest.raises(ValueError, match="guest accounts"):
+        await auth_manager.generate_join_code(user_id=admin.user_id)
+
+    with pytest.raises(ValueError, match="guest accounts"):
+        await auth_manager.generate_join_code(user_id=user.user_id)
 
 
 async def test_generate_join_code_invalid_user(auth_manager: AuthenticationManager) -> None:
@@ -951,7 +966,7 @@ async def test_exchange_join_code(auth_manager: AuthenticationManager) -> None:
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="exchangeuser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="exchangeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -977,7 +992,7 @@ async def test_exchange_join_code_case_insensitive(auth_manager: AuthenticationM
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="caseuser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="caseuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -1008,7 +1023,7 @@ async def test_exchange_join_code_expired(auth_manager: AuthenticationManager) -
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="expiredcodeuser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="expiredcodeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -1036,7 +1051,7 @@ async def test_exchange_join_code_max_uses(auth_manager: AuthenticationManager) 
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="maxusesuser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="maxusesuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -1062,7 +1077,7 @@ async def test_exchange_join_code_unlimited_uses(auth_manager: AuthenticationMan
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="unlimiteduser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="unlimiteduser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -1083,7 +1098,7 @@ async def test_exchange_join_code_provider_name_in_token(
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="provideruser", role=UserRole.USER)
+    user = await auth_manager.create_user(username="provideruser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
         user_id=user.user_id,
@@ -1104,8 +1119,8 @@ async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user1 = await auth_manager.create_user(username="revokeuser1", role=UserRole.USER)
-    user2 = await auth_manager.create_user(username="revokeuser2", role=UserRole.USER)
+    user1 = await auth_manager.create_user(username="revokeuser1", role=UserRole.GUEST)
+    user2 = await auth_manager.create_user(username="revokeuser2", role=UserRole.GUEST)
 
     # Create codes for both users
     code1, _ = await auth_manager.generate_join_code(user_id=user1.user_id)
@@ -1129,8 +1144,8 @@ async def test_revoke_all_join_codes(auth_manager: AuthenticationManager) -> Non
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user1 = await auth_manager.create_user(username="revokeall1", role=UserRole.USER)
-    user2 = await auth_manager.create_user(username="revokeall2", role=UserRole.USER)
+    user1 = await auth_manager.create_user(username="revokeall1", role=UserRole.GUEST)
+    user2 = await auth_manager.create_user(username="revokeall2", role=UserRole.GUEST)
 
     # Create codes for both users
     code1, _ = await auth_manager.generate_join_code(user_id=user1.user_id)

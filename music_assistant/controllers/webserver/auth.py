@@ -1565,6 +1565,8 @@ class AuthenticationManager:
         user = await self.get_user(user_id)
         if not user:
             raise ValueError(f"User not found: {user_id}")
+        if user.role != UserRole.GUEST:
+            raise ValueError("Join codes can only be generated for guest accounts")
 
         now = utc()
         expires_at = now + timedelta(hours=expires_in_hours)
