@@ -39,11 +39,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     token = config.get_value(CONF_USER_TOKEN)
-    api_base_url = config.get_value(CONF_API_BASE_URL)
-
-    # fallback to the public listenbrainz API
-    if not api_base_url:
-        api_base_url = LISTENBRAINZ_API_URL
+    api_base_url = config.get_value(CONF_API_BASE_URL, LISTENBRAINZ_API_URL)
 
     if not token:
         raise SetupFailedError("User token needs to be set")
@@ -171,6 +167,7 @@ async def get_config_entries(
             value=values.get(CONF_API_BASE_URL) if values else None,
             description="URL for listenbrainz endpoint. Leave blank to default"
             "to the public listenbrainz API.",
+            advanced=True,
         ),
         # add user selection entry
         await create_scrobble_users_config_entry(mass),
