@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from yandex_music.landing.chart_info import ChartInfo
     from yandex_music.landing.landing import Landing
     from yandex_music.landing.landing_list import LandingList
+    from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
@@ -58,6 +60,8 @@ class YandexMusicClient:
         self._base_url = base_url
         self._client: ClientAsync | None = None
         self._user_id: int | None = None
+        self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
+        self._reconnect_lock = asyncio.Lock()
 
     @property
     def user_id(self) -> int:
@@ -110,9 +114,18 @@ class YandexMusicClient:
         return "disconnect" in msg or "connection" in msg or "timeout" in msg
 
     async def _reconnect(self) -> None:
-        """Disconnect and connect again to recover from Server disconnected / connection errors."""
-        await self.disconnect()
-        await self.connect()
+        """Disconnect and connect again to recover from Server disconnected / connection errors.
+
+        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Yandex
+        and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
+        """
+        async with self._reconnect_lock:
+            now = time.monotonic()
+            if now - self._last_reconnect_at < 30.0:
+                raise ProviderUnavailableError("Reconnect cooldown active, skipping")
+            self._last_reconnect_at = now
+            await self.disconnect()
+            await self.connect()
 
     async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
         """Execute an async API call with one reconnect attempt on connection error.
@@ -133,6 +146,19 @@ class YandexMusicClient:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
             return await func(client)
+
+    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+        """Execute an async API call without reconnect retry.
+
+        Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
+        should be silently dropped rather than triggering a reconnect cycle that
+        could cause rate limiting.
+
+        :param func: Async callable that takes a ClientAsync and returns a result.
+        :return: The result of the API call.
+        """
+        client = await self._ensure_connected()
+        return await func(client)
 
     # Rotor (radio station) methods
 
@@ -229,7 +255,7 @@ class YandexMusicClient:
             return True
 
         try:
-            result = await self._call_with_retry(_post)
+            result = await self._call_no_retry(_post)
             LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
@@ -862,6 +888,40 @@ class YandexMusicClient:
                         tags.append((slug, entity.data.title))
         return tags
 
+    async def get_mixes_waves(self) -> list[dict[str, Any]] | None:
+        """Get AI Wave Set stations from /landing-blocks/mixes-waves endpoint.
+
+        Returns structured mix data with categories and station items, each
+        containing station_id, title, seeds, and visual metadata.
+
+        :return: List of mix category dicts, or None on error.
+        """
+        return await self._get_landing_waves("mixes-waves")
+
+    async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
+        """Fetch wave categories from a /landing-blocks/<block> endpoint.
+
+        Note: Response keys are auto-converted from camelCase to snake_case
+        by the yandex-music library's JSON parser.
+
+        :param block: Block name, e.g. 'waves' or 'mixes-waves'.
+        :return: List of wave category dicts, or None on error.
+        """
+
+        async def _get(c: ClientAsync) -> dict[str, Any]:
+            url = f"{c.base_url}/landing-blocks/{block}"
+            return await c._request.get(url)  # type: ignore[no-any-return]
+
+        try:
+            result = await self._call_with_retry(_get)
+            if result and isinstance(result, dict):
+                waves = result.get("waves", [])
+                return waves if isinstance(waves, list) else []
+            return None
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching landing-blocks/%s: %s", block, err)
+            return None
+
     async def get_wave_stations(
         self, language: str | None = None
     ) -> list[tuple[str, str, str, str | None]]:
@@ -891,8 +951,9 @@ class YandexMusicClient:
             tag = station.id.tag
             if not category or not tag:
                 continue
-            if category == "user":
-                # Skip personal stations (My Wave is already a separate feature)
+            if category in ("user", "local-language"):
+                # Skip personal stations (My Wave is handled separately)
+                # and local-language stations (Yandex returns overlapping tracks across them)
                 continue
             station_id = f"{category}:{tag}"
             name = station.name or result.rup_title or tag
@@ -909,6 +970,54 @@ class YandexMusicClient:
                 else:
                     image_url = f"{raw_url}/400x400"
             stations.append((station_id, category, name, image_url))
+        local_stations = [(sid, name) for sid, cat, name, _ in stations if cat == "local-language"]
+        if local_stations:
+            LOGGER.debug("Local-language stations from API: %s", local_stations)
+        return stations
+
+    async def get_dashboard_stations(self) -> list[tuple[str, str, str | None]]:
+        """Get personalized recommended stations for the current user.
+
+        Calls rotor_stations_dashboard() — returns user-specific stations based
+        on listening history, unlike rotor_stations_list() which is non-personalized.
+
+        :return: List of (station_id, name, image_url) tuples,
+                 e.g. ('genre:rock', 'Рок', 'https://...').
+        """
+        try:
+            dashboard: Dashboard | None = await self._call_with_retry(
+                lambda c: c.rotor_stations_dashboard()
+            )
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.warning("Error fetching dashboard stations: %s", err)
+            return []
+
+        if not dashboard or not dashboard.stations:
+            return []
+
+        stations: list[tuple[str, str, str | None]] = []
+        for result in dashboard.stations:
+            station = result.station
+            if station is None or station.id is None:
+                continue
+            category = station.id.type
+            tag = station.id.tag
+            if not category or not tag:
+                continue
+            if category == "user":
+                continue
+            station_id = f"{category}:{tag}"
+            name = station.name or result.rup_title or tag
+            image_url: str | None = None
+            raw_url = station.full_image_url or (station.icon.image_url if station.icon else None)
+            if raw_url:
+                if not raw_url.startswith("http"):
+                    raw_url = f"https://{raw_url}"
+                if "%%" in raw_url:
+                    image_url = raw_url.replace("%%", "400x400")
+                else:
+                    image_url = f"{raw_url}/400x400"
+            stations.append((station_id, name, image_url))
         return stations
 
     # Library modifications

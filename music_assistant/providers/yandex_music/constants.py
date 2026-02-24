@@ -135,8 +135,14 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "mood_mix": "Настроение",
     "activity_mix": "Активность",
     "seasonal_mix": "Сезонное",
-    # Waves by tag (rotor station categories)
-    "waves": "Волны",
+    # Top-level browse groups
+    "for_you": "Для вас",
+    "collection": "Коллекция",
+    # Waves / Radio (rotor station categories)
+    "waves": "Радио",
+    "radio": "Радио",
+    "my_waves": "Персональные",
+    "my_waves_set": "AI Сеты",
     "genre": "Жанры",
     "epoch": "Эпоха",
     "local": "Местное",
@@ -200,8 +206,14 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "mood_mix": "Mood Mix",
     "activity_mix": "Activity Mix",
     "seasonal_mix": "Seasonal",
-    # Waves by tag (rotor station categories)
-    "waves": "Waves",
+    # Top-level browse groups
+    "for_you": "For You",
+    "collection": "Collection",
+    # Waves / Radio (rotor station categories)
+    "waves": "Radio",
+    "radio": "Radio",
+    "my_waves": "Personal",
+    "my_waves_set": "AI Wave Sets",
     "genre": "Genres",
     "epoch": "Era",
     "local": "Local",
@@ -304,8 +316,19 @@ TAG_SEASONAL_MAP: Final[dict[int, str]] = {
 # Tags for Mixes (seasonal collections)
 TAG_MIXES: Final[list[str]] = ["winter", "spring", "summer", "autumn", "newyear"]
 
-# Waves by tag (rotor stations)
+# Waves by tag (rotor stations) — canonical ID is "waves", "radio" is an alias
 WAVES_FOLDER_ID: Final[str] = "waves"
+RADIO_FOLDER_ID: Final[str] = "radio"
+
+# Personalized waves subfolder (rotor/stations/dashboard)
+MY_WAVES_FOLDER_ID: Final[str] = "my_waves"
+
+# AI Wave Sets subfolder (from /landing-blocks/mixes-waves)
+MY_WAVES_SET_FOLDER_ID: Final[str] = "my_waves_set"
+
+# Top-level browse group folders
+FOR_YOU_FOLDER_ID: Final[str] = "for_you"
+COLLECTION_FOLDER_ID: Final[str] = "collection"
 
 # Preferred display order for wave categories (rotor station types)
 WAVE_CATEGORY_DISPLAY_ORDER: Final[list[str]] = [
