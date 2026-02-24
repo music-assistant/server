@@ -7,6 +7,7 @@ import logging
 import random
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
+from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
@@ -31,6 +32,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from PIL import Image as PilImage
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -574,7 +576,7 @@ class YandexMusicProvider(MusicProvider):
 
         :return: Set of tag slug strings that have playlists.
         """
-        discovered = await self._get_discovered_tags(self.mass.metadata.locale)
+        discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
         return {slug for slug, _title in discovered}
 
     async def _browse_for_you(
@@ -685,7 +687,7 @@ class YandexMusicProvider(MusicProvider):
         base = path.rstrip("/") + "/"
 
         # Get validated tags
-        discovered = await self._get_discovered_tags(self.mass.metadata.locale)
+        discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
 
         # Categorize valid tags
         categorized: dict[str, list[tuple[str, str]]] = {}
@@ -1166,7 +1168,7 @@ class YandexMusicProvider(MusicProvider):
                     title = item.get("title", "")
                     if not station_id or not title:
                         continue
-                    cover_uri, _ = self._extract_wave_item_cover(item)
+                    cover_uri, bg_color = self._extract_wave_item_cover(item)
                     image: MediaItemImage | None = None
                     if cover_uri:
                         if cover_uri.startswith("http"):
@@ -1175,11 +1177,18 @@ class YandexMusicProvider(MusicProvider):
                             raw = get_image_url(cover_uri)
                             img_url = "" if raw is None else raw
                         if img_url:
+                            if bg_color:
+                                # Append bg_color as URL fragment for cache-key uniqueness.
+                                # MA will call resolve_image() to composite the transparent PNG.
+                                if len(self._wave_bg_colors) > 200:
+                                    self._wave_bg_colors.clear()
+                                img_url = f"{img_url}#{bg_color.lstrip('#')}"
+                                self._wave_bg_colors[img_url] = bg_color
                             image = MediaItemImage(
                                 type=ImageType.THUMB,
                                 path=img_url,
                                 provider=self.instance_id,
-                                remotely_accessible=True,
+                                remotely_accessible=bg_color is None,
                             )
                     result.append(
                         BrowseFolder(
@@ -2248,6 +2257,51 @@ class YandexMusicProvider(MusicProvider):
         """
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve wave cover image with background color fill for transparent PNGs.
+
+        If the image URL has an associated background color (stored in _wave_bg_colors),
+        downloads the PNG from Yandex CDN and composites it on a solid color background
+        using Pillow, returning JPEG bytes. Falls back to the original URL on any error.
+
+        :param path: Image URL (may include #rrggbb fragment used as cache key).
+        :return: Composited JPEG bytes, or original path string as fallback.
+        """
+        bg_color = self._wave_bg_colors.get(path)
+        if not bg_color:
+            return path
+
+        # Strip the #color fragment before fetching the actual image
+        fetch_url = path.split("#", maxsplit=1)[0] if "#" in path else path
+        try:
+            async with self.mass.http_session.get(fetch_url) as resp:
+                resp.raise_for_status()
+                raw = await resp.read()
+        except Exception as err:
+            self.logger.debug("Failed to fetch wave cover %s: %s", fetch_url, err)
+            return fetch_url
+
+        def _composite() -> bytes:
+            bg_clean = bg_color.lstrip("#")
+            try:
+                r = int(bg_clean[0:2], 16)
+                g = int(bg_clean[2:4], 16)
+                b = int(bg_clean[4:6], 16)
+            except (ValueError, IndexError):
+                return raw
+            fg = PilImage.open(BytesIO(raw)).convert("RGBA")
+            bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))
+            bg.paste(fg, mask=fg)
+            out = BytesIO()
+            bg.convert("RGB").save(out, "JPEG", quality=92)
+            return out.getvalue()
+
+        try:
+            return await asyncio.to_thread(_composite)
+        except Exception as err:
+            self.logger.debug("Wave cover composite failed for %s: %s", fetch_url, err)
+            return fetch_url
 
     async def on_played(
         self,

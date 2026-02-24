@@ -12,7 +12,6 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-from urllib.parse import unquote
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -96,7 +95,12 @@ class YandexMusicClient:
 
     async def _ensure_connected(self) -> ClientAsync:
         """Ensure the client is connected, attempting reconnect if needed."""
-        if self._client is None:
+        if self._client is not None:
+            return self._client
+        async with self._reconnect_lock:
+            # Re-check after acquiring lock — another task may have connected already
+            if self._client is not None:
+                return self._client  # type: ignore[unreachable]
             LOGGER.info("Client disconnected, attempting to reconnect...")
             try:
                 await self.connect()
@@ -104,7 +108,7 @@ class YandexMusicClient:
                 raise
             except Exception as err:
                 raise ProviderUnavailableError("Client not connected and reconnect failed") from err
-        return self._client
+        return cast("ClientAsync", self._client)
 
     def _is_connection_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a connection or server drop."""
@@ -148,11 +152,13 @@ class YandexMusicClient:
             return await func(client)
 
     async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """Execute an async API call without reconnect retry.
+        """Execute an async API call without reconnect retry on call failure.
 
         Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
         should be silently dropped rather than triggering a reconnect cycle that
-        could cause rate limiting.
+        could cause rate limiting. Note: _ensure_connected() is still called to
+        establish the initial connection if needed; only the reconnect-on-error
+        path is skipped.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
@@ -883,7 +889,7 @@ class YandexMusicClient:
                     # Filter out editorial posts — only include /tag/ URLs
                     if not url.startswith("/tag/"):
                         continue
-                    slug = unquote(url.strip("/").split("/")[-1])
+                    slug = url.strip("/").split("/")[-1]
                     if slug:
                         tags.append((slug, entity.data.title))
         return tags
@@ -970,9 +976,6 @@ class YandexMusicClient:
                 else:
                     image_url = f"{raw_url}/400x400"
             stations.append((station_id, category, name, image_url))
-        local_stations = [(sid, name) for sid, cat, name, _ in stations if cat == "local-language"]
-        if local_stations:
-            LOGGER.debug("Local-language stations from API: %s", local_stations)
         return stations
 
     async def get_dashboard_stations(self) -> list[tuple[str, str, str | None]]:
