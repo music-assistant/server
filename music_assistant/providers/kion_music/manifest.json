@@ -3,11 +3,11 @@
   "domain": "kion_music",
   "stage": "beta",
   "name": "KION Music",
-  "description": "Stream music from Yandex Music service.",
+  "description": "Stream music from Kion Music service.",
   "codeowners": [
     "@TrudenBoy"
   ],
-  "documentation": "https://music-assistant.io/music-providers/yandex-music/",
+  "documentation": "https://music-assistant.io/music-providers/kion-music/",
   "requirements": [
     "yandex-music==2.2.0"
   ],
