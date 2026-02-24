@@ -10,9 +10,13 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
+    CONF_LIKED_TRACKS_MAX_TRACKS,
+    CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_BASE_URL,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
 )
@@ -24,7 +28,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -40,6 +43,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.LYRICS,
 }
 
 
@@ -68,6 +72,7 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_TOKEN))
 
     return (
+        # Authentication
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -86,24 +91,53 @@ async def get_config_entries(
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not is_authenticated,
         ),
+        # Quality
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
             label="Audio quality",
             description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
-                ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
+                ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
+                ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
+                ConfigValueOption("High (MP3 ~320kbps)", QUALITY_HIGH),
+                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_LOSSLESS),
             ],
-            default_value=QUALITY_HIGH,
+            default_value=QUALITY_BALANCED,
         ),
+        # My Mix maximum tracks (advanced)
+        ConfigEntry(
+            key=CONF_MY_WAVE_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="My Mix maximum tracks",
+            description="Maximum number of tracks to fetch for My Mix playlist. "
+            "Lower values load faster but provide fewer tracks. Default: 150.",
+            range=(10, 1000),
+            default_value=150,
+            required=False,
+            advanced=True,
+        ),
+        # Liked Tracks maximum tracks (advanced)
+        ConfigEntry(
+            key=CONF_LIKED_TRACKS_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            label="Liked Tracks maximum tracks",
+            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
+            "Higher values may significantly increase load time. "
+            "Lower values load faster. Default: 500.",
+            range=(50, 2000),
+            default_value=500,
+            required=False,
+            advanced=True,
+        ),
+        # API Base URL (advanced)
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
             label="API Base URL",
             description="API endpoint base URL. "
             "Only change if KION Music changes their API endpoint. "
-            "Default: https://music.mts.ru/ya_proxy_api",
+            f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,

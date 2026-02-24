@@ -3,9 +3,13 @@
   "domain": "kion_music",
   "stage": "beta",
   "name": "KION Music",
-  "description": "Stream music from KION Music (MTS) service.",
-  "codeowners": ["@TrudenBoy"],
-  "documentation": "https://music-assistant.io/music-providers/kion-music/",
-  "requirements": ["yandex-music==2.2.0"],
+  "description": "Stream music from Yandex Music service.",
+  "codeowners": [
+    "@TrudenBoy"
+  ],
+  "documentation": "https://music-assistant.io/music-providers/yandex-music/",
+  "requirements": [
+    "yandex-music==2.2.0"
+  ],
   "multi_instance": true
 }
