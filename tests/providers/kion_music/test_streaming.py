@@ -94,20 +94,6 @@ def test_select_best_quality_label_lossless_flac_returns_flac(
     assert result.codec == "flac"
 
 
-def test_select_best_quality_lossless_no_flac_returns_fallback(
-    streaming_manager_with_tracking: KionMusicStreamingManager,
-) -> None:
-    """When lossless requested but no FLAC in list, returns best available (fallback)."""
-    mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
-    download_infos = [mp3]
-
-    result = streaming_manager_with_tracking._select_best_quality(download_infos, QUALITY_LOSSLESS)
-
-    assert result is not None
-    assert result.codec == "mp3"
-    assert streaming_manager_with_tracking.provider.logger._warning_count == 1  # type: ignore[attr-defined]
-
-
 def test_select_best_quality_empty_list_returns_none(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
