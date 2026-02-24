@@ -39,7 +39,7 @@ def streaming_manager(
     streaming_provider_stub: StreamingProviderStub,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with real stub (no Mock)."""
-    return KionMusicStreamingManager(streaming_provider_stub)  # type: ignore[arg-type]
+    return KionMusicStreamingManager(streaming_provider_stub)
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def streaming_manager_with_tracking(
     streaming_provider_stub_with_tracking: StreamingProviderStubWithTracking,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with tracking logger for assertions."""
-    return KionMusicStreamingManager(streaming_provider_stub_with_tracking)  # type: ignore[arg-type]
+    return KionMusicStreamingManager(streaming_provider_stub_with_tracking)
 
 
 def test_select_best_quality_lossless_returns_flac(
@@ -129,3 +129,11 @@ def test_select_best_quality_none_preferred_returns_highest_bitrate(
     assert result is not None
     assert result.codec == "mp3"
     assert result.bitrate_in_kbps == 320
+
+
+def test_get_content_type_flac_mp4_returns_flac(
+    streaming_manager: KionMusicStreamingManager,
+) -> None:
+    """flac-mp4 codec from get-file-info is mapped to ContentType.FLAC."""
+    assert streaming_manager._get_content_type("flac-mp4")[0] == ContentType.FLAC
+    assert streaming_manager._get_content_type("FLAC-MP4")[0] == ContentType.FLAC
