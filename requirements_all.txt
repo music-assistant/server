@@ -37,7 +37,7 @@ gql[all]==4.0.0
 hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
-liblistenbrainz==0.6.1
+liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.7.5
 mashumaro==3.18
