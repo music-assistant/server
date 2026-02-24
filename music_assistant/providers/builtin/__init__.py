@@ -24,13 +24,11 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
-    Audiobook,
     AudioFormat,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
     Playlist,
-    PodcastEpisode,
     ProviderMapping,
     Radio,
     Track,
@@ -40,6 +38,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
     MASS_LOGO,
+    PLAYLIST_MEDIA_TYPES,
     VARIOUS_ARTISTS_FANART,
     PlaylistPlayableItem,
 )
@@ -396,9 +395,10 @@ class BuiltinProvider(MusicProvider):
                     if item_prov:
                         item_prov = cast("MusicProvider", item_prov)
                         media_item = await item_prov.get_item(media_type, item_id)
-                    if isinstance(media_item, (Track, Radio, PodcastEpisode, Audiobook)):
-                        media_item.position = index
-                        result.append(media_item)
+                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
+                    playlist_item.position = index
+                    result.append(playlist_item)
                 else:
                     self.logger.warning(
                         "Unsupported media type in playlist %s: %s",
