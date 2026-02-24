@@ -20,4 +20,10 @@ def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
             # filter out APIPA address
             continue
         return address
+    # fall back to IPv6 addresses if no usable IPv4 address found
+    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+        if address.startswith(("::1", "fe80")):
+            # filter out loopback and link-local addresses
+            continue
+        return address
     return None

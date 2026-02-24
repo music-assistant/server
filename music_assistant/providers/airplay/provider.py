@@ -173,7 +173,8 @@ class AirPlayProvider(PlayerProvider):
         else:
             return  # should not happen, but guard just in case
 
-        address = get_primary_ip_address_from_zeroconf(discovery_info)
+        prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
+        address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if not address:
             return  # should not happen, but guard just in case
 
@@ -183,7 +184,7 @@ class AirPlayProvider(PlayerProvider):
         # shairport-sync instances running on other machines
         if model == "ShairportSync":
             # Check if this is a local address (127.x.x.x or matches our server's IP)
-            if address.startswith("127.") or address == self.mass.streams.publish_ip:
+            if address.startswith(("127.", "::1")) or address == self.mass.streams.publish_ip:
                 # Only filter if the port matches one of MA's own AirPlay Receiver instances.
                 # This allows user-configured shairport-sync instances on the same machine
                 # to be used as AirPlay players (e.g., multiple audio outputs via shairport-sync).

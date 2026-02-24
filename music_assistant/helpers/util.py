@@ -347,6 +347,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
         result: list[tuple[int, str]] = []
         # try to get the primary IP address
         # this is the IP address of the default route
+        primary_ip = ""
+        # try IPv4 first
         _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         _sock.settimeout(0)
         try:
@@ -357,6 +359,17 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             primary_ip = ""
         finally:
             _sock.close()
+        # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
+        if not primary_ip:
+            _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            _sock6.settimeout(0)
+            try:
+                _sock6.connect(("2001:db8::1", 1))
+                primary_ip = _sock6.getsockname()[0]
+            except Exception:
+                primary_ip = ""
+            finally:
+                _sock6.close()
         # get all IP addresses of all network interfaces
         adapters = ifaddr.get_adapters()
         for adapter in adapters:
@@ -429,10 +442,14 @@ async def get_ip_from_host(dns_name: str) -> str | None:
 
     def _resolve() -> str | None:
         try:
-            return socket.gethostbyname(dns_name)
+            # use getaddrinfo to support both IPv4 and IPv6 resolution
+            results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if results:
+                return str(results[0][4][0])
         except Exception:
             # fail gracefully!
             return None
+        return None
 
     return await asyncio.to_thread(_resolve)
 
@@ -691,22 +708,35 @@ async def remove_file(file_path: str) -> None:
     LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    # fall back to IPv6 addresses if no usable IPv4 address found
-    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-        if address.startswith(("::1", "fe80")):
-            # filter out loopback and link-local addresses
-            continue
-        return address
+def get_primary_ip_address_from_zeroconf(
+    discovery_info: AsyncServiceInfo,
+    prefer_ipv6: bool = False,
+) -> str | None:
+    """Get primary IP address from zeroconf discovery info.
+
+    :param discovery_info: The zeroconf service info to extract the address from.
+    :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
+    """
+    if prefer_ipv6:
+        # Prefer IPv6, fall back to IPv4
+        for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+            if address.startswith(("::1", "fe80")):
+                continue
+            return address
+        for address in discovery_info.parsed_addresses(IPVersion.V4Only):
+            if address.startswith(("127", "169.254")):
+                continue
+            return address
+    else:
+        # Prefer IPv4, fall back to IPv6
+        for address in discovery_info.parsed_addresses(IPVersion.V4Only):
+            if address.startswith(("127", "169.254")):
+                continue
+            return address
+        for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+            if address.startswith(("::1", "fe80")):
+                continue
+            return address
     return None
 
 

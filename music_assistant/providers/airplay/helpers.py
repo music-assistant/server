@@ -8,8 +8,6 @@ import platform
 import time
 from typing import TYPE_CHECKING
 
-from zeroconf import IPVersion
-
 from music_assistant.helpers.process import check_output
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
@@ -99,19 +97,6 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
         return ("Apple", f"Mac ({model})")
 
     return (manufacturer or "AirPlay", model)
-
-
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    return None
 
 
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:

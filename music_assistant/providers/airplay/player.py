@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -52,7 +52,6 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
-    get_primary_ip_address_from_zeroconf,
     is_airplay2_preferred_model,
     is_apple_device,
     is_broken_airplay_model,
@@ -799,7 +798,8 @@ class AirPlayPlayer(Player):
         else:  # guard
             return
         cur_address = self.address
-        new_address = get_primary_ip_address_from_zeroconf(discovery_info)
+        prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
+        new_address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if new_address is None:
             # should always be set, but guard against None
             return
