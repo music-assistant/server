@@ -6,9 +6,9 @@ import asyncio
 import functools
 import itertools
 import time
-from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
 from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
@@ -25,6 +25,9 @@ from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
 )
+from aioaudiobookshelf.schema.calls_playlists import (
+    CreatePlaylistParameters as AbsCreatePlaylistParameters,
+)
 from aioaudiobookshelf.schema.calls_series import SeriesWithProgress as AbsSeriesWithProgress
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpanded,
@@ -33,6 +36,8 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemMinifiedPodcast,
 )
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
+from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
+from aioaudiobookshelf.schema.playlist import PlaylistItem as AbsPlaylistItem
 from aioaudiobookshelf.schema.playlist import (
     PlaylistItemExpandedBook as AbsPlaylistItemExpandedBook,
 )
@@ -131,7 +136,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
-    # abs only supports playlists of one media type, so editing them is better left outside of MA
 }
 
 
@@ -252,6 +256,23 @@ class Audiobookshelf(MusicProvider):
     """Audiobookshelf MusicProvider."""
 
     _on_unload_callbacks: list[Callable[[], None]]
+
+    @staticmethod
+    def __handle_refresh_token[AudiobookshelfT: "Audiobookshelf", **P, R](
+        method: Callable[Concatenate[AudiobookshelfT, P], Awaitable[R]],
+    ) -> Callable[Concatenate[AudiobookshelfT, P], Coroutine[Any, Any, R | None]]:
+        """TODO..."""
+
+        @functools.wraps(method)
+        async def wrapper(self: AudiobookshelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                return await method(self, *args, **kwargs)
+            except RefreshTokenExpiredError:
+                self.logger.debug("Refresh token expired. Trying to renew.")
+                await self.reauthenticate()
+                return await method(self, *args, **kwargs)
+
+        return wrapper
 
     @staticmethod
     def handle_refresh_token(
@@ -409,6 +430,23 @@ for more details.
         # For streaming providers return True here but for local file based providers return False.
         return False
 
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Get supported features.
+
+        ABS supports multiple libraries, but they must be of the same media type. If we only
+        have a single library of a media type, mapping the playlist creation is unambiguous.
+        """
+        features = SUPPORTED_FEATURES
+        if len(self.libraries.audiobooks) > 1 or len(self.libraries.podcasts) > 1:
+            return features
+        features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
+        if len(self.libraries.audiobooks) == 1:
+            features.add(ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS)
+        if len(self.libraries.podcasts) == 1:
+            features.add(ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES)
+        return features
+
     @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
@@ -430,18 +468,31 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
+    @handle_refresh_token
+    async def _get_playlists(self) -> list[AbsPlaylistExpanded]:
+        return await self._client.get_all_playlists()
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
-        abs_playlists = await self._client.get_all_playlists()
+        abs_playlists = await self._get_playlists()
         for abs_playlist in abs_playlists:
+            if abs_playlist.library_id in self.libraries.audiobooks:
+                media_type = MediaType.AUDIOBOOK
+            elif abs_playlist.library_id in self.libraries.podcasts:
+                media_type = MediaType.PODCAST_EPISODE
+            else:
+                # we do not know the library yet
+                continue
             yield parse_playlist(
                 abs_playlist=abs_playlist,
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                media_type=media_type,
             )
 
+    @handle_refresh_token
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
@@ -483,6 +534,80 @@ for more details.
                 )
 
         return playlist_items
+
+    @handle_refresh_token
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+        """Create a playlist in ABS.
+
+        This method may only be called, if we have not more than one library per media item in ABS.
+        """
+        media_type = media_types.pop()
+        if media_type == MediaType.AUDIOBOOK:
+            library_id = next(iter(self.libraries.audiobooks.keys()))
+        elif media_type == MediaType.PODCAST_EPISODE:
+            library_id = next(iter(self.libraries.podcasts.keys()))
+        else:
+            raise RuntimeError(
+                "ABS only supports Podcast Episodes and Audiobooks in playlist creation."
+            )
+        abs_playlist = await self._client.create_playlist(
+            parameters=AbsCreatePlaylistParameters(name=name, library_id=library_id)
+        )
+        return parse_playlist(
+            abs_playlist=abs_playlist,
+            instance_id=self.instance_id,
+            domain=self.domain,
+            token=self._client.token,
+            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            media_type=media_type,
+        )
+
+    @handle_refresh_token
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """Add items to playlist."""
+
+        def get_playlist_item(ma_id: str) -> AbsPlaylistItem:
+            item_ids = ma_id.split(" ")
+            abs_item_id = item_ids[0]
+            episode_id = item_ids[1] if len(item_ids) == 2 else None
+            return AbsPlaylistItem(library_item_id=abs_item_id, episode_id=episode_id)
+
+        abs_items = [get_playlist_item(ma_id) for ma_id in prov_track_ids]
+        await self._client.add_item_to_playlist_batch(playlist_id=prov_playlist_id, items=abs_items)
+
+    @handle_refresh_token
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove items from playlist."""
+        abs_playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        items_to_remove: list[AbsPlaylistItem] = []
+        for item_cnt, item in enumerate(abs_playlist.items):
+            if item_cnt in positions_to_remove:
+                items_to_remove.append(
+                    AbsPlaylistItem(
+                        library_item_id=item.library_item_id, episode_id=item.episode_id
+                    )
+                )
+        if items_to_remove:
+            await self._client.remove_item_to_playlist_batch(
+                playlist_id=prov_playlist_id, items=items_to_remove
+            )
+
+    @handle_refresh_token
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove item from ABS."""
+        assert media_type == MediaType.PLAYLIST
+        await self._client.delete_playlist(playlist_id=prov_item_id)
+        return True
+
+    @handle_refresh_token
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add item to ABS library.
+
+        When is this endpoint used for playlists?
+        """
+        return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from the provider.

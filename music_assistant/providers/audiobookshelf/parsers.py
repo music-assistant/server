@@ -40,7 +40,13 @@ from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpis
 
 
 def parse_playlist(
-    *, abs_playlist: AbsPlaylistExpanded, instance_id: str, domain: str, token: str, base_url: str
+    *,
+    abs_playlist: AbsPlaylistExpanded,
+    instance_id: str,
+    domain: str,
+    token: str,
+    base_url: str,
+    media_type: MediaType,
 ) -> MassPlaylist:
     """Translate AbsPlaylist to MassPlaylist."""
     mass_playlist = MassPlaylist(
@@ -52,6 +58,7 @@ def parse_playlist(
                 item_id=abs_playlist.id_, provider_domain=domain, provider_instance=instance_id
             )
         },
+        supported_mediatypes={media_type},
     )
     # cover
     if abs_playlist.cover_path is not None:
