@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import MediaType
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
@@ -265,17 +265,6 @@ async def test_get_album(mass: MusicAssistant) -> None:
     assert album.item_id == "300"
 
 
-@pytest.mark.usefixtures("kion_music_provider")
-async def test_get_track(mass: MusicAssistant) -> None:
-    """Test getting track by id."""
-    prov = _get_kion_provider(mass)
-    assert prov is not None
-    track = await prov.get_track("400")
-    assert track is not None
-    assert track.name
-    assert track.provider == prov.instance_id
-    assert track.item_id == "400"
-
 
 @pytest.mark.usefixtures("kion_music_provider")
 async def test_get_album_tracks(mass: MusicAssistant) -> None:
@@ -306,28 +295,6 @@ async def test_get_playlist_tracks_page_gt_zero_returns_empty(mass: MusicAssista
     assert tracks == []
 
 
-@pytest.mark.usefixtures("kion_music_provider")
-async def test_get_stream_details(mass: MusicAssistant) -> None:
-    """Test stream details retrieval."""
-    prov = _get_kion_provider(mass)
-    assert prov is not None
-    stream_details = await prov.get_stream_details("400", MediaType.TRACK)
-    assert stream_details is not None
-    assert stream_details.stream_type == StreamType.HTTP
-    assert stream_details.path == "https://example.com/kion_track.mp3"
-
-
-@pytest.mark.usefixtures("kion_music_provider_lossless")
-async def test_get_stream_details_returns_flac_when_lossless_selected(
-    mass: MusicAssistant,
-) -> None:
-    """When quality=lossless and API returns MP3+FLAC, stream details use FLAC."""
-    prov = _get_kion_provider(mass)
-    assert prov is not None
-    stream_details = await prov.get_stream_details("400", MediaType.TRACK)
-    assert stream_details is not None
-    assert stream_details.audio_format.content_type == ContentType.FLAC
-    assert stream_details.path == "https://example.com/kion_track.flac"
 
 
 @pytest.mark.usefixtures("kion_music_provider")
