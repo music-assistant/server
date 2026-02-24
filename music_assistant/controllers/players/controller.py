@@ -2600,7 +2600,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and not player_was_synced
             and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
-            await self.cmd_stop(player_id)
+            # stop the player directly to avoid recursion:
+            await player.stop()
             # short sleep: allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
 
