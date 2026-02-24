@@ -6,10 +6,11 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.enums import (
     IdentifierType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.player import OutputProtocol
+from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
@@ -98,6 +99,31 @@ class MockPlayer(Player):
 
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Mock implementation of set_members."""
+        current_members = set(getattr(self, "_attr_group_members", []))
+
+        if player_ids_to_add:
+            current_members.update(player_ids_to_add)
+
+        if player_ids_to_remove:
+            current_members.difference_update(player_ids_to_remove)
+
+        # Always include self as first member if there are members
+        if current_members:
+            self._attr_group_members = [self.player_id] + [
+                pid for pid in current_members if pid != self.player_id
+            ]
+        else:
+            self._attr_group_members = []
+
+        # Clear cache to reflect changes
+        self._cache.clear()
 
 
 @pytest.fixture
@@ -1964,6 +1990,111 @@ class TestProtocolSwitchingDuringPlayback:
         assert selected_player == sonos_airplay
         assert output_protocol is not None
         assert output_protocol.output_protocol_id == "airplay_sonos"
+
+    async def test_no_restart_from_handle_set_members(self, mock_mass: MagicMock) -> None:
+        """Test that _handle_set_members does NOT restart playback.
+
+        Protocol switching and playback restarts are handled in _forward_protocol_set_members,
+        not in _handle_set_members. This test verifies that _handle_set_members doesn't
+        trigger any redundant playback restarts.
+        """
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        # Create Sonos player currently playing via AirPlay
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_playback_state = PlaybackState.PLAYING
+        sonos_player._attr_group_members = ["sonos_123", "sonos_456"]
+
+        # Create another Sonos player in the group (member of sonos_123's group)
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        sonos_player_b._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        # sonos_player_b's synced_to is derived from group_members, not a direct attribute
+
+        # Create AirPlay protocol player (was used for grouping)
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        sonos_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_sonos",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "sonos_123": Throttler(1, 0.05),
+            "sonos_456": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        # Update state and set active output protocol AFTER registering with controller
+        sonos_player.update_state(signal_event=False)
+        sonos_player_b.update_state(signal_event=False)
+        sonos_airplay.update_state(signal_event=False)
+
+        # Set active output protocol (must be done after controller is set up)
+        sonos_player.set_active_output_protocol("airplay_sonos")
+
+        # Track if cmd_resume was called
+        resume_called = False
+
+        async def mock_cmd_resume(
+            player_id: str,  # noqa: ARG001
+            source: str | None = None,  # noqa: ARG001
+            media: PlayerMedia | None = None,  # noqa: ARG001
+        ) -> None:
+            nonlocal resume_called
+            resume_called = True
+
+        controller.cmd_resume = mock_cmd_resume  # type: ignore[method-assign]
+
+        # Remove member - now only the parent player is left
+        # After removal, _select_best_output_protocol would return native
+        sonos_player._attr_group_members = ["sonos_123"]
+        sonos_player._cache.clear()
+
+        # Call _handle_set_members directly to trigger the protocol change check
+        await controller._handle_set_members(
+            sonos_player,
+            player_ids_to_add=None,
+            player_ids_to_remove=["sonos_456"],
+        )
+
+        # Playback should NOT have been restarted because we're going back to native
+        assert not resume_called, "cmd_resume should not be called when switching to native"
 
 
 class TestNativeProtocolPlayerGrouping:

@@ -2392,13 +2392,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             return
         # For regular players, handle protocol selection and translation
-        # Store playback state before changing members to detect protocol changes
-        was_playing = parent_player.playback_state in (
-            PlaybackState.PLAYING,
-            PlaybackState.PAUSED,
-        )
-        previous_protocol = parent_player.active_output_protocol if was_playing else None
-
         await self._handle_set_members_with_protocols(
             parent_player, final_player_ids_to_add, final_player_ids_to_remove
         )
@@ -2406,28 +2399,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if should_stop:
             # Stop playback on the player if it is being removed from itself
             await self._handle_cmd_stop(parent_player.player_id)
-            return
-
-        # Check if protocol changed due to member change and restart playback if needed
-        if not should_stop and was_playing:
-            # Determine which protocol would be used now with new members
-            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
-            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
-            previous_protocol_id = previous_protocol or "native"
-
-            # If protocol changed, restart playback
-            if new_protocol_id != previous_protocol_id:
-                self.logger.info(
-                    "Protocol changed from %s to %s due to member change, restarting playback",
-                    previous_protocol_id,
-                    new_protocol_id,
-                )
-                # Restart playback on the new protocol using resume
-                await self.cmd_resume(
-                    parent_player.player_id,
-                    parent_player.state.active_source,
-                    parent_player.state.current_media,
-                )
 
     async def _handle_set_members_with_protocols(
         self,
@@ -2753,8 +2724,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # Select best output protocol for playback
-        target_player, output_protocol = self._select_best_output_protocol(player)
+        # Determine output protocol to use:
+        # If player already has an active protocol set, prefer that.
+        # Otherwise, select best protocol based on current state.
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (target_player := self.get_player(player.active_output_protocol))
+        ):
+            # Use the already-set protocol directly
+            output_protocol = next(
+                (
+                    p
+                    for p in player.linked_output_protocols
+                    if p.output_protocol_id == player.active_output_protocol
+                ),
+                None,
+            )
+        else:
+            target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol
@@ -2891,7 +2879,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle command on player(protocol) directly
         await target_player.stop()
-        player.set_active_output_protocol(None)  # also clear active protocol if any
+        # Only clear active protocol if the protocol player has no remaining group members.
+        # If there are still protocol group members, keep the protocol active so that
+        # when playback resumes it continues on the same protocol.
+        if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
+            player.set_active_output_protocol(None)
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """
