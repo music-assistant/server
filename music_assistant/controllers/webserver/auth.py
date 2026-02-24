@@ -97,6 +97,8 @@ class AuthenticationManager:
 
         self._has_users = await self._has_non_system_users()
 
+        self._schedule_join_code_cleanup()
+
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
         )
@@ -1690,6 +1692,23 @@ class AuthenticationManager:
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
+
+    async def _cleanup_expired_join_codes(self) -> None:
+        """Delete expired join codes from the database."""
+        now = utc()
+        cursor = await self.database.execute(
+            "DELETE FROM join_codes WHERE expires_at < :now",
+            {"now": now.isoformat()},
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired join code(s)", count)
+
+    def _schedule_join_code_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes."""
+        self.mass.create_task(self._cleanup_expired_join_codes())
+        self.mass.loop.call_later(86400, self._schedule_join_code_cleanup)
 
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
