@@ -113,19 +113,10 @@ async def get_config_entries(
     """
     return (
         ConfigEntry(
-            key=CONF_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Enable Guest Access via QR Code",
-            description=(
-                "Enable shareable guest access URL and QR code. "
-                "When enabled, guests can scan the QR code to add songs to the queue."
-            ),
-        ),
-        ConfigEntry(
             key=CONF_PARTY_MODE_PLAYER,
             type=ConfigEntryType.STRING,
             default_value="",
+            required=True,
             label="Party Mode Player",
             description="Select which player/queue guests will add songs to.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
@@ -137,26 +128,14 @@ async def get_config_entries(
             ],
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_ALBUM_ART_BACKGROUND,
+            key=CONF_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Use Album Art as Background in Party Mode View",
+            label="Enable Guest Access via QR Code",
             description=(
-                "Display the currently playing track's album art as a blurred background "
-                "in the party mode guest interface."
+                "Enable shareable guest access URL and QR code. "
+                "When enabled, guests can scan the QR code to add songs to the queue."
             ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Show Player Controls in Party Mode View",
-            description=(
-                "Display playback controls (play/pause, skip, volume) in the party mode view. "
-                "When disabled, the view is frameless and only shows now playing info and search."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
             key=CONF_QR_SHOW_INSTRUCTION_TEXT,
@@ -175,6 +154,30 @@ async def get_config_entries(
             depends_on=CONF_QR_SHOW_INSTRUCTION_TEXT,
         ),
         ConfigEntry(
+            key=CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Show Player Controls in Party Mode View",
+            description=(
+                "Display playback controls (play/pause, skip, volume) in the party mode view. "
+                "When disabled, the view is frameless and only shows now playing info and search."
+            ),
+            advanced=True,
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_MODE_ALBUM_ART_BACKGROUND,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Use Album Art as Background in Party Mode View",
+            description=(
+                "Display the currently playing track's album art as a blurred background "
+                "in the party mode guest interface."
+            ),
+            advanced=True,
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
             key=CONF_ENABLE_RATE_LIMITING,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
@@ -184,7 +187,8 @@ async def get_config_entries(
                 "When disabled, guests have unlimited uses (subject to feature toggles below)."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         # Add to Queue feature
         ConfigEntry(
@@ -197,7 +201,8 @@ async def get_config_entries(
                 "When disabled, guests cannot add songs to the queue at all."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_ADD_QUEUE_LIMIT,
@@ -210,7 +215,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(5, 50),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_ADD_QUEUE_REFILL_MINUTES,
@@ -223,7 +229,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(1, 30),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         # Boost feature (priority queue jumping)
         ConfigEntry(
@@ -236,7 +243,8 @@ async def get_config_entries(
                 "When disabled, guests can only add songs to the end of the queue."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_BOOST_LIMIT,
@@ -249,7 +257,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_BOOST,
             range=(1, 10),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_BOOST_REFILL_MINUTES,
@@ -262,7 +271,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_BOOST,
             range=(5, 120),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         # Skip Song feature
         ConfigEntry(
@@ -275,7 +285,8 @@ async def get_config_entries(
                 "When disabled, guests cannot skip songs at all."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_SKIP_SONG_LIMIT,
@@ -288,7 +299,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(1, 5),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES,
@@ -301,7 +313,8 @@ async def get_config_entries(
             ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(15, 180),
-            category="advanced",
+            advanced=True,
+            category="Guest Features",
         ),
         # Badge color configuration
         ConfigEntry(
@@ -312,7 +325,7 @@ async def get_config_entries(
             description="Color for the 'Request' badge shown on guest-added queue items.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_BOOST_BADGE_COLOR,
@@ -322,7 +335,7 @@ async def get_config_entries(
             description="Color for the 'Boost' badge shown on priority guest requests.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
-            category="advanced",
+            advanced=True,
         ),
     )
 
