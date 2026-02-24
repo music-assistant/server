@@ -1068,8 +1068,16 @@ class YandexMusicProvider(MusicProvider):
                 if track is None:
                     continue
                 # Override station_id in composite item_id to reflect this specific station
-                track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+                old_item_id = track.item_id
+                track_id = old_item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
                 track.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{station_id}"
+                # Keep provider mappings in sync with the new item_id
+                for pm in getattr(track, "provider_mappings", []):
+                    if (
+                        getattr(pm, "item_id", None) == old_item_id
+                        and getattr(pm, "provider_instance", None) == self.instance_id
+                    ):
+                        pm.item_id = track.item_id
                 if first_track_id is None:
                     first_track_id = track_id
                 tracks.append(track)
@@ -2390,10 +2398,11 @@ class YandexMusicProvider(MusicProvider):
             # _ensure_dont_stop_the_music is now called unconditionally above.
 
     def _ensure_dont_stop_the_music(self, prov_item_id: str) -> None:
-        """Enable 'Don't stop the music' on any queue currently playing this radio item.
+        """Enable 'Don't stop the music' on queues playing this specific radio item.
 
         Iterates all queues and enables the setting on queues whose current track
-        matches our provider and has a radio composite item_id (track_id@station_id).
+        mapping matches this exact composite item_id (track_id@station_id) for this
+        provider instance.
 
         Also sets queue.radio_source directly to the current track because
         enqueued_media_items is empty for BrowseFolder-initiated playback, which
@@ -2405,11 +2414,11 @@ class YandexMusicProvider(MusicProvider):
             if current is None or current.media_item is None:
                 continue
             item = current.media_item
-            # Match by provider + composite item_id (contains RADIO_TRACK_ID_SEP)
+            # Match by provider instance and exact composite item_id
             for mapping in getattr(item, "provider_mappings", []):
                 if (
                     mapping.provider_instance == self.instance_id
-                    and RADIO_TRACK_ID_SEP in mapping.item_id
+                    and mapping.item_id == prov_item_id
                 ):
                     # Set radio_source directly so MA's fill mechanism works even when
                     # the queue was started from a BrowseFolder (enqueued_media_items empty).
