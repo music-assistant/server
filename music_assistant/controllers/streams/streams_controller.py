@@ -532,6 +532,7 @@ class StreamsController(CoreController):
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback!
             audio_input = self.get_queue_item_stream_with_smartfade(
+                player=player,
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 smart_fades_mode=smart_fades_mode,
@@ -1590,6 +1591,7 @@ class StreamsController(CoreController):
     @use_buffer(buffer_size=30, min_buffer_before_yield=2)
     async def get_queue_item_stream_with_smartfade(
         self,
+        player: Player,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
@@ -1791,10 +1793,8 @@ class StreamsController(CoreController):
             queue.index_in_buffer = self.mass.player_queues.index_by_id(
                 queue.queue_id, next_queue_item.queue_item_id
             )
-            queue_player = self.mass.players.get_player(queue.queue_id)
-            assert queue_player is not None
             next_queue_item_pcm_format = await self._select_pcm_format(
-                player=queue_player,
+                player=player,
                 streamdetails=next_queue_item.streamdetails,
                 smartfades_enabled=True,
             )

@@ -115,16 +115,19 @@ class SyncGroupPlayer(Player):
             return set(self._attr_static_group_members)
         # if we already have a sync leader, we use its can_group_with as reference
         if self.sync_leader:
-            return {self.sync_leader.player_id, *self.sync_leader.state.can_group_with}
+            return {
+                self.sync_leader.player_id,
+                *self.sync_leader.state.can_group_with,
+            }
         # If we have no syncleader, but we do have group members
         # grab 'can_group_with' from the first available member
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
-                return {*self._attr_group_members, *member_player.state.can_group_with}
-        # Dynamic groups can potentially group with any compatible players
+                return {member_player.player_id, *member_player.state.can_group_with}
+        # Empty dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
-        temp_can_group_with = set()
+        can_group_with: set[str] = set()
         for player in self.mass.players.all_players(return_unavailable=False):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
@@ -134,8 +137,20 @@ class SyncGroupPlayer(Player):
                 and player.state.can_group_with
                 and not player.state.active_group
             ):
-                temp_can_group_with.add(player.player_id)
-        return temp_can_group_with
+                can_group_with.add(player.player_id)
+        return can_group_with
+
+    @property
+    def group_members(self) -> list[str]:
+        """Return the list of player id's that are part of this sync group."""
+        if (sync_leader := self.sync_leader) and sync_leader.state.group_members:
+            # prefer the group members as reported by the sync leader,
+            # since that is the source of truth for the actual active group members
+            # as the user may have decided to (temporarily) join/unjoin some members
+            # to/from the group, which would cause our internal list to be out of
+            # sync with the actual group members
+            return sync_leader.state.group_members
+        return self._attr_group_members
 
     async def get_config_entries(
         self,
@@ -188,7 +203,7 @@ class SyncGroupPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        await self.mass.players.cmd_resume(
+        await self.mass.players._handle_cmd_resume(
             self.player_id, self._attr_active_source, self._attr_current_media
         )
 
@@ -225,29 +240,12 @@ class SyncGroupPlayer(Player):
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
-        prev_leader = self.sync_leader
+        sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
-        needs_restart = False
-        if prev_leader and prev_leader.player_id in (player_ids_to_remove or []):
-            # We're removing the current sync leader while the group is active
-            # We need to select a new leader before we can handle the member changes
-            self.logger.info(
-                "Removing current sync leader %s from group %s while it is active, "
-                "dissolving the current syncgroup and will re-form it with a new leader",
-                prev_leader.display_name,
-                self.display_name,
-            )
-            if was_playing:
-                await self.mass.players._handle_cmd_stop(prev_leader.player_id)
-                await asyncio.sleep(1)
-            await self._dissolve_syncgroup()
-            await asyncio.sleep(2)
-            needs_restart = was_playing
 
-        cur_leader = self._select_sync_leader(new_members=player_ids_to_add)
         # handle additions
         final_players_to_add: list[str] = []
-        can_group_with = cur_leader.state.can_group_with.copy() if cur_leader else set()
+        can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
         for member_id in player_ids_to_add or []:
             if member_id == self.player_id:
                 continue  # can not add self as member
@@ -256,21 +254,25 @@ class SyncGroupPlayer(Player):
                 continue
             if member_id not in self._attr_group_members:
                 self._attr_group_members.append(member_id)
-            if not cur_leader:
+            if not sync_leader:
                 continue
-            if member_id != cur_leader.player_id and member_id not in can_group_with:
+            if member_id != sync_leader.player_id and member_id not in can_group_with:
                 self.logger.debug(
                     f"Cannot add {member.display_name} to group {self.display_name} since it's "
-                    f"not compatible with the current sync leader"
+                    f"not compatible with the (current) sync leader"
                 )
                 continue
-            if member_id != cur_leader.player_id:
+            if member_id != sync_leader.player_id:
                 final_players_to_add.append(member_id)
 
         # handle removals
         final_players_to_remove: list[str] = []
+        leader_removed = False
         for member_id in player_ids_to_remove or []:
             if member_id not in self._attr_group_members:
+                continue
+            if self.sync_leader and member_id == self.sync_leader.player_id:
+                leader_removed = True
                 continue
             if member_id == self.player_id:
                 raise UnsupportedFeaturedException(
@@ -278,23 +280,53 @@ class SyncGroupPlayer(Player):
                 )
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)
-        self.update_state()
-        if needs_restart:
-            await self.play()
-            return
-        if not was_playing or not cur_leader:
-            # Don't need to do anything else if the group is not active
-            # The syncing will be done once playback starts
-            return
-        await self.mass.players.cmd_set_members(
-            cur_leader.player_id,
-            player_ids_to_add=final_players_to_add,
-            player_ids_to_remove=final_players_to_remove,
-        )
+
+        if self.sync_leader and leader_removed and self._attr_group_members:
+            # we removed the current sync leader, but we still have members in the group
+            # we need to select a new leader and re-form the syncgroup with it
+            self.logger.info(
+                "Removing current sync leader %s from group %s while it is active, "
+                "dissolving the current syncgroup and will re-form it with a new leader",
+                self.sync_leader.display_name,
+                self.display_name,
+            )
+            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
+            await asyncio.sleep(1)
+            await self._dissolve_syncgroup()
+            if was_playing:
+                await asyncio.sleep(2)
+                await self.play()
+        elif self.sync_leader and (leader_removed or not self._attr_group_members):
+            # we removed the current sync leader, and we have no members left in the group
+            # or we just removed the last member from the group, so we dissolve the syncgroup
+            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
+            await asyncio.sleep(1)
+            await self._dissolve_syncgroup()
+
+        elif self.sync_leader:
+            # just a regular member(s) added/removed action,
+            # we can simply update the syncgroup members on the sync leader
+            await self.mass.players.cmd_set_members(
+                self.sync_leader.player_id,
+                player_ids_to_add=final_players_to_add,
+                player_ids_to_remove=final_players_to_remove,
+            )
+        else:
+            # If we weren't playing before, we don't need to do anything else,
+            # since the syncing will be done once playback starts
+            self.update_state()
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
+        # always ensure static members are part of the group members,
+        # even if they were (temporarily) removed by un unjoin
+        self._attr_group_members = [
+            *self._attr_static_group_members,
+            *[x for x in self._attr_group_members if x not in self._attr_static_group_members],
+        ]
+
+        # select new sync leader if needed
         if not self.sync_leader:
             self.sync_leader = self._select_sync_leader()
 
@@ -337,7 +369,8 @@ class SyncGroupPlayer(Player):
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
-        group_members = self.group_members or new_members or []
+        # with selecting a new leader, we prioritize the static group members
+        group_members = self.static_group_members or self.group_members or new_members or []
         for member_id in group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:

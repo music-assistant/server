@@ -135,7 +135,30 @@ class SmartFade(ABC):
 
         try:
             # Execute the enhanced smart fade with full buffer
-            _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
+            returncode, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
+
+            expected_min_output = (
+                len(fade_out_part) + len(fade_in_part) - int(pcm_format.pcm_sample_size * 10)
+            )  # rough minimum: both inputs minus ~10s overlap
+            self.logger.debug(
+                "FFmpeg smartfade result: returncode=%d%s, "
+                "output=%.2fs (%d bytes), fadeout_input=%.2fs, fadein_input=%.2fs%s, "
+                "stderr=%s",
+                returncode,
+                " *** NONZERO - crossfade likely FAILED or produced partial output!"
+                if returncode != 0
+                else "",
+                len(raw_crossfade_output) / pcm_format.pcm_sample_size
+                if raw_crossfade_output
+                else 0,
+                len(raw_crossfade_output) if raw_crossfade_output else 0,
+                len(fade_out_part) / pcm_format.pcm_sample_size,
+                len(fade_in_part) / pcm_format.pcm_sample_size,
+                f" *** OUTPUT SUSPICIOUSLY SMALL (expected >={expected_min_output} bytes)"
+                if raw_crossfade_output and len(raw_crossfade_output) < expected_min_output
+                else "",
+                stderr.decode().strip() if stderr else "(empty)",
+            )
 
             if raw_crossfade_output:
                 return raw_crossfade_output
@@ -221,6 +244,24 @@ class SmartCrossFade(SmartFade):
             )
 
         # Check if we would have enough audio after beat alignment for the crossfade
+        if fadein_start_pos:
+            required = fadein_start_pos + crossfade_duration
+            self.logger.debug(
+                "Trim validation: fadein_start=%.2fs + xfade=%.2fs"
+                " = %.2fs needed. Checked against constant=%ds"
+                " (pass=%s). NOTE: if actual fade_in buffer is"
+                " shorter than %ds after silence stripping,"
+                " FFmpeg acrossfade WILL fail (only %.2fs would"
+                " remain, need %.2fs)",
+                fadein_start_pos,
+                crossfade_duration,
+                required,
+                SMART_CROSSFADE_DURATION,
+                required <= SMART_CROSSFADE_DURATION,
+                SMART_CROSSFADE_DURATION,
+                SMART_CROSSFADE_DURATION - required,
+                crossfade_duration,
+            )
         if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
             self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
         else:

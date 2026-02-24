@@ -782,7 +782,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
-            await self.cmd_volume_mute(protocol_player.player_id, muted)
+            await protocol_player.volume_mute(muted)
             return
 
     @api_command("players/cmd/play_announcement")
@@ -1029,9 +1029,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
-        # handle edge case: player already synced to another player
-        # automatically ungroup it first and wait for state to propagate
-        await self._auto_ungroup_if_synced(parent_player, "setting members")
+        if parent_player.synced_to:
+            # handle edge case: target player is already synced itself to another player
+            # automatically ungroup it first and wait for state to propagate
+            await self._auto_ungroup_if_synced(parent_player, "setting members")
 
         lock_key = f"set_members_{target_player}"
         if lock_key not in self._player_command_locks:
@@ -1097,7 +1098,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         if player.state.group_members:
-            # player is a sync leader, so we ungroup all members from it
+            # player is a sync leader (or syncgroup), so we ungroup all members from it
             await self.cmd_set_members(
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
@@ -2217,8 +2218,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             protocol_player.provider.domain,
         )
 
-        # Clear active output protocol
-        player.set_active_output_protocol(None)
+        # Set active output protocol to native
+        player.set_active_output_protocol("native")
 
         # Ungroup the protocol player (async task)
         self.mass.create_task(protocol_player.ungroup())
@@ -2391,13 +2392,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             return
         # For regular players, handle protocol selection and translation
-        # Store playback state before changing members to detect protocol changes
-        was_playing = parent_player.playback_state in (
-            PlaybackState.PLAYING,
-            PlaybackState.PAUSED,
-        )
-        previous_protocol = parent_player.active_output_protocol if was_playing else None
-
         await self._handle_set_members_with_protocols(
             parent_player, final_player_ids_to_add, final_player_ids_to_remove
         )
@@ -2405,28 +2399,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if should_stop:
             # Stop playback on the player if it is being removed from itself
             await self._handle_cmd_stop(parent_player.player_id)
-            return
-
-        # Check if protocol changed due to member change and restart playback if needed
-        if not should_stop and was_playing:
-            # Determine which protocol would be used now with new members
-            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
-            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
-            previous_protocol_id = previous_protocol or "native"
-
-            # If protocol changed, restart playback
-            if new_protocol_id != previous_protocol_id:
-                self.logger.info(
-                    "Protocol changed from %s to %s due to member change, restarting playback",
-                    previous_protocol_id,
-                    new_protocol_id,
-                )
-                # Restart playback on the new protocol using resume
-                await self.cmd_resume(
-                    parent_player.player_id,
-                    parent_player.state.active_source,
-                    parent_player.state.current_media,
-                )
 
     async def _handle_set_members_with_protocols(
         self,
@@ -2553,6 +2525,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
             and active_source
             and active_source.can_play_pause
+            and PlayerFeature.PAUSE in player.state.supported_features
         ):
             # player has some other source active and native resume support
             await player.play()
@@ -2564,8 +2537,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # try to re-play the current media item
             await player.play_media(media)
             return
-        # fallback: just send play command - which will fail if nothing can be played
-        await player.play()
+        # fallback: just try to resume queue playback
+        await self.mass.player_queues.resume(player.player_id)
 
     async def _handle_cmd_power(self, player_id: str, powered: bool) -> None:
         """
@@ -2587,12 +2560,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return  # nothing to do
 
         # ungroup player at power off
-        player_was_synced = bool(player.state.synced_to or player.group_members)
-        if player.type == PlayerType.PLAYER and not powered:
+        player_was_synced = bool(
+            player.state.synced_to or player.group_members or player.state.active_group
+        )
+        if player_was_synced and player.type == PlayerType.PLAYER and not powered:
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
-            player.set_active_output_protocol(None)  # also clear active protocol if any
 
         # always stop player at power off
         if (
@@ -2600,7 +2574,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and not player_was_synced
             and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
-            await self.cmd_stop(player_id)
+            await self._handle_cmd_stop(player_id)
             # short sleep: allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
 
@@ -2750,8 +2724,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # Select best output protocol for playback
-        target_player, output_protocol = self._select_best_output_protocol(player)
+        # Determine output protocol to use:
+        # If player already has an active protocol set, prefer that.
+        # Otherwise, select best protocol based on current state.
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (target_player := self.get_player(player.active_output_protocol))
+        ):
+            # Use the already-set protocol directly
+            output_protocol = next(
+                (
+                    p
+                    for p in player.linked_output_protocols
+                    if p.output_protocol_id == player.active_output_protocol
+                ),
+                None,
+            )
+        else:
+            target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
             # Playing via linked protocol - update active output protocol
@@ -2760,7 +2751,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
                 player.state.name,
-                output_protocol.output_protocol_id,
+                output_protocol.name,
                 target_player.display_name,
                 target_player.state.group_members,
             )
@@ -2882,11 +2873,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if PlayerFeature.POWER in target_player.supported_features:
                 # if protocol player supports/requires power,
                 # we power it off instead of just stopping (which also stops playback)
+                # this is rare as most protocols do not support power control (except for cast)
                 await self._handle_cmd_power(target_player.player_id, False)
                 return
 
         # handle command on player(protocol) directly
         await target_player.stop()
+        # Only clear active protocol if the protocol player has no remaining group members.
+        # If there are still protocol group members, keep the protocol active so that
+        # when playback resumes it continues on the same protocol.
+        if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
+            player.set_active_output_protocol(None)
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """
