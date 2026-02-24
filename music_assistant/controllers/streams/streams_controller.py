@@ -1793,8 +1793,18 @@ class StreamsController(CoreController):
             )
             queue_player = self.mass.players.get_player(queue.queue_id)
             assert queue_player is not None
+            # Resolve to protocol player which has CONF_SAMPLE_RATES registered;
+            # the queue player (universal) is just a wrapper and does not carry that config entry.
+            pcm_player = queue_player
+            if (
+                queue_player.active_output_protocol
+                and queue_player.active_output_protocol != "native"
+            ):
+                _proto = self.mass.players.get_player(queue_player.active_output_protocol)
+                if _proto is not None:
+                    pcm_player = _proto
             next_queue_item_pcm_format = await self._select_pcm_format(
-                player=queue_player,
+                player=pcm_player,
                 streamdetails=next_queue_item.streamdetails,
                 smartfades_enabled=True,
             )
