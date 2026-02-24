@@ -108,7 +108,9 @@ class WiimPlayer(Player):
                     await player.wiim_player.refresh()
 
                     player._attr_device_info = DeviceInfo(
-                        model=player.wiim_player.model if player.wiim_player.model else "",
+                        model=player.wiim_player.model_name
+                        if player.wiim_player.model_name
+                        else "",
                         software_version=player.wiim_player.firmware
                         if player.wiim_player.firmware
                         else "",
