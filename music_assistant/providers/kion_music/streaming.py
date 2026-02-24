@@ -368,7 +368,12 @@ class KionMusicStreamingManager:
         """
         encrypted_url: str = streamdetails.data["encrypted_url"]
         key_hex: str = streamdetails.data["decryption_key"]
-        key_bytes = bytes.fromhex(key_hex)
+        try:
+            key_bytes = bytes.fromhex(key_hex)
+        except ValueError as exc:
+            raise MediaNotFoundError(
+                f"Invalid AES decryption key format (expected hex string): {exc}"
+            ) from exc
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
@@ -378,7 +383,7 @@ class KionMusicStreamingManager:
 
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                await asyncio.sleep(min(2**attempt, 8))  # 2s, 4s, 8s
+                await asyncio.sleep(min(2**attempt, 8))  # backoff: 2s, 4s, 8s for attempts 1-3
 
             # Align resume position to AES-CTR block boundary
             block_start = (bytes_yielded // block_size) * block_size
