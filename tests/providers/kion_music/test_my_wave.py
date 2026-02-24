@@ -1,4 +1,4 @@
-"""Tests for My Mix (Мой Микс) browse and rotor feedback helpers."""
+"""Tests for My Mix (Мой микс) browse and rotor feedback helpers."""
 
 from __future__ import annotations
 

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
-from .constants import DEFAULT_BASE_URL, DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
+from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Kion API moved to these formats around 2025)
@@ -56,7 +56,7 @@ class KionMusicClient:
         :param base_url: Optional API base URL (defaults to KION Music API).
         """
         self._token = token
-        self._base_url = base_url or DEFAULT_BASE_URL
+        self._base_url = base_url
         self._client: ClientAsync | None = None
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately

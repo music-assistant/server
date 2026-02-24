@@ -41,25 +41,25 @@ def _load_json(path: pathlib.Path) -> dict[str, Any]:
 
 
 def _artist_from_fixture(path: pathlib.Path) -> YandexArtist | None:
-    """Deserialize KION Artist from fixture JSON."""
+    """Deserialize Kion Artist from fixture JSON."""
     data = _load_json(path)
     return YandexArtist.de_json(data, DE_JSON_CLIENT)
 
 
 def _album_from_fixture(path: pathlib.Path) -> YandexAlbum | None:
-    """Deserialize KION Album from fixture JSON."""
+    """Deserialize Kion Album from fixture JSON."""
     data = _load_json(path)
     return YandexAlbum.de_json(data, DE_JSON_CLIENT)
 
 
 def _track_from_fixture(path: pathlib.Path) -> YandexTrack | None:
-    """Deserialize KION Track from fixture JSON."""
+    """Deserialize Kion Track from fixture JSON."""
     data = _load_json(path)
     return YandexTrack.de_json(data, DE_JSON_CLIENT)
 
 
 def _playlist_from_fixture(path: pathlib.Path) -> YandexPlaylist | None:
-    """Deserialize KION Playlist from fixture JSON."""
+    """Deserialize Kion Playlist from fixture JSON."""
     data = _load_json(path)
     return YandexPlaylist.de_json(data, DE_JSON_CLIENT)
 
@@ -78,7 +78,7 @@ def test_parse_artist(example: pathlib.Path, provider_stub: ProviderStub) -> Non
     assert result.provider == provider_stub.instance_id
     assert len(result.provider_mappings) == 1
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/artist/{artist_obj.id}" in (mapping.url or "")
+    assert f"music.kion.ru/artist/{artist_obj.id}" in (mapping.url or "")
 
 
 def test_parse_artist_with_cover(provider_stub: ProviderStub) -> None:
@@ -92,7 +92,7 @@ def test_parse_artist_with_cover(provider_stub: ProviderStub) -> None:
     if artist_obj.cover and artist_obj.cover.uri:
         assert result.metadata.images is not None
         assert len(result.metadata.images) == 1
-        assert "avatars.yandex.net" in (result.metadata.images[0].path or "")
+        assert "avatars.kion.net" in (result.metadata.images[0].path or "")
 
 
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: val.stem)
@@ -105,7 +105,7 @@ def test_parse_album(example: pathlib.Path, provider_stub: ProviderStub) -> None
     assert result.name
     assert result.provider == provider_stub.instance_id
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/album/{album_obj.id}" in (mapping.url or "")
+    assert f"music.kion.ru/album/{album_obj.id}" in (mapping.url or "")
     if album_obj.year:
         assert result.year == album_obj.year
 
@@ -120,7 +120,7 @@ def test_parse_track(example: pathlib.Path, provider_stub: ProviderStub) -> None
     assert result.name
     assert result.duration == (track_obj.duration_ms or 0) // 1000
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/track/{track_obj.id}" in (mapping.url or "")
+    assert f"music.kion.ru/track/{track_obj.id}" in (mapping.url or "")
 
 
 def test_parse_track_with_artist_and_album(provider_stub: ProviderStub) -> None:
@@ -152,7 +152,7 @@ def test_parse_playlist(example: pathlib.Path, provider_stub: ProviderStub) -> N
     assert result.item_id == f"{owner_id}:{kind}"
     assert result.name == (playlist_obj.title or "Unknown Playlist")
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/users/{owner_id}/playlists/{kind}" in (mapping.url or "")
+    assert f"music.kion.ru/users/{owner_id}/playlists/{kind}" in (mapping.url or "")
 
 
 def test_parse_playlist_editable(provider_stub: ProviderStub) -> None:
