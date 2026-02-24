@@ -1558,6 +1558,10 @@ class AuthenticationManager:
         :param provider_name: Optional provider name identifier (e.g., "party_mode").
         :return: Tuple of (code, expires_at datetime).
         """
+        if expires_in_hours <= 0:
+            raise ValueError("expires_in_hours must be positive")
+        if max_uses < 0:
+            raise ValueError("max_uses must be non-negative (0 = unlimited)")
         user = await self.get_user(user_id)
         if not user:
             raise ValueError(f"User not found: {user_id}")
