@@ -230,6 +230,7 @@ class SendspinAirPlayBridge:
         self._writer_task: asyncio.Task[None] | None = None
         self._protocol_start_task: asyncio.Task[None] | None = None
         self._protocol_ready = asyncio.Event()
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -316,13 +317,16 @@ class SendspinAirPlayBridge:
 
         Called when Sendspin wants to play audio to this bridge player.
         aiosendspin handles role lifecycle (on_connect, push stream join).
-        We just need to reset local streaming state.
+        We clean up any previous stream state before starting a new one.
         """
         self.logger.debug(
             "Sendspin stream start request for %s (reason=%s)",
             self.airplay_player.display_name,
             request.connection_reason,
         )
+        # Schedule cleanup of any previous stream (kills old CLI process).
+        if self._protocol or self._writer_task or self._protocol_start_task:
+            self._schedule_cleanup()
         self._is_streaming = True
         self._next_expected_timestamp_us = None
 
@@ -332,8 +336,9 @@ class SendspinAirPlayBridge:
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
         """
-        if self._writer_task is not None:
-            return
+        # Cancel any existing writer task (leftover from previous stream)
+        if self._writer_task is not None and not self._writer_task.done():
+            self._writer_task.cancel()
         self._next_expected_timestamp_us = None
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
@@ -391,10 +396,27 @@ class SendspinAirPlayBridge:
             await self._protocol.send_cli_command(f"VOLUME={volume}")
 
     def _on_bridge_stream_end(self) -> None:
-        """Signal the writer task that the stream has ended."""
+        """Stop the AirPlay protocol immediately when the stream ends.
+
+        Rather than just sending EOF (which lets the CLI play out its buffer),
+        we schedule a full cleanup that kills the CLI process immediately.
+        """
         self._is_streaming = False
         self._next_expected_timestamp_us = None
-        self._write_queue.put_nowait(None)
+        # Schedule full streaming cleanup - this kills the CLI process immediately
+        # so AirPlay stops playing instead of draining its 30s buffer.
+        self._schedule_cleanup()
+
+    def _schedule_cleanup(self) -> None:
+        """Ensure a single in-flight cleanup task runs under the bridge lock."""
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
+        self._cleanup_task = self.mass.create_task(self._stop_streaming_locked())
+
+    async def _stop_streaming_locked(self) -> None:
+        """Serialize streaming teardown with other stop/start operations."""
+        async with self._lock:
+            await self._stop_streaming()
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""
@@ -424,23 +446,44 @@ class SendspinAirPlayBridge:
     async def _cli_writer(self) -> None:
         """Write queued audio data to the CLI process stdin.
 
-        Waits for the protocol to be ready before writing. Runs as a single
-        task so writes are serialised and ordered. A None sentinel signals
-        end-of-stream: write EOF to stdin and exit.
+        Waits for any pending cleanup and then for the new protocol to be
+        ready before writing. Runs as a single task so writes are serialised
+        and ordered. A None sentinel signals end-of-stream: write EOF to
+        stdin and exit.
         """
-        await self._protocol_ready.wait()
-        while True:
-            data = await self._write_queue.get()
-            if not self._protocol:
-                if data is None:
-                    return
-                continue
-            if data is None:
+        try:
+            # Wait for any pending cleanup from a previous stream to complete
+            # so we don't write to a stale/dead protocol.
+            cleanup_task = self._cleanup_task
+            if cleanup_task and not cleanup_task.done():
                 with suppress(Exception):
-                    await self._protocol.write_audio_eof()
+                    await cleanup_task
+                if self._cleanup_task is cleanup_task:
+                    self._cleanup_task = None
+            try:
+                await asyncio.wait_for(self._protocol_ready.wait(), timeout=30.0)
+            except TimeoutError:
+                self.logger.warning(
+                    "Timed out waiting for AirPlay protocol to become ready for %s",
+                    self.airplay_player.display_name,
+                )
                 return
-            with suppress(Exception):
-                await self._protocol.write_audio(data)
+            while True:
+                data = await self._write_queue.get()
+                if not self._protocol:
+                    if data is None:
+                        return
+                    continue
+                if data is None:
+                    with suppress(Exception):
+                        await self._protocol.write_audio_eof()
+                    return
+                with suppress(Exception):
+                    await self._protocol.write_audio(data)
+        finally:
+            # Only clear if this writer is still the active one.
+            if self._writer_task is asyncio.current_task():
+                self._writer_task = None
 
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
@@ -449,12 +492,12 @@ class SendspinAirPlayBridge:
         self._protocol_ready.clear()
         if self._protocol_start_task:
             self._protocol_start_task.cancel()
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 await self._protocol_start_task
             self._protocol_start_task = None
         if self._writer_task:
             self._writer_task.cancel()
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 await self._writer_task
             self._writer_task = None
         while not self._write_queue.empty():
