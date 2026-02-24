@@ -22,6 +22,7 @@ body {
 }
 
 body {
+  position: relative;
   margin: 0;
   font-family: "Roboto", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
   background:
@@ -29,6 +30,40 @@ body {
     var(--ma-bg);
   color: var(--ma-text);
   padding: 16px;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.88;
+  mix-blend-mode: screen;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      transparent 0 116px,
+      rgb(3 169 244 / 16%) 116px 118px,
+      transparent 118px 232px
+    ),
+    radial-gradient(circle at 18px 22px, rgb(3 169 244 / 28%) 0 1.5px, transparent 2.2px),
+    radial-gradient(circle at 18px 42px, rgb(3 169 244 / 20%) 0 1.4px, transparent 2.1px),
+    radial-gradient(circle at 18px 62px, rgb(3 169 244 / 24%) 0 1.2px, transparent 2px),
+    radial-gradient(circle at 18px 82px, rgb(3 169 244 / 18%) 0 1.3px, transparent 2px);
+  background-size:
+    232px 100%,
+    232px 104px,
+    232px 104px,
+    232px 104px,
+    232px 104px;
+  background-position:
+    0 0,
+    0 0,
+    0 0,
+    0 0,
+    0 0;
 }
 
 h1,
@@ -73,8 +108,23 @@ a:hover {
   padding: 10px 12px;
   border: 1px solid var(--ma-border);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--ma-surface) 90%, black 10%);
+  background: color-mix(in oklab, var(--ma-surface) 78%, transparent 22%);
   backdrop-filter: blur(6px);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid color-mix(in oklab, var(--ma-primary) 35%, transparent);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 5%) inset;
 }
 
 .topbar h1 {
@@ -154,7 +204,9 @@ textarea:focus-visible {
 }
 
 .panel {
-  background: color-mix(in oklab, var(--ma-surface) 92%, black 8%);
+  position: relative;
+  z-index: 1;
+  background: color-mix(in oklab, var(--ma-surface) 70%, transparent 30%);
   border: 1px solid var(--ma-border);
   border-radius: 12px;
   padding: 14px;
@@ -306,6 +358,39 @@ textarea:focus-visible {
 
 .guide-list li {
   margin: 5px 0;
+}
+
+.api-docs pre {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  overflow: auto;
+}
+
+.api-docs code {
+  font-family: "JetBrains Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ma-border);
+  background: color-mix(in oklab, var(--ma-surface-soft) 92%, black 8%);
+  color: var(--ma-text);
+  text-decoration: none;
+  font-size: 0.92rem;
+}
+
+.btn-link:hover {
+  border-color: var(--ma-border-strong);
+  background: color-mix(in oklab, var(--ma-surface-soft) 84%, white 4%);
 }
 
 .field-help {

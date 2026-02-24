@@ -4,11 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Radio Control</title>
+  <link rel="icon" type="image/png" href="./air.png">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <header class="topbar">
-    <h1>AI Radio</h1>
+    <div class="brand">
+      <img src="./air.png" alt="AI Radio" class="brand-logo">
+      <h1>AI Radio</h1>
+    </div>
     <nav>
       <button id="nav_control" class="nav-btn active" type="button">
         <i data-lucide="play-circle" class="lucide" aria-hidden="true"></i>
@@ -21,6 +25,14 @@
       <button id="nav_sections" class="nav-btn" type="button">
         <i data-lucide="list" class="lucide" aria-hidden="true"></i>
         <span class="btn-label">Sections</span>
+      </button>
+      <button id="nav_api_docs" class="nav-btn" type="button">
+        <i data-lucide="book-open" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">API Docs</span>
+      </button>
+      <button id="nav_about" class="nav-btn" type="button">
+        <i data-lucide="badge-info" class="lucide" aria-hidden="true"></i>
+        <span class="btn-label">About</span>
       </button>
       <button id="tour_replay" type="button">
         <i data-lucide="info" class="lucide" aria-hidden="true"></i>
@@ -63,6 +75,25 @@
           <button id="login_submit" type="button">Login</button>
         </div>
       </details>
+    </div>
+  </section>
+
+  <section id="about_view" class="panel hidden">
+    <h2>About AI Radio</h2>
+    <p>
+      AI Radio transforms a source playlist into a radio-style show by planning section flow,
+      generating host text with LLM, synthesizing speech with TTS, and stitching results into
+      playlist or live queue runs.
+    </p>
+    <ul class="guide-list">
+      <li><strong>Playlist mode</strong>: creates a generated playlist with inserted AI segments.</li>
+      <li><strong>Dynamic mode</strong>: keeps generating/injecting batches during playback.</li>
+      <li><strong>Sections</strong>: reusable prompt modules shared across stations.</li>
+      <li><strong>Flow rules</strong>: MUST / ALTERNATIVE / OPTIONAL determine section ordering.</li>
+    </ul>
+    <div class="row">
+      <a class="btn-link" href="./docs.html" target="_blank" rel="noopener">Open API Docs</a>
+      <a class="btn-link" href="/api-docs/commands" target="_blank" rel="noopener">Open Global Commands</a>
     </div>
   </section>
 
@@ -162,6 +193,27 @@
       </thead>
       <tbody id="sessions_body"></tbody>
     </table>
+
+    <details class="guide api-docs">
+      <summary>AI Radio API Documentation</summary>
+      <p>
+        AI Radio command docs are available in a dedicated page:
+        <a href="./docs.html" target="_blank" rel="noopener">Open AI Radio API Docs</a>.
+      </p>
+      <p>
+        This documentation is based on the same backend source as MA global docs:
+        <a href="/api-docs" target="_blank" rel="noopener">/api-docs</a> and
+        <a href="/api-docs/commands" target="_blank" rel="noopener">/api-docs/commands</a>,
+        but filtered to <code>ai_radio/*</code> commands.
+      </p>
+      <h3>Quick Integration Flow</h3>
+      <ol class="guide-list">
+        <li>Load stations/sections: <code>ai_radio/stations/list</code>, <code>ai_radio/sections/list</code>.</li>
+        <li>Start a run: <code>ai_radio/start</code> with <code>mode: "playlist"</code> or <code>"dynamic"</code>.</li>
+        <li>Poll status: <code>ai_radio/status</code> and render <code>progress.phase</code>.</li>
+        <li>Stop when needed: <code>ai_radio/stop</code>.</li>
+      </ol>
+    </details>
   </section>
 
   <section id="stations_view" class="panel hidden">

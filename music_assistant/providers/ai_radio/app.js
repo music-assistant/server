@@ -136,6 +136,8 @@ function cacheElements() {
     'nav_control',
     'nav_stations',
     'nav_sections',
+    'nav_api_docs',
+    'nav_about',
     'tour_replay',
     'auth_toggle',
     'refresh_all',
@@ -161,6 +163,7 @@ function cacheElements() {
     'sessions_body',
     'stations_view',
     'sections_view',
+    'about_view',
     'station_selector',
     'station_new',
     'station_new_template',
@@ -292,6 +295,10 @@ function bindEvents() {
   el.nav_control.addEventListener('click', () => showView('control'));
   el.nav_stations.addEventListener('click', () => showView('stations'));
   el.nav_sections.addEventListener('click', () => showView('sections'));
+  el.nav_about.addEventListener('click', () => showView('about'));
+  el.nav_api_docs.addEventListener('click', () => {
+    window.open('./docs.html', '_blank', 'noopener');
+  });
   el.tour_replay.addEventListener('click', () => openTour(false));
 
   el.auth_toggle.addEventListener('click', toggleAuthPanel);
@@ -429,10 +436,13 @@ function showView(view) {
   el.control_view.classList.toggle('hidden', active !== 'control');
   el.stations_view.classList.toggle('hidden', active !== 'stations');
   el.sections_view.classList.toggle('hidden', active !== 'sections');
+  el.about_view.classList.toggle('hidden', active !== 'about');
 
   el.nav_control.classList.toggle('active', active === 'control');
   el.nav_stations.classList.toggle('active', active === 'stations');
   el.nav_sections.classList.toggle('active', active === 'sections');
+  el.nav_about.classList.toggle('active', active === 'about');
+  el.nav_api_docs.classList.toggle('active', false);
 }
 
 function applyInitialViewFromUrl() {
@@ -440,6 +450,10 @@ function applyInitialViewFromUrl() {
   const view = String(params.get('view') || '').trim().toLowerCase();
   if (view === 'sections') {
     showView('sections');
+    return;
+  }
+  if (view === 'about') {
+    showView('about');
     return;
   }
   if (view === 'stations') {
