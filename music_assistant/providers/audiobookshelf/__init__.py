@@ -6,9 +6,9 @@ import asyncio
 import functools
 import itertools
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
 from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
@@ -258,23 +258,6 @@ class Audiobookshelf(MusicProvider):
     _on_unload_callbacks: list[Callable[[], None]]
 
     @staticmethod
-    def __handle_refresh_token[AudiobookshelfT: "Audiobookshelf", **P, R](
-        method: Callable[Concatenate[AudiobookshelfT, P], Awaitable[R]],
-    ) -> Callable[Concatenate[AudiobookshelfT, P], Coroutine[Any, Any, R | None]]:
-        """TODO..."""
-
-        @functools.wraps(method)
-        async def wrapper(self: AudiobookshelfT, *args: P.args, **kwargs: P.kwargs) -> R:
-            try:
-                return await method(self, *args, **kwargs)
-            except RefreshTokenExpiredError:
-                self.logger.debug("Refresh token expired. Trying to renew.")
-                await self.reauthenticate()
-                return await method(self, *args, **kwargs)
-
-        return wrapper
-
-    @staticmethod
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
     ) -> Callable[P, Coroutine[Any, Any, R]]:
@@ -468,13 +451,15 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
-    @handle_refresh_token
-    async def _get_playlists(self) -> list[AbsPlaylistExpanded]:
-        return await self._client.get_all_playlists()
-
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
-        abs_playlists = await self._get_playlists()
+
+        @self.handle_refresh_token
+        async def _get_playlists() -> list[AbsPlaylistExpanded]:
+            # This method has a proper type hint in the lib, why the mypy any?
+            return await self._client.get_all_playlists()  # type: ignore[no-any-return]
+
+        abs_playlists = await _get_playlists()
         for abs_playlist in abs_playlists:
             if abs_playlist.library_id in self.libraries.audiobooks:
                 media_type = MediaType.AUDIOBOOK
@@ -679,7 +664,7 @@ for more details.
             if x.episode_id is not None and x.library_item_id == prov_podcast_id
         }
         for abs_episode in abs_podcast.media.episodes:
-            progress = abs_progresses.get(abs_episode.id_, None)
+            progress = abs_progresses.get(abs_episode.id_)
             mass_episode = parse_podcast_episode(
                 episode=abs_episode,
                 prov_podcast_id=prov_podcast_id,
