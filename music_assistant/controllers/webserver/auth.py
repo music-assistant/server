@@ -1658,12 +1658,17 @@ class AuthenticationManager:
         user_id: str | None = None,
         provider_name: str | None = None,
     ) -> int:
-        """Revoke join codes, optionally filtered by user or provider.
+        """Revoke join codes filtered by user and/or provider.
 
-        :param user_id: Optional user ID to revoke codes for.
-        :param provider_name: Optional provider name to revoke codes for.
+        At least one filter parameter must be provided to prevent accidental deletion of all codes.
+
+        :param user_id: User ID to revoke codes for.
+        :param provider_name: Provider name to revoke codes for.
         :return: Number of codes revoked.
         """
+        if not user_id and not provider_name:
+            raise ValueError("At least one of user_id or provider_name must be provided")
+
         conditions = []
         params = {}
 

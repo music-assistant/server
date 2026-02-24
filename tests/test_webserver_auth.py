@@ -1139,28 +1139,13 @@ async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -
     assert token2 is not None
 
 
-async def test_revoke_all_join_codes(auth_manager: AuthenticationManager) -> None:
-    """Test revoking all join codes.
+async def test_revoke_join_codes_requires_filter(auth_manager: AuthenticationManager) -> None:
+    """Test that revoking join codes requires at least one filter parameter.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user1 = await auth_manager.create_user(username="revokeall1", role=UserRole.GUEST)
-    user2 = await auth_manager.create_user(username="revokeall2", role=UserRole.GUEST)
-
-    # Create codes for both users
-    code1, _ = await auth_manager.generate_join_code(user_id=user1.user_id)
-    code2, _ = await auth_manager.generate_join_code(user_id=user2.user_id)
-
-    # Revoke all codes
-    revoked_count = await auth_manager.revoke_join_codes()
-    assert revoked_count == 2
-
-    # Neither code should work
-    token1 = await auth_manager._exchange_join_code(code1)
-    assert token1 is None
-
-    token2 = await auth_manager._exchange_join_code(code2)
-    assert token2 is None
+    with pytest.raises(ValueError, match="At least one of"):
+        await auth_manager.revoke_join_codes()
 
 
 async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManager) -> None:
