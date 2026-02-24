@@ -2751,7 +2751,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
                 player.state.name,
-                output_protocol.output_protocol_id,
+                output_protocol.name,
                 target_player.display_name,
                 target_player.state.group_members,
             )
