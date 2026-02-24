@@ -71,6 +71,7 @@ from .constants import (
     TRACK_BATCH_SIZE,
     WAVE_CATEGORY_DISPLAY_ORDER,
     WAVES_FOLDER_ID,
+    WAVES_LANDING_FOLDER_ID,
 )
 from .parsers import (
     _get_image_url as get_image_url,
@@ -245,6 +246,10 @@ class YandexMusicProvider(MusicProvider):
         if subpath == MY_WAVES_SET_FOLDER_ID:
             return await self._browse_vibe_sets(path, path_parts)
 
+        # Handle waves_landing/ path (Featured Waves from /landing-blocks/waves)
+        if subpath == WAVES_LANDING_FOLDER_ID:
+            return await self._browse_waves_landing(path, path_parts)
+
         # Handle direct tag subpath (when folder is played by URI, the full path
         # "picks/category/tag" is lost and only the tag slug arrives as subpath).
         # Skip the API call for standard top-level folders that are never tag slugs.
@@ -258,6 +263,7 @@ class YandexMusicProvider(MusicProvider):
             RADIO_FOLDER_ID,
             MY_WAVES_FOLDER_ID,
             MY_WAVES_SET_FOLDER_ID,
+            WAVES_LANDING_FOLDER_ID,
             FOR_YOU_FOLDER_ID,
             COLLECTION_FOLDER_ID,
         }
@@ -864,6 +870,18 @@ class YandexMusicProvider(MusicProvider):
                         is_playable=False,
                     )
                 )
+            # Featured Waves — only show if landing-blocks/waves returns data
+            waves_landing = await self._get_waves_landing_cached()
+            if waves_landing:
+                folders.append(
+                    BrowseFolder(
+                        item_id=WAVES_LANDING_FOLDER_ID,
+                        provider=self.instance_id,
+                        path=f"{base}{WAVES_LANDING_FOLDER_ID}",
+                        name=names.get(WAVES_LANDING_FOLDER_ID, "Featured Waves"),
+                        is_playable=False,
+                    )
+                )
             for cat in WAVE_CATEGORY_DISPLAY_ORDER:
                 if cat in categorized:
                     folders.append(
@@ -1102,6 +1120,28 @@ class YandexMusicProvider(MusicProvider):
         :return: List of mix category dicts from the API, or None on error.
         """
         return await self.client.get_mixes_waves()
+
+    @use_cache(3600)
+    async def _get_waves_landing_cached(self) -> list[dict[str, Any]] | None:
+        """Get Featured Waves data from /landing-blocks/waves, cached for 1 hour.
+
+        :return: List of wave category dicts from the API, or None on error.
+        """
+        return await self.client.get_waves_landing()
+
+    async def _browse_waves_landing(
+        self, path: str, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Featured Waves (from /landing-blocks/waves).
+
+        :param path: Full browse path.
+        :param path_parts: Split path parts after ://.
+        :return: List of folders or tracks.
+        """
+        waves_data = await self._get_waves_landing_cached()
+        return await self._browse_wave_categories(
+            path, path_parts, waves_data or [], WAVES_LANDING_FOLDER_ID
+        )
 
     async def _browse_wave_categories(
         self,

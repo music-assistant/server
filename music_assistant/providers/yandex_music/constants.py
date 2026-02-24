@@ -143,6 +143,7 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "radio": "Радио",
     "my_waves": "Персональные",
     "my_waves_set": "AI Сеты",
+    "waves_landing": "Избранные волны",
     "genre": "Жанры",
     "epoch": "Эпоха",
     "local": "Местное",
@@ -214,6 +215,7 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "radio": "Radio",
     "my_waves": "Personal",
     "my_waves_set": "AI Wave Sets",
+    "waves_landing": "Featured Waves",
     "genre": "Genres",
     "epoch": "Era",
     "local": "Local",
@@ -325,6 +327,9 @@ MY_WAVES_FOLDER_ID: Final[str] = "my_waves"
 
 # AI Wave Sets subfolder (from /landing-blocks/mixes-waves)
 MY_WAVES_SET_FOLDER_ID: Final[str] = "my_waves_set"
+
+# Featured Waves subfolder inside Radio (from /landing-blocks/waves)
+WAVES_LANDING_FOLDER_ID: Final[str] = "waves_landing"
 
 # Top-level browse group folders
 FOR_YOU_FOLDER_ID: Final[str] = "for_you"
