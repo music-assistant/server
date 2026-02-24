@@ -435,8 +435,43 @@
     </div>
 
     <label>Prompt Template
+      <span class="field-help">Placeholders (see overview below) can be used in prompts.</span>
       <textarea id="section_prompt" rows="4" placeholder="Use placeholders like <next_songinfo>, <prev_songinfo>, <timestamp>"></textarea>
     </label>
+
+    <details class="placeholder-overview">
+      <summary>Available Placeholders</summary>
+      <div class="placeholder-grid">
+        <div class="placeholder-item">
+          <code>&lt;prev_songinfo&gt;</code>
+          <span>Previous track info (artist - title).</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;next_songinfo&gt;</code>
+          <span>Next/current target track info (artist - title).</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;very_next_songinfo&gt;</code>
+          <span>Track info after the next track (look-ahead).</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;timestamp&gt;</code>
+          <span>Current local timestamp in the station timezone.</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;weather_hourly&gt;</code>
+          <span>Hourly weather summary (when weather is configured).</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;weather_daily&gt;</code>
+          <span>Daily weather summary (when weather is configured).</span>
+        </div>
+        <div class="placeholder-item">
+          <code>&lt;section_drafts&gt;</code>
+          <span>Only for <code>ai_meta</code> merge sections: inserted section snippets.</span>
+        </div>
+      </div>
+    </details>
   </section>
 
   <section id="messages" class="panel messages"></section>

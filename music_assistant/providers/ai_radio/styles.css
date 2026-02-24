@@ -360,6 +360,36 @@ textarea:focus-visible {
   margin: 5px 0;
 }
 
+.placeholder-overview {
+  margin-top: 8px;
+}
+
+.placeholder-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.placeholder-item {
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in oklab, var(--ma-surface-soft) 84%, black 16%);
+  display: grid;
+  gap: 3px;
+}
+
+.placeholder-item code {
+  font-family: "JetBrains Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
+  color: color-mix(in oklab, var(--ma-primary) 88%, white 12%);
+  font-size: 0.84rem;
+}
+
+.placeholder-item span {
+  color: var(--ma-muted);
+  font-size: 0.82rem;
+}
+
 .api-docs pre {
   margin: 8px 0;
   padding: 10px;
