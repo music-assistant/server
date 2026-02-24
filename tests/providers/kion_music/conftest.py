@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -32,6 +33,14 @@ class ProviderStub:
         )
 
 
+class _StubConfig:
+    """Minimal config stub for streaming tests."""
+
+    def get_value(self, key: str, default: Any = None) -> Any:
+        """Return default value for any key."""
+        return default
+
+
 class StreamingProviderStub:
     """Minimal provider stub for streaming tests (no Mock).
 
@@ -41,12 +50,17 @@ class StreamingProviderStub:
     domain = "kion_music"
     instance_id = "kion_music_instance"
     logger = logging.getLogger("kion_music_test_streaming")
+    config = _StubConfig()
 
     def __init__(self) -> None:
         """Initialize stub with minimal client."""
         self.client = type("ClientStub", (), {"user_id": 12345})()
         self.mass = type("MassStub", (), {})()
         self._warning_count = 0
+
+    async def get_track(self, prov_track_id: str) -> None:
+        """Stub — not used by streaming unit tests."""
+        return
 
     def _count_warning(self, *args: object, **kwargs: object) -> None:
         """Track warning calls for test assertions."""
@@ -88,12 +102,17 @@ class StreamingProviderStubWithTracking:
 
     domain = "kion_music"
     instance_id = "kion_music_instance"
+    config = _StubConfig()
 
     def __init__(self) -> None:
         """Initialize stub with tracking logger."""
         self.client = type("ClientStub", (), {"user_id": 12345})()
         self.mass = type("MassStub", (), {})()
         self.logger = TrackingLogger()
+
+    async def get_track(self, prov_track_id: str) -> None:
+        """Stub — not used by streaming unit tests."""
+        return
 
 
 # Minimal client-like object for kion_music de_json (library requires client, not None)

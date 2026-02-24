@@ -35,7 +35,7 @@
     }),
     'name': 'Test Album',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -52,14 +52,14 @@
         'in_library': None,
         'is_unique': None,
         'item_id': '300',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/album/300',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/album/300',
       }),
     ]),
     'sort_name': 'test album',
     'translation_key': None,
-    'uri': 'yandex_music_instance://album/300',
+    'uri': 'kion_music_instance://album/300',
     'version': '',
     'year': 2020,
   })
@@ -97,7 +97,7 @@
     }),
     'name': 'Test Artist',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -114,14 +114,14 @@
         'in_library': None,
         'is_unique': None,
         'item_id': '100',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/artist/100',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/artist/100',
       }),
     ]),
     'sort_name': 'test artist',
     'translation_key': None,
-    'uri': 'yandex_music_instance://artist/100',
+    'uri': 'kion_music_instance://artist/100',
     'version': '',
   })
 # ---
@@ -144,7 +144,7 @@
       'images': list([
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/xxx/yyy/1000x1000',
-          'provider': 'yandex_music_instance',
+          'provider': 'kion_music_instance',
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -165,7 +165,7 @@
     }),
     'name': 'Artist With Cover',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -182,14 +182,14 @@
         'in_library': None,
         'is_unique': None,
         'item_id': '200',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/artist/200',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/artist/200',
       }),
     ]),
     'sort_name': 'artist with cover',
     'translation_key': None,
-    'uri': 'yandex_music_instance://artist/200',
+    'uri': 'kion_music_instance://artist/200',
     'version': '',
   })
 # ---
@@ -228,7 +228,7 @@
     'name': 'My Playlist',
     'owner': 'Me',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -245,14 +245,14 @@
         'in_library': None,
         'is_unique': True,
         'item_id': '12345:3',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/users/12345/playlists/3',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/users/12345/playlists/3',
       }),
     ]),
     'sort_name': 'my playlist',
     'translation_key': None,
-    'uri': 'yandex_music_instance://playlist/12345:3',
+    'uri': 'kion_music_instance://playlist/12345:3',
     'version': '',
   })
 # ---
@@ -291,7 +291,7 @@
     'name': 'Shared Playlist',
     'owner': 'Other User',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -308,14 +308,14 @@
         'in_library': None,
         'is_unique': False,
         'item_id': '99999:1',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/users/99999/playlists/1',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/users/99999/playlists/1',
       }),
     ]),
     'sort_name': 'shared playlist',
     'translation_key': None,
-    'uri': 'yandex_music_instance://playlist/99999:1',
+    'uri': 'kion_music_instance://playlist/99999:1',
     'version': '',
   })
 # ---
@@ -358,7 +358,7 @@
     }),
     'name': 'Test Track',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -375,15 +375,15 @@
         'in_library': None,
         'is_unique': None,
         'item_id': '400',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/track/400',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/track/400',
       }),
     ]),
     'sort_name': 'test track',
     'track_number': 0,
     'translation_key': None,
-    'uri': 'yandex_music_instance://track/400',
+    'uri': 'kion_music_instance://track/400',
     'version': '',
   })
 # ---
@@ -410,7 +410,7 @@
         'images': list([
           dict({
             'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
-            'provider': 'yandex_music_instance',
+            'provider': 'kion_music_instance',
             'remotely_accessible': True,
             'type': 'thumb',
           }),
@@ -431,7 +431,7 @@
       }),
       'name': 'Track Album',
       'position': None,
-      'provider': 'yandex_music_instance',
+      'provider': 'kion_music_instance',
       'provider_mappings': list([
         dict({
           'audio_format': dict({
@@ -448,14 +448,14 @@
           'in_library': None,
           'is_unique': None,
           'item_id': '20',
-          'provider_domain': 'yandex_music',
-          'provider_instance': 'yandex_music_instance',
-          'url': 'https://music.yandex.ru/album/20',
+          'provider_domain': 'kion_music',
+          'provider_instance': 'kion_music_instance',
+          'url': 'https://music.mts.ru/album/20',
         }),
       ]),
       'sort_name': 'track album',
       'translation_key': None,
-      'uri': 'yandex_music_instance://album/20',
+      'uri': 'kion_music_instance://album/20',
       'version': '',
       'year': None,
     }),
@@ -492,7 +492,7 @@
         }),
         'name': 'Track Artist',
         'position': None,
-        'provider': 'yandex_music_instance',
+        'provider': 'kion_music_instance',
         'provider_mappings': list([
           dict({
             'audio_format': dict({
@@ -509,14 +509,14 @@
             'in_library': None,
             'is_unique': None,
             'item_id': '10',
-            'provider_domain': 'yandex_music',
-            'provider_instance': 'yandex_music_instance',
-            'url': 'https://music.yandex.ru/artist/10',
+            'provider_domain': 'kion_music',
+            'provider_instance': 'kion_music_instance',
+            'url': 'https://music.mts.ru/artist/10',
           }),
         ]),
         'sort_name': 'track artist',
         'translation_key': None,
-        'uri': 'yandex_music_instance://artist/10',
+        'uri': 'kion_music_instance://artist/10',
         'version': '',
       }),
     ]),
@@ -540,7 +540,7 @@
       'images': list([
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
-          'provider': 'yandex_music_instance',
+          'provider': 'kion_music_instance',
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -561,7 +561,7 @@
     }),
     'name': 'Track With Album',
     'position': None,
-    'provider': 'yandex_music_instance',
+    'provider': 'kion_music_instance',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -578,15 +578,15 @@
         'in_library': None,
         'is_unique': None,
         'item_id': '500',
-        'provider_domain': 'yandex_music',
-        'provider_instance': 'yandex_music_instance',
-        'url': 'https://music.yandex.ru/track/500',
+        'provider_domain': 'kion_music',
+        'provider_instance': 'kion_music_instance',
+        'url': 'https://music.mts.ru/track/500',
       }),
     ]),
     'sort_name': 'track with album',
     'track_number': 0,
     'translation_key': None,
-    'uri': 'yandex_music_instance://track/500',
+    'uri': 'kion_music_instance://track/500',
     'version': '',
   })
 # ---
