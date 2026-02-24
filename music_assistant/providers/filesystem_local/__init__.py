@@ -1857,7 +1857,7 @@ class LocalFileSystemProvider(MusicProvider):
                     continue
                 chapters.append(
                     MediaItemChapter(
-                        position=position if use_alphabetical else (chapter_tags.track or position),
+                        position=position,
                         name=chapter_tags.title,
                         start=total_duration,
                         end=total_duration + chapter_tags.duration,
