@@ -28,6 +28,7 @@ from .constants import (
     IMAGE_SIZE_LARGE,
     PROVIDER_DISPLAY_NAME_EN,
     PROVIDER_DISPLAY_NAME_RU,
+    WEB_BASE_URL,
     YANDEX_SYSTEM_OWNER_NAMES,
 )
 
@@ -84,7 +85,7 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
                 item_id=artist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/artist/{artist_id}",
+                url=f"{WEB_BASE_URL}/artist/{artist_id}",
             )
         },
     )
@@ -149,7 +150,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
-                url=f"https://music.yandex.ru/album/{album_id}",
+                url=f"{WEB_BASE_URL}/album/{album_id}",
                 available=available,
             )
         },
@@ -254,7 +255,7 @@ def parse_track(
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
-                url=f"https://music.yandex.ru/track/{track_id}",
+                url=f"{WEB_BASE_URL}/track/{track_id}",
                 available=available,
             )
         },
@@ -345,7 +346,7 @@ def parse_playlist(
                 item_id=playlist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.yandex.ru/users/{owner_id}/playlists/{playlist_kind}",
+                url=f"{WEB_BASE_URL}/users/{owner_id}/playlists/{playlist_kind}",
                 is_unique=is_editable,
             )
         },

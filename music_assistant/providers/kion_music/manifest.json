@@ -3,7 +3,7 @@
   "domain": "kion_music",
   "stage": "beta",
   "name": "KION Music",
-  "description": "Stream music from Kion Music service.",
+  "description": "Stream music from KION Music service.",
   "codeowners": [
     "@TrudenBoy"
   ],
