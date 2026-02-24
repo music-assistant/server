@@ -26,6 +26,14 @@ With this repository cloned locally, execute the following commands in a termina
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.
 
+### Build local Python artifact (for Docker image build)
+If you want to build the local Docker image from this repository, generate the `dist/` artifact first:
+
+```bash
+uv pip install build tomli tomli-w
+python -m build
+```
+
 ### Using Devcontainer/Codespace
 We removed support for devcontainers because we do not have anyone willing to maintain it.
 It also is not very convenient due to all the port requirements, binaries etc.
