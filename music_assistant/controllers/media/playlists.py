@@ -113,7 +113,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def create_playlist(
         self,
         name: str,
-        media_types: set[MediaType] | None = None,
+        media_types: list[MediaType] | set[MediaType] | None = None,
         provider_instance_or_domain: str | None = None,
     ) -> Playlist:
         """Create new playlist."""
@@ -127,6 +127,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         if media_types is None:
             media_types = {MediaType.TRACK}
+        if isinstance(media_types, list):
+            media_types = set(media_types)
+
         if not provider_instance_or_domain and not media_types:
             # builtin can handle all media_types
             media_types.update((MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO))
