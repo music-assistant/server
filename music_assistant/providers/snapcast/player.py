@@ -201,6 +201,9 @@ class SnapCastPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
+        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+        assert player_group is not None  # for type checking
+        await player_group.set_stream("default")
         if ma_stream := self.active_snap_ma_stream:
             ma_stream.request_stop_stream()
             return
@@ -240,6 +243,7 @@ class SnapCastPlayer(Player):
         ]
 
         curr_stream_id = player_group.stream
+        sync_group_player: Player | None = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
             if media.media_type == MediaType.PLUGIN_SOURCE:

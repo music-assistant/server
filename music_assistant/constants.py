@@ -26,9 +26,17 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.AUDIOBOOK,
 )
 
-
+# API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
+# or small non-breaking changes to existing commands
 API_SCHEMA_VERSION: Final[int] = 29
-MIN_SCHEMA_VERSION: Final[int] = 29
+
+# MIN_SCHEMA_VERSION is the minimum API schema version that the current server
+# version can work with. Only bump when there are breaking changes to existing
+# API commands or models, such as removing fields or changing field types.
+# Note that doing so will break compatibility with all clients in the field
+# (including Home Assistant) that have not yet been updated to the new API
+# schema version, so only bump this when absolutely necessary.
+MIN_SCHEMA_VERSION: Final[int] = 28
 
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
@@ -45,7 +53,8 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
+GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))

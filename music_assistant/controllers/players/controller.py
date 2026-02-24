@@ -195,6 +195,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for player in list(self._players.values())
             if (player.state.available or return_unavailable)
             and (player.state.enabled or return_disabled)
+            and player.initialized.is_set()
             and (provider_filter is None or player.provider.instance_id == provider_filter)
             and (
                 not user_filter
@@ -486,6 +487,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_cmd_resume(player_id, source, media)
 
     @api_command("players/cmd/seek")
+    @handle_player_command
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given player.
 
@@ -517,6 +519,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await player.seek(position)
 
     @api_command("players/cmd/next")
+    @handle_player_command
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -545,6 +548,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/previous")
+    @handle_player_command
     async def cmd_previous_track(self, player_id: str) -> None:
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -706,7 +710,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.type == PlayerType.GROUP or player.group_members:
+        if player.state.type == PlayerType.GROUP or player.state.group_members:
             # dedicated group player or sync leader
             coros = []
             for child_player in self.iter_group_members(
@@ -860,6 +864,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             # determine if the player has native announcements support
             # or if any linked protocol has announcement support
+            native_announce_support = False
             if announce_player := self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -895,8 +900,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
-        - player_id: player_id of the player to handle the command.
-        - media: The Media that needs to be played on the player.
+        :param player_id: player_id of the player to handle the command.
+        :param media: The Media that needs to be played on the player.
         """
         player = self._get_player_with_redirect(player_id)
         # Delegate to internal handler for actual implementation
@@ -1024,119 +1029,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
-        # guard edge case: player already synced to another player
-        if parent_player.state.synced_to:
-            raise PlayerCommandFailed(
-                f"Player {parent_player.name} is already synced to another player on its own, "
-                "you need to ungroup it first before you can join other players to it.",
-            )
-        # handle dissolve sync group if the target player is currently
-        # a sync leader and is being removed from itself
-        should_stop = False
-        if player_ids_to_remove and target_player in player_ids_to_remove:
-            self.logger.info(
-                "Dissolving sync group of player %s as it is being removed from itself",
-                parent_player.name,
-            )
-            player_ids_to_add = None
-            player_ids_to_remove = [
-                x for x in parent_player.state.group_members if x != target_player
-            ]
-            should_stop = True
-        # filter all player ids on compatibility and availability
-        final_player_ids_to_add: list[str] = []
-        for child_player_id in player_ids_to_add or []:
-            if child_player_id == target_player:
-                continue
-            if child_player_id in final_player_ids_to_add:
-                continue
-            if (
-                not (child_player := self.get_player(child_player_id))
-                or not child_player.state.available
-            ):
-                self.logger.warning("Player %s is not available", child_player_id)
-                continue
+        # handle edge case: player already synced to another player
+        # automatically ungroup it first and wait for state to propagate
+        await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-            # check if player can be synced/grouped with the target player
-            # state.can_group_with already handles all expansion and translation
-            if child_player_id not in parent_player.state.can_group_with:
-                self.logger.warning(
-                    "Player %s can not be grouped with %s",
-                    child_player.name,
-                    parent_player.name,
-                )
-                continue
-
-            if (
-                child_player.state.synced_to
-                and child_player.state.synced_to == target_player
-                and child_player_id in parent_player.state.group_members
-            ):
-                continue  # already synced to this target
-
-            # power on the player if needed
-            if (
-                not child_player.state.powered
-                and child_player.state.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(child_player.player_id, True)
-            # if we reach here, all checks passed
-            final_player_ids_to_add.append(child_player_id)
-
-        # process player ids to remove and filter out invalid/unavailable players and edge cases
-        final_player_ids_to_remove: list[str] = []
-        if player_ids_to_remove:
-            for child_player_id in player_ids_to_remove:
-                if child_player_id not in parent_player.state.group_members:
-                    continue
-                final_player_ids_to_remove.append(child_player_id)
-
-        # Forward command to the appropriate player after all (base) sanity checks
-        # GROUP players (sync_group, universal_group) manage their own members internally
-        # and don't need protocol translation - call their set_members directly
-        if parent_player.type == PlayerType.GROUP:
-            await parent_player.set_members(
-                player_ids_to_add=final_player_ids_to_add,
-                player_ids_to_remove=final_player_ids_to_remove,
-            )
-            return
-        # For regular players, handle protocol selection and translation
-        # Store playback state before changing members to detect protocol changes
-        was_playing = parent_player.playback_state in (
-            PlaybackState.PLAYING,
-            PlaybackState.PAUSED,
-        )
-        previous_protocol = parent_player.active_output_protocol if was_playing else None
-
-        await self._handle_set_members_with_protocols(
-            parent_player, final_player_ids_to_add, final_player_ids_to_remove
-        )
-
-        if should_stop:
-            # Stop playback on the player if it is being removed from itself
-            await self._handle_cmd_stop(parent_player.player_id)
-            return
-
-        # Check if protocol changed due to member change and restart playback if needed
-        if not should_stop and was_playing:
-            # Determine which protocol would be used now with new members
-            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
-            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
-            previous_protocol_id = previous_protocol or "native"
-
-            # If protocol changed, restart playback
-            if new_protocol_id != previous_protocol_id:
-                self.logger.info(
-                    "Protocol changed from %s to %s due to member change, restarting playback",
-                    previous_protocol_id,
-                    new_protocol_id,
-                )
-                # Restart playback on the new protocol using resume
-                await self.cmd_resume(
-                    parent_player.player_id,
-                    parent_player.state.active_source,
-                    parent_player.state.current_media,
-                )
+        lock_key = f"set_members_{target_player}"
+        if lock_key not in self._player_command_locks:
+            self._player_command_locks[lock_key] = asyncio.Lock()
+        async with self._player_command_locks[lock_key]:
+            await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")
     @handle_player_command
@@ -1146,6 +1047,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Join/add the given player(id) to the given (leader) player/sync group.
         If the target player itself is already synced to another player, this may fail.
         If the player can not be synced with the given target player, this may fail.
+
+        NOTE: This is a convenience helper for cmd_set_members.
 
         :param player_id: player_id of the player to handle the command.
         :param target_player: player_id of the syncgroup leader or group player.
@@ -1170,46 +1073,35 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/ungroup")
     @handle_player_command
     async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
+        """
+        Handle UNGROUP command for given player.
 
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
 
-        NOTE: This is a (deprecated) alias for cmd_set_members.
+        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
             return
 
-        if (
-            player.state.active_group
-            and (group_player := self.get_player(player.state.active_group))
-            and (PlayerFeature.SET_MEMBERS in group_player.state.supported_features)
-        ):
+        if player.state.active_group:
             # the player is part of a (permanent) groupplayer and the user tries to ungroup
-            if player_id in group_player.static_group_members:
-                raise UnsupportedFeaturedException(
-                    f"Player {player.name}  is a static member of group {group_player.name} "
-                    "and cannot be removed from that group!"
-                )
-            await group_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
             return
 
-        if player.state.synced_to and (synced_player := self.get_player(player.state.synced_to)):
+        if player.state.synced_to:
             # player is a sync member
-            await synced_player.set_members(player_ids_to_remove=[player_id])
+            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
             return
 
-        if not (player.state.synced_to or player.state.group_members):
-            return  # nothing to do
-
-        if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
-            self.logger.warning("Player %s does not support (un)group commands", player.name)
+        if player.state.group_members:
+            # player is a sync leader, so we ungroup all members from it
+            await self.cmd_set_members(
+                player.player_id, player_ids_to_remove=player.state.group_members
+            )
             return
-
-        # forward command to the player once all checks passed
-        await player.ungroup()
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
@@ -1349,13 +1241,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.extra_data[ATTR_FAKE_POWER] = cached_value
 
             # finally actually register it
-            self._players[player_id] = player
-            # update state without signaling event first (ensure all attributes are set)
-            player.update_state(signal_event=False)
 
+            # Despite the fact that the player is not fully ready yet
+            # (config not loaded, protocol links not evaluated),
+            # we already add it to the _players dict here because we
+            # want to make sure the player is available in the controller
+            # during the rest of the registration process
+            # (such as when fetching config or evaluating protocol links).
+            # We use the 'initialized' attribute to indicate that the player
+            # is still in the process of being registered so we can filter it out where needed.
+            self._players[player_id] = player
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
             player.set_config(player_config)
+            # update state without signaling event first (ensures all attributes are set)
+            player.update_state(signal_event=False)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
 
@@ -1364,6 +1264,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self._enrich_player_identifiers(player)
             self._evaluate_protocol_links(player)
 
+            # now we're ready to signal the player is added and available
+            player.set_initialized()
             self.logger.info(
                 "Player (type %s) registered: %s/%s",
                 player.state.type.value,
@@ -1371,26 +1273,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             # signal event that a player was added
-
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player
                 )
-
-            # register playerqueue for this player
-            # Skip if this is a protocol player pending evaluation (queue created when promoted)
-            if (
-                player.state.type != PlayerType.PROTOCOL
-                and player.player_id not in self._pending_protocol_evaluations
-            ):
+            # register playerqueue for this player (if not a protocol player)
+            if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
-
-        # always call update to fix special attributes like display name, group volume etc.
-        player.update_state()
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players()
+        self._schedule_update_all_players(5)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1438,13 +1331,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self._players.get(player_id)
         if player is None:
             return
-        await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
             # player permanent removal: cleanup protocol links, delete config
             # and signal PLAYER_REMOVED event
+            await self._cleanup_player_memberships(player_id)
             self._cleanup_protocol_links(player)
             self.delete_player_config(player_id)
             self.logger.info("Player removed: %s", player.name)
@@ -1563,8 +1456,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # something external while we have a grouped protocol active
         if ATTR_ACTIVE_SOURCE in changed_values:
             prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
-            self._handle_external_source_takeover(player, prev_source, new_source)
-
+            task_id = f"external_source_takeover_{player_id}"
+            self.mass.call_later(
+                3,
+                self._handle_external_source_takeover,
+                player,
+                prev_source,
+                new_source,
+                task_id=task_id,
+            )
         became_inactive = False
         if ATTR_AVAILABLE in changed_values:
             became_inactive = changed_values[ATTR_AVAILABLE][1] is False
@@ -1684,8 +1584,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""
         # account for player that is synced (sync child)
-        if player.synced_to and player.synced_to != player.player_id:
-            if sync_leader := self.get_player(player.synced_to):
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.state.synced_to):
                 return self.get_active_queue(sync_leader)
         # handle active group player
         if player.state.active_group and player.state.active_group != player.player_id:
@@ -1907,21 +1807,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Ensure a player is detached from any groups or syncgroups."""
         if not (player := self.get_player(player_id)):
             return
-
-        if (
-            player.state.active_group
-            and (group := self.get_player(player.state.active_group))
-            and group.supports_feature(PlayerFeature.SET_MEMBERS)
-        ):
-            # Ungroup the player if its part of an active group, this will ignore
-            # static_group_members since that is only checked when using cmd_set_members
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await group.set_members(player_ids_to_remove=[player_id])
-        elif player.state.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
-            # Remove the player if it was synced, otherwise it will still show as
-            # synced to the other player after it gets registered again
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await player.ungroup()
+        with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
+            if parent_id := (player.state.active_group or player.state.synced_to):
+                # the player is part of a (permanent) groupplayer and the user tries to ungroup
+                if parent_player := self.get_player(parent_id):
+                    await self._handle_set_members(parent_player, player_ids_to_remove=[player_id])
+                return
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
@@ -2295,6 +2186,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.type == PlayerType.PROTOCOL:
             return
 
+        # Not a takeover if the player is not actively playing
+        if player.playback_state != PlaybackState.PLAYING:
+            return
+
         # Only relevant if we have an active output protocol (not native)
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
@@ -2308,13 +2203,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not protocol_player:
             return
 
-        # Only relevant if the protocol is grouped
-        if not self._is_protocol_grouped(protocol_player):
+        # If the source matches the active protocol's domain, it's expected - not a takeover
+        # e.g., source "airplay" when using AirPlay protocol is normal
+        if new_source and new_source.lower() == protocol_player.provider.domain.lower():
             return
 
-        # External source took over while protocol was grouped - unbond
+        # Confirmed external source takeover
         self.logger.info(
-            "External source '%s' took over on %s while grouped via protocol %s - "
+            "External source '%s' took over on %s while playing via protocol %s - "
             "clearing active output protocol and ungrouping",
             new_source,
             player.display_name,
@@ -2332,7 +2228,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Check if a source is managed by Music Assistant.
 
         MA-managed sources include:
-        - None (no source active)
+        - None (=autodetect, no source explicitly set by player)
         - The player's own ID (MA queue)
         - Any active queue ID
         - Any plugin source ID
@@ -2384,6 +2280,153 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Each call resets the timer, so rapid registrations only trigger one update
         task_id = "update_all_players_on_registration"
         self.mass.call_later(delay, _update_all_players, task_id=task_id)
+
+    async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
+        """
+        Automatically ungroup a player if it's synced to another player.
+
+        :param player: The player to check and potentially ungroup.
+        :param log_context: Additional context for the log message (e.g., target player name).
+        """
+        if not player.state.synced_to:
+            return
+        self.logger.info(
+            "Player %s is already synced to %s, ungrouping it first before %s",
+            player.name,
+            player.state.synced_to,
+            log_context,
+        )
+        await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player.player_id])
+        await asyncio.sleep(2)
+
+    async def _handle_set_members(
+        self,
+        parent_player: Player,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """
+        Handle the actual set_members logic.
+
+        Skips the permission checks (internal use only).
+
+        :param parent_player: The parent player to add/remove members to/from.
+        :param player_ids_to_add: List of player_id's to add to the parent player.
+        :param player_ids_to_remove: List of player_id's to remove from the parent player.
+        """
+        target_player = parent_player.player_id
+        # handle dissolve sync group if the target player is currently
+        # a sync leader and is being removed from itself
+        should_stop = False
+        if player_ids_to_remove and target_player in player_ids_to_remove:
+            self.logger.info(
+                "Dissolving sync group of player %s as it is being removed from itself",
+                parent_player.name,
+            )
+            player_ids_to_add = None
+            player_ids_to_remove = [
+                x for x in parent_player.state.group_members if x != target_player
+            ]
+            should_stop = True
+        # filter all player ids on compatibility and availability
+        final_player_ids_to_add: list[str] = []
+        for child_player_id in player_ids_to_add or []:
+            if child_player_id == target_player:
+                continue
+            if child_player_id in final_player_ids_to_add:
+                continue
+            if (
+                not (child_player := self.get_player(child_player_id))
+                or not child_player.state.available
+            ):
+                self.logger.warning("Player %s is not available", child_player_id)
+                continue
+
+            # check if player can be synced/grouped with the target player
+            # state.can_group_with already handles all expansion and translation
+            if child_player_id not in parent_player.state.can_group_with:
+                self.logger.warning(
+                    "Player %s can not be grouped with %s",
+                    child_player.name,
+                    parent_player.name,
+                )
+                continue
+
+            if (
+                child_player.state.synced_to
+                and child_player.state.synced_to == target_player
+                and child_player_id in parent_player.state.group_members
+            ):
+                continue  # already synced to this target
+
+            # handle edge case: child player is synced to a different player
+            # automatically ungroup it first and wait for state to propagate
+            if child_player.state.synced_to and child_player.state.synced_to != target_player:
+                await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
+
+            # power on the player if needed
+            if (
+                not child_player.state.powered
+                and child_player.state.power_control != PLAYER_CONTROL_NONE
+            ):
+                await self._handle_cmd_power(child_player.player_id, True)
+            # if we reach here, all checks passed
+            final_player_ids_to_add.append(child_player_id)
+
+        # process player ids to remove and filter out invalid/unavailable players and edge cases
+        final_player_ids_to_remove: list[str] = []
+        if player_ids_to_remove:
+            for child_player_id in player_ids_to_remove:
+                if child_player_id not in parent_player.state.group_members:
+                    continue
+                final_player_ids_to_remove.append(child_player_id)
+
+        # Forward command to the appropriate player after all (base) sanity checks
+        # GROUP players (sync_group, universal_group) manage their own members internally
+        # and don't need protocol translation - call their set_members directly
+        if parent_player.type == PlayerType.GROUP:
+            await parent_player.set_members(
+                player_ids_to_add=final_player_ids_to_add,
+                player_ids_to_remove=final_player_ids_to_remove,
+            )
+            return
+        # For regular players, handle protocol selection and translation
+        # Store playback state before changing members to detect protocol changes
+        was_playing = parent_player.playback_state in (
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
+        )
+        previous_protocol = parent_player.active_output_protocol if was_playing else None
+
+        await self._handle_set_members_with_protocols(
+            parent_player, final_player_ids_to_add, final_player_ids_to_remove
+        )
+
+        if should_stop:
+            # Stop playback on the player if it is being removed from itself
+            await self._handle_cmd_stop(parent_player.player_id)
+            return
+
+        # Check if protocol changed due to member change and restart playback if needed
+        if not should_stop and was_playing:
+            # Determine which protocol would be used now with new members
+            _new_target_player, new_protocol = self._select_best_output_protocol(parent_player)
+            new_protocol_id = new_protocol.output_protocol_id if new_protocol else "native"
+            previous_protocol_id = previous_protocol or "native"
+
+            # If protocol changed, restart playback
+            if new_protocol_id != previous_protocol_id:
+                self.logger.info(
+                    "Protocol changed from %s to %s due to member change, restarting playback",
+                    previous_protocol_id,
+                    new_protocol_id,
+                )
+                # Restart playback on the new protocol using resume
+                await self.cmd_resume(
+                    parent_player.player_id,
+                    parent_player.state.active_source,
+                    parent_player.state.current_media,
+                )
 
     async def _handle_set_members_with_protocols(
         self,
@@ -2544,11 +2587,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return  # nothing to do
 
         # ungroup player at power off
-        player_was_synced = player.state.synced_to is not None
+        player_was_synced = bool(player.state.synced_to or player.group_members)
         if player.type == PlayerType.PLAYER and not powered:
             # ungroup player if it is synced (or is a sync leader itself)
             # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
+            player.set_active_output_protocol(None)  # also clear active protocol if any
 
         # always stop player at power off
         if (
@@ -2570,9 +2614,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support power control"
+            self.logger.debug(
+                "Player %s does not support power control, ignoring power command",
+                player_state.name,
             )
+            return
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
@@ -2883,21 +2929,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
-        source = player.state.active_source
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         media = player.state.current_media
         # power on the player if needed
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True)
-        # try to handle command on player directly
-        active_source = next((x for x in player.state.source_list if x.id == source), None)
-        if (
-            player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
-            and active_source
-            and active_source.can_play_pause
-        ):
-            # player has some other source active and native resume support
-            await player.play()
-            return
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
             return

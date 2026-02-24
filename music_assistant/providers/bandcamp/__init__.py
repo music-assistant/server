@@ -124,6 +124,19 @@ class BandcampProvider(MusicProvider):
         )
         self._converters = BandcampConverters(self.domain, self.instance_id)
 
+        # The provider can function without login (search-only),
+        # but if credentials were explicitly configured, validate them now.
+        # A bad login fails hard so the user can fix it immediately;
+        # transient errors (rate limits, network) are logged and the provider
+        # continues since the login may still be valid.
+        if identity:
+            try:
+                await self._client.get_collection_summary()
+            except BandcampMustBeLoggedInError as error:
+                raise LoginFailed("Bandcamp login is invalid or expired.") from error
+            except BandcampAPIError as error:
+                self.logger.warning("Could not validate Bandcamp login: %s", error)
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""

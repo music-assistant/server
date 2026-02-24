@@ -1450,30 +1450,3 @@ class ProtocolLinkingMixin:
             parent_protocol_player.group_members,
             parent_protocol_player.synced_to,
         )
-
-        # Clear active protocol if all protocol members were removed
-        if (
-            filtered_protocol_remove
-            and not filtered_protocol_add
-            and parent_protocol_player.player_id == parent_player.active_output_protocol
-        ):
-            # Check group_members count to see if we should clear
-            members_count = len(parent_protocol_player.group_members)
-            self.logger.debug(
-                "Checking if should clear active protocol on %s: "
-                "protocol_members_count=%s, removing=%s",
-                parent_player.state.name,
-                members_count,
-                filtered_protocol_remove,
-            )
-            if members_count <= 1 and parent_player.state.playback_state == PlaybackState.IDLE:
-                parent_player.set_active_output_protocol(None)
-
-        # Clear active output protocol on removed child players
-        if filtered_protocol_remove:
-            for child_protocol_id in filtered_protocol_remove:
-                if child_protocol := self.get_player(child_protocol_id):
-                    if child_protocol.protocol_parent_id:
-                        if child_player := self.get_player(child_protocol.protocol_parent_id):
-                            if child_player.active_output_protocol == child_protocol_id:
-                                child_player.set_active_output_protocol(None)

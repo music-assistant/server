@@ -97,6 +97,8 @@ class AuthenticationManager:
 
         self._has_users = await self._has_non_system_users()
 
+        self._schedule_join_code_cleanup()
+
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
         )
@@ -1558,9 +1560,15 @@ class AuthenticationManager:
         :param provider_name: Optional provider name identifier (e.g., "party_mode").
         :return: Tuple of (code, expires_at datetime).
         """
+        if expires_in_hours <= 0:
+            raise ValueError("expires_in_hours must be positive")
+        if max_uses < 0:
+            raise ValueError("max_uses must be non-negative (0 = unlimited)")
         user = await self.get_user(user_id)
         if not user:
             raise ValueError(f"User not found: {user_id}")
+        if user.role != UserRole.GUEST:
+            raise ValueError("Join codes can only be generated for guest accounts")
 
         now = utc()
         expires_at = now + timedelta(hours=expires_in_hours)
@@ -1581,8 +1589,12 @@ class AuthenticationManager:
             try:
                 await self.database.insert("join_codes", code_data)
                 await self.database.commit()
-                self.logger.debug(
-                    "Generated join code (expires: %s, max_uses: %s)", expires_at, max_uses
+                self.logger.info(
+                    "Join code generated for user %s (expires: %s, max_uses: %s, provider: %s)",
+                    user.username,
+                    expires_at,
+                    max_uses,
+                    provider_name,
                 )
                 return code, expires_at
             except IntegrityError:
@@ -1591,7 +1603,7 @@ class AuthenticationManager:
 
         raise RuntimeError("Failed to generate a unique join code after 3 attempts")
 
-    async def exchange_join_code(self, code: str) -> str | None:
+    async def _exchange_join_code(self, code: str) -> str | None:
         """Exchange a join code for a JWT access token.
 
         The token is created for the user associated with the join code,
@@ -1618,6 +1630,7 @@ class AuthenticationManager:
         await self.database.commit()
 
         if not row:
+            self.logger.warning("Join code exchange rejected (code=%s)", code.upper())
             return None
 
         user = await self.get_user(row["user_id"])
@@ -1625,9 +1638,7 @@ class AuthenticationManager:
             self.logger.error(
                 "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
             )
-            raise RuntimeError(
-                f"Data integrity violation: user_id {row['user_id']} missing despite FK constraint"
-            )
+            return None
 
         device_name = row["device_name"] or "Short Code Login"
         token = await self.create_token(
@@ -1637,7 +1648,11 @@ class AuthenticationManager:
             provider_name=row["provider_name"],
         )
 
-        self.logger.debug("Join code exchanged for token (user=%s)", user.username)
+        self.logger.info(
+            "Join code exchanged for token (user=%s, provider=%s)",
+            user.username,
+            row["provider_name"],
+        )
         return token
 
     async def revoke_join_codes(
@@ -1645,12 +1660,17 @@ class AuthenticationManager:
         user_id: str | None = None,
         provider_name: str | None = None,
     ) -> int:
-        """Revoke join codes, optionally filtered by user or provider.
+        """Revoke join codes filtered by user and/or provider.
 
-        :param user_id: Optional user ID to revoke codes for.
-        :param provider_name: Optional provider name to revoke codes for.
+        At least one filter parameter must be provided to prevent accidental deletion of all codes.
+
+        :param user_id: User ID to revoke codes for.
+        :param provider_name: Provider name to revoke codes for.
         :return: Number of codes revoked.
         """
+        if not user_id and not provider_name:
+            raise ValueError("At least one of user_id or provider_name must be provided")
+
         conditions = []
         params = {}
 
@@ -1661,10 +1681,8 @@ class AuthenticationManager:
             conditions.append("provider_name = :provider_name")
             params["provider_name"] = provider_name
 
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
         cursor = await self.database.execute(
-            f"DELETE FROM join_codes {where_clause}", params or None
+            f"DELETE FROM join_codes WHERE {' AND '.join(conditions)}", params
         )
         await self.database.commit()
 
@@ -1673,8 +1691,29 @@ class AuthenticationManager:
             self.logger.info("Revoked %d join code(s)", count)
         return count
 
-    @api_command("auth/code", authenticated=False)
-    async def authenticate_with_join_code(self, code: str) -> dict[str, Any]:
+    async def _cleanup_expired_join_codes(self) -> None:
+        """Delete expired and exhausted join codes from the database."""
+        now = utc()
+        cursor = await self.database.execute(
+            """
+            DELETE FROM join_codes
+            WHERE expires_at < :now
+               OR (max_uses > 0 AND use_count >= max_uses)
+            """,
+            {"now": now.isoformat()},
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
+
+    def _schedule_join_code_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes."""
+        self.mass.create_task(self._cleanup_expired_join_codes())
+        self.mass.loop.call_later(86400, self._schedule_join_code_cleanup)
+
+    @api_command("auth/join_code/exchange", authenticated=False)
+    async def exchange_join_code(self, code: str) -> dict[str, Any]:
         """Exchange a join code for an access token (public API).
 
         This is the public API endpoint for short-code authentication.
@@ -1683,7 +1722,7 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        token = await self.exchange_join_code(code)
+        token = await self._exchange_join_code(code)
 
         if not token:
             return {
@@ -1708,3 +1747,28 @@ class AuthenticationManager:
                 "success": False,
                 "error": "Failed to create access token",
             }
+
+    @api_command("auth/join_codes", required_role="admin")
+    async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List join codes, optionally filtered by user (admin only).
+
+        :param user_id: Optional user ID to filter codes for.
+        :return: List of join code records.
+        """
+        filter_args = {"user_id": user_id} if user_id else None
+        rows = await self.database.get_rows("join_codes", filter_args, limit=100)
+        return [dict(row) for row in rows]
+
+    @api_command("auth/join_code/revoke", required_role="admin")
+    async def revoke_join_code(self, code_id: str) -> None:
+        """Revoke a specific join code (admin only).
+
+        :param code_id: The code ID to revoke.
+        """
+        code_row = await self.database.get_row("join_codes", {"code_id": code_id})
+        if not code_row:
+            raise InvalidDataError("Join code not found")
+
+        await self.database.delete("join_codes", {"code_id": code_id})
+        await self.database.commit()
+        self.logger.info("Join code revoked (code_id=%s)", code_id)

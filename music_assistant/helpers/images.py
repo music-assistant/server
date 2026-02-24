@@ -88,7 +88,9 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.split(",")[-1])
     # handle FILE location (of type image)
-    if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")) and is_safe_path(path_or_url):
+    if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg", "svg", "SVG")) and is_safe_path(
+        path_or_url
+    ):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
                 return cast("bytes", await _file.read())

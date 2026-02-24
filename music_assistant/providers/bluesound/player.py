@@ -25,7 +25,6 @@ from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
     PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
-    PLAYBACK_STATE_POLL_MAP,
     PLAYER_FEATURES_BASE,
     PLAYER_SOURCE_MAP,
     POLL_STATE_DYNAMIC,
@@ -147,15 +146,19 @@ class BluesoundPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to BluOS player."""
-        await self.client.volume(level=volume_level, timeout=1)
-        self.logger.debug("Set BluOS speaker volume to %s", volume_level)
+        volume_response = await self.client.volume(level=volume_level, timeout=1)
+        self.logger.debug(
+            "Set BluOS speaker volume to %s, response: %s", volume_level, volume_response
+        )
         self._attr_volume_level = volume_level
+        self._set_polling_dynamic()
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to BluOS player."""
         await self.client.volume(mute=muted)
         self._attr_volume_muted = muted
+        self._set_polling_dynamic()
         self.update_state()
 
     async def next_track(self):
@@ -276,9 +279,9 @@ class BluesoundPlayer(Player):
             )
 
         self.logger.debug(self.status)
-        mass_active = self.mass.streams.base_url
-        if self.status.stream_url and mass_active in self.status.stream_url:
-            self._attr_active_source = self.player_id
+        mass_url = self.mass.streams.base_url
+        if self.status.stream_url and mass_url in self.status.stream_url:
+            self._attr_active_source = None
         elif player_source := PLAYER_SOURCE_MAP.get(self.status.input_id):
             self._attr_active_source = self.status.input_id
             self._attr_source_list.append(player_source)
@@ -339,9 +342,7 @@ class BluesoundPlayer(Player):
             self.update_state()
             return
 
-        if (
-            self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0
-        ) or self._attr_playback_state == PLAYBACK_STATE_POLL_MAP[self.status.state]:
+        if self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0:
             self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
             self.poll_state = POLL_STATE_STATIC
 
@@ -371,6 +372,10 @@ class BluesoundPlayer(Player):
         else:
             self._attr_volume_level = self.sync_status.volume
         self._attr_volume_muted = self.status.mute
+
+        self.logger.debug(
+            f"Volume from sync_status: {self.sync_status.volume}, from status: {self.status.volume}"
+        )
 
         if not self.sync_status.leader:
             # Player not grouped or player is group leader

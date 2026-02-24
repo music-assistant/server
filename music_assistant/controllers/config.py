@@ -803,20 +803,31 @@ class ConfigController:
         """Save/update PlayerConfig."""
         values = await self._update_output_protocol_config(values)
         config = await self.get_player_config(player_id)
-        old_config = deepcopy(config)
         changed_keys = config.update(values)
         if not changed_keys:
             # no changes
             return config
         # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        self.set(conf_key, config.to_raw())
+        # Get existing raw config to preserve values that don't have config entries.
+        # e.g. protocol links etc.
+        existing_raw = self.get(conf_key) or {}
+        existing_values = existing_raw.get("values", {})
+        new_raw = config.to_raw()
+        new_values = new_raw.get("values", {})
+        # Preserve values from storage that don't have config entries in current context.
+        config_entry_keys = set(config.values.keys())
+        for key, value in existing_values.items():
+            if key not in new_values and key not in config_entry_keys:
+                new_values[key] = value
+        new_raw["values"] = new_values
+        self.set(conf_key, new_raw)
         try:
             # validate/handle the update in the player manager
             await self.mass.players.on_player_config_change(config, changed_keys)
         except Exception:
-            # rollback on error
-            self.set(conf_key, old_config.to_raw())
+            # rollback on error - use existing_raw to preserve all values
+            self.set(conf_key, existing_raw)
             raise
         # send config updated event
         self.mass.signal_event(
@@ -1836,11 +1847,6 @@ class ConfigController:
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
-
-        if not player.available:
-            # if player is not available, we cannot reliably determine the available protocols
-            # so we return no options to avoid confusion
-            return all_entries
 
         # Build options from available output protocols, sorted by priority
         options: list[ConfigValueOption] = []

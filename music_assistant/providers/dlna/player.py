@@ -500,12 +500,30 @@ class DLNAPlayer(Player):
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
             self.logger.debug("Device unavailable: %r", err)
-            if TYPE_CHECKING:
-                assert isinstance(self.provider, DLNAPlayerProvider)  # for type checking
-            await self.provider._device_disconnect(self)
+            await self._device_disconnect()
             raise PlayerUnavailableError from err
         finally:
             self.force_poll = False
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        await self._device_disconnect()
+
+    async def _device_disconnect(self) -> None:
+        """Destroy connections to the device."""
+        async with self.lock:
+            if not self.device:
+                self.logger.debug("Disconnecting from device that's not connected")
+                return
+
+            self.logger.debug("Disconnecting from %s", self.device.name)
+
+            self.device.on_event = None
+            old_device = self.device
+            self.device = None
+            self.set_available(False)
+            await old_device.async_unsubscribe_services()
 
     @staticmethod
     def _extract_mac_from_uuid(uuid_value: str) -> str | None:

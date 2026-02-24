@@ -12,7 +12,9 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
+    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_AIRPLAY_LATENCY,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -55,19 +57,22 @@ class AirPlay2Stream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Start cliap2 process."""
-        cli_binary = await get_cli_binary(self.player.protocol)
         assert self.player.airplay_discovery_info is not None
-
+        cli_binary = await get_cli_binary(self.player.protocol)
         player_id = self.player.player_id
-        sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+        sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
         assert isinstance(sync_adjust, int)
+        latency = self.player.config.get_value(
+            CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS
+        )
+        assert isinstance(latency, int)
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
 
         # cliap2 is the binary that handles the actual streaming to the player
-        # this binary leverages from the AirPlay2 support in owntones
+        # this binary leverages from the AirPlay2 support in OwnTone
         # https://github.com/music-assistant/cliairplay
 
         # Get AirPlay credentials if available (for Apple devices that require pairing)
@@ -98,12 +103,12 @@ class AirPlay2Stream(AirPlayProtocol):
             str(self._cli_loglevel),
             "--dacp_id",
             prov.dacp_id,
-            "--active_remote",
-            self.active_remote_id,
             "--pipe",
             "-",  # Use stdin for audio input
             "--command_pipe",
             self.commands_pipe.path,
+            "--latency",
+            str(latency),
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
@@ -150,10 +155,16 @@ class AirPlay2Stream(AirPlayProtocol):
                 )
             if "put delay detected" in line:
                 if "resetting all outputs" in line:
-                    logger.error("High packet loss detected, restarting playback...")
+                    logger.error(
+                        "Repeated output buffer low level detected, restarting playback..."
+                    )
+                    logger.info(
+                        "Recommended to increase 'Milliseconds of data to buffer' in player "
+                        "advanced settings"
+                    )
                     self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
                 else:
-                    logger.warning("Packet loss detected!")
+                    logger.warning("Output buffer low level detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 break
