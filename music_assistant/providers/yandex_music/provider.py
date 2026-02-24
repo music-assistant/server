@@ -914,6 +914,10 @@ class YandexMusicProvider(MusicProvider):
         if category == MY_WAVES_FOLDER_ID and not tag:
             return await self._browse_my_waves_stations(path)
 
+        # waves/waves_landing/... — redirect to Featured Waves browse
+        if category == WAVES_LANDING_FOLDER_ID:
+            return await self._browse_waves_landing(path, path_parts[1:])
+
         # waves/my_waves/<tag>[/next] — play a specific personal station
         # The full station_id has format "genre:allrock", not "my_waves:allrock".
         # Resolve by matching against dashboard stations cache.

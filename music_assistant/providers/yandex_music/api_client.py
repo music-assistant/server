@@ -933,6 +933,11 @@ class YandexMusicClient:
             result = await self._call_with_retry(_get)
             if result and isinstance(result, dict):
                 waves = result.get("waves", [])
+                LOGGER.debug(
+                    "landing-blocks/%s returned %d categories",
+                    block,
+                    len(waves) if isinstance(waves, list) else -1,
+                )
                 return waves if isinstance(waves, list) else []
             return None
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
