@@ -515,7 +515,12 @@ async def get_package_version(pkg_name: str) -> str | None:
 
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
+    # Fast path: check for HA supervisor token environment variable
+    # This is always set when running inside the HA supervisor
+    if not os.environ.get("SUPERVISOR_TOKEN"):
+        return False
 
+    # Token exists, verify the supervisor is actually reachable
     def _check() -> bool:
         try:
             urllib.request.urlopen("http://supervisor/core", timeout=1)
@@ -670,6 +675,23 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
     return fallback
+
+
+def parse_optional_bool(value: Any) -> bool | None:
+    """Parse an optional boolean value from various input types."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ("true", "1", "yes", "on"):
+            return True
+        if value_lower in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
 
 
 def merge_dict(

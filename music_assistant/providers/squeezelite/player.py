@@ -109,7 +109,7 @@ class SqueezelitePlayer(Player):
         )
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is registered or the config was updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # set presets and display
         await self._set_preset_items()
         await self._set_display()
@@ -265,7 +265,7 @@ class SqueezelitePlayer(Player):
         # select audio source, we force flow mode
         # because multi-client streaming does not support enqueueing
         audio_source = self.mass.streams.get_stream(
-            media, master_audio_format, force_flow_mode=True
+            media, master_audio_format, player_id=self.player_id, force_flow_mode=True
         )
 
         # start the stream task
@@ -297,9 +297,10 @@ class SqueezelitePlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._handle_play_url_for_slimplayer(
             self.client,
-            url=media.uri,
+            url=stream_url,
             media=media,
             enqueue=True,
             send_flush=False,

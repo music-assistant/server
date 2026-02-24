@@ -752,9 +752,7 @@ class SonosPlayer(Player):
         for idx in range(offset, current_index):
             if queue_item := self.mass.player_queues.get_item(queue_id, idx):
                 if queue_item.available:
-                    media = await self.mass.player_queues.player_media_from_queue_item(
-                        queue_item, False
-                    )
+                    media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
                     media.uri = await self.provider.mass.streams.resolve_stream_url(
                         self.player_id, media
                     )
@@ -763,9 +761,7 @@ class SonosPlayer(Player):
         # Add the current item
         if current_item := self.mass.player_queues.get_item(queue_id, current_index):
             if current_item.available:
-                media = await self.mass.player_queues.player_media_from_queue_item(
-                    current_item, False
-                )
+                media = await self.mass.player_queues.player_media_from_queue_item(current_item)
                 media.uri = await self.provider.mass.streams.resolve_stream_url(
                     self.player_id, media
                 )
@@ -777,7 +773,7 @@ class SonosPlayer(Player):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
-            media = await self.mass.player_queues.player_media_from_queue_item(next_item, False)
+            media = await self.mass.player_queues.player_media_from_queue_item(next_item)
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             items.append(media)
             last_index = next_item.queue_item_id

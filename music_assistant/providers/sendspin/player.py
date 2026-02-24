@@ -412,7 +412,7 @@ class SendspinPlayer(Player):
         self.update_state()
 
     async def on_config_updated(self) -> None:
-        """Apply preferred format when config changes."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
 
     async def _apply_preferred_format(self) -> None:

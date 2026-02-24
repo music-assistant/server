@@ -221,6 +221,16 @@ def parse_artist(
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_artist.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_artist.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if sonic_artist.artist_image_url:
         metadata.add_image(
             MediaItemImage(
@@ -231,15 +241,6 @@ def parse_artist(
             )
         )
 
-    if sonic_artist.cover_art:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=sonic_artist.cover_art,
-                provider=instance_id,
-                remotely_accessible=False,
-            )
-        )
     if sonic_info:
         if sonic_info.biography:
             metadata.description = sonic_info.biography

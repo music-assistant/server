@@ -59,7 +59,7 @@ async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> B
 
     # Initialize the provider
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
-        mock_client = Mock()
+        mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
         await provider.handle_async_init()
 
@@ -77,7 +77,7 @@ async def test_provider_initialization(
 
     # Test that initialization sets the correct values
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
-        mock_client = Mock()
+        mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
 
         await provider.handle_async_init()
@@ -88,7 +88,7 @@ async def test_provider_initialization(
 async def test_handle_async_init_with_identity(provider: BandcampProvider) -> None:
     """Test successful async initialization with identity token."""
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
-        mock_client = Mock()
+        mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
 
         await provider.handle_async_init()
@@ -113,7 +113,7 @@ async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock
     provider = BandcampProvider(mass_mock, manifest_mock, config)
 
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
-        mock_client = Mock()
+        mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
 
         await provider.handle_async_init()

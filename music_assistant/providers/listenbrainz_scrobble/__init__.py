@@ -27,6 +27,8 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
 CONF_USER_TOKEN = "_user_token"
+CONF_API_BASE_URL = "api_base_url"
+LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
@@ -37,12 +39,14 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     token = config.get_value(CONF_USER_TOKEN)
+    api_base_url = config.get_value(CONF_API_BASE_URL, LISTENBRAINZ_API_URL)
+
     if not token:
         raise SetupFailedError("User token needs to be set")
 
     assert token != SECURE_STRING_SUBSTITUTE
 
-    client = ListenBrainz()
+    client = ListenBrainz(api_base_url=api_base_url)
     client.set_auth_token(token)
 
     return ListenBrainzScrobbleProvider(mass, manifest, config, client)
@@ -154,6 +158,16 @@ async def get_config_entries(
             label="User Token",
             required=True,
             value=values.get(CONF_USER_TOKEN) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_API_BASE_URL,
+            type=ConfigEntryType.STRING,
+            label="Base URL",
+            required=False,
+            value=values.get(CONF_API_BASE_URL) if values else None,
+            description="URL for listenbrainz endpoint. Leave blank to default"
+            "to the public listenbrainz API.",
+            advanced=True,
         ),
         # add user selection entry
         await create_scrobble_users_config_entry(mass),

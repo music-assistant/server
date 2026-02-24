@@ -326,7 +326,7 @@ class ChromecastPlayer(Player):
         ]
 
     async def on_config_updated(self) -> None:
-        """Handle config updates - resend Sendspin config if needed."""
+        """Handle config load/update - resend Sendspin config if needed."""
         if not self.sendspin_mode_enabled:
             return
 
@@ -467,6 +467,7 @@ class ChromecastPlayer(Player):
         """Handle enqueuing of the next item on the player."""
         next_item_id = None
         status = self.cc.media_controller.status
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         # lookup position of current track in cast queue
         cast_current_item_id = getattr(status, "current_item_id", 0)
         cast_queue_items = getattr(status, "items", [])
