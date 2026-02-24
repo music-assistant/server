@@ -10,13 +10,13 @@ from bandcamp_async_api.models import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from music_assistant_models.enums import ImageType, LinkType, MediaType
+from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Album as MAAlbum
 from music_assistant_models.media_items import Artist as MAArtist
 from music_assistant_models.media_items import (
+    AudioFormat,
     ItemMapping,
     MediaItemImage,
-    MediaItemLink,
     ProviderMapping,
     UniqueList,
 )
@@ -31,16 +31,20 @@ class BandcampConverters:
         self.domain = domain
         self.instance_id = instance_id
 
+    @staticmethod
     def streaming_url_from_api(
-        self, streaming_info: dict[str, str]
-    ) -> tuple[str | None, int | None]:
-        """Parse streaming URL info."""
-        # Extract streaming URL with priority: mp3-v0 > mp3-128
+        streaming_info: dict[str, str],
+    ) -> tuple[str | None, int | None, ContentType]:
+        """Parse streaming URL info.
+
+        :param streaming_info: Dict of format keys to URLs from the Bandcamp API.
+        """
+        # Extract streaming URL with priority: mp3-v0 > mp3-320 > mp3-128
         bitrate = None
         streaming_url = None
+        content_type = ContentType.MP3
         if "mp3-v0" in streaming_info:
             streaming_url = streaming_info["mp3-v0"]
-            bitrate = None  # VBR
         elif "mp3-320" in streaming_info:
             streaming_url = streaming_info["mp3-320"]
             bitrate = 320
@@ -48,9 +52,9 @@ class BandcampConverters:
             streaming_url = streaming_info["mp3-128"]
             bitrate = 128
         elif streaming_info:
-            # Fallback to first available URL
             streaming_url = next(iter(streaming_info.values()))
-        return streaming_url, bitrate
+            content_type = ContentType.UNKNOWN
+        return streaming_url, bitrate, content_type
 
     def track_from_search(self, item: SearchResultTrack) -> MATrack:
         """Create a Track from new API SearchResultTrack."""
@@ -165,6 +169,7 @@ class BandcampConverters:
     ) -> MATrack:
         """Convert a Track object from the API to MA Track format."""
         album_id = album_id or 0
+        _, bitrate, content_type = self.streaming_url_from_api(track.streaming_url or {})
         output = MATrack(
             item_id=f"{track.artist.id}-{album_id}-{track.id}",
             provider=self.instance_id,
@@ -187,6 +192,10 @@ class BandcampConverters:
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=track.url,
+                    audio_format=AudioFormat(
+                        content_type=content_type,
+                        bit_rate=bitrate,
+                    ),
                 )
             },
         )
@@ -208,15 +217,6 @@ class BandcampConverters:
                 provider=self.instance_id,
                 name=track.album.title,
             )
-
-        streaming_url, _ = self.streaming_url_from_api(track.streaming_url)
-        if streaming_url:
-            output.metadata.links = {
-                MediaItemLink(
-                    type=LinkType.UNKNOWN,
-                    url=streaming_url,
-                )
-            }
         output.metadata.lyrics = track.lyrics
         if album_image_url:
             output.metadata.add_image(
@@ -287,7 +287,7 @@ class BandcampConverters:
                     url=album.url,
                 )
             },
-            year=datetime.fromtimestamp(album.release_date).year,
+            year=datetime.fromtimestamp(album.release_date).year if album.release_date else None,
         )
         output.metadata.add_image(
             MediaItemImage(
