@@ -1629,9 +1629,7 @@ class AuthenticationManager:
             self.logger.error(
                 "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
             )
-            raise RuntimeError(
-                f"Data integrity violation: user_id {row['user_id']} missing despite FK constraint"
-            )
+            return None
 
         device_name = row["device_name"] or "Short Code Login"
         token = await self.create_token(
