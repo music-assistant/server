@@ -644,6 +644,146 @@ class TestPromoteAlias:
 
 
 # ===================================================================
+# Group F2: merge_genres (7 tests)
+# ===================================================================
+
+
+class TestMergeGenres:
+    """Tests for merge_genres."""
+
+    async def test_merge_transfers_aliases(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Aliases from source genres are added to the target."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeTarget"))
+        source = await genre_ctrl.add_item_to_library(_make_genre("MergeSource"))
+        await genre_ctrl.add_alias(source.item_id, "SourceAlias")
+
+        result = await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        assert result.genre_aliases is not None
+        assert "MergeTarget" in result.genre_aliases
+        assert "MergeSource" in result.genre_aliases
+        assert "SourceAlias" in result.genre_aliases
+
+    async def test_merge_transfers_media_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Media mappings from source genres are moved to the target."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeMapTarget"))
+        source = await genre_ctrl.add_item_to_library(_make_genre("MergeMapSource"))
+        track = await _add_test_track(mass, "Merge Track")
+        await genre_ctrl.add_media_mapping(
+            source.item_id, MediaType.TRACK, track.item_id, "MergeMapSource"
+        )
+
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = 'track' AND media_id = :mid",
+            {"gid": int(target.item_id), "mid": int(track.item_id)},
+            limit=1,
+        )
+        assert len(rows) == 1
+
+    async def test_merge_deletes_source_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Source genres are deleted after merge."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeDelTarget"))
+        source = await genre_ctrl.add_item_to_library(_make_genre("MergeDelSource"))
+
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        with pytest.raises(MediaNotFoundError):
+            await genre_ctrl.get_library_item(int(source.item_id))
+
+    async def test_merge_deduplicates_aliases(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Overlapping aliases are not duplicated on the target."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeDedupTarget"))
+        await genre_ctrl.add_alias(target.item_id, "SharedAlias")
+        source = await genre_ctrl.add_item_to_library(_make_genre("MergeDedupSource"))
+        await genre_ctrl.add_alias(source.item_id, "SharedAlias")
+
+        result = await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        assert result.genre_aliases is not None
+        alias_list = list(result.genre_aliases)
+        norm_aliases = [a for a in alias_list if a.lower().replace(" ", "") == "sharedalias"]
+        assert len(norm_aliases) == 1
+
+    async def test_merge_deduplicates_media_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Overlapping media mappings do not create duplicates."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeDedupMapTarget"))
+        source = await genre_ctrl.add_item_to_library(_make_genre("MergeDedupMapSource"))
+        track = await _add_test_track(mass, "Merge Dedup Track")
+        # Both genres map the same track
+        await genre_ctrl.add_media_mapping(
+            target.item_id, MediaType.TRACK, track.item_id, "MergeDedupMapTarget"
+        )
+        await genre_ctrl.add_media_mapping(
+            source.item_id, MediaType.TRACK, track.item_id, "MergeDedupMapSource"
+        )
+
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = 'track' AND media_id = :mid",
+            {"gid": int(target.item_id), "mid": int(track.item_id)},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_merge_multiple_sources(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Multiple source genres can be merged at once."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeMultiTarget"))
+        source1 = await genre_ctrl.add_item_to_library(_make_genre("MergeMultiSrc1"))
+        source2 = await genre_ctrl.add_item_to_library(_make_genre("MergeMultiSrc2"))
+        track1 = await _add_test_track(mass, "Multi Merge Track 1")
+        track2 = await _add_test_track(mass, "Multi Merge Track 2")
+        await genre_ctrl.add_media_mapping(
+            source1.item_id, MediaType.TRACK, track1.item_id, "MergeMultiSrc1"
+        )
+        await genre_ctrl.add_media_mapping(
+            source2.item_id, MediaType.TRACK, track2.item_id, "MergeMultiSrc2"
+        )
+
+        result = await genre_ctrl.merge_genres([source1.item_id, source2.item_id], target.item_id)
+        assert result.genre_aliases is not None
+        assert "MergeMultiSrc1" in result.genre_aliases
+        assert "MergeMultiSrc2" in result.genre_aliases
+
+        # Both tracks mapped to target
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_type = 'track'",
+            {"gid": int(target.item_id)},
+            limit=0,
+        )
+        assert len(rows) == 2
+
+        # Both sources deleted
+        for src in (source1, source2):
+            with pytest.raises(MediaNotFoundError):
+                await genre_ctrl.get_library_item(int(src.item_id))
+
+    async def test_merge_target_in_source_raises(self, genre_ctrl: GenreController) -> None:
+        """Raises ValueError when target is in the source list."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MergeSelfTarget"))
+        with pytest.raises(ValueError, match="Target genre cannot be in the list"):
+            await genre_ctrl.merge_genres([genre.item_id], genre.item_id)
+
+    async def test_merge_empty_source_raises(self, genre_ctrl: GenreController) -> None:
+        """Raises ValueError when source list is empty."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeEmptyTarget"))
+        with pytest.raises(ValueError, match="No genre IDs provided"):
+            await genre_ctrl.merge_genres([], target.item_id)
+
+
+# ===================================================================
 # Group G: restore_default_genres (5 tests)
 # ===================================================================
 

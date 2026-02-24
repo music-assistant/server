@@ -130,6 +130,11 @@ class GenreController(MediaControllerBase[Genre]):
             "music/genres/genres_for_media_item",
             self.get_genres_for_media_item,
         )
+        self.mass.register_api_command(
+            "music/genres/merge",
+            self.merge_genres,
+            required_role="admin",
+        )
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_sync_tasks_updated, EventType.SYNC_TASKS_UPDATED)
@@ -938,6 +943,63 @@ class GenreController(MediaControllerBase[Genre]):
         )
 
         return await self.get_library_item(new_genre_id)
+
+    async def merge_genres(self, genre_ids: list[str | int], target_genre_id: str | int) -> Genre:
+        """Merge one or more genres into a target genre.
+
+        Transfers all aliases and media mappings from the source genres to the
+        target, then deletes the source genres. Aliases and mappings are
+        deduplicated so no duplicates are created on the target.
+
+        :param genre_ids: List of genre IDs to merge into the target.
+        :param target_genre_id: Database ID of the genre to merge into.
+        """
+        target_id = int(target_genre_id)
+        source_ids = [int(gid) for gid in genre_ids]
+
+        if target_id in source_ids:
+            msg = "Target genre cannot be in the list of genres to merge"
+            raise ValueError(msg)
+        if not source_ids:
+            msg = "No genre IDs provided to merge"
+            raise ValueError(msg)
+
+        target_genre = await self.get_library_item(target_id)
+        db = self.mass.music.database
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+
+        # Collect and merge aliases from all source genres into the target
+        all_new_aliases: list[str] = []
+        for source_id in source_ids:
+            source_genre = await self.get_library_item(source_id)
+            if source_genre.genre_aliases:
+                all_new_aliases.extend(source_genre.genre_aliases)
+
+        existing_aliases = list(target_genre.genre_aliases) if target_genre.genre_aliases else []
+        merged_aliases = self._dedup_aliases(existing_aliases, all_new_aliases)
+        await db.update(
+            self.db_table,
+            {"item_id": target_id},
+            {"genre_aliases": serialize_to_json(merged_aliases)},
+        )
+
+        # Transfer media mappings from source genres to target (deduplicated)
+        placeholders = ", ".join(str(sid) for sid in source_ids)
+        await db.execute(
+            f"INSERT OR IGNORE INTO {gm} (genre_id, media_id, media_type, alias) "
+            f"SELECT :target_id, media_id, media_type, alias FROM {gm} "
+            f"WHERE genre_id IN ({placeholders})",
+            {"target_id": target_id},
+        )
+
+        # Delete source genres and their remaining mappings
+        for source_id in source_ids:
+            await db.delete(gm, {"genre_id": source_id})
+            await super().remove_item_from_library(source_id)
+
+        updated = await self.get_library_item(target_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
 
     async def sync_media_item_genres(
         self, media_type: MediaType, media_id: str | int, genre_names: set[str]
