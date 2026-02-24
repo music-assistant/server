@@ -315,8 +315,11 @@ class SendspinPlaybackSession:
         """Return (join_pending_ids, active_pipelines) under lock."""
         async with self._state_lock:
             members = self._members
+            leader_id = self.player.player_id
             return set(self._join_catchup), tuple(
-                (mid, p) for mid, p in self._member_pipelines.items() if mid in members
+                (mid, p)
+                for mid, p in self._member_pipelines.items()
+                if mid in members or mid == leader_id
             )
 
     # -- Public API ------------------------------------------------------------
@@ -920,6 +923,8 @@ class SendspinPlaybackSession:
             self._mapping_dirty = False
         for member_id in member_ids:
             await self._sync_member_pipeline(member_id)
+        # Keep leader pipeline in sync so leader DSP can be applied when required.
+        await self._sync_member_pipeline(self.player.player_id)
 
     async def _sync_member_pipeline(self, player_id: str) -> _MemberPipeline:
         """Create/update pipeline state for one member from current MA config."""
@@ -1083,13 +1088,9 @@ class SendspinPlaybackSession:
         pipeline = self._member_pipelines.get(player_id)
         if pipeline is not None:
             return pipeline.channel_id
-        # The leader always receives MAIN_CHANNEL audio directly from the
-        # commit loop; only group members get per-player DSP channels.
-        if player_id == self.player.player_id:
-            return MAIN_CHANNEL
         # Force a fresh config read for pending/unknown joiners so the very
         # first resolution (triggered by add_client) uses up-to-date DSP settings.
-        force = player_id not in self._members
+        force = player_id not in self._members and player_id != self.player.player_id
         config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
             return MAIN_CHANNEL
