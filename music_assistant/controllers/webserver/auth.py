@@ -1601,7 +1601,7 @@ class AuthenticationManager:
 
         raise RuntimeError("Failed to generate a unique join code after 3 attempts")
 
-    async def exchange_join_code(self, code: str) -> str | None:
+    async def _exchange_join_code(self, code: str) -> str | None:
         """Exchange a join code for a JWT access token.
 
         The token is created for the user associated with the join code,
@@ -1686,8 +1686,8 @@ class AuthenticationManager:
             self.logger.info("Revoked %d join code(s)", count)
         return count
 
-    @api_command("auth/code", authenticated=False)
-    async def authenticate_with_join_code(self, code: str) -> dict[str, Any]:
+    @api_command("auth/join_code/exchange", authenticated=False)
+    async def exchange_join_code(self, code: str) -> dict[str, Any]:
         """Exchange a join code for an access token (public API).
 
         This is the public API endpoint for short-code authentication.
@@ -1696,7 +1696,7 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        token = await self.exchange_join_code(code)
+        token = await self._exchange_join_code(code)
 
         if not token:
             return {
@@ -1721,3 +1721,28 @@ class AuthenticationManager:
                 "success": False,
                 "error": "Failed to create access token",
             }
+
+    @api_command("auth/join_codes", required_role="admin")
+    async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List active join codes, optionally filtered by user (admin only).
+
+        :param user_id: Optional user ID to filter codes for.
+        :return: List of join code records.
+        """
+        filter_args = {"user_id": user_id} if user_id else None
+        rows = await self.database.get_rows("join_codes", filter_args, limit=100)
+        return [dict(row) for row in rows]
+
+    @api_command("auth/join_code/revoke", required_role="admin")
+    async def revoke_join_code(self, code_id: str) -> None:
+        """Revoke a specific join code (admin only).
+
+        :param code_id: The code ID to revoke.
+        """
+        code_row = await self.database.get_row("join_codes", {"code_id": code_id})
+        if not code_row:
+            raise InvalidDataError("Join code not found")
+
+        await self.database.delete("join_codes", {"code_id": code_id})
+        await self.database.commit()
+        self.logger.info("Join code revoked (code_id=%s)", code_id)
