@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
+if TYPE_CHECKING:
+    import aiohttp
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -77,12 +79,14 @@ def handle_zvuk_errors(
 class ZvukMusicClient:
     """Wrapper around zvuk-music ClientAsync."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, http_session: aiohttp.ClientSession) -> None:
         """Initialize the Zvuk Music client.
 
         :param token: Zvuk Music X-Auth-Token.
+        :param http_session: Shared aiohttp session from MA (``self.mass.http_session``).
         """
         self._token = token
+        self._http_session = http_session
         self._client: ClientAsync | None = None
         self._user_id: str | None = None
 
@@ -117,6 +121,28 @@ class ZvukMusicClient:
         """Disconnect the client."""
         self._client = None
         self._user_id = None
+
+    async def _tiny_get(self, path: str, params: dict[str, str]) -> dict[str, Any] | None:
+        """Perform an authenticated GET to a /api/tiny endpoint.
+
+        Reuses the shared ``http_session`` passed at construction to benefit from
+        connection pooling and avoid per-call session overhead.
+
+        :param path: Endpoint path relative to TINY_API_URL (e.g. ``"lyrics"``).
+        :param params: Query parameters.
+        :return: Parsed JSON dict, or None on non-200 response or empty body.
+        """
+        url = f"{TINY_API_URL}/{path}"
+        try:
+            async with self._http_session.get(
+                url, params=params, headers={"X-Auth-Token": self._token}
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return cast("dict[str, Any]", await resp.json())
+        except Exception as err:
+            LOGGER.debug("Tiny API request to %s failed: %s", url, err)
+            return None
 
     def _ensure_connected(self) -> ClientAsync:
         """Ensure the client is connected and return it."""
@@ -313,11 +339,7 @@ class ZvukMusicClient:
         :param quality: Quality string — "flac", "high", or "mid".
         :return: Stream URL string, or None if not found.
         """
-        client = self._ensure_connected()
-        result = await client._request.get(
-            f"{TINY_API_URL}/track/stream",
-            params={"quality": quality, "id": track_id},
-        )
+        result = await self._tiny_get("track/stream", {"quality": quality, "id": track_id})
         if not result or "stream" not in result:
             return None
         return str(result["stream"])
@@ -374,16 +396,25 @@ class ZvukMusicClient:
 
         :return: List of playlist IDs.
         """
-        client = self._ensure_connected()
-        result = await client._request.get(
-            f"{TINY_API_URL}/grid/content",
-            params={"name": "editorial_playlist", "ranker_enabled": "true"},
+        result = await self._tiny_get(
+            "grid/content", {"name": "editorial_playlist", "ranker_enabled": "true"}
         )
         if not result:
             return []
         # Response: {'page': {'data': [{'type': 'playlist', 'id': 123}, ...]}, ...}
         data = result.get("page", {}).get("data", [])
-        return [int(item["id"]) for item in data if item.get("type") == "playlist"]
+        playlist_ids: list[int] = []
+        for item in data:
+            if item.get("type") != "playlist":
+                continue
+            raw_id = item.get("id")
+            if raw_id is None:
+                continue
+            try:
+                playlist_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        return playlist_ids
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_lyrics(self, track_id: str) -> dict[str, str | None] | None:
@@ -397,11 +428,7 @@ class ZvukMusicClient:
         :return: Dict with ``lyrics`` (str or None), ``type`` (str or None),
             ``translation`` (str or None), or None on error.
         """
-        client = self._ensure_connected()
-        result = await client._request.get(
-            f"{TINY_API_URL}/lyrics",
-            params={"track_id": track_id},
-        )
+        result = await self._tiny_get("lyrics", {"track_id": track_id})
         if not result or not result.get("lyrics"):
             return None
         return result
