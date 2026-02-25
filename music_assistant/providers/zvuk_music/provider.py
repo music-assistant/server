@@ -521,10 +521,10 @@ class ZvukMusicProvider(MusicProvider):
                 },
             ) as resp:
                 if resp.status == 200:
-                    return bytes(await resp.read())
+                    return await resp.read()
         except Exception as err:
             self.logger.debug("Failed to resolve static image %s: %s", path, err)
-        return str(path)
+        return path
 
     # Library edit methods
 

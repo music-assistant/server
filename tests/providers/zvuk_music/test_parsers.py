@@ -7,13 +7,13 @@ from unittest.mock import Mock
 import pytest
 from music_assistant_models.enums import AlbumType, ImageType
 
-from music_assistant.providers.zvuk_music.constants import SYNTHESIS_PLAYLIST_IDS
 from music_assistant.providers.zvuk_music.parsers import (
     parse_album,
     parse_artist,
     parse_playlist,
     parse_track,
 )
+from provider.constants import SYNTHESIS_PLAYLIST_IDS
 
 
 def _create_mock_image(template: str = "https://zvuk.com/image/{width}x{height}") -> Mock:
