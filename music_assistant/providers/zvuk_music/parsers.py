@@ -47,10 +47,10 @@ def _get_image_url(image: ZvukImage | None, size: int = IMAGE_SIZE_LARGE) -> str
     :param size: Image size in pixels.
     :return: Full image URL or None.
     """
-    if not image:
+    if not image or not image.src:
         return None
     url = image.get_url(size, size)
-    return url if url else None
+    return url or None
 
 
 def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpleArtist) -> Artist:
@@ -87,6 +87,25 @@ def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpl
                         remotely_accessible=True,
                     )
                 ]
+            )
+
+    # Map artist biography (only available when fetched with with_description=True)
+    if hasattr(artist_obj, "description") and artist_obj.description:
+        artist.metadata.description = artist_obj.description
+
+    # Map artist background/fanart image (second_image, available on full Artist)
+    if hasattr(artist_obj, "second_image") and artist_obj.second_image:
+        fanart_url = _get_image_url(artist_obj.second_image)
+        if fanart_url:
+            if artist.metadata.images is None:
+                artist.metadata.images = UniqueList()
+            artist.metadata.images.append(
+                MediaItemImage(
+                    type=ImageType.FANART,
+                    path=fanart_url,
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
+                )
             )
 
     return artist
@@ -155,6 +174,10 @@ def parse_album(provider: ZvukMusicProvider, release_obj: ZvukRelease | ZvukSimp
     # Parse genres (only available on full Release, not SimpleRelease)
     if hasattr(release_obj, "genres") and release_obj.genres:
         album.metadata.genres = {genre.name for genre in release_obj.genres if genre.name}
+
+    # Parse record label (only available on full Release, not SimpleRelease)
+    if hasattr(release_obj, "label") and release_obj.label and release_obj.label.title:
+        album.metadata.label = release_obj.label.title
 
     # Parse explicit flag
     if release_obj.explicit:
@@ -244,6 +267,14 @@ def parse_track(provider: ZvukMusicProvider, track_obj: ZvukTrack | ZvukSimpleTr
     if hasattr(track_obj, "position") and track_obj.position is not None:
         track.track_number = track_obj.position
 
+    # Genres (only on full Track, not SimpleTrack)
+    if hasattr(track_obj, "genres") and track_obj.genres:
+        track.metadata.genres = {g.name for g in track_obj.genres if g.name}
+
+    # Credits/performers (only on full Track)
+    if hasattr(track_obj, "credits") and track_obj.credits:
+        track.metadata.performers = {track_obj.credits}
+
     # Explicit flag (boolean on both Track and SimpleTrack)
     if track_obj.explicit:
         track.metadata.explicit = True
@@ -297,13 +328,17 @@ def parse_playlist(
     if playlist_obj.image:
         image_url = _get_image_url(playlist_obj.image)
         if image_url:
+            # Static avatar images (/static/avatar/...) require Zvuk auth cookies and
+            # cannot be fetched publicly; set remotely_accessible=False so MA calls
+            # resolve_image() on the provider instead of trying to proxy the URL directly.
+            remotely_accessible = not playlist_obj.image.src.startswith("/static/")
             playlist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
                         provider=provider.instance_id,
-                        remotely_accessible=True,
+                        remotely_accessible=remotely_accessible,
                     )
                 ]
             )

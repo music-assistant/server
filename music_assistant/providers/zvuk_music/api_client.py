@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ParamSpec, TypeVar, cast
 
 from music_assistant_models.errors import (
@@ -17,6 +17,7 @@ from zvuk_music import CollectionItem as ZvukCollectionItem
 from zvuk_music import Playlist as ZvukPlaylist
 from zvuk_music import Release as ZvukRelease
 from zvuk_music import Search as ZvukSearch
+from zvuk_music import SimplePlaylist as ZvukSimplePlaylist
 from zvuk_music import SimpleTrack as ZvukSimpleTrack
 from zvuk_music import Stream as ZvukStream
 from zvuk_music import Track as ZvukTrack
@@ -29,6 +30,7 @@ from zvuk_music.exceptions import (
     TimedOutError,
     UnauthorizedError,
 )
+from zvuk_music.utils.request_async import TINY_API_URL
 
 from .constants import DEFAULT_LIMIT
 
@@ -299,6 +301,27 @@ class ZvukMusicClient:
         client = self._ensure_connected()
         return await client.get_stream_urls(track_id)
 
+    @handle_zvuk_errors(not_found_return=None)
+    async def get_direct_stream_url(self, track_id: str, quality: str) -> str | None:
+        """Get a direct (non-DRM) stream URL for a track via /api/tiny/track/stream.
+
+        Unlike get_stream_urls() which uses the tracks endpoint and returns a DRM-protected
+        FLAC URL (flacdrm), this method calls the dedicated stream endpoint which returns a
+        plain, decodable URL. Used by zvuk-dl-rs to download lossless FLAC.
+
+        :param track_id: Track ID.
+        :param quality: Quality string — "flac", "high", or "mid".
+        :return: Stream URL string, or None if not found.
+        """
+        client = self._ensure_connected()
+        result = await client._request.get(
+            f"{TINY_API_URL}/track/stream",
+            params={"quality": quality, "id": track_id},
+        )
+        if not result or "stream" not in result:
+            return None
+        return str(result["stream"])
+
     # Collection (Library)
 
     @handle_zvuk_errors()
@@ -327,6 +350,61 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         return await client.get_user_playlists()
+
+    @handle_zvuk_errors(not_found_return=[])
+    async def get_short_playlists(
+        self, playlist_ids: Sequence[int | str]
+    ) -> list[ZvukSimplePlaylist]:
+        """Get playlist metadata (title, image, description) by IDs without tracks.
+
+        Uses the lightweight getShortPlaylist GraphQL query which returns only metadata.
+        Works for both regular playlists and synthesis playlists (IDs 3,4,6,11,12,13,14,15).
+
+        :param playlist_ids: List of playlist IDs.
+        :return: List of SimplePlaylist objects.
+        """
+        client = self._ensure_connected()
+        return await client.get_short_playlist(list(playlist_ids))
+
+    @handle_zvuk_errors(not_found_return=[])
+    async def get_editorial_playlist_ids(self) -> list[int]:
+        """Get editorial (curated) playlist IDs from Zvuk's grid content API.
+
+        Fetches «Подборки» — genre-focused curated playlists shown on the home page.
+
+        :return: List of playlist IDs.
+        """
+        client = self._ensure_connected()
+        result = await client._request.get(
+            f"{TINY_API_URL}/grid/content",
+            params={"name": "editorial_playlist", "ranker_enabled": "true"},
+        )
+        if not result:
+            return []
+        # Response: {'page': {'data': [{'type': 'playlist', 'id': 123}, ...]}, ...}
+        data = result.get("page", {}).get("data", [])
+        return [int(item["id"]) for item in data if item.get("type") == "playlist"]
+
+    @handle_zvuk_errors(not_found_return=None)
+    async def get_lyrics(self, track_id: str) -> dict[str, str | None] | None:
+        """Get lyrics for a track from Zvuk lyrics API.
+
+        Fetches lyrics from ``/api/tiny/lyrics?track_id={id}``.
+        Returns synced LRC text (type ``'subtitle'``) or plain text (type ``'lyrics'``).
+        Returns ``None`` if the track has no lyrics.
+
+        :param track_id: Track ID.
+        :return: Dict with ``lyrics`` (str or None), ``type`` (str or None),
+            ``translation`` (str or None), or None on error.
+        """
+        client = self._ensure_connected()
+        result = await client._request.get(
+            f"{TINY_API_URL}/lyrics",
+            params={"track_id": track_id},
+        )
+        if not result or not result.get("lyrics"):
+            return None
+        return result
 
     # Library modifications
 
