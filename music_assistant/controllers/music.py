@@ -79,6 +79,24 @@ from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
+from music_assistant.providers.builtin.constants import (
+    ALL_FAVORITE_TRACKS as BUILTIN_ALL_FAVORITE_TRACKS,
+)
+from music_assistant.providers.builtin.constants import (
+    RANDOM_ALBUM as BUILTIN_RANDOM_ALBUM,
+)
+from music_assistant.providers.builtin.constants import (
+    RANDOM_ARTIST as BUILTIN_RANDOM_ARTIST,
+)
+from music_assistant.providers.builtin.constants import (
+    RANDOM_TRACKS as BUILTIN_RANDOM_TRACKS,
+)
+from music_assistant.providers.builtin.constants import (
+    RECENTLY_ADDED_TRACKS as BUILTIN_RECENTLY_ADDED_TRACKS,
+)
+from music_assistant.providers.builtin.constants import (
+    RECENTLY_PLAYED as BUILTIN_RECENTLY_PLAYED,
+)
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -101,7 +119,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 29
+DB_SCHEMA_VERSION: Final[int] = 30
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2481,6 +2499,31 @@ class MusicController(CoreController):
             # to the crossfade mixer. Truncate the table so all analyses are re-computed.
             await self._database.execute(f"DELETE FROM {DB_TABLE_SMART_FADES_ANALYSIS}")
 
+        if prev_version <= 30:
+            # add supported_mediatypes column to playlist table, and populated it with
+            # {MediaType.TRACK}, i.e. ["track"], as this was the only media type supported.
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes json DEFAULT '' "
+                "NOT NULL"
+            )
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = '[\"track\"]'"
+            )
+            # The builtin provider is special, as it supports all media types for
+            # user-created playlists already prior to this schema version.
+            query = (
+                "SELECT * FROM provider_mappings WHERE provider_domain = 'builtin' and "
+                "provider_item_id not in "
+                f"('{BUILTIN_ALL_FAVORITE_TRACKS}','{BUILTIN_RANDOM_ALBUM}','{BUILTIN_RANDOM_TRACKS}','{BUILTIN_RECENTLY_ADDED_TRACKS}','{BUILTIN_RECENTLY_PLAYED}','{BUILTIN_RANDOM_ARTIST}')"
+            )
+            db_rows = await self.mass.music.database.get_rows_from_query(query)
+            item_ids = [str(x["item_id"]) for x in db_rows]
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_PLAYLISTS} SET "
+                'supported_mediatypes = \'["audiobook","podcast_episode","radio","track"]\' '
+                f"WHERE item_id in ({','.join(item_ids)})"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2592,7 +2635,8 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [supported_mediatypes] json NOT NULL
             );"""
         )
         await self.database.execute(

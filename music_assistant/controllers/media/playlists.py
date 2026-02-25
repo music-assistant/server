@@ -137,7 +137,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
         supported_types: set[MediaType] = set()
-        if ProviderFeature.PLAYLIST_CREATE in provider.supported_features:
+        if (
+            ProviderFeature.PLAYLIST_CREATE in provider.supported_features
+            or ProviderFeature.PLAYLIST_CREATE_TRACKS in provider.supported_features
+        ):
+            # PLAYLIST_CREATE is deprecated
             supported_types.add(MediaType.TRACK)
         if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
             supported_types.add(MediaType.AUDIOBOOK)
@@ -485,6 +489,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "supported_mediatypes": serialize_to_json(item.supported_mediatypes),
             },
         )
         # update/set provider_mappings table
