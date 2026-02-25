@@ -271,11 +271,14 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        has_media_mappings: bool | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
+        :param has_media_mappings: If True, only return genres with media mappings.
+            If False, only return genres without media mappings. If None, no filter.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -285,8 +288,15 @@ class GenreController(MediaControllerBase[Genre]):
         # Pass raw lowered search for alias matching (search_raw),
         # since the normalized :search param strips spaces/special chars.
         extra_params: dict[str, Any] | None = None
+        extra_parts: list[str] | None = None
         if search:
             extra_params = {"search_raw": f"%{search.strip().lower()}%"}
+        if has_media_mappings is not None:
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            exists_clause = (
+                f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
+            )
+            extra_parts = [exists_clause if has_media_mappings else f"NOT {exists_clause}"]
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -294,6 +304,7 @@ class GenreController(MediaControllerBase[Genre]):
             offset=offset,
             order_by=order_by,
             extra_query_params=extra_params,
+            extra_query_parts=extra_parts,
         )
 
     async def radio_mode_base_tracks(

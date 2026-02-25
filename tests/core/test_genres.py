@@ -942,6 +942,42 @@ class TestQueryMethods:
         genres = await genre_ctrl.get_genres_for_media_item(MediaType.TRACK, track.item_id)
         assert genres == []
 
+    async def test_library_items_has_media_mappings_true(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """has_media_mappings=True returns only genres with mappings."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("HasMappingGenre"))
+        unmapped = await genre_ctrl.add_item_to_library(_make_genre("NoMappingGenre"))
+        track = await _add_test_track(mass, "HasMapping Track")
+        await genre_ctrl.add_media_mapping(
+            mapped.item_id, MediaType.TRACK, track.item_id, "HasMappingGenre"
+        )
+        results = await genre_ctrl.library_items(has_media_mappings=True)
+        result_ids = {int(g.item_id) for g in results}
+        assert int(mapped.item_id) in result_ids
+        assert int(unmapped.item_id) not in result_ids
+
+    async def test_library_items_has_media_mappings_false(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """has_media_mappings=False returns only genres without mappings."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("MappedFilterGenre"))
+        unmapped = await genre_ctrl.add_item_to_library(_make_genre("UnmappedFilterGenre"))
+        track = await _add_test_track(mass, "MappedFilter Track")
+        await genre_ctrl.add_media_mapping(
+            mapped.item_id, MediaType.TRACK, track.item_id, "MappedFilterGenre"
+        )
+        results = await genre_ctrl.library_items(has_media_mappings=False)
+        result_ids = {int(g.item_id) for g in results}
+        assert int(unmapped.item_id) in result_ids
+        assert int(mapped.item_id) not in result_ids
+
+    async def test_library_items_has_media_mappings_none(self, genre_ctrl: GenreController) -> None:
+        """has_media_mappings=None (default) returns all genres."""
+        all_genres = await genre_ctrl.library_items(has_media_mappings=None)
+        all_genres_default = await genre_ctrl.library_items()
+        assert len(all_genres) == len(all_genres_default)
+
 
 # ===================================================================
 # Group I: Genre Lookup & Scanner (5 tests)
