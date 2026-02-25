@@ -1710,7 +1710,7 @@ class AuthenticationManager:
     def _schedule_join_code_cleanup(self) -> None:
         """Schedule periodic cleanup of expired join codes."""
         self.mass.create_task(self._cleanup_expired_join_codes())
-        self.mass.loop.call_later(86400, self._schedule_join_code_cleanup)
+        self.mass.call_later(86400, self._schedule_join_code_cleanup)
 
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
