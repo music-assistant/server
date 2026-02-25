@@ -602,32 +602,12 @@ class PartyModePlugin(PluginProvider):
         # Handle different scenarios based on queue state and boost mode
         started_playback = False
 
-        if queue.state in (PlaybackState.IDLE, PlaybackState.UNKNOWN):
-            # Queue is idle — resolve, load, and start playback
-            media_item = await self.mass.music.get_item_by_uri(uri)
-            if not media_item or media_item.media_type not in (
-                MediaType.TRACK,
-                MediaType.RADIO,
-            ):
-                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
-            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-            if boost:
-                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
-            await self.mass.player_queues.load(
-                queue_id=queue_id,
-                queue_items=[queue_item],
-                insert_at_index=0,
-                keep_remaining=True,
-                keep_played=True,
-                shuffle=False,
-            )
-            await self.mass.player_queues.play_index(queue_id, 0)
-            started_playback = True
-        elif queue.state == PlaybackState.PAUSED:
-            # Paused — insert as next song after current position, then skip to it
-            current_index = queue.current_index or 0
-            insert_index = current_index + 1
+        if queue.state == PlaybackState.PLAYING:
+            pass  # Handled below via boost/guest section insertion
+        elif queue.current_index is not None:
+            # Not playing but queue has a position (paused/idle with loaded queue)
+            # Insert as next song after current position, then skip to it
+            insert_index = queue.current_index + 1
             media_item = await self.mass.music.get_item_by_uri(uri)
             if not media_item or media_item.media_type not in (
                 MediaType.TRACK,
@@ -648,14 +628,36 @@ class PartyModePlugin(PluginProvider):
             )
             await self.mass.player_queues.play_index(queue_id, insert_index)
             started_playback = True
-        elif boost:
-            # Boost = insert after other boosted songs, before regular guest songs
-            # This creates a priority within the guest section
-            await self._add_to_boost_section(queue_id, uri)
         else:
-            # Regular add = insert at end of guest section (priority queue)
-            # This ensures guest items play before regular queue items
-            await self._add_to_guest_section(queue_id, uri)
+            # Queue has no position — fresh start
+            media_item = await self.mass.music.get_item_by_uri(uri)
+            if not media_item or media_item.media_type not in (
+                MediaType.TRACK,
+                MediaType.RADIO,
+            ):
+                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+            if boost:
+                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+            await self.mass.player_queues.load(
+                queue_id=queue_id,
+                queue_items=[queue_item],
+                insert_at_index=0,
+                keep_remaining=True,
+                keep_played=True,
+                shuffle=False,
+            )
+            await self.mass.player_queues.play_index(queue_id, 0)
+            started_playback = True
+
+        if queue.state == PlaybackState.PLAYING and not started_playback:
+            if boost:
+                # Boost = insert after other boosted songs, before regular guest songs
+                await self._add_to_boost_section(queue_id, uri)
+            else:
+                # Regular add = insert at end of guest section (priority queue)
+                await self._add_to_guest_section(queue_id, uri)
 
         self.logger.info(
             "Guest added to queue: %s (boost=%s, started_playback=%s)",
