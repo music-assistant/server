@@ -58,9 +58,7 @@ class TestGetDirectStreamUrl:
         url = await client.get_direct_stream_url("12345", "flac")
 
         assert url == "https://cdn.zvuk.com/track.flac?token=abc"
-        client._tiny_get.assert_called_once_with(  # type: ignore[attr-defined]
-            "track/stream", {"quality": "flac", "id": "12345"}
-        )
+        client._tiny_get.assert_called_once_with("track/stream", {"quality": "flac", "id": "12345"})
 
     @pytest.mark.asyncio
     async def test_returns_none_when_stream_missing(self) -> None:
@@ -92,7 +90,7 @@ class TestGetDirectStreamUrl:
 
         await client.get_direct_stream_url("99999", "high")
 
-        call_args = client._tiny_get.call_args  # type: ignore[attr-defined]
+        call_args = client._tiny_get.call_args
         assert call_args.args[1]["quality"] == "high"
         assert call_args.args[1]["id"] == "99999"
 
