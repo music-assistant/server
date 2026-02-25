@@ -331,7 +331,8 @@ def parse_playlist(
             # Static avatar images (/static/avatar/...) require Zvuk auth cookies and
             # cannot be fetched publicly; set remotely_accessible=False so MA calls
             # resolve_image() on the provider instead of trying to proxy the URL directly.
-            remotely_accessible = not playlist_obj.image.src.startswith("/static/")
+            src = getattr(playlist_obj.image, "src", None)
+            remotely_accessible = isinstance(src, str) and "/static/" not in src
             playlist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
