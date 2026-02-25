@@ -27,6 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAYLISTS,
+    DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
     DB_TABLE_RADIOS,
     DB_TABLE_TRACKS,
@@ -496,6 +497,9 @@ class GenreController(MediaControllerBase[Genre]):
         if full_restore:
             self.logger.warning("Performing FULL restore - deleting all existing genres")
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
+            await self.mass.music.database.delete(
+                DB_TABLE_PLAYLOG, {"media_type": MediaType.GENRE.value}
+            )
             await self.mass.music.database.delete(DB_TABLE_GENRES)
             existing = set()
         else:
