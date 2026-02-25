@@ -448,8 +448,9 @@ class DLNAPlayer(Player):
         assert self.device is not None  # for type checking
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
-            await self.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+            await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:
             self.logger.error(
                 "Enqueuing the next track failed for player %s - "

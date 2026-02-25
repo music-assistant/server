@@ -297,9 +297,10 @@ class SqueezelitePlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._handle_play_url_for_slimplayer(
             self.client,
-            url=media.uri,
+            url=stream_url,
             media=media,
             enqueue=True,
             send_flush=False,
