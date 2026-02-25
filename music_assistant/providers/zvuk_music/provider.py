@@ -646,10 +646,12 @@ class ZvukMusicProvider(MusicProvider):
         quality_pref = self.config.get_value(CONF_QUALITY)
         quality_str = str(quality_pref) if quality_pref is not None else QUALITY_LOSSLESS
 
-        # Fetch track metadata for duration and FLAC availability.
+        # Fetch track metadata for duration.
+        # has_flac is read for diagnostics only — it is not reliable enough to
+        # skip the FLAC attempt, so it does not affect the quality fallback chain.
         track = await self.client.get_track(item_id)
         duration: int | None = None
-        has_flac: bool = True  # default: always attempt FLAC; field is unreliable
+        has_flac: bool | None = None
         if track is not None:
             if getattr(track, "duration", None) is not None:
                 duration = int(track.duration)
@@ -659,7 +661,7 @@ class ZvukMusicProvider(MusicProvider):
         # Build quality fallback chain.
         # /api/tiny/track/stream quality strings: "flac", "high", "mid"
         self.logger.debug(
-            "Stream request for track %s: quality_pref=%s has_flac=%s",
+            "Stream request for track %s: quality_pref=%s has_flac=%s (diagnostic only)",
             item_id,
             quality_str,
             has_flac,
