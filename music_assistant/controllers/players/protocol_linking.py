@@ -1442,7 +1442,7 @@ class ProtocolLinkingMixin:
                     parent_protocol_player.provider.domain,
                 )
                 # Use resume to restart from current position
-                await self.mass.players.cmd_resume(parent_player.player_id)
+                await self.mass.players._handle_cmd_resume(parent_player.player_id)
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
