@@ -605,8 +605,6 @@ class AirPlayPlayer(Player):
             if not child_player_to_add:
                 # should not happen, but guard against it
                 continue
-            if child_player_to_add.synced_to and child_player_to_add.synced_to != self.player_id:
-                raise RuntimeError("Player is already synced to another player")
 
             # ensure the child does not have an existing stream session active
             if child_player_to_add := cast(

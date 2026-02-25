@@ -113,7 +113,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def create_playlist(
         self,
         name: str,
-        media_types: list[MediaType] | set[MediaType] | None = None,
+        media_types: list[MediaType] | None = None,
         provider_instance_or_domain: str | None = None,
     ) -> Playlist:
         """Create new playlist."""
@@ -125,21 +125,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
-        if media_types is None:
-            media_types = {MediaType.TRACK}
-        if isinstance(media_types, list):
-            media_types = set(media_types)
-
-        if not provider_instance_or_domain and not media_types:
+        media_types_set = {MediaType.TRACK} if media_types is None else set(media_types)
+        if not provider_instance_or_domain and not media_types_set:
             # builtin can handle all media_types
-            media_types.update((MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO))
+            media_types_set.update(
+                (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO)
+            )
 
         # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
         mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
         supported_types: set[MediaType] = set()
-        if ProviderFeature.PLAYLIST_CREATE in provider.supported_features:
+        if (
+            ProviderFeature.PLAYLIST_CREATE in provider.supported_features
+            or ProviderFeature.PLAYLIST_CREATE_TRACKS in provider.supported_features
+        ):
+            # PLAYLIST_CREATE is deprecated
             supported_types.add(MediaType.TRACK)
         if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
             supported_types.add(MediaType.AUDIOBOOK)
@@ -156,15 +158,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
 
-        if len(media_types.difference(supported_types)) > 0:
+        if len(media_types_set.difference(supported_types)) > 0:
             msg = f"Provider {provider.name} only supports {supported_types} in playlists."
             raise InvalidDataError(msg)
-        if len(media_types) > 1 and not mix_allowed:
+        if len(media_types_set) > 1 and not mix_allowed:
             msg = f"Provider {provider.name} does not support mixed media_types in playlists."
             raise InvalidDataError(msg)
 
         # create playlist on the provider
-        playlist = await provider.create_playlist(name, media_types=media_types)
+        playlist = await provider.create_playlist(name, media_types=media_types_set)
         for prov_mapping in playlist.provider_mappings:
             # when manually creating a playlist, it's always in the library
             prov_mapping.in_library = True
@@ -487,6 +489,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "supported_mediatypes": serialize_to_json(item.supported_mediatypes),
             },
         )
         # update/set provider_mappings table

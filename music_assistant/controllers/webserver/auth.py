@@ -7,7 +7,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
-from sqlite3 import OperationalError
+from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any
 
 import jwt as pyjwt
@@ -24,11 +24,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import (
-    DB_TABLE_PLAYLOG,
-    HOMEASSISTANT_SYSTEM_USER,
-    MASS_LOGGER_NAME,
-)
+from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -53,11 +49,16 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 4
+DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
 TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+
+# Join code constants (short codes for QR/link-based login)
+JOIN_CODE_LENGTH = 6
+JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
+JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
 
 
 class AuthenticationManager:
@@ -95,6 +96,8 @@ class AuthenticationManager:
         await self._setup_login_providers()
 
         self._has_users = await self._has_non_system_users()
+
+        self._schedule_join_code_cleanup()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -203,6 +206,24 @@ class AuthenticationManager:
             )
             """
         )
+        # Join codes table (for short code to JWT exchange, used by providers like party mode)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS join_codes (
+                code_id TEXT PRIMARY KEY,
+                code TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                max_uses INTEGER DEFAULT 0,
+                use_count INTEGER DEFAULT 0,
+                last_used_at TEXT,
+                device_name TEXT,
+                provider_name TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -220,6 +241,9 @@ class AuthenticationManager:
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
         )
 
     async def _migrate_database(self, from_version: int) -> None:
@@ -256,6 +280,27 @@ class AuthenticationManager:
         # Migration to version 4: Make usernames case-insensitive by converting to lowercase
         if from_version < 4:
             await self.database.execute("UPDATE users SET username = LOWER(username)")
+            await self.database.commit()
+
+        # Migration to version 5: Add join codes table
+        if from_version < 5:
+            await self.database.execute(
+                """
+                CREATE TABLE IF NOT EXISTS join_codes (
+                    code_id TEXT PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_uses INTEGER DEFAULT 0,
+                    use_count INTEGER DEFAULT 0,
+                    last_used_at TEXT,
+                    device_name TEXT,
+                    provider_name TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
@@ -355,7 +400,7 @@ class AuthenticationManager:
 
     async def authenticate_with_token(self, token: str) -> User | None:
         """
-        Authenticate a user with an access token.
+        Authenticate a user with an access token (JWT or legacy).
 
         Supports both JWT tokens and legacy hash-based tokens for backward compatibility.
 
@@ -426,18 +471,18 @@ class AuthenticationManager:
         # Implement sliding expiration for short-lived tokens
         is_long_lived = bool(token_row["is_long_lived"])
         now = utc()
-        updates = {"last_used_at": now.isoformat()}
+        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
 
         if not is_long_lived and token_row["expires_at"]:
             # Short-lived token: extend expiration on each use (sliding window)
             new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            updates["expires_at"] = new_expires_at.isoformat()
+            legacy_updates["expires_at"] = new_expires_at.isoformat()
 
         # Update last used timestamp and potentially expiration
         await self.database.update(
             "auth_tokens",
             {"token_id": token_row["token_id"]},
-            updates,
+            legacy_updates,
         )
 
         # Get user
@@ -459,7 +504,6 @@ class AuthenticationManager:
         token_row = await self.database.get_row("auth_tokens", {"token_hash": token_hash})
         if not token_row:
             return None
-
         return str(token_row["token_id"])
 
     @api_command("auth/user", required_role="admin")
@@ -830,15 +874,19 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
+    async def create_token(
+        self, user: User, name: str, is_long_lived: bool = False, provider_name: str | None = None
+    ) -> str:
         """
-        Create a new access token for a user.
+        Create a new JWT access token for a user.
 
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
             Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
             Long-lived tokens (True): No auto-renewal, expire after 10 years.
+        :param provider_name: Optional provider name that created this token (e.g., "party_mode").
+        :return: JWT token string.
         """
         # Generate unique token ID
         token_id = secrets.token_urlsafe(32)
@@ -859,6 +907,7 @@ class AuthenticationManager:
             token_name=name,
             expires_at=expires_at,
             is_long_lived=is_long_lived,
+            provider_name=provider_name,
         )
 
         # Store token hash in database for revocation checking
@@ -1487,3 +1536,239 @@ class AuthenticationManager:
         )
         await self.database.commit()
         return True
+
+    # ==================== Join Code Methods ====================
+
+    async def generate_join_code(
+        self,
+        user_id: str,
+        expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
+        max_uses: int = 1,
+        device_name: str = "Short Code Login",
+        provider_name: str | None = None,
+    ) -> tuple[str, datetime]:
+        """Generate a short join code for link/QR-based login.
+
+        This creates a short alphanumeric code that can be exchanged for a JWT token.
+        Providers can use this to implement features like party mode guest access,
+        device pairing, or other short-code authentication flows.
+
+        :param user_id: The user ID that tokens created from this code will belong to.
+        :param expires_in_hours: Hours until code expires (default: 8).
+        :param max_uses: Maximum number of uses (0 = unlimited).
+        :param device_name: Device name for tokens created with this code.
+        :param provider_name: Optional provider name identifier (e.g., "party_mode").
+        :return: Tuple of (code, expires_at datetime).
+        """
+        if expires_in_hours <= 0:
+            raise ValueError("expires_in_hours must be positive")
+        if max_uses < 0:
+            raise ValueError("max_uses must be non-negative (0 = unlimited)")
+        user = await self.get_user(user_id)
+        if not user:
+            raise ValueError(f"User not found: {user_id}")
+        if user.role != UserRole.GUEST:
+            raise ValueError("Join codes can only be generated for guest accounts")
+
+        now = utc()
+        expires_at = now + timedelta(hours=expires_in_hours)
+
+        for _ in range(3):  # Try up to 3 times to avoid code collisions
+            code = "".join(secrets.choice(JOIN_CODE_CHARSET) for _ in range(JOIN_CODE_LENGTH))
+            code_data = {
+                "code_id": secrets.token_urlsafe(32),
+                "code": code,
+                "user_id": user_id,
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "max_uses": max_uses,
+                "use_count": 0,
+                "device_name": device_name,
+                "provider_name": provider_name,
+            }
+            try:
+                await self.database.insert("join_codes", code_data)
+                await self.database.commit()
+                self.logger.info(
+                    "Join code generated for user %s (expires: %s, max_uses: %s, provider: %s)",
+                    user.username,
+                    expires_at,
+                    max_uses,
+                    provider_name,
+                )
+                return code, expires_at
+            except IntegrityError:
+                self.logger.warning("Join code collision, retrying...")
+                continue
+
+        raise RuntimeError("Failed to generate a unique join code after 3 attempts")
+
+    async def _exchange_join_code(self, code: str) -> str | None:
+        """Exchange a join code for a JWT access token.
+
+        The token is created for the user associated with the join code,
+        using the provider_name that was specified when the code was generated.
+
+        :param code: The short join code.
+        :return: JWT token string if valid, None otherwise.
+        """
+        now = utc()
+
+        cursor = await self.database.execute(
+            """
+            UPDATE join_codes
+            SET use_count = use_count + 1,
+                last_used_at = :now
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            RETURNING user_id, provider_name, device_name
+            """,
+            {"now": now.isoformat(), "code": code.upper()},
+        )
+        row = await cursor.fetchone()
+        await self.database.commit()
+
+        if not row:
+            self.logger.warning("Join code exchange rejected (code=%s)", code.upper())
+            return None
+
+        user = await self.get_user(row["user_id"])
+        if not user:
+            self.logger.error(
+                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
+            )
+            return None
+
+        device_name = row["device_name"] or "Short Code Login"
+        token = await self.create_token(
+            user,
+            device_name,
+            is_long_lived=False,
+            provider_name=row["provider_name"],
+        )
+
+        self.logger.info(
+            "Join code exchanged for token (user=%s, provider=%s)",
+            user.username,
+            row["provider_name"],
+        )
+        return token
+
+    async def revoke_join_codes(
+        self,
+        user_id: str | None = None,
+        provider_name: str | None = None,
+    ) -> int:
+        """Revoke join codes filtered by user and/or provider.
+
+        At least one filter parameter must be provided to prevent accidental deletion of all codes.
+
+        :param user_id: User ID to revoke codes for.
+        :param provider_name: Provider name to revoke codes for.
+        :return: Number of codes revoked.
+        """
+        if not user_id and not provider_name:
+            raise ValueError("At least one of user_id or provider_name must be provided")
+
+        conditions = []
+        params = {}
+
+        if user_id:
+            conditions.append("user_id = :user_id")
+            params["user_id"] = user_id
+        if provider_name:
+            conditions.append("provider_name = :provider_name")
+            params["provider_name"] = provider_name
+
+        cursor = await self.database.execute(
+            f"DELETE FROM join_codes WHERE {' AND '.join(conditions)}", params
+        )
+        await self.database.commit()
+
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d join code(s)", count)
+        return count
+
+    async def _cleanup_expired_join_codes(self) -> None:
+        """Delete expired and exhausted join codes from the database."""
+        now = utc()
+        cursor = await self.database.execute(
+            """
+            DELETE FROM join_codes
+            WHERE expires_at < :now
+               OR (max_uses > 0 AND use_count >= max_uses)
+            """,
+            {"now": now.isoformat()},
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
+
+    def _schedule_join_code_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes."""
+        self.mass.create_task(self._cleanup_expired_join_codes())
+        self.mass.call_later(86400, self._schedule_join_code_cleanup)
+
+    @api_command("auth/join_code/exchange", authenticated=False)
+    async def exchange_join_code(self, code: str) -> dict[str, Any]:
+        """Exchange a join code for an access token (public API).
+
+        This is the public API endpoint for short-code authentication.
+        Clients call this with a code (e.g., from QR scan or link) to receive a JWT token.
+
+        :param code: The short join code.
+        :return: Authentication result with access token if successful.
+        """
+        token = await self._exchange_join_code(code)
+
+        if not token:
+            return {
+                "success": False,
+                "error": "Invalid or expired join code",
+            }
+
+        # Decode token to get user info
+        try:
+            payload = self.jwt_helper.decode_token(token)
+            return {
+                "success": True,
+                "access_token": token,
+                "user": {
+                    "user_id": payload.get("sub"),
+                    "username": payload.get("username"),
+                    "role": payload.get("role"),
+                },
+            }
+        except pyjwt.InvalidTokenError:
+            return {
+                "success": False,
+                "error": "Failed to create access token",
+            }
+
+    @api_command("auth/join_codes", required_role="admin")
+    async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List join codes, optionally filtered by user (admin only).
+
+        :param user_id: Optional user ID to filter codes for.
+        :return: List of join code records.
+        """
+        filter_args = {"user_id": user_id} if user_id else None
+        rows = await self.database.get_rows("join_codes", filter_args, limit=100)
+        return [dict(row) for row in rows]
+
+    @api_command("auth/join_code/revoke", required_role="admin")
+    async def revoke_join_code(self, code_id: str) -> None:
+        """Revoke a specific join code (admin only).
+
+        :param code_id: The code ID to revoke.
+        """
+        code_row = await self.database.get_row("join_codes", {"code_id": code_id})
+        if not code_row:
+            raise InvalidDataError("Join code not found")
+
+        await self.database.delete("join_codes", {"code_id": code_id})
+        await self.database.commit()
+        self.logger.info("Join code revoked (code_id=%s)", code_id)

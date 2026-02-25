@@ -274,6 +274,9 @@
       }),
     ]),
     'sort_name': 'my daily discovery',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
@@ -344,6 +347,9 @@
       }),
     ]),
     'sort_name': 'test playlist',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
