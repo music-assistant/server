@@ -473,18 +473,13 @@ class ZvukMusicProvider(MusicProvider):
         Called by MA when ``ProviderFeature.TRACK_METADATA`` is declared.
         Returns LRC-synced lyrics (``lrc_lyrics``) when the API returns type
         ``'subtitle'``, otherwise plain text (``lyrics``). Returns ``None`` if
-        the track has no lyrics. Any API errors are caught and return ``None``
-        so that optional metadata enrichment never fails the broader media load.
+        the track has no lyrics or the API call fails.
 
         :param track: The MA Track object. ``item_id`` is used to call the API.
         :return: MediaItemMetadata with lyrics, or None.
         """
         track_id = track.item_id
-        try:
-            result = await self.client.get_lyrics(track_id)
-        except Exception as err:
-            self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
-            return None
+        result = await self.client.get_lyrics(track_id)
         if not result:
             return None
 
@@ -526,10 +521,10 @@ class ZvukMusicProvider(MusicProvider):
                 },
             ) as resp:
                 if resp.status == 200:
-                    return bytes(await resp.read())
+                    return await resp.read()
         except Exception as err:
             self.logger.debug("Failed to resolve static image %s: %s", path, err)
-        return str(path)
+        return path
 
     # Library edit methods
 

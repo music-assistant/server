@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import contextlib
 from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import AlbumType, ImageType
 
-from music_assistant.providers.zvuk_music.constants import SYNTHESIS_PLAYLIST_IDS
 from music_assistant.providers.zvuk_music.parsers import (
     parse_album,
     parse_artist,
     parse_playlist,
     parse_track,
 )
+from provider.constants import SYNTHESIS_PLAYLIST_IDS
 
 
 def _create_mock_image(template: str = "https://zvuk.com/image/{width}x{height}") -> Mock:
@@ -55,14 +54,12 @@ def _create_mock_artist(
     if description is not None:
         artist.description = description
     else:
-        with contextlib.suppress(AttributeError):
-            del artist.description
+        del artist.description
 
     if second_image is not None:
         artist.second_image = second_image
     else:
-        with contextlib.suppress(AttributeError):
-            del artist.second_image
+        del artist.second_image
 
     return artist
 
@@ -118,15 +115,13 @@ def _create_mock_release(
         release.genres = genres
     else:
         # SimpleRelease doesn't have genres
-        with contextlib.suppress(AttributeError):
-            del release.genres
+        del release.genres
 
     # Label (only on full Release)
     if label is not None:
         release.label = label
     else:
-        with contextlib.suppress(AttributeError):
-            del release.label
+        del release.label
 
     return release
 
@@ -167,22 +162,19 @@ def _create_mock_track(
     if position is not None:
         track.position = position
     else:
-        with contextlib.suppress(AttributeError):
-            del track.position
+        del track.position
 
     # Genres are only on full Track, not SimpleTrack
     if genres is not None:
         track.genres = genres
     else:
-        with contextlib.suppress(AttributeError):
-            del track.genres
+        del track.genres
 
     # Credits are only on full Track, not SimpleTrack
     if credits_str is not None:
         track.credits = credits_str
     else:
-        with contextlib.suppress(AttributeError):
-            del track.credits
+        del track.credits
 
     return track
 
@@ -213,8 +205,7 @@ def _create_mock_playlist(
     if user_id is not None:
         playlist.user_id = user_id
     else:
-        with contextlib.suppress(AttributeError):
-            del playlist.user_id
+        del playlist.user_id
 
     return playlist
 
