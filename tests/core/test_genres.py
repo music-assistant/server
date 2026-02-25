@@ -196,7 +196,7 @@ class TestGenreCRUD:
         """Add 3 genres, returns all 3."""
         for name in ("Alpha", "Beta", "Gamma"):
             await genre_ctrl.add_item_to_library(_make_genre(name))
-        items = await genre_ctrl.library_items()
+        items = await genre_ctrl.library_items(hide_empty=False)
         names = {g.name for g in items}
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
@@ -204,7 +204,7 @@ class TestGenreCRUD:
         """Search 'country' returns only matching genres."""
         await genre_ctrl.add_item_to_library(_make_genre("Country"))
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
-        items = await genre_ctrl.library_items(search="country")
+        items = await genre_ctrl.library_items(search="country", hide_empty=False)
         assert all("country" in g.name.lower() for g in items)
 
     async def test_library_items_rejects_genre_param(self, genre_ctrl: GenreController) -> None:
@@ -820,7 +820,7 @@ class TestRestoreDefaultGenres:
         """Full restore: custom genres gone, only defaults remain."""
         await genre_ctrl.add_item_to_library(_make_genre("MyCustomGenre"))
         await genre_ctrl.restore_default_genres(full_restore=True)
-        items = await genre_ctrl.library_items(limit=0)
+        items = await genre_ctrl.library_items(limit=0, hide_empty=False)
         names = {g.name for g in items}
         assert "MyCustomGenre" not in names
         assert len(items) == len(DEFAULT_GENRE_MAPPING)
@@ -832,7 +832,7 @@ class TestRestoreDefaultGenres:
         if not entries_with_aliases:
             pytest.skip("No default genres with aliases configured")
         entry = entries_with_aliases[0]
-        items = await genre_ctrl.library_items(search=entry["genre"])
+        items = await genre_ctrl.library_items(search=entry["genre"], hide_empty=False)
         assert len(items) > 0
         genre = items[0]
         assert genre.genre_aliases is not None
@@ -942,41 +942,50 @@ class TestQueryMethods:
         genres = await genre_ctrl.get_genres_for_media_item(MediaType.TRACK, track.item_id)
         assert genres == []
 
-    async def test_library_items_has_media_mappings_true(
+    async def test_library_items_hide_empty_true(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """has_media_mappings=True returns only genres with mappings."""
+        """hide_empty=True returns only genres with mappings."""
         mapped = await genre_ctrl.add_item_to_library(_make_genre("HasMappingGenre"))
         unmapped = await genre_ctrl.add_item_to_library(_make_genre("NoMappingGenre"))
         track = await _add_test_track(mass, "HasMapping Track")
         await genre_ctrl.add_media_mapping(
             mapped.item_id, MediaType.TRACK, track.item_id, "HasMappingGenre"
         )
-        results = await genre_ctrl.library_items(has_media_mappings=True)
+        results = await genre_ctrl.library_items(hide_empty=True)
         result_ids = {int(g.item_id) for g in results}
         assert int(mapped.item_id) in result_ids
         assert int(unmapped.item_id) not in result_ids
 
-    async def test_library_items_has_media_mappings_false(
+    async def test_library_items_hide_empty_default(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """has_media_mappings=False returns only genres without mappings."""
-        mapped = await genre_ctrl.add_item_to_library(_make_genre("MappedFilterGenre"))
-        unmapped = await genre_ctrl.add_item_to_library(_make_genre("UnmappedFilterGenre"))
-        track = await _add_test_track(mass, "MappedFilter Track")
+        """Default (hide_empty=True) excludes unmapped genres."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterMapped"))
+        unmapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterUnmapped"))
+        track = await _add_test_track(mass, "DefaultFilter Track")
         await genre_ctrl.add_media_mapping(
-            mapped.item_id, MediaType.TRACK, track.item_id, "MappedFilterGenre"
+            mapped.item_id, MediaType.TRACK, track.item_id, "DefaultFilterMapped"
         )
-        results = await genre_ctrl.library_items(has_media_mappings=False)
+        results = await genre_ctrl.library_items()
         result_ids = {int(g.item_id) for g in results}
-        assert int(unmapped.item_id) in result_ids
-        assert int(mapped.item_id) not in result_ids
+        assert int(mapped.item_id) in result_ids
+        assert int(unmapped.item_id) not in result_ids
 
-    async def test_library_items_has_media_mappings_none(self, genre_ctrl: GenreController) -> None:
-        """has_media_mappings=None (default) returns all genres."""
-        all_genres = await genre_ctrl.library_items(has_media_mappings=None)
-        all_genres_default = await genre_ctrl.library_items()
-        assert len(all_genres) == len(all_genres_default)
+    async def test_library_items_show_all(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=False returns all genres including unmapped."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("ShowAllMapped"))
+        unmapped = await genre_ctrl.add_item_to_library(_make_genre("ShowAllUnmapped"))
+        track = await _add_test_track(mass, "ShowAll Track")
+        await genre_ctrl.add_media_mapping(
+            mapped.item_id, MediaType.TRACK, track.item_id, "ShowAllMapped"
+        )
+        results = await genre_ctrl.library_items(hide_empty=False)
+        result_ids = {int(g.item_id) for g in results}
+        assert int(mapped.item_id) in result_ids
+        assert int(unmapped.item_id) in result_ids
 
 
 # ===================================================================
@@ -1035,7 +1044,7 @@ class TestBaseClassIntegration:
         genre = await genre_ctrl.add_item_to_library(_make_genre("InlineTest"))
         await genre_ctrl.add_alias(genre.item_id, "Inline Alias")
         # Fetch via library_items (uses base_query)
-        items = await genre_ctrl.library_items(search="InlineTest")
+        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False)
         assert len(items) >= 1
         fetched = items[0]
         assert fetched.genre_aliases is not None
@@ -1046,8 +1055,8 @@ class TestBaseClassIntegration:
         """limit/offset work correctly."""
         for i in range(5):
             await genre_ctrl.add_item_to_library(_make_genre(f"Page{i}"))
-        page1 = await genre_ctrl.library_items(limit=2, offset=0, order_by="name")
-        page2 = await genre_ctrl.library_items(limit=2, offset=2, order_by="name")
+        page1 = await genre_ctrl.library_items(limit=2, offset=0, order_by="name", hide_empty=False)
+        page2 = await genre_ctrl.library_items(limit=2, offset=2, order_by="name", hide_empty=False)
         assert len(page1) == 2
         assert len(page2) == 2
         ids1 = {g.item_id for g in page1}
@@ -1058,6 +1067,6 @@ class TestBaseClassIntegration:
         """favorite=True filters correctly."""
         await genre_ctrl.add_item_to_library(_make_genre("FavYes", favorite=True))
         await genre_ctrl.add_item_to_library(_make_genre("FavNo", favorite=False))
-        favs = await genre_ctrl.library_items(favorite=True)
+        favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
         assert all(g.favorite for g in favs)
         assert any(g.name == "FavYes" for g in favs)

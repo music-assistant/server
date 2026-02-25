@@ -271,14 +271,14 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        has_media_mappings: bool | None = None,
+        hide_empty: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
-        :param has_media_mappings: If True, only return genres with media mappings.
-            If False, only return genres without media mappings. If None, no filter.
+        :param hide_empty: If True (default), only return genres that have media mappings.
+            Set to False to return all genres including unmapped ones.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -291,12 +291,11 @@ class GenreController(MediaControllerBase[Genre]):
         extra_parts: list[str] | None = None
         if search:
             extra_params = {"search_raw": f"%{search.strip().lower()}%"}
-        if has_media_mappings is not None:
+        if hide_empty:
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            exists_clause = (
+            extra_parts = [
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
-            )
-            extra_parts = [exists_clause if has_media_mappings else f"NOT {exists_clause}"]
+            ]
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -1003,10 +1002,9 @@ class GenreController(MediaControllerBase[Genre]):
             {"target_id": target_id},
         )
 
-        # Delete source genres and their remaining mappings
+        # Delete source genres (remove_item_from_library cleans up remaining mappings)
         for source_id in source_ids:
-            await db.delete(gm, {"genre_id": source_id})
-            await super().remove_item_from_library(source_id)
+            await self.remove_item_from_library(source_id)
 
         updated = await self.get_library_item(target_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
