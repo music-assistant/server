@@ -7,8 +7,10 @@ to add songs to the queue with configurable rate limiting.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -21,7 +23,6 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
-    QueueOption,
 )
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.queue_item import QueueItem
@@ -91,6 +92,35 @@ ATTR_PARTY_MODE_BOOSTED = "party_mode_boosted"
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
+@dataclass
+class PartyModeConfig(DataClassDictMixin):
+    """Configuration data returned to the party mode guest frontend."""
+
+    # Feature toggles
+    enable_rate_limiting: bool
+    enable_add_queue: bool
+    enable_boost: bool
+    enable_skip_song: bool
+    # Add to Queue rate limiting
+    add_queue_limit: int
+    add_queue_refill_minutes: int
+    # Boost rate limiting
+    boost_limit: int
+    boost_refill_minutes: int
+    # Skip Song rate limiting
+    skip_song_limit: int
+    skip_song_refill_minutes: int
+    # UI settings
+    album_art_background: bool
+    show_player_controls: bool
+    # Badge colors (hex values)
+    request_badge_color: str
+    boost_badge_color: str
+    # QR code instruction text
+    qr_show_instruction_text: bool
+    qr_instruction_text: str
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -113,6 +143,16 @@ async def get_config_entries(
     """
     return (
         ConfigEntry(
+            key=CONF_ENABLE_GUEST_ACCESS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Enable Guest Access via QR Code",
+            description=(
+                "Enable shareable guest access URL and QR code. "
+                "When enabled, guests can scan the QR code to add songs to the queue."
+            ),
+        ),
+        ConfigEntry(
             key=CONF_PARTY_MODE_PLAYER,
             type=ConfigEntryType.STRING,
             default_value="",
@@ -126,16 +166,6 @@ async def get_config_entries(
                     mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                 )
             ],
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Enable Guest Access via QR Code",
-            description=(
-                "Enable shareable guest access URL and QR code. "
-                "When enabled, guests can scan the QR code to add songs to the queue."
-            ),
         ),
         ConfigEntry(
             key=CONF_QR_SHOW_INSTRUCTION_TEXT,
@@ -278,7 +308,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_SKIP_SONG,
             type=ConfigEntryType.BOOLEAN,
-            default_value=True,
+            default_value=False,
             label="Allow Skip Song",
             description=(
                 "Allow guests to skip the currently playing song. "
@@ -432,49 +462,54 @@ class PartyModePlugin(PluginProvider):
         self.logger.info("Created party mode guest user account")
         return user.user_id
 
-    async def get_party_mode_url(self) -> dict[str, str | None]:
-        """Get the guest access URL with short code for party mode.
+    async def _get_join_code(self) -> str:
+        """Get an active join code for party mode, creating one if needed.
+
+        Looks up an existing non-expired join code via the auth controller.
+        If none exists, generates a new one.
+
+        :returns: The active join code string.
+        """
+        auth = self.mass.webserver.auth
+
+        # Check for an existing active join code
+        existing_code = await auth.get_active_join_code(self.domain)
+        if existing_code:
+            return existing_code
+
+        # No active code found, generate a new one
+        guest_user_id = await self._get_or_create_party_guest_user()
+        code, _expires_at = await auth.generate_join_code(
+            user_id=guest_user_id,
+            expires_in_hours=8,
+            max_uses=0,
+            device_name="Party Mode Guest",
+            provider_name=self.domain,
+        )
+        return code
+
+    async def get_party_mode_url(self) -> str | None:
+        """Get the guest access URL for party mode.
 
         When remote access is enabled, returns a URL that works from anywhere via WebRTC.
         Otherwise, returns a local URL that only works on the same network.
 
-        The returned URL contains a short code that guests exchange for a JWT token.
-
-        :returns: Dictionary with url, code, and expires_at (or empty values if disabled).
+        :returns: The guest join URL, or None if guest access is disabled.
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return {"url": "", "code": "", "expires_at": None}
+            return None
 
-        # Ensure we have a guest user for party mode
-        guest_user_id = await self._get_or_create_party_guest_user()
+        code = await self._get_join_code()
 
-        # Generate a new short code (valid for 24 hours, unlimited uses)
-        code, expires_at = await self.mass.webserver.auth.generate_join_code(
-            user_id=guest_user_id,
-            expires_in_hours=8,
-            max_uses=0,  # Unlimited uses
-            device_name="Party Mode Guest",
-            provider_name="party_mode",
-        )
-
-        # Check if remote access is enabled - if so, use app.music-assistant.io
         remote_access = self.mass.webserver.remote_access
         if remote_access.is_enabled and remote_access.remote_id:
-            # Remote URL allows guests to connect from anywhere via WebRTC
-            # The frontend will redirect to /guest after successful auth
-            url = f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
-        else:
-            # Fall back to local URL (only works on same network)
-            # The frontend will redirect to /guest after successful auth
-            base_url_value = self.mass.webserver.config.get_value("base_url")
-            base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
-            url = f"{base_url}/?join={code}"
+            return (
+                f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
+            )
 
-        return {
-            "url": url,
-            "code": code,
-            "expires_at": expires_at.isoformat(),
-        }
+        base_url_value = self.mass.webserver.config.get_value("base_url")
+        base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
+        return f"{base_url}/?join={code}"
 
     async def get_party_mode_player(self) -> str | None:
         """Get the configured party mode player/queue ID.
@@ -487,47 +522,41 @@ class PartyModePlugin(PluginProvider):
         player_id = self.config.get_value(CONF_PARTY_MODE_PLAYER)
         return str(player_id) if player_id else None
 
-    async def get_party_mode_config(self) -> dict[str, int | bool | str]:
+    async def get_party_mode_config(self) -> PartyModeConfig:
         """Get the party mode configuration for guest rate limiting.
 
-        :returns: Dictionary with feature toggles, token limits, refill rates, and colors.
+        :returns: PartyModeConfig with feature toggles, token limits, refill rates, and colors.
         """
-        return {
-            "enable_rate_limiting": cast("bool", self.config.get_value(CONF_ENABLE_RATE_LIMITING)),
-            # Add to Queue feature
-            "enable_add_queue": cast("bool", self.config.get_value(CONF_ENABLE_ADD_QUEUE)),
-            "add_queue_limit": cast("int", self.config.get_value(CONF_PARTY_MODE_ADD_QUEUE_LIMIT)),
-            "add_queue_refill_minutes": cast(
+        return PartyModeConfig(
+            enable_rate_limiting=cast("bool", self.config.get_value(CONF_ENABLE_RATE_LIMITING)),
+            enable_add_queue=cast("bool", self.config.get_value(CONF_ENABLE_ADD_QUEUE)),
+            add_queue_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_ADD_QUEUE_LIMIT)),
+            add_queue_refill_minutes=cast(
                 "int", self.config.get_value(CONF_PARTY_MODE_ADD_QUEUE_REFILL_MINUTES)
             ),
-            # Play Next feature
-            "enable_boost": cast("bool", self.config.get_value(CONF_ENABLE_BOOST)),
-            "boost_limit": cast("int", self.config.get_value(CONF_PARTY_MODE_BOOST_LIMIT)),
-            "boost_refill_minutes": cast(
+            enable_boost=cast("bool", self.config.get_value(CONF_ENABLE_BOOST)),
+            boost_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_BOOST_LIMIT)),
+            boost_refill_minutes=cast(
                 "int", self.config.get_value(CONF_PARTY_MODE_BOOST_REFILL_MINUTES)
             ),
-            # Skip Song feature
-            "enable_skip_song": cast("bool", self.config.get_value(CONF_ENABLE_SKIP_SONG)),
-            "skip_song_limit": cast("int", self.config.get_value(CONF_PARTY_MODE_SKIP_SONG_LIMIT)),
-            "skip_song_refill_minutes": cast(
+            enable_skip_song=cast("bool", self.config.get_value(CONF_ENABLE_SKIP_SONG)),
+            skip_song_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_SKIP_SONG_LIMIT)),
+            skip_song_refill_minutes=cast(
                 "int", self.config.get_value(CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES)
             ),
-            # UI settings
-            "album_art_background": cast(
+            album_art_background=cast(
                 "bool", self.config.get_value(CONF_PARTY_MODE_ALBUM_ART_BACKGROUND)
             ),
-            "show_player_controls": cast(
+            show_player_controls=cast(
                 "bool", self.config.get_value(CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS)
             ),
-            # Badge colors (hex values)
-            "request_badge_color": cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
-            "boost_badge_color": cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
-            # QR code instruction text
-            "qr_show_instruction_text": cast(
+            request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
+            boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
+            qr_show_instruction_text=cast(
                 "bool", self.config.get_value(CONF_QR_SHOW_INSTRUCTION_TEXT)
             ),
-            "qr_instruction_text": cast("str", self.config.get_value(CONF_QR_INSTRUCTION_TEXT)),
-        }
+            qr_instruction_text=cast("str", self.config.get_value(CONF_QR_INSTRUCTION_TEXT)),
+        )
 
     # ==================== Guest Action API Commands ====================
 
@@ -564,11 +593,7 @@ class PartyModePlugin(PluginProvider):
         # Get the party mode queue
         queue_id = await self.get_party_mode_player()
         if not queue_id:
-            # Fall back to first available player
-            players = list(self.mass.players.all(False, False))
-            if not players:
-                raise InvalidDataError("No players available")
-            queue_id = players[0].player_id
+            raise InvalidDataError("Could not get player queue")
 
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
@@ -577,23 +602,52 @@ class PartyModePlugin(PluginProvider):
         # Handle different scenarios based on queue state and boost mode
         started_playback = False
 
-        if queue.state != PlaybackState.PLAYING:
-            # If nothing is playing, start playback immediately
-            await self.mass.player_queues.play_media(
+        if queue.state in (PlaybackState.IDLE, PlaybackState.UNKNOWN):
+            # Queue is idle — resolve, load, and start playback
+            media_item = await self.mass.music.get_item_by_uri(uri)
+            if not media_item or media_item.media_type not in (
+                MediaType.TRACK,
+                MediaType.RADIO,
+            ):
+                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+            if boost:
+                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+            await self.mass.player_queues.load(
                 queue_id=queue_id,
-                media=uri,
-                option=QueueOption.PLAY,
+                queue_items=[queue_item],
+                insert_at_index=0,
+                keep_remaining=True,
+                keep_played=True,
+                shuffle=False,
             )
+            await self.mass.player_queues.play_index(queue_id, 0)
             started_playback = True
-            # Mark the newly added item
-            queue_items = self.mass.player_queues.items(queue_id)
-            if queue_items:
-                # The item we just added should be at current_index
-                current_idx = queue.current_index or 0
-                if current_idx < len(queue_items):
-                    queue_items[current_idx].extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-                    if boost:
-                        queue_items[current_idx].extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+        elif queue.state == PlaybackState.PAUSED:
+            # Paused — insert as next song after current position, then skip to it
+            current_index = queue.current_index or 0
+            insert_index = current_index + 1
+            media_item = await self.mass.music.get_item_by_uri(uri)
+            if not media_item or media_item.media_type not in (
+                MediaType.TRACK,
+                MediaType.RADIO,
+            ):
+                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+            if boost:
+                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+            await self.mass.player_queues.load(
+                queue_id=queue_id,
+                queue_items=[queue_item],
+                insert_at_index=insert_index,
+                keep_remaining=True,
+                keep_played=True,
+                shuffle=False,
+            )
+            await self.mass.player_queues.play_index(queue_id, insert_index)
+            started_playback = True
         elif boost:
             # Boost = insert after other boosted songs, before regular guest songs
             # This creates a priority within the guest section
@@ -774,10 +828,7 @@ class PartyModePlugin(PluginProvider):
         # Get the party mode queue
         queue_id = await self.get_party_mode_player()
         if not queue_id:
-            players = list(self.mass.players.all(False, False))
-            if not players:
-                raise InvalidDataError("No players available")
-            queue_id = players[0].player_id
+            raise InvalidDataError("Could not get player queue")
 
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
@@ -818,26 +869,8 @@ class PartyModePlugin(PluginProvider):
             self.logger.debug("No party guest user found, nothing more to revoke")
             return
 
-        # Disconnect all WebSocket connections for the guest user
-        # This forces the frontend to redirect to login
-        self.logger.debug(
-            "Disconnecting WebSocket connections for user '%s' (user_id=%s)",
-            guest_user.username,
-            guest_user.user_id,
-        )
-        self.mass.webserver.disconnect_websockets_for_user(guest_user.user_id)
-
-        # Revoke all tokens for the guest user so they can't reconnect
-        token_rows = await auth.database.get_rows(
-            "auth_tokens", {"user_id": guest_user.user_id}, limit=1000
-        )
-
-        revoked_count = 0
-        for token_row in token_rows:
-            token_id = token_row["token_id"]
-            await auth.database.delete("auth_tokens", {"token_id": token_id})
-            revoked_count += 1
-
+        # Revoke all tokens and disconnect WebSocket connections for the guest user
+        revoked_count = await auth.revoke_tokens_for_user(guest_user.user_id)
         if revoked_count > 0:
             self.logger.info(
                 "Revoked %d guest access tokens for user '%s'",
