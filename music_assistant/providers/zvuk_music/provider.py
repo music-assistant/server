@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
@@ -323,8 +322,6 @@ class ZvukMusicProvider(MusicProvider):
         for related_release in release.related:
             if len(result) >= limit:
                 break
-            if not getattr(related_release, "id", None):
-                continue
             related_full = await self.client.get_release(str(related_release.id))
             if not related_full or not related_full.tracks:
                 continue
@@ -476,18 +473,13 @@ class ZvukMusicProvider(MusicProvider):
         Called by MA when ``ProviderFeature.TRACK_METADATA`` is declared.
         Returns LRC-synced lyrics (``lrc_lyrics``) when the API returns type
         ``'subtitle'``, otherwise plain text (``lyrics``). Returns ``None`` if
-        the track has no lyrics. Any API errors are caught and return ``None``
-        so that optional metadata enrichment never fails the broader media load.
+        the track has no lyrics or the API call fails.
 
         :param track: The MA Track object. ``item_id`` is used to call the API.
         :return: MediaItemMetadata with lyrics, or None.
         """
         track_id = track.item_id
-        try:
-            result = await self.client.get_lyrics(track_id)
-        except Exception as err:
-            self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
-            return None
+        result = await self.client.get_lyrics(track_id)
         if not result:
             return None
 
@@ -510,17 +502,9 @@ class ZvukMusicProvider(MusicProvider):
         Static playlist avatar images (``/static/avatar/playlist/...``) require
         Zvuk auth cookies and cannot be fetched anonymously.
 
-        Only sends the auth token to trusted Zvuk domains (``zvuk.com``,
-        ``cdn.zvuk.com``) to prevent token leakage to arbitrary hosts.
-
         :param path: Full image URL (e.g. ``https://zvuk.com/static/avatar/...``).
         :return: Raw image bytes on success, original URL string as fallback.
         """
-        _zvuk_image_hosts = frozenset({"zvuk.com", "cdn.zvuk.com"})
-        parsed = urlparse(path)
-        if parsed.hostname not in _zvuk_image_hosts:
-            self.logger.warning("Refusing to fetch image from untrusted host: %s", parsed.hostname)
-            return str(path)
         token = self.config.get_value(CONF_TOKEN)
         try:
             async with self.mass.http_session.get(
@@ -537,10 +521,10 @@ class ZvukMusicProvider(MusicProvider):
                 },
             ) as resp:
                 if resp.status == 200:
-                    return bytes(await resp.read())
+                    return await resp.read()
         except Exception as err:
             self.logger.debug("Failed to resolve static image %s: %s", path, err)
-        return str(path)
+        return path
 
     # Library edit methods
 
