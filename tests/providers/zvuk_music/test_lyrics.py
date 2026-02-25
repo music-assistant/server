@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-
 from provider.provider import ZvukMusicProvider
 
 
@@ -80,4 +80,4 @@ class TestGetTrackMetadata:
 
         await provider.get_track_metadata(track)
 
-        provider.client.get_lyrics.assert_awaited_once_with("12345678")  # type: ignore[attr-defined]
+        cast("AsyncMock", provider.client.get_lyrics).assert_awaited_once_with("12345678")
