@@ -96,7 +96,8 @@ from music_assistant.providers.audiobookshelf.parsers import (
 )
 
 from .constants import (
-    ABS_BROWSE_ITEMS_TO_PATH,
+    ABS_BROWSE_ITEMS_BOOK_TO_PATH,
+    ABS_BROWSE_ITEMS_PODCAST_TO_PATH,
     ABS_SHELF_ID_ICONS,
     ABS_SHELF_ID_TRANSLATION_KEY,
     AIOHTTP_TIMEOUT,
@@ -455,6 +456,12 @@ for more details.
                 and media_type == MediaType.PODCAST
             ):
                 self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
+            elif media_type == MediaType.PLAYLIST:
+                if library.media_type == AbsLibraryMediaType.PODCAST:
+                    self.libraries.playlists_podcasts[library.id_] = set()
+                if library.media_type == AbsLibraryMediaType.BOOK:
+                    self.libraries.playlists_audiobooks[library.id_] = set()
+
         await super().sync_library(media_type)
         await self._cache_set_helper_libraries()
 
@@ -462,30 +469,30 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
-    @handle_refresh_token
-    async def _get_playlists(self) -> list[AbsPlaylistExpanded]:
-        # This method has a proper type hint in the lib, why the mypy any?
-        return await self._client.get_all_playlists()  # type: ignore[no-any-return]
-
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
-        abs_playlists = await self._get_playlists()
-        for abs_playlist in abs_playlists:
-            if abs_playlist.library_id in self.libraries.audiobooks:
-                media_type = MediaType.AUDIOBOOK
-            elif abs_playlist.library_id in self.libraries.podcasts:
-                media_type = MediaType.PODCAST_EPISODE
-            else:
-                # we do not know the library yet
-                continue
-            yield parse_playlist(
-                abs_playlist=abs_playlist,
-                instance_id=self.instance_id,
-                domain=self.domain,
-                token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
-                media_type=media_type,
-            )
+        for playlist_dict, media_type in zip(
+            [
+                self.libraries.playlists_audiobooks,
+                self.libraries.playlists_podcasts,
+            ],
+            [MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE],
+            strict=True,
+        ):
+            for library_id in playlist_dict:
+                async for response in self._client.get_library_playlists(library_id=library_id):
+                    if not response.results:
+                        break
+                    for abs_playlist in response.results:
+                        playlist_dict[library_id].add(abs_playlist.id_)
+                        yield parse_playlist(
+                            abs_playlist=abs_playlist,
+                            instance_id=self.instance_id,
+                            domain=self.domain,
+                            token=self._client.token,
+                            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                            media_type=media_type,
+                        )
 
     @handle_refresh_token
     async def get_playlist_tracks(
@@ -1349,6 +1356,7 @@ for more details.
             Podcast_1
             Podcast_2
         """
+        # ruff: noqa: PLR0911 # to many return
         item_path = path.split("://", 1)[1]
         if not item_path:
             return self._browse_root()
@@ -1356,7 +1364,7 @@ for more details.
         lib_key, lib_id = sub_path[0].split(" ")
         if len(sub_path) == 1:
             if lib_key == AbsBrowsePaths.LIBRARIES_PODCAST:
-                return await self._browse_lib_podcasts(library_id=lib_id)
+                return self._browse_lib_podcasts(current_path=path)
             return self._browse_lib_audiobooks(current_path=path)
         if len(sub_path) == 2:
             item_key = sub_path[1]
@@ -1371,6 +1379,10 @@ for more details.
                     return await self._browse_collections(current_path=path, library_id=lib_id)
                 case AbsBrowsePaths.AUDIOBOOKS:
                     return await self._browse_books(library_id=lib_id)
+                case AbsBrowsePaths.PODCASTS:
+                    return await self._browse_podcasts(library_id=lib_id)
+                case AbsBrowsePaths.PLAYLISTS:
+                    return await self._browse_playlists(library_id=lib_id, browse_path=lib_key)
         elif len(sub_path) == 3:
             item_key, item_id = sub_path[1:3]
             match item_key:
@@ -1427,8 +1439,23 @@ for more details.
             )
         return items
 
-    async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemType]:
-        """No sub categories for podcasts."""
+    def _browse_lib_podcasts(self, current_path: str) -> Sequence[BrowseFolder]:
+        items = []
+        for translation_key in AbsBrowseItemsPodcastTranslationKey:
+            path = current_path + "/" + ABS_BROWSE_ITEMS_PODCAST_TO_PATH[translation_key]
+            items.append(
+                BrowseFolder(
+                    item_id=translation_key.lower(),
+                    name="",
+                    translation_key=translation_key,
+                    provider=self.instance_id,
+                    path=path,
+                )
+            )
+        return items
+
+    async def _browse_podcasts(self, library_id: str) -> list[MediaItemType]:
+        """Browse podcasts."""
         if len(self.libraries.podcasts[library_id].item_ids) == 0:
             self._log_no_helper_item_ids()
         items = []
@@ -1445,11 +1472,11 @@ for more details.
     def _browse_lib_audiobooks(self, current_path: str) -> Sequence[BrowseFolder]:
         items = []
         for translation_key in AbsBrowseItemsBookTranslationKey:
-            path = current_path + "/" + ABS_BROWSE_ITEMS_TO_PATH[translation_key]
+            path = current_path + "/" + ABS_BROWSE_ITEMS_BOOK_TO_PATH[translation_key]
             items.append(
                 BrowseFolder(
                     item_id=translation_key.lower(),
-                    name="",  # use translation key
+                    name="",
                     translation_key=translation_key,
                     provider=self.instance_id,
                     path=path,
@@ -1524,6 +1551,29 @@ for more details.
                         path=path,
                     )
                 )
+        return sorted(items, key=lambda x: x.name)
+
+    @handle_refresh_token
+    async def _browse_playlists(self, library_id: str, browse_path: str) -> Sequence[MediaItemType]:
+        items = []
+        if browse_path == AbsBrowsePaths.LIBRARIES_PODCAST:
+            playlists = self.libraries.playlists_podcasts
+            if len(self.libraries.playlists_podcasts) == 0:
+                self._log_no_helper_item_ids()
+        elif browse_path == AbsBrowsePaths.LIBRARIES_BOOK:
+            playlists = self.libraries.playlists_audiobooks
+            if len(self.libraries.playlists_audiobooks) == 0:
+                self._log_no_helper_item_ids()
+        else:
+            raise RuntimeError("Unknown media type in browse playlist.")
+        for playlist_id in playlists[library_id]:
+            mass_item = await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.PLAYLIST,
+                item_id=playlist_id,
+                provider_instance_id_or_domain=self.instance_id,
+            )
+            if mass_item is not None:
+                items.append(mass_item)
         return sorted(items, key=lambda x: x.name)
 
     async def _browse_books(self, library_id: str) -> Sequence[MediaItemType]:
