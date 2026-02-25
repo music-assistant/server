@@ -379,7 +379,8 @@ for more details.
         )
 
         self._client_socket.set_playlist_callbacks(
-            on_playlist_added=self._socket_abs_playlist_added,
+            on_playlist_added=self._socket_abs_playlist_changed,
+            on_playlist_updated=self._socket_abs_playlist_changed,
             on_playlist_removed=self._socket_abs_playlist_removed,
         )
 
@@ -1734,7 +1735,7 @@ for more details.
             return
         await self._update_playlog_episode(progress)
 
-    async def _socket_abs_playlist_added(self, abs_playlist: AbsPlaylistExpanded) -> None:
+    async def _socket_abs_playlist_changed(self, abs_playlist: AbsPlaylistExpanded) -> None:
         if time.time() - self.playlist_last < 5:
             return
         if abs_playlist.library_id in self.libraries.audiobooks:
