@@ -949,6 +949,24 @@ class AuthenticationManager:
         # Disconnect any WebSocket connections using this token
         self.webserver.disconnect_websockets_for_token(token_id)
 
+    async def revoke_tokens_for_user(self, user_id: str) -> int:
+        """Revoke all auth tokens for a user.
+
+        This is an internal method for programmatic use (e.g., when disabling guest access).
+        Unlike revoke_token(), this does not require an authenticated user context.
+
+        :param user_id: The user ID whose tokens should be revoked.
+        :return: Number of tokens revoked.
+        """
+        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user_id}, limit=1000)
+        revoked_count = 0
+        for token_row in token_rows:
+            token_id = token_row["token_id"]
+            await self.database.delete("auth_tokens", {"token_id": token_id})
+            self.webserver.disconnect_websockets_for_token(token_id)
+            revoked_count += 1
+        return revoked_count
+
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
@@ -1690,6 +1708,26 @@ class AuthenticationManager:
         if count > 0:
             self.logger.info("Revoked %d join code(s)", count)
         return count
+
+    async def get_active_join_code(self, provider_name: str) -> str | None:
+        """Get the most recently created, non-expired join code for a provider.
+
+        :param provider_name: Provider name to filter codes for.
+        :return: The join code string if found, None otherwise.
+        """
+        now = utc()
+        cursor = await self.database.execute(
+            """
+            SELECT code FROM join_codes
+            WHERE provider_name = :provider_name
+            AND expires_at > :now
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            {"provider_name": provider_name, "now": now.isoformat()},
+        )
+        row = await cursor.fetchone()
+        return str(row["code"]) if row else None
 
     async def _cleanup_expired_join_codes(self) -> None:
         """Delete expired and exhausted join codes from the database."""
