@@ -865,15 +865,23 @@ class GenreController(MediaControllerBase[Genre]):
         return updated
 
     async def add_media_mapping(
-        self, genre_id: str | int, media_type: MediaType, media_id: str | int, alias: str
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+        alias: str | None = None,
     ) -> None:
         """Map a media item to a genre.
 
         :param genre_id: Database ID of the genre.
         :param media_type: Type of media item (track, album, artist).
         :param media_id: Database ID of the media item.
-        :param alias: The alias string that caused this mapping.
+        :param alias: The alias string that caused this mapping. If not provided,
+            the genre's primary name is used.
         """
+        if alias is None:
+            genre = await self.get_library_item(int(genre_id))
+            alias = genre.name
         await self.mass.music.database.insert(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
             {
