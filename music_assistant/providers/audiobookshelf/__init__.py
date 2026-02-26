@@ -431,7 +431,7 @@ for more details.
         ABS supports multiple libraries, but they must be of the same media type. If we only
         have a single library of a media type, mapping the playlist creation is unambiguous.
         """
-        features = SUPPORTED_FEATURES
+        features = SUPPORTED_FEATURES.copy()
         if len(self.libraries.audiobooks) > 1 or len(self.libraries.podcasts) > 1:
             return features
         features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
@@ -1806,6 +1806,11 @@ for more details.
                 ),
                 overwrite_existing=True,
             )
+            if media_type == MediaType.AUDIOBOOK:
+                self.libraries.playlists_audiobooks[abs_playlist.library_id].add(abs_playlist.id_)
+            elif media_type == MediaType.PODCAST_EPISODE:
+                self.libraries.playlists_podcasts[abs_playlist.library_id].add(abs_playlist.id_)
+        await self._cache_set_helper_libraries()
 
     async def _socket_abs_playlist_removed(self, abs_playlist: AbsPlaylistExpanded) -> None:
         if time.time() - self.playlist_last < 5:
@@ -1817,6 +1822,13 @@ for more details.
         ):
             async with self.playlist_lock:
                 await self.mass.music.playlists.remove_item_from_library(item_id=mass_item.item_id)
+                playlist_set = self.libraries.playlists_audiobooks.get(abs_playlist.id_)
+                if playlist_set is None:
+                    playlist_set = self.libraries.playlists_podcasts.get(abs_playlist.id_)
+                if playlist_set is not None:
+                    with suppress(KeyError):
+                        playlist_set.remove(abs_playlist.id_)
+        await self._cache_set_helper_libraries()
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()
