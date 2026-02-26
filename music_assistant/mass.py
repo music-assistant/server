@@ -9,7 +9,6 @@ import os
 import pathlib
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -17,7 +16,7 @@ import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import UserRole
-from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.enums import CoreState, EventType, ProviderType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
@@ -103,15 +102,6 @@ def is_music_provider(provider: ProviderInstanceType) -> TypeGuard[MusicProvider
 def is_player_provider(provider: ProviderInstanceType) -> TypeGuard[PlayerProvider]:
     """Type guard that returns true if a provider is a player provider."""
     return provider.type == ProviderType.PLAYER
-
-
-class CoreState(Enum):
-    """Enum representing the core state of the Music Assistant server."""
-
-    STARTING = "starting"
-    RUNNING = "running"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
 
 
 class MusicAssistant:
@@ -223,13 +213,13 @@ class MusicAssistant:
             await self._load_providers()
         # at this point we are fully up and running,
         # set state to running to signal we're ready
-        self._state = CoreState.RUNNING
+        self._set_state(CoreState.RUNNING)
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
         LOGGER.info("Stop called, cleaning up...")
-        self.signal_event(EventType.SHUTDOWN)
-        self._state = CoreState.STOPPING
+        # set state to stopping to signal we're shutting down
+        self._set_state(CoreState.STOPPING)
         # cancel all running tasks
         for task in list(self._tracked_tasks.values()):
             task.cancel()
@@ -257,7 +247,7 @@ class MusicAssistant:
             self._http_session_no_ssl.detach()
             if self._http_session_no_ssl.connector:
                 await self._http_session_no_ssl.connector.close()
-        self._state = CoreState.STOPPED
+        self._set_state(CoreState.STOPPED)
 
     @property
     def state(self) -> CoreState:
@@ -309,6 +299,7 @@ class MusicAssistant:
             base_url=self.webserver.base_url,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
+            status=self._state,
         )
 
     @api_command("providers/manifests")
@@ -905,10 +896,11 @@ class MusicAssistant:
             )
         ]
         # load providers concurrently via tasks
-        for prov_conf in other_configs:
-            # Use a task so we can load multiple providers at once.
-            # If a provider fails, that will not block the loading of other providers.
-            self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
+        async with TaskManager(self, 2) as tg:
+            for prov_conf in other_configs:
+                # Use a task so we can load multiple providers at once.
+                # If a provider fails, that will not block the loading of other providers.
+                tg.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
     async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
@@ -1164,3 +1156,10 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+
+    def _set_state(self, new_state: CoreState) -> None:
+        """Set new state and signal state change."""
+        if self._state == new_state:
+            return
+        self._state = new_state
+        self.signal_event(EventType.CORE_STATE_UPDATED, data=self.get_server_info())

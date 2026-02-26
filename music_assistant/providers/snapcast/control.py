@@ -260,9 +260,10 @@ class MusicAssistantControl:
         """Create snapcast properties from Music Assistant queue details."""
         current_queue_item: dict[str, Any] | None = mass_queue_details.get("current_item")
         next_queue_item: dict[str, Any] | None = mass_queue_details.get("next_item")
+        current_index: int = mass_queue_details.get("current_index") or 0
         properties: dict[str, Any] = {
             "canGoNext": next_queue_item is not None,
-            "canGoPrevious": mass_queue_details["current_index"] > 0,
+            "canGoPrevious": current_index > 0,
             "canPlay": current_queue_item is not None,
             "canPause": current_queue_item is not None,
             "canSeek": current_queue_item and current_queue_item.get("duration") is not None,

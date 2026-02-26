@@ -492,6 +492,10 @@ class SonosPlayer(Player):
             active_group = group_parent.client.player.group
             self._attr_group_members.clear()
 
+        if not active_group:
+            # should not happen, but guard it anyways
+            return
+
         # map playback state
         self._attr_playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
@@ -640,9 +644,9 @@ class SonosPlayer(Player):
             except Exception as err:
                 self.logger.warning("Failed to restore AirPlay group: %s", err)
 
-        # Schedule restoration after 4 seconds to let AirPlay settle
+        # Schedule restoration after 6 seconds to let AirPlay settle
         self.mass.call_later(
-            4,
+            6,
             _restore_airplay_group,
             task_id=f"restore_airplay_group_{self.player_id}",
         )
@@ -720,6 +724,8 @@ class SonosPlayer(Player):
             return
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
+        if not self.client.player.group:
+            return
         play_modes = self.client.player.group.play_modes
         if (
             play_modes.repeat != repeat_all_enabled

@@ -152,7 +152,16 @@ class AirPlayProvider(PlayerProvider):
         if model == "ShairportSync":
             # Check if this is a local address (127.x.x.x or matches our server's IP)
             if address.startswith("127.") or address == self.mass.streams.publish_ip:
-                return
+                # Only filter if the port matches one of MA's own AirPlay Receiver instances.
+                # This allows user-configured shairport-sync instances on the same machine
+                # to be used as AirPlay players (e.g., multiple audio outputs via shairport-sync).
+                receiver_ports = {
+                    port
+                    for prov in self.mass.get_provider_instances("airplay_receiver")
+                    if (port := getattr(prov, "airplay_port", None)) is not None
+                }
+                if discovery_info.port in receiver_ports:
+                    return
 
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)

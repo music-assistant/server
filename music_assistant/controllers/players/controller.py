@@ -61,8 +61,12 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
+    ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
+    ATTR_POWER_CONTROL,
     ATTR_PREVIOUS_VOLUME,
+    ATTR_SUPPORTED_FEATURES,
+    ATTR_VOLUME_CONTROL,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -1442,13 +1446,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if ATTR_GROUP_MEMBERS in changed_values:
             prev_group_members, new_group_members = changed_values[ATTR_GROUP_MEMBERS]
             self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
-
-        if ATTR_GROUP_MEMBERS in changed_values:
             # Removed group members also need to be updated since they are no longer part
             # of this group and are available for playback again
-            prev_group_members = changed_values[ATTR_GROUP_MEMBERS][0] or []
-            new_group_members = changed_values[ATTR_GROUP_MEMBERS][1] or []
-            removed_members = set(prev_group_members) - set(new_group_members)
+            removed_members = set(prev_group_members or []) - set(new_group_members or [])
             for _removed_player_id in removed_members:
                 if removed_player := self.get_player(_removed_player_id):
                     removed_player.update_state()
@@ -1466,11 +1466,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 new_source,
                 task_id=task_id,
             )
-        became_inactive = False
-        if ATTR_AVAILABLE in changed_values:
-            became_inactive = changed_values[ATTR_AVAILABLE][1] is False
-        if not became_inactive and ATTR_ENABLED in changed_values:
-            became_inactive = changed_values[ATTR_ENABLED][1] is False
+        became_inactive = (
+            ATTR_AVAILABLE in changed_values and changed_values[ATTR_AVAILABLE][1] is False
+        ) or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
         if became_inactive and (player.state.active_group or player.state.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
@@ -1482,6 +1480,20 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if options := changed_values.get("options"):
             self.mass.signal_event(
                 EventType.PLAYER_OPTIONS_UPDATED, object_id=player_id, data=options
+            )
+        # signal player config update event if playerfeatures changed
+        # this is temporary needed for the Home Assistant integration which only
+        # re-evalues the entity's supported features on a PLAYER_CONFIG_UPDATED event.
+        # TODO: Remove this temporary workaround once the HA integration is updated to
+        # also re-evaluate supported features on PLAYER_UPDATED events.
+        if changed_values.keys() & {
+            ATTR_SUPPORTED_FEATURES,
+            ATTR_MUTE_CONTROL,
+            ATTR_VOLUME_CONTROL,
+            ATTR_POWER_CONTROL,
+        }:
+            self.mass.signal_event(
+                EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=player.config
             )
 
         if skip_forward and not force_update:
@@ -2560,18 +2572,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return  # nothing to do
 
         # ungroup player at power off
-        player_was_synced = bool(
-            player.state.synced_to or player.group_members or player.state.active_group
-        )
-        if player_was_synced and player.type == PlayerType.PLAYER and not powered:
+        player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
+        if (
+            (player_was_sync_child or player.group_members)
+            and player.type == PlayerType.PLAYER
+            and not powered
+        ):
             # ungroup player if it is synced (or is a sync leader itself)
-            # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
 
         # always stop player at power off
         if (
             not powered
-            and not player_was_synced
+            and not player_was_sync_child
             and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             await self._handle_cmd_stop(player_id)
@@ -2724,6 +2737,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
+        # power on the player if needed
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True)
+
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
         # Otherwise, select best protocol based on current state.
@@ -2751,7 +2768,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
                 player.state.name,
-                output_protocol.output_protocol_id,
+                output_protocol.name,
                 target_player.display_name,
                 target_player.state.group_members,
             )
