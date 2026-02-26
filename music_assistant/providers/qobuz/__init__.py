@@ -623,7 +623,8 @@ class QobuzProvider(MusicProvider):
         ):
             album.album_type = AlbumType.SINGLE
         elif (
-            album_obj.get("product_type", "") == "compilation" or "Various" in album.artists[0].name
+            album_obj.get("product_type", "") == "compilation"
+            or album.artists[0].item_id == VARIOUS_ARTISTS_ID
         ):
             album.album_type = AlbumType.COMPILATION
         elif (
@@ -689,7 +690,10 @@ class QobuzProvider(MusicProvider):
         )
         if isrc := track_obj.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
-        if track_obj.get("performer") and "Various" not in track_obj["performer"].get("name", ""):
+        if (
+            track_obj.get("performer")
+            and str(track_obj["performer"].get("id", "")) != VARIOUS_ARTISTS_ID
+        ):
             artist = self._parse_artist(track_obj["performer"])
             if artist:
                 track.artists.append(artist)
@@ -697,7 +701,7 @@ class QobuzProvider(MusicProvider):
         if not track.artists and (
             track_obj.get("album")
             and track_obj["album"].get("artist")
-            and "Various" not in track_obj["album"]["artist"].get("name", "")
+            and str(track_obj["album"]["artist"].get("id", "")) != VARIOUS_ARTISTS_ID
         ):
             artist = self._parse_artist(track_obj["album"]["artist"])
             if artist:

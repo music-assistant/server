@@ -317,7 +317,7 @@ class TestParseTrack:
         """Test parsing track with Various Artists performer is filtered."""
         track_with_various = deepcopy(TRACK_OBJ)
         track_with_various["performer"] = {
-            "id": 145383,
+            "id": int(VARIOUS_ARTISTS_ID),
             "name": "Various Artists",
         }
         result = await mock_provider._parse_track(track_with_various)
@@ -334,7 +334,7 @@ class TestParseTrack:
         track_with_various["performer"] = None
         album_copy = deepcopy(ALBUM_OBJ)
         album_copy["artist"] = {
-            "id": 145383,
+            "id": int(VARIOUS_ARTISTS_ID),
             "name": "Various Artists",
         }
         track_with_various["album"] = album_copy
