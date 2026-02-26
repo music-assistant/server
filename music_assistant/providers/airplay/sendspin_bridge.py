@@ -31,6 +31,7 @@ from aiosendspin.server.roles.registry import register_role
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.mass import LOGGER
+from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
 from .constants import StreamingProtocol
 from .helpers import player_id_to_mac_address, unix_time_to_ntp
@@ -59,7 +60,7 @@ def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     """
     mac = player_id_to_mac_address(airplay_player.player_id)
     if is_valid_mac_address(mac):
-        return mac
+        return bridge_client_id_from_mac(mac)
     return None
 
 

@@ -1837,6 +1837,13 @@ class Player(ABC):
             # try to catch cases where player reports an active source
             # that is actually from an active output protocol (e.g. AirPlay)
             and self.active_source.lower() != output_protocol_domain
+            and not (
+                # try to handle sendspin bridge where the player itself
+                # is reporting the bridged protocol as active source
+                # we need to ignore that
+                output_protocol_domain == "sendspin"
+                and self.active_source.lower() in ("airplay", "cast", "chromecast", "network")
+            )
         ):
             return self.active_source
         # return the (last) known MA source - fallback to player's own queue source if none

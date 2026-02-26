@@ -57,7 +57,9 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+
+from .helpers import mac_from_bridge_client_id
+from .playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -184,7 +186,9 @@ class SendspinPlayer(Player):
             self._attr_device_info = DeviceInfo()
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
-        if is_valid_mac_address(player_id):
+        if _mac := mac_from_bridge_client_id(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
+        elif is_valid_mac_address(player_id):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
