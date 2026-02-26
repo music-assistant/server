@@ -473,7 +473,7 @@ class PartyModePlugin(PluginProvider):
         auth = self.mass.webserver.auth
 
         # Check for an existing active join code
-        existing_code = await auth.get_active_join_code(self.domain)
+        existing_code = await auth.get_active_join_code(self)
         if existing_code:
             return existing_code
 
@@ -481,10 +481,10 @@ class PartyModePlugin(PluginProvider):
         guest_user_id = await self._get_or_create_party_guest_user()
         code, _expires_at = await auth.generate_join_code(
             user_id=guest_user_id,
+            provider=self,
             expires_in_hours=8,
             max_uses=0,
             device_name="Party Mode Guest",
-            provider_name=self.domain,
         )
         return code
 
@@ -861,7 +861,7 @@ class PartyModePlugin(PluginProvider):
         auth = self.mass.webserver.auth
 
         # Revoke pending join codes for party mode only
-        codes_revoked = await auth.revoke_join_codes(provider_name=self.domain)
+        codes_revoked = await auth.revoke_join_codes(provider=self)
         if codes_revoked > 0:
             self.logger.info("Revoked %d pending join codes", codes_revoked)
 
