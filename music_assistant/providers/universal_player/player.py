@@ -14,12 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlayerFeature
-
 from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import PlayerFeature
+
     from .provider import UniversalPlayerProvider
 
 
@@ -50,38 +50,23 @@ class UniversalPlayer(Player):
         :param device_info: Device information aggregated from protocol players.
         :param protocol_player_ids: List of protocol player IDs to link.
         """
-        super().__init__(provider, player_id)
         self._protocol_player_ids = protocol_player_ids
+        super().__init__(provider, player_id)
         # Set player attributes
         self._attr_name = name
         self._attr_device_info = device_info
-        # Start as unavailable - will be updated when protocol players are linked
-        self._attr_available = False
         # a universal player does not have any features on its own,
         # it delegates to protocol players
         self._attr_supported_features = set()
 
     @property
-    def hidden_by_default(self) -> bool:
-        """Return if the player should be hidden in the UI by default."""
-        if len(self.linked_output_protocols) == 0:
-            # If we have no linked protocols, hide by default
-            return True
-        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
-            # hide web players by default
-            return True
-        return False
-
-    @property
-    def expose_to_ha_by_default(self) -> bool:
-        """Return if the player should be exposed to Home Assistant by default."""
-        if len(self.linked_output_protocols) == 0:
-            # If we have no linked protocols, hide by default
-            return False
-        if self.device_info.model.lower() == "web browser":  # noqa: SIM103
-            # hide web players by default
-            return False
-        return True
+    def available(self) -> bool:
+        """Return if the player is currently available."""
+        # A universal player is available if any of its linked protocol players are available
+        return any(
+            (p := self.mass.players.get_player(pid)) and p.available
+            for pid in self._protocol_player_ids
+        )
 
     def _get_control_target(
         self, required_feature: PlayerFeature, require_active: bool = False
@@ -114,27 +99,6 @@ class UniversalPlayer(Player):
                 return protocol_player
 
         return None
-
-    def update_from_protocol_players(self) -> None:
-        """
-        Update state from linked protocol players.
-
-        Called to sync state like volume, availability from protocol players.
-        """
-        # Aggregate availability - available if any protocol is available
-        self._attr_available = any(
-            (p := self.mass.players.get_player(pid)) and p.available
-            for pid in self._protocol_player_ids
-        )
-        # Get volume from best control target
-        if target := self._get_control_target(PlayerFeature.VOLUME_SET):
-            if target.volume_level is not None:
-                self._attr_volume_level = target.volume_level
-        if target := self._get_control_target(PlayerFeature.VOLUME_MUTE):
-            if target.volume_muted is not None:
-                self._attr_volume_muted = target.volume_muted
-
-        self.update_state()
 
     def add_protocol_player(self, protocol_player_id: str) -> None:
         """Add a protocol player to this universal player."""

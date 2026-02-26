@@ -257,6 +257,7 @@ class WebserverController(CoreController):
         # add index (with onboarding check)
         self._index_path = os.path.join(frontend_dir, "index.html")
         routes.append(("GET", "/", self._handle_index))
+        routes.append(("HEAD", "/", self._handle_index))
         # add logo
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)

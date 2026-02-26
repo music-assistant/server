@@ -46,7 +46,7 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Player (Internal)                            │
+│                     Player (Internal)                           │
 │  - Provider-specific implementation                             │
 │  - Control methods (play, pause, volume_set, etc.)              │
 │  - Raw state (_attr_volume_level, _attr_playback_state, etc.)   │
@@ -164,6 +164,8 @@ Protocol players are matched to the same physical device using identifiers in or
 4. **player_id** - Fallback for players without identifiers (e.g., Sendspin)
 
 **Note:** IP_ADDRESS is intentionally NOT used for matching as it can change with DHCP and cause incorrect matches between different devices.
+
+**Important:** Protocol players from the **same protocol domain** (same provider.domain) will NOT be matched together, even if they share the same MAC/IP address. This is intentional to handle multiple software player instances (e.g., multiple Snapcast clients, multiple SendSpin web players) running on the same host. These are separate logical players, not multiple protocols of the same physical device.
 
 **Fallback behavior:** Protocol players that don't expose any identifiers (like Sendspin clients) will still get wrapped in a Universal Player using their player_id as the device key. This ensures all protocol players get a consistent user-facing interface.
 

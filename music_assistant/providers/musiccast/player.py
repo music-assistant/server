@@ -657,6 +657,7 @@ class MusicCastPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await avt_set_url(
             self.mass.http_session,
             self.physical_device,

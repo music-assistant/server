@@ -326,7 +326,7 @@ class ChromecastPlayer(Player):
         ]
 
     async def on_config_updated(self) -> None:
-        """Handle config updates - resend Sendspin config if needed."""
+        """Handle config load/update - resend Sendspin config if needed."""
         if not self.sendspin_mode_enabled:
             return
 
@@ -425,7 +425,7 @@ class ChromecastPlayer(Player):
                     raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
             else:
                 await self._launch_app()
-            self._attr_active_source = self.player_id
+            self._attr_active_source = None
         else:
             self._attr_active_source = None
             await asyncio.to_thread(self.cc.quit_app)
@@ -467,6 +467,7 @@ class ChromecastPlayer(Player):
         """Handle enqueuing of the next item on the player."""
         next_item_id = None
         status = self.cc.media_controller.status
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         # lookup position of current track in cast queue
         cast_current_item_id = getattr(status, "current_item_id", 0)
         cast_queue_items = getattr(status, "items", [])
@@ -725,7 +726,7 @@ class ChromecastPlayer(Player):
         if group_player:
             self._attr_active_source = group_player.active_source or group_player.player_id
         elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
-            self._attr_active_source = self.player_id
+            self._attr_active_source = None
         else:
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
@@ -770,7 +771,7 @@ class ChromecastPlayer(Player):
                     child._attr_current_media = self._attr_current_media
                     child._attr_elapsed_time = self._attr_elapsed_time
                     child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
-                    child._attr_active_source = self._active_source
+                    child._attr_active_source = self.active_source
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
