@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import time
@@ -301,11 +302,16 @@ class QobuzProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
-        return [
-            await self._parse_track(item)
-            for item in await self._get_all_items("album/get", **params, key="tracks")
-            if (item and item["id"])
-        ]
+        result: list[Track] = []
+        for index, item in enumerate(
+            await self._get_all_items("album/get", **params, key="tracks")
+        ):
+            if not (item and item["id"]):
+                continue
+            result.append(await self._parse_track(item))
+            if index % 10 == 0:
+                await asyncio.sleep(0)
+        return result
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -330,6 +336,8 @@ class QobuzProvider(MusicProvider):
             track = await self._parse_track(track_obj)
             track.position = index + offset
             result.append(track)
+            if index % 10 == 0:
+                await asyncio.sleep(0)
         return result
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
