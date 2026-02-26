@@ -574,6 +574,18 @@ class SendspinPlayer(Player):
             repeat = SendspinRepeatMode.ONE
 
         shuffle = queue.shuffle_enabled if queue else False
+        is_playing = self.state.playback_state == PlaybackState.PLAYING
+
+        # Prefer queue/media elapsed as source of truth. Only interpolate while
+        # actively playing; for paused/idle states keep the last fixed position.
+        elapsed_time: float | None = (
+            float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
+        )
+        if is_playing and current_media.corrected_elapsed_time is not None:
+            elapsed_time = current_media.corrected_elapsed_time
+        if elapsed_time is None:
+            elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
+        track_progress = int(elapsed_time * 1000) if elapsed_time is not None else 0
 
         metadata = Metadata(
             title=current_media.title,
@@ -584,10 +596,8 @@ class SendspinPlayer(Player):
             year=None,
             track=None,
             track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=int(current_media.corrected_elapsed_time * 1000)
-            if current_media.corrected_elapsed_time
-            else 0,
-            playback_speed=1000,
+            track_progress=track_progress,
+            playback_speed=1000 if is_playing else 0,
             repeat=repeat,
             shuffle=shuffle,
         )
