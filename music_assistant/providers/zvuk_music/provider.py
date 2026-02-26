@@ -538,7 +538,7 @@ class ZvukMusicProvider(MusicProvider):
         track_id = track.item_id
         try:
             result = await self.client.get_lyrics(track_id)
-        except (ResourceTemporarilyUnavailable, ProviderUnavailableError) as err:
+        except (ResourceTemporarilyUnavailable, ProviderUnavailableError, LoginFailed) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
             return None
         if not result:
@@ -742,7 +742,13 @@ class ZvukMusicProvider(MusicProvider):
         bitrate = 0
 
         for q_str, q_content_type, q_bitrate in quality_chain:
-            url = await self.client.get_direct_stream_url(item_id, q_str)
+            try:
+                url = await self.client.get_direct_stream_url(item_id, q_str)
+            except ResourceTemporarilyUnavailable as err:
+                self.logger.debug(
+                    "Quality %s unavailable for track %s: %s — trying next", q_str, item_id, err
+                )
+                continue
             self.logger.debug(
                 "Stream URL for track %s quality=%s: %s",
                 item_id,

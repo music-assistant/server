@@ -316,9 +316,12 @@ class ZvukMusicClient:
         client = self._ensure_connected()
         url = f"{TINY_API_URL}/track/stream"
         result = await client._request.get(url, params={"quality": quality, "id": track_id})
-        if not result or "stream" not in result:
+        if not result:
             return None
-        return str(result["stream"])
+        stream = result.get("stream")
+        if not stream:
+            return None
+        return str(stream)
 
     # Collection (Library)
 
