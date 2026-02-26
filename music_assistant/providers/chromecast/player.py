@@ -773,11 +773,7 @@ class ChromecastPlayer(Player):
                     child._attr_current_media = self._attr_current_media
                     child._attr_elapsed_time = self._attr_elapsed_time
                     child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
-<<<<<<< mypy-chromecast
-                    child._attr_active_source = self._attr_active_source
-=======
                     child._attr_active_source = self.active_source
->>>>>>> dev
                     self.mass.loop.call_soon_threadsafe(child.update_state)
         self.mass.loop.call_soon_threadsafe(self.update_state)
 
