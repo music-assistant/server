@@ -26,6 +26,8 @@ from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
+from music_assistant.helpers.throttle_retry import Throttler
+
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
     from yandex_music.feed.feed import Feed
@@ -61,6 +63,7 @@ class YandexMusicClient:
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
         self._reconnect_lock = asyncio.Lock()
+        self._throttler = Throttler(rate_limit=1, period=2.0)
 
     @property
     def user_id(self) -> int:
@@ -112,10 +115,15 @@ class YandexMusicClient:
 
     def _is_connection_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a connection or server drop."""
-        if isinstance(err, NetworkError):
+        if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
             return True
         msg = str(err).lower()
         return "disconnect" in msg or "connection" in msg or "timeout" in msg
+
+    def _is_rate_limit_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a rate-limit response from Yandex."""
+        msg = str(err).lower()
+        return "429" in msg or "too many" in msg or "rate limit" in msg
 
     async def _reconnect(self) -> None:
         """Disconnect and connect again to recover from Server disconnected / connection errors.
@@ -132,15 +140,20 @@ class YandexMusicClient:
             await self.connect()
 
     async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """Execute an async API call with one reconnect attempt on connection error.
+        """Execute an async API call with throttling and one reconnect attempt on connection error.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         try:
             return await func(client)
         except Exception as err:
+            if self._is_rate_limit_error(err):
+                raise ResourceTemporarilyUnavailable(
+                    "Yandex Music rate limit", backoff_time=60
+                ) from err
             if not self._is_connection_error(err):
                 raise
             LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
@@ -163,6 +176,7 @@ class YandexMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
+        await self._throttler.acquire()
         client = await self._ensure_connected()
         return await func(client)
 
