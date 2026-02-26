@@ -90,6 +90,7 @@ class ChromecastPlayer(Player):
         self.mz_controller: MultizoneController | None = None
         self.last_poll = 0.0
         self.flow_meta_checksum: str | None = None
+        self._attr_synced_to: str | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -242,7 +243,7 @@ class ChromecastPlayer(Player):
                     or sendspin_player.synced_to
                 )
             else:
-                self._attr_synced_to = ""
+                self._attr_synced_to = None
             self.update_state()
             # Check if sync delay config changed and resend if needed
             current_sync_delay = int(
