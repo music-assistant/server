@@ -112,8 +112,9 @@ class AirPlayProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         # Stop all Sendspin bridges
-        if self._bridge_manager:
-            await self._bridge_manager.stop_all()
+        bridge_manager = getattr(self, "_bridge_manager", None)
+        if bridge_manager:
+            await bridge_manager.stop_all()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()

@@ -1053,18 +1053,22 @@ class ProtocolLinkingMixin:
 
             # Check if this member is in the parent's group via protocol
             if parent_protocol_domain and parent_protocol_player:
-                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
-                if (
-                    child_protocol
-                    and child_protocol.output_protocol_id in parent_protocol_player.group_members
-                ):
-                    self.logger.debug(
-                        "Translating removal: %s -> protocol %s",
-                        child_player_id,
-                        child_protocol.output_protocol_id,
+                child_protocol = child_player.get_output_protocol_by_domain(parent_protocol_domain)
+                if child_protocol and child_protocol.available:
+                    # For native protocol players, use the child's player_id directly
+                    child_protocol_id = (
+                        child_player.player_id
+                        if child_protocol.is_native
+                        else child_protocol.output_protocol_id
                     )
-                    protocol_members.append(child_protocol.output_protocol_id)
-                    continue
+                    if child_protocol_id in parent_protocol_player.group_members:
+                        self.logger.debug(
+                            "Translating removal: %s -> protocol %s",
+                            child_player_id,
+                            child_protocol_id,
+                        )
+                        protocol_members.append(child_protocol_id)
+                        continue
 
             # Check if child's protocol player is in parent's native group_members
             # This handles native protocol players (e.g., native AirPlay player like Apple TV)
@@ -1087,13 +1091,11 @@ class ProtocolLinkingMixin:
         return protocol_members, native_members
 
     def _filter_protocol_members(self, member_ids: list[str], protocol_player: Player) -> list[str]:
-        """Filter member IDs to only include protocol players from the same domain."""
+        """Filter member IDs to only include players from the same protocol domain."""
         return [
             pid
             for pid in member_ids
-            if (p := self.get_player(pid))
-            and p.type == PlayerType.PROTOCOL
-            and p.provider.domain == protocol_player.provider.domain
+            if (p := self.get_player(pid)) and p.provider.domain == protocol_player.provider.domain
         ]
 
     def _filter_native_members(self, member_ids: list[str], parent_player: Player) -> list[str]:
@@ -1178,7 +1180,7 @@ class ProtocolLinkingMixin:
         for parent_output_protocol in parent_player.output_protocols:
             if not parent_output_protocol.available:
                 continue
-            child_protocol = child_player.get_linked_protocol(
+            child_protocol = child_player.get_output_protocol_by_domain(
                 parent_output_protocol.protocol_domain
             )
             if not child_protocol or not child_protocol.available:
@@ -1270,9 +1272,18 @@ class ProtocolLinkingMixin:
             if parent_protocol_domain and parent_protocol_player:
                 # Verify the active protocol supports SET_MEMBERS
                 if PlayerFeature.SET_MEMBERS in parent_protocol_player.state.supported_features:
-                    child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
+                    child_protocol = child_player.get_output_protocol_by_domain(
+                        parent_protocol_domain
+                    )
                     if child_protocol and child_protocol.available:
-                        protocol_members.append(child_protocol.output_protocol_id)
+                        # For native protocol players, use the child's player_id directly
+                        # (e.g., a native sendspin web player IS the protocol player)
+                        child_protocol_id = (
+                            child_player.player_id
+                            if child_protocol.is_native
+                            else child_protocol.output_protocol_id
+                        )
+                        protocol_members.append(child_protocol_id)
                         self.logger.log(
                             VERBOSE_LOG_LEVEL,
                             "Using parent's active protocol %s for %s",
@@ -1317,7 +1328,13 @@ class ProtocolLinkingMixin:
                     )
                     if parent_protocol_player:
                         parent_protocol_domain = parent_protocol_player.provider.domain
-                protocol_members.append(child_protocol.output_protocol_id)
+                # For native protocol players, use the child's player_id directly
+                child_protocol_id = (
+                    child_player.player_id
+                    if child_protocol.is_native
+                    else child_protocol.output_protocol_id
+                )
+                protocol_members.append(child_protocol_id)
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Selected common protocol %s for grouping %s with %s",

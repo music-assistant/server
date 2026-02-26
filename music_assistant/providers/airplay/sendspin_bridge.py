@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -26,11 +25,16 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from aiosendspin.server.roles import AudioRequirements, Role
-from aiosendspin.server.roles.registry import register_role
 
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.mass import LOGGER
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BIT_DEPTH,
+    BRIDGE_BYTES_PER_SAMPLE,
+    BRIDGE_CHANNELS,
+    BRIDGE_ROLE_ID,
+    BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
+)
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
 from .constants import StreamingProtocol
@@ -62,136 +66,6 @@ def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     if is_valid_mac_address(mac):
         return bridge_client_id_from_mac(mac)
     return None
-
-
-class BridgePlayerRole(Role):
-    """Custom Sendspin player role for the AirPlay bridge.
-
-    This role receives audio from Sendspin's PushStream and forwards it
-    to the AirPlay device via a callback. It bypasses the normal WebSocket
-    audio delivery since external players don't have a WebSocket connection.
-
-    Created by the role factory registry. After creation, the bridge must
-    call set_callbacks() to wire up audio/volume/stream callbacks.
-    """
-
-    def __init__(self, client: SendspinClient) -> None:
-        """Initialize the bridge player role.
-
-        :param client: The Sendspin client this role belongs to.
-        """
-        self._client = client
-        self._on_audio_chunk_cb: Callable[[AudioChunk], None] | None = None
-        self._on_volume_change_cb: Callable[[int, bool], None] | None = None
-        self._on_stream_start_cb: Callable[[], None] | None = None
-        self._on_stream_end_cb: Callable[[], None] | None = None
-        self._audio_requirements: AudioRequirements | None = None
-        self._volume: int = 100
-        self._muted: bool = False
-
-    def set_callbacks(
-        self,
-        *,
-        on_audio_chunk: Callable[[AudioChunk], None],
-        on_volume_change: Callable[[int, bool], None],
-        on_stream_start: Callable[[], None],
-        on_stream_end: Callable[[], None],
-        initial_volume: int = 100,
-    ) -> None:
-        """Wire up bridge callbacks after role creation.
-
-        :param on_audio_chunk: Callback to receive audio chunks.
-        :param on_volume_change: Callback when volume or mute state changes.
-        :param on_stream_start: Callback when the stream starts.
-        :param on_stream_end: Callback when the stream ends.
-        :param initial_volume: Initial volume level (0-100).
-        """
-        self._on_audio_chunk_cb = on_audio_chunk
-        self._on_volume_change_cb = on_volume_change
-        self._on_stream_start_cb = on_stream_start
-        self._on_stream_end_cb = on_stream_end
-        self._volume = initial_volume
-
-    @property
-    def role_id(self) -> str:
-        """Return role identifier."""
-        return "player@_airplay_bridge"
-
-    @property
-    def role_family(self) -> str:
-        """Return role family name."""
-        return "player"
-
-    def setup_audio_requirements(self) -> None:
-        """Set up audio requirements for 44.1kHz 16-bit stereo PCM."""
-        self._audio_requirements = AudioRequirements(
-            sample_rate=44100,
-            bit_depth=16,
-            channels=2,
-            transformer=None,  # Raw PCM, no encoding
-        )
-
-    def get_audio_requirements(self) -> AudioRequirements | None:
-        """Return audio requirements for PushStream."""
-        return self._audio_requirements
-
-    def get_player_volume(self) -> int | None:
-        """Return current volume level."""
-        return self._volume
-
-    def get_player_muted(self) -> bool | None:
-        """Return current mute state."""
-        return self._muted
-
-    def set_player_volume(self, volume: int) -> None:
-        """Set volume and notify bridge."""
-        self._volume = volume
-        if self._on_volume_change_cb:
-            self._on_volume_change_cb(volume, self._muted)
-
-    def set_player_mute(self, muted: bool) -> None:
-        """Set mute state and notify bridge."""
-        self._muted = muted
-        if self._on_volume_change_cb:
-            self._on_volume_change_cb(self._volume, muted)
-
-    def on_audio_chunk(self, chunk: AudioChunk) -> None:
-        """Receive audio chunk from PushStream and forward to callback."""
-        if self._on_audio_chunk_cb:
-            self._on_audio_chunk_cb(chunk)
-
-    def on_connect(self) -> None:
-        """Subscribe to PlayerGroupRole on attach."""
-        self._subscribe_to_group_role()
-
-    def on_disconnect(self) -> None:
-        """Unsubscribe from PlayerGroupRole on detach."""
-        self._unsubscribe_from_group_role()
-
-    def has_connection(self) -> bool:
-        """Return True to indicate bridge is "connected" for audio purposes."""
-        return True
-
-    def supports_preconnect_audio(self) -> bool:
-        """Return True — AirPlay bridge can receive audio before the stream starts."""
-        return True
-
-    def on_stream_start(self) -> None:
-        """Log stream start and invoke callback."""
-        LOGGER.debug("BridgePlayerRole stream started for client %s", self._client.client_id)
-        if self._on_stream_start_cb:
-            self._on_stream_start_cb()
-
-    def on_stream_end(self) -> None:
-        """Log stream end and invoke the stream-end callback."""
-        LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
-        if self._on_stream_end_cb:
-            self._on_stream_end_cb()
-
-
-BRIDGE_ROLE_ID = "player@_airplay_bridge"
-
-register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))
 
 
 class SendspinAirPlayBridge:
@@ -262,9 +136,9 @@ class SendspinAirPlayBridge:
                 supported_formats=[
                     SupportedAudioFormat(
                         codec=AudioCodec.PCM,
-                        channels=2,
-                        sample_rate=44100,
-                        bit_depth=16,
+                        channels=BRIDGE_CHANNELS,
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH,
                     )
                 ],
                 buffer_capacity=1_000,
@@ -340,6 +214,13 @@ class SendspinAirPlayBridge:
         # Cancel any existing writer task (leftover from previous stream)
         if self._writer_task is not None and not self._writer_task.done():
             self._writer_task.cancel()
+        # Re-assert streaming state and clear protocol references so the first
+        # audio chunk triggers a fresh protocol start. This is needed because
+        # the async cleanup scheduled by _on_stream_start may have cleared
+        # _is_streaming and _protocol_start_task between then and now.
+        self._is_streaming = True
+        self._protocol_start_task = None
+        self._protocol_ready.clear()
         self._next_expected_timestamp_us = None
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
@@ -435,8 +316,10 @@ class SendspinAirPlayBridge:
             if gap_us > 1_000:
                 # Forward gap: fill with silence, capped at 2 seconds to avoid huge fills on seeks
                 fill_us = min(gap_us, 2_000_000)
-                # 44100 Hz * 2 channels * 2 bytes/sample = 176400 bytes/sec = 0.1764 bytes/µs
-                silence = bytes(int(fill_us * 44100 * 2 * 2 / 1_000_000))
+                bytes_per_us = (
+                    BRIDGE_SAMPLE_RATE * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE / 1_000_000
+                )
+                silence = bytes(int(fill_us * bytes_per_us))
                 self._write_queue.put_nowait(silence)
             elif gap_us < -1_000:
                 self.logger.debug("Discarding late audio chunk (%d µs behind)", -gap_us)
@@ -557,9 +440,18 @@ class SendspinBridgeManager:
                 return
 
             bridge = SendspinAirPlayBridge(self.provider, airplay_player, sendspin_server)
-            self._bridges[player_id] = bridge
 
-            await bridge.start()
+            try:
+                await bridge.start()
+            except Exception:
+                self.logger.warning(
+                    "Failed to start Sendspin bridge for %s", airplay_player.display_name
+                )
+                with suppress(Exception):
+                    await bridge.stop()
+                return
+
+            self._bridges[player_id] = bridge
 
             self.logger.info("Sendspin bridge created for %s", airplay_player.display_name)
 
