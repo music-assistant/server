@@ -206,8 +206,8 @@ class KionMusicStreamingManager:
             reverse=True,
         )
 
-        # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
+        # Superb: prefer FLAC; exact match to avoid substring false-positives
+        if preferred_normalized in {QUALITY_LOSSLESS, "lossless", "superb"}:
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
@@ -355,7 +355,10 @@ class KionMusicStreamingManager:
         """
         encrypted_url: str = streamdetails.data["encrypted_url"]
         key_hex: str = streamdetails.data["decryption_key"]
-        key_bytes = bytes.fromhex(key_hex)
+        try:
+            key_bytes = bytes.fromhex(key_hex)
+        except ValueError as err:
+            raise MediaNotFoundError("Invalid decryption key format for encrypted stream") from err
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 

@@ -342,14 +342,18 @@ class KionMusicClient:
         ]
         if not album_ids:
             return []
+
         # Fetch full album details in batches to get cover_uri and other metadata
+        def _fetch_albums_batch(
+            album_ids_batch: list[str],
+        ) -> Callable[[ClientAsync], Any]:
+            return lambda c: c.albums(album_ids_batch)
+
         full_albums: list[YandexAlbum] = []
         for i in range(0, len(album_ids), batch_size):
             batch = album_ids[i : i + batch_size]
             try:
-                batch_result = await self._call_with_retry(
-                    lambda c, _b=batch: c.albums(_b)  # type: ignore[misc]
-                )
+                batch_result = await self._call_with_retry(_fetch_albums_batch(batch))
                 if batch_result:
                     full_albums.extend(batch_result)
             except (BadRequestError, NetworkError, ProviderUnavailableError) as batch_err:
@@ -511,7 +515,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
