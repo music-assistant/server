@@ -53,6 +53,10 @@ class SendspinProvider(PlayerProvider):
 
     async def _handle_client_added(self, client_id: str) -> None:
         """Handle a new client connection asynchronously."""
+        # Yield to allow any synchronous registration (like register_external_player) to complete
+        # This is needed because ClientAddedEvent fires during get_or_create_client, before
+        # preload_hello sets the client info
+        await asyncio.sleep(0)
         # Wait for any pending unregister to complete before registering
         # This prevents a race condition where a slow unregister removes
         # a newly registered player after a quick reconnect

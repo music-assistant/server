@@ -125,14 +125,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         else:
             provider = self.mass.get_provider("builtin")
 
-        media_types_set = {MediaType.TRACK} if media_types is None else set(media_types)
+        # Default is track for backwards compatibility.
+        media_types_set = {MediaType.TRACK} if not media_types else set(media_types)
         if not provider_instance_or_domain and not media_types_set:
             # builtin can handle all media_types
             media_types_set.update(
                 (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO)
             )
 
-        # grab all existing track ids in the playlist so we can check for duplicates
         provider = cast("MusicProvider", provider)
 
         mix_allowed = ProviderFeature.PLAYLIST_CREATE_MIXED in provider.supported_features
