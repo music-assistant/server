@@ -135,8 +135,9 @@ async def get_config_entries(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
             label="API Base URL",
-            description="API endpoint base URL. "
-            "Only change if KION Music changes their API endpoint. "
+            description="Yandex Music API base URL (must support OAuth token auth). "
+            "The default works with Yandex OAuth tokens. "
+            "KION Music web proxy (music.mts.ru/ya-proxy/api) uses cookie-based auth only. "
             f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
             required=False,

@@ -87,6 +87,11 @@ class KionMusicClient:
             return True
         except UnauthorizedError as err:
             raise LoginFailed("Invalid KION Music token") from err
+        except BadRequestError as err:
+            # KION API returns HTTP 400 for expired/invalid tokens (not 401)
+            raise LoginFailed(
+                f"KION Music authentication failed — token may be expired: {err}"
+            ) from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
             raise ResourceTemporarilyUnavailable(msg) from err

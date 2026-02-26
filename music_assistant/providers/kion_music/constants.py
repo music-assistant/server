@@ -19,7 +19,7 @@ LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
-DEFAULT_BASE_URL: Final[str] = "https://music.mts.ru/ya_proxy_api"
+DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
 WEB_BASE_URL: Final[str] = "https://music.mts.ru"
 
 # Quality options (matching reference implementation)
