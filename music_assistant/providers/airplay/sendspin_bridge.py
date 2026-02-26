@@ -123,6 +123,19 @@ class SendspinAirPlayBridge:
             )
             return
 
+        # Check if another bridge (e.g. Chromecast) already registered this client_id.
+        # Devices that support both AirPlay and Chromecast share the same MAC,
+        # so only the first bridge to register wins.
+        if self.sendspin_server.get_client(self._bridge_client_id):
+            self.logger.debug(
+                "Sendspin client %s already registered (likely by another bridge), "
+                "skipping AirPlay bridge for %s",
+                self._bridge_client_id,
+                self.airplay_player.display_name,
+            )
+            self._bridge_client_id = None
+            return
+
         hello = ClientHelloPayload(
             client_id=self._bridge_client_id,
             name=f"{self.airplay_player.display_name} (AirPlay)",
@@ -491,6 +504,9 @@ class SendspinBridgeManager:
                 )
                 with suppress(Exception):
                     await bridge.stop()
+                return
+
+            if not bridge.is_registered:
                 return
 
             self._bridges[player_id] = bridge
