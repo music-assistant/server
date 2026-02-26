@@ -14,6 +14,8 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+
 from .constants import (
     CONF_QUALITY,
     QUALITY_EFFICIENT,
@@ -354,10 +356,14 @@ class YandexMusicStreamingManager:
             attempt + 1,
             max_retries,
         )
-        file_info = await self.client.get_track_file_info_lossless(raw_track_id)
+        token = BYPASS_THROTTLER.set(True)
+        try:
+            file_info = await self.client.get_track_file_info_lossless(raw_track_id)
+        finally:
+            BYPASS_THROTTLER.reset(token)
         if file_info and file_info.get("url"):
             return file_info["url"], file_info.get("key", current_key_hex)
-        return current_url, current_key_hex
+        return None
 
     async def _decrypt_response_stream(
         self,
@@ -468,7 +474,7 @@ class YandexMusicStreamingManager:
                             )
                         encrypted_url, key_hex = refreshed
                         key_bytes = bytes.fromhex(key_hex)
-                        retry_delay = _TCP_DROP_DELAYS[min(attempt, len(_TCP_DROP_DELAYS) - 1)]
+                        retry_delay = 0.0  # fresh URL is immediately available
                         continue  # retry with fresh URL
                     try:
                         response.raise_for_status()

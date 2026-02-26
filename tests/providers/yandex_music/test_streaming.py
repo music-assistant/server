@@ -667,3 +667,29 @@ async def test_get_audio_stream_resets_decrypt_when_range_ignored(
 
     # Decryptor was reset to 0 on the second request, so full plaintext is recovered
     assert result == plaintext
+
+
+async def test_get_audio_stream_fails_immediately_when_url_refresh_returns_nothing(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """If get_track_file_info_lossless returns no URL, stream fails without wasting retries."""
+    key = b"\x88" * 32
+    sd = _make_encrypted_stream_details(key.hex())
+    streaming_provider_stub.mass.http_session = _MockHttpSession(_MockResponse([], status=410))
+    streaming_provider_stub.client = unittest.mock.AsyncMock()
+    # Simulate API returning no usable URL (None result)
+    streaming_provider_stub.client.get_track_file_info_lossless = unittest.mock.AsyncMock(
+        return_value=None
+    )
+    streaming_manager.client = streaming_provider_stub.client
+
+    with (
+        pytest.raises(MediaNotFoundError, match="retries exhausted"),
+        unittest.mock.patch("asyncio.sleep"),
+    ):
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+    # Should have given up after attempt 0 (refresh returned None → no stale URL reuse)
+    assert streaming_provider_stub.client.get_track_file_info_lossless.call_count == 1
