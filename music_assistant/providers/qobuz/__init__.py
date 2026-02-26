@@ -823,7 +823,7 @@ class QobuzProvider(MusicProvider):
     ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)
-        url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
+        url = f"https://www.qobuz.com/api.json/0.2/{endpoint}"
         headers = {"X-App-Id": app_var(0)}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
@@ -881,16 +881,14 @@ class QobuzProvider(MusicProvider):
             params = {}
         if not data:
             data = {}
-        url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
+        url = f"https://www.qobuz.com/api.json/0.2/{endpoint}"
         params["app_id"] = app_var(0)
         auth_token = await self._auth_token()
         if auth_token is None:
             msg = "Authentication token is required"
             raise LoginFailed(msg)
         params["user_auth_token"] = auth_token
-        async with self.mass.http_session.post(
-            url, params=params, json=data, ssl=False
-        ) as response:
+        async with self.mass.http_session.post(url, params=params, json=data) as response:
             # handle rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers.get("Retry-After", 0))
