@@ -33,6 +33,7 @@ def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
     mock_underlying = mock.AsyncMock()
     client._client = mock_underlying
     client._user_id = 12345
+    client._throttler = mock.AsyncMock()  # disable throttling in unit tests
 
     async def _fake_connect() -> bool:
         client._client = mock_underlying
@@ -277,7 +278,7 @@ def test_is_rate_limit_error_detects_429() -> None:
 
 
 def test_is_rate_limit_error_detects_too_many() -> None:
-    """_is_rate_limit_error returns True when message contains 'too many'."""
+    """_is_rate_limit_error returns True when message contains 'too many requests'."""
     client, _ = _make_client()
     err = NetworkError("too many requests from this IP")
     assert client._is_rate_limit_error(err) is True
@@ -287,6 +288,13 @@ def test_is_rate_limit_error_false_for_ordinary_network_error() -> None:
     """_is_rate_limit_error returns False for ordinary connection errors."""
     client, _ = _make_client()
     err = NetworkError("timeout")
+    assert client._is_rate_limit_error(err) is False
+
+
+def test_is_rate_limit_error_false_for_non_network_error() -> None:
+    """_is_rate_limit_error returns False for non-NetworkError, even with 'too many' in msg."""
+    client, _ = _make_client()
+    err = ValueError("too many values to unpack")
     assert client._is_rate_limit_error(err) is False
 
 

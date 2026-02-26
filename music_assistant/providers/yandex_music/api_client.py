@@ -63,7 +63,7 @@ class YandexMusicClient:
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
         self._reconnect_lock = asyncio.Lock()
-        self._throttler = Throttler(rate_limit=1, period=2.0)
+        self._throttler = Throttler(rate_limit=5, period=1.0)
 
     @property
     def user_id(self) -> int:
@@ -122,8 +122,10 @@ class YandexMusicClient:
 
     def _is_rate_limit_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a rate-limit response from Yandex."""
+        if not isinstance(err, NetworkError):
+            return False
         msg = str(err).lower()
-        return "429" in msg or "too many" in msg or "rate limit" in msg
+        return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
     async def _reconnect(self) -> None:
         """Disconnect and connect again to recover from Server disconnected / connection errors.
