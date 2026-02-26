@@ -407,7 +407,10 @@ class GenreController(MediaControllerBase[Genre]):
         :param media_type: The type of media item.
         :param media_id: The database ID of the media item.
         """
-        media_id_int = int(media_id)
+        try:
+            media_id_int = int(media_id)
+        except (ValueError, TypeError):
+            return []
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         query = (
             f"EXISTS(SELECT 1 FROM {gm} gm "
