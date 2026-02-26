@@ -742,13 +742,7 @@ class ZvukMusicProvider(MusicProvider):
         bitrate = 0
 
         for q_str, q_content_type, q_bitrate in quality_chain:
-            try:
-                url = await self.client.get_direct_stream_url(item_id, q_str)
-            except ResourceTemporarilyUnavailable as err:
-                self.logger.debug(
-                    "Quality %s unavailable for track %s: %s — trying next", q_str, item_id, err
-                )
-                continue
+            url = await self.client.get_direct_stream_url(item_id, q_str)
             self.logger.debug(
                 "Stream URL for track %s quality=%s: %s",
                 item_id,
