@@ -698,7 +698,17 @@ class PartyModePlugin(PluginProvider):
         # Find the insert position (end of guest section)
         queue = self.mass.player_queues.get(queue_id)
         queue_items = self.mass.player_queues.items(queue_id)
-        current_index = queue.current_index or 0 if queue else 0
+
+        # Use index_in_buffer when playing to avoid inserting before an already-buffered track,
+        # which would cause the newly added song to be skipped
+        if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            current_index = (
+                queue.index_in_buffer
+                if queue.index_in_buffer is not None
+                else (queue.current_index if queue.current_index is not None else 0)
+            )
+        else:
+            current_index = queue.current_index or 0 if queue else 0
 
         # Find where to insert: after last guest item, before first non-guest item
         insert_index = self._find_guest_section_end(queue_items, current_index)
@@ -767,7 +777,17 @@ class PartyModePlugin(PluginProvider):
         # Find the insert position (end of boost section)
         queue = self.mass.player_queues.get(queue_id)
         queue_items = self.mass.player_queues.items(queue_id)
-        current_index = queue.current_index or 0 if queue else 0
+
+        # Use index_in_buffer when playing to avoid inserting before an already-buffered track,
+        # which would cause the newly added song to be skipped
+        if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            current_index = (
+                queue.index_in_buffer
+                if queue.index_in_buffer is not None
+                else (queue.current_index if queue.current_index is not None else 0)
+            )
+        else:
+            current_index = queue.current_index or 0 if queue else 0
 
         # Find where to insert: after last boosted item, before first non-boosted guest item
         insert_index = self._find_boost_section_end(queue_items, current_index)
