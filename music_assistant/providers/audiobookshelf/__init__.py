@@ -652,8 +652,10 @@ for more details.
             )
 
             session = await self._client.get_playback_session(
-                # These parameters give an hls if we don't enforce direct play stream,
-                # which is only a concat of the individual file's at abs
+                # Direct play gives us the individual files. Transcode give an HLS session.
+                # Sessions without HLS proved to be stable. See:
+                # https://github.com/music-assistant/support/issues/4754
+                # https://github.com/music-assistant/support/issues/4586
                 session_parameters=AbsPlaybackSessionParameters(
                     device_info=device_info,
                     force_direct_play=True,
