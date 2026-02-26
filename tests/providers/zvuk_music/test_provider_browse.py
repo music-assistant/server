@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -42,7 +43,7 @@ def _make_provider() -> ZvukMusicProvider:
     provider.logger = Mock()
     provider.instance_id = "zvuk_music"
     provider.supported_features = frozenset({ProviderFeature.BROWSE})
-    # Async helpers as mocks — overridden per-test as needed
+    # Async helpers as mocks — overridden per-test using setattr() to satisfy mypy
     provider._get_for_you_playlists = AsyncMock(return_value=[])
     provider._get_editorial_playlists = AsyncMock(return_value=[])
     # Bind real implementations
@@ -191,24 +192,30 @@ class TestBrowse:
         """Path ending with 'for_you' returns the for-you playlist list."""
         provider = _make_provider()
         pl_1, pl_2 = _make_playlist("3"), _make_playlist("4")
-        provider._get_for_you_playlists = AsyncMock(return_value=[pl_1, pl_2])
+        for_you_mock = AsyncMock(return_value=[pl_1, pl_2])
+        editorial_mock = AsyncMock(return_value=[])
+        provider._get_for_you_playlists = for_you_mock
+        provider._get_editorial_playlists = editorial_mock
 
         result = await provider.browse("zvuk_music://for_you")
 
         assert result == [pl_1, pl_2]
-        provider._get_editorial_playlists.assert_not_called()
+        editorial_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_editorial_subpath_returns_editorial_playlists(self) -> None:
         """Path ending with 'editorial' returns the editorial playlist list."""
         provider = _make_provider()
         pl = _make_playlist("101")
-        provider._get_editorial_playlists = AsyncMock(return_value=[pl])
+        for_you_mock = AsyncMock(return_value=[])
+        editorial_mock = AsyncMock(return_value=[pl])
+        provider._get_for_you_playlists = for_you_mock
+        provider._get_editorial_playlists = editorial_mock
 
         result = await provider.browse("zvuk_music://editorial")
 
         assert result == [pl]
-        provider._get_for_you_playlists.assert_not_called()
+        for_you_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_browse_folder_paths_are_correct(self) -> None:
@@ -217,7 +224,7 @@ class TestBrowse:
 
         result = await provider.browse("zvuk_music://")
 
-        for_you_folder = result[0]
-        editorial_folder = result[1]
+        for_you_folder = cast("BrowseFolder", result[0])
+        editorial_folder = cast("BrowseFolder", result[1])
         assert for_you_folder.path == "zvuk_music://for_you"
         assert editorial_folder.path == "zvuk_music://editorial"

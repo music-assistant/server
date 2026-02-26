@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -114,7 +115,7 @@ class TestGetLibraryArtists:
             results = [a async for a in provider.get_library_artists()]
 
         assert results == [parsed_2]
-        provider.logger.debug.assert_called()
+        cast("Mock", provider.logger.debug).assert_called()
 
     @pytest.mark.asyncio
     async def test_large_collection_fetches_multiple_batches(self) -> None:
@@ -185,7 +186,7 @@ class TestGetLibraryAlbums:
             results = [a async for a in provider.get_library_albums()]
 
         assert results == []
-        provider.logger.debug.assert_called()
+        cast("Mock", provider.logger.debug).assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +316,7 @@ class TestGetLibraryPlaylists:
 
         # User playlist is yielded; synthesis item is skipped
         assert results == [good_parsed]
-        provider.logger.debug.assert_called()
+        cast("Mock", provider.logger.debug).assert_called()
 
     @pytest.mark.asyncio
     async def test_invalid_data_error_in_user_playlist_is_skipped(self) -> None:
