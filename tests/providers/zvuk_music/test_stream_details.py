@@ -47,24 +47,37 @@ def _make_provider(quality_pref: str) -> ZvukMusicProvider:
 class TestGetDirectStreamUrl:
     """Tests for ZvukMusicClient.get_direct_stream_url."""
 
+    def _mock_request(
+        self, zvuk_client: ZvukMusicClient, response: dict[str, object] | None
+    ) -> AsyncMock:
+        """Patch _ensure_connected to return a mock with _request.get returning response.
+
+        The library's Request.get() already unwraps {"result": {...}}, so response
+        is the inner dict (what the real API returns after unwrapping).
+        """
+        mock_inner_client = MagicMock()
+        mock_inner_client._request.get = AsyncMock(return_value=response)
+        zvuk_client._ensure_connected = MagicMock(return_value=mock_inner_client)  # type: ignore[method-assign]
+        return mock_inner_client._request.get
+
     @pytest.mark.asyncio
     async def test_returns_stream_url_for_flac(self) -> None:
-        """get_direct_stream_url returns the stream URL string from API response."""
+        """get_direct_stream_url returns the stream URL from the library response."""
         client = ZvukMusicClient(token="test", http_session=MagicMock())
-        client._tiny_get = AsyncMock(  # type: ignore[method-assign]
-            return_value={"stream": "https://cdn.zvuk.com/track.flac?token=abc"}
+        mock_get = self._mock_request(
+            client, {"expire": 0, "stream": "https://cdn.zvuk.com/track.flac?token=abc"}
         )
 
         url = await client.get_direct_stream_url("12345", "flac")
 
         assert url == "https://cdn.zvuk.com/track.flac?token=abc"
-        client._tiny_get.assert_called_once_with("track/stream", {"quality": "flac", "id": "12345"})
+        mock_get.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_returns_none_when_stream_missing(self) -> None:
-        """get_direct_stream_url returns None when API result has no stream key."""
+        """get_direct_stream_url returns None when result has no stream key."""
         client = ZvukMusicClient(token="test", http_session=MagicMock())
-        client._tiny_get = AsyncMock(return_value={})  # type: ignore[method-assign]
+        self._mock_request(client, {})
 
         url = await client.get_direct_stream_url("12345", "flac")
 
@@ -74,7 +87,7 @@ class TestGetDirectStreamUrl:
     async def test_returns_none_when_api_returns_none(self) -> None:
         """get_direct_stream_url returns None when API returns None."""
         client = ZvukMusicClient(token="test", http_session=MagicMock())
-        client._tiny_get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        self._mock_request(client, None)
 
         url = await client.get_direct_stream_url("12345", "high")
 
@@ -84,15 +97,13 @@ class TestGetDirectStreamUrl:
     async def test_passes_quality_param(self) -> None:
         """get_direct_stream_url passes the quality parameter to the API."""
         client = ZvukMusicClient(token="test", http_session=MagicMock())
-        client._tiny_get = AsyncMock(  # type: ignore[method-assign]
-            return_value={"stream": "https://cdn.zvuk.com/track.mp3"}
-        )
+        mock_get = self._mock_request(client, {"stream": "https://cdn.zvuk.com/track.mp3"})
 
         await client.get_direct_stream_url("99999", "high")
 
-        call_args = client._tiny_get.call_args
-        assert call_args.args[1]["quality"] == "high"
-        assert call_args.args[1]["id"] == "99999"
+        _url, kwargs = mock_get.call_args.args[0], mock_get.call_args.kwargs
+        assert kwargs["params"]["quality"] == "high"
+        assert kwargs["params"]["id"] == "99999"
 
 
 class TestGetStreamDetailsFlac:
@@ -100,7 +111,7 @@ class TestGetStreamDetailsFlac:
 
     @pytest.mark.asyncio
     async def test_lossless_with_has_flac_requests_flac(self) -> None:
-        """When lossless is requested and track has FLAC, ContentType.FLAC is returned."""
+        """When lossless is requested and FLAC URL is available, ContentType.FLAC is returned."""
         provider = MagicMock(spec=ZvukMusicProvider)
         provider.config = MagicMock()
         provider.config.get_value = MagicMock(return_value="lossless")
@@ -129,7 +140,7 @@ class TestGetStreamDetailsFlac:
         provider.instance_id = "zvuk_music--test"
 
         mock_client = MagicMock(spec=ZvukMusicClient)
-        # has_flac=False but API actually returns FLAC URL
+        # has_flac=False but tiny API actually returns FLAC URL
         mock_client.get_track = AsyncMock(return_value=_make_mock_track(has_flac=False))
         mock_client.get_direct_stream_url = AsyncMock(
             return_value="https://cdn.zvuk.com/track.flac"

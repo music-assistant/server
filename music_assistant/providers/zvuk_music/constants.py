@@ -14,6 +14,9 @@ CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
 PLAYLIST_TRACKS_PAGE_SIZE: Final[int] = 50
+# Max tracks to fetch when reading a playlist for modification (e.g. track removal).
+# The Zvuk API has no remove-by-ID endpoint, so we must fetch all tracks and re-upload.
+PLAYLIST_TRACK_FETCH_LIMIT: Final[int] = 10_000
 
 # Quality options
 QUALITY_HIGH: Final[str] = "high"
