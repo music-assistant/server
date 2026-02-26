@@ -985,6 +985,12 @@ ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
+ATTR_ACTIVE_PLAYLIST: Final[str] = "active_playlist"
+ATTR_SUPPORTED_FEATURES: Final[str] = "supported_features"
+ATTR_MUTE_CONTROL: Final[str] = "mute_control"
+ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
+ATTR_POWER_CONTROL: Final[str] = "power_control"
+ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
