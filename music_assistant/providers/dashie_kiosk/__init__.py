@@ -8,6 +8,7 @@ integration, or manual configuration by IP address.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -31,8 +32,14 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    raw_prov = mass.get_provider(HASS_DOMAIN)
-    hass_prov = cast("HomeAssistantProvider", raw_prov) if raw_prov else None
+    # Wait for the hass provider to become available (not guaranteed to be
+    # loaded yet since depends_on is not set -- manual config works without HA).
+    hass_prov: HomeAssistantProvider | None = None
+    for _ in range(10):
+        if (raw_prov := mass.get_provider(HASS_DOMAIN)) and raw_prov.available:
+            hass_prov = cast("HomeAssistantProvider", raw_prov)
+            break
+        await asyncio.sleep(1)
     return DashieKioskProvider(mass, manifest, config, hass_prov)
 
 
