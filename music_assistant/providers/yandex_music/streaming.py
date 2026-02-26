@@ -348,7 +348,7 @@ class YandexMusicStreamingManager:
         """
         if attempt >= max_retries:
             return None
-        raw_track_id = track_item_id.split("@", 1)[0]
+        raw_track_id = self._track_id_from_item_id(track_item_id)
         self.logger.warning(
             "Encrypted stream URL expired (HTTP %d) at %d bytes (attempt %d/%d) — re-fetching",
             http_status,
