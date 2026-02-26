@@ -336,6 +336,21 @@ class TestParseArtist:
         assert ImageType.THUMB in types
         assert ImageType.FANART in types
 
+    def test_parse_artist_second_image_subtype_remapped(self, mock_provider: Mock) -> None:
+        """SecondImage subtype in second_image URL is remapped to cover_background."""
+        second_image = _create_mock_image(
+            "https://cdn-image.zvuk.com/pic?hash=abc&id=1&size=300x300&type=artist&subtype=secondImage"
+        )
+        artist_obj = _create_mock_artist(artist_id=1, title="Artist", second_image=second_image)
+
+        result = parse_artist(mock_provider, artist_obj)
+
+        assert result.metadata.images is not None
+        fanart_images = [i for i in result.metadata.images if i.type == ImageType.FANART]
+        assert len(fanart_images) == 1
+        assert "subtype=cover_background" in fanart_images[0].path
+        assert "subtype=secondImage" not in fanart_images[0].path
+
 
 class TestParseAlbum:
     """Tests for parse_album function."""
