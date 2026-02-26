@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from music_assistant_models.enums import (
     AlbumType,
@@ -41,16 +42,28 @@ if TYPE_CHECKING:
 
 
 def _get_image_url(image: ZvukImage | None, size: int = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert Zvuk Image to full URL.
+    """Convert Zvuk Image to full URL with guaranteed square dimensions.
 
     :param image: Zvuk Image object.
-    :param size: Image size in pixels.
+    :param size: Image size in pixels (applied as both width and height).
     :return: Full image URL or None.
+
+    Note: The underlying ``Image.get_url()`` only updates ``?size=`` when it already
+    exists in the URL.  Editorial playlist covers are served without that parameter,
+    so we ensure it is always present after calling ``get_url()``.
     """
     if not image or not image.src:
         return None
     url = image.get_url(size, size)
-    return url or None
+    if not url:
+        return None
+    # Ensure ?size=WxH is always set (get_url skips it when absent from the original URL)
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    if "size" not in qs:
+        qs["size"] = [f"{size}x{size}"]
+        url = urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+    return url
 
 
 def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpleArtist) -> Artist:
