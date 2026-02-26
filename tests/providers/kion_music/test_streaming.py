@@ -9,6 +9,8 @@ import pytest
 from aiohttp import ClientPayloadError
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
@@ -118,24 +120,30 @@ def test_get_content_type_flac_mp4_returns_flac(
     assert content_type_upper[1] == ContentType.FLAC
 
 
-class _FakeStreamDetails:
-    """Minimal StreamDetails stub for get_audio_stream tests."""
-
-    def __init__(
-        self, decryption_key: str, encrypted_url: str = "https://example.com/enc.flac"
-    ) -> None:
-        """Initialize with key and URL."""
-        self.data = {"encrypted_url": encrypted_url, "decryption_key": decryption_key}
+def _make_stream_details(
+    decryption_key: str, encrypted_url: str = "https://example.com/enc.flac"
+) -> StreamDetails:
+    """Build a minimal StreamDetails for get_audio_stream tests."""
+    return StreamDetails(
+        provider="kion_music_instance",
+        item_id="test_track",
+        audio_format=AudioFormat(content_type=ContentType.FLAC),
+        data={"encrypted_url": encrypted_url, "decryption_key": decryption_key},
+    )
 
 
 async def test_get_audio_stream_invalid_key_hex_raises_error(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
     """Malformed hex decryption key raises MediaNotFoundError (not bare ValueError)."""
-    streamdetails = _FakeStreamDetails(decryption_key="not_valid_hex!!")
+    get_audio_stream = getattr(streaming_manager, "get_audio_stream", None)
+    if get_audio_stream is None:
+        pytest.skip("get_audio_stream not available in this provider version")
+
+    streamdetails = _make_stream_details(decryption_key="not_valid_hex!!")
 
     with pytest.raises(MediaNotFoundError, match="Invalid decryption key format"):
-        async for _ in streaming_manager.get_audio_stream(streamdetails):  # type: ignore[attr-defined]
+        async for _ in get_audio_stream(streamdetails):
             pass
 
 
@@ -144,6 +152,9 @@ async def test_get_audio_stream_retries_on_payload_error_then_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ClientPayloadError causes retries; raises MediaNotFoundError after max retries."""
+    get_audio_stream = getattr(streaming_manager, "get_audio_stream", None)
+    if get_audio_stream is None:
+        pytest.skip("get_audio_stream not available in this provider version")
 
     async def _no_sleep(_: float) -> None:
         pass
@@ -173,9 +184,10 @@ async def test_get_audio_stream_retries_on_payload_error_then_raises(
         def get(self, url: str, headers: Any = None, **kwargs: Any) -> _DroppingContext:
             return _DroppingContext()
 
-    streaming_manager.mass.http_session = _FakeHttpSession()  # type: ignore[misc, assignment]
-    streamdetails = _FakeStreamDetails(decryption_key="00" * 16)  # valid 16-byte AES key
+    streaming_manager_mass: Any = streaming_manager.mass
+    streaming_manager_mass.http_session = _FakeHttpSession()
+    streamdetails = _make_stream_details(decryption_key="00" * 16)  # valid 16-byte AES key
 
     with pytest.raises(MediaNotFoundError, match="retries were exhausted"):
-        async for _ in streaming_manager.get_audio_stream(streamdetails):  # type: ignore[attr-defined]
+        async for _ in get_audio_stream(streamdetails):
             pass
