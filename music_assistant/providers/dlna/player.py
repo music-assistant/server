@@ -525,6 +525,7 @@ class DLNAPlayer(Player):
             self.device = None
             self.set_available(False)
             await old_device.async_unsubscribe_services()
+        self.update_state()
 
     @staticmethod
     def _extract_mac_from_uuid(uuid_value: str) -> str | None:
