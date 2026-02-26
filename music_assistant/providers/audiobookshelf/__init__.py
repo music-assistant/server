@@ -72,7 +72,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -543,15 +543,18 @@ for more details.
 
         This method may only be called, if we have not more than one library per media item in ABS.
         """
-        media_type = media_types.pop()
+        error_msg = (
+            "The ABS provider only supports playlists of _either_ audiobooks, or podcast episodes."
+        )
+        if len(media_types) != 1:
+            raise InvalidDataError(error_msg)
+        media_type = next(iter(media_types))
         if media_type == MediaType.AUDIOBOOK:
             library_id = next(iter(self.libraries.audiobooks.keys()))
         elif media_type == MediaType.PODCAST_EPISODE:
             library_id = next(iter(self.libraries.podcasts.keys()))
         else:
-            raise RuntimeError(
-                "ABS only supports Podcast Episodes and Audiobooks in playlist creation."
-            )
+            raise InvalidDataError(error_msg)
         abs_playlist = await self._client.create_playlist(
             parameters=AbsCreatePlaylistParameters(name=name, library_id=library_id)
         )
