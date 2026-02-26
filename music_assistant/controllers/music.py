@@ -101,7 +101,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 27
+DB_SCHEMA_VERSION: Final[int] = 29
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2474,6 +2474,12 @@ class MusicController(CoreController):
                     )
                     await db.execute(full_query)
                     await db.commit()
+
+        if prev_version <= 29:
+            # Smart fades analyses were previously computed on silence-stripped audio,
+            # so beat timestamps are misaligned with the unstripped buffers now passed
+            # to the crossfade mixer. Truncate the table so all analyses are re-computed.
+            await self._database.execute(f"DELETE FROM {DB_TABLE_SMART_FADES_ANALYSIS}")
 
         # save changes
         await self._database.commit()

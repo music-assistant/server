@@ -40,6 +40,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     ImageType,
     PlaybackState,
     PlayerFeature,
@@ -54,8 +55,11 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     CONF_ENTRY_SAMPLE_RATES,
 )
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+
+from .helpers import mac_from_bridge_client_id
+from .playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -180,6 +184,12 @@ class SendspinPlayer(Player):
             )
         else:
             self._attr_device_info = DeviceInfo()
+        # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
+        # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
+        if _mac := mac_from_bridge_client_id(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
+        elif is_valid_mac_address(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
@@ -357,12 +367,20 @@ class SendspinPlayer(Player):
     async def _handle_group_member_removed(self, group: SendspinGroup, client_id: str) -> None:
         """Handle a group member being removed asynchronously."""
         if client_id == self.player_id:
-            if len(group.clients) > 0:
-                # We were just removed as a leader:
-                # 1. stop playback on the old group
+            was_leader = (
+                bool(self._attr_group_members) and self._attr_group_members[0] == self.player_id
+            )
+            if was_leader and len(group.clients) > 0:
+                # We were removed as the group leader:
+                # stop playback on the old group before we continue as solo.
                 await group.stop()
-                # 2. clear our members (since we are now alone in a new group)
-                self._attr_group_members = []
+            elif not was_leader:
+                self.logger.debug(
+                    "Player %s removed from group as non-leader; keeping old group playing",
+                    self.player_id,
+                )
+            # Clear members for our detached/solo state.
+            self._attr_group_members = []
             self.update_state()
         elif client_id in self._attr_group_members:
             # Someone else left our group
@@ -405,9 +423,9 @@ class SendspinPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something
+        # Stop previous stream in case we were already playing something.
+        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
-        await self.api.group.stop()
         await self.playback_session.start(media)
         self.update_state()
 
@@ -566,6 +584,18 @@ class SendspinPlayer(Player):
             repeat = SendspinRepeatMode.ONE
 
         shuffle = queue.shuffle_enabled if queue else False
+        is_playing = self.state.playback_state == PlaybackState.PLAYING
+
+        # Prefer queue/media elapsed as source of truth. Only interpolate while
+        # actively playing; for paused/idle states keep the last fixed position.
+        elapsed_time: float | None = (
+            float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
+        )
+        if is_playing and current_media.corrected_elapsed_time is not None:
+            elapsed_time = current_media.corrected_elapsed_time
+        if elapsed_time is None:
+            elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
+        track_progress = int(elapsed_time * 1000) if elapsed_time is not None else 0
 
         metadata = Metadata(
             title=current_media.title,
@@ -576,10 +606,8 @@ class SendspinPlayer(Player):
             year=None,
             track=None,
             track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=int(current_media.corrected_elapsed_time * 1000)
-            if current_media.corrected_elapsed_time
-            else 0,
-            playback_speed=1000,
+            track_progress=track_progress,
+            playback_speed=1000 if is_playing else 0,
             repeat=repeat,
             shuffle=shuffle,
         )

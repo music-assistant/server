@@ -1223,10 +1223,9 @@ class StreamsController(CoreController):
                     del _chunk
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
-            crossfade_allowed = self._crossfade_allowed(
+            if self._crossfade_allowed(
                 queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
-            )
-            if crossfade_allowed:
+            ):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_buffer_size:]
                 last_streamdetails = queue_track.streamdetails
@@ -1236,14 +1235,7 @@ class StreamsController(CoreController):
                     yield remaining_bytes
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif smart_fades_mode != SmartFadesMode.DISABLED:
-                self.logger.debug(
-                    "Flow mode: crossfade NOT allowed for track %s on queue %s"
-                    " - fadeout part not saved",
-                    queue_track.name,
-                    queue.display_name,
-                )
-            if not crossfade_allowed and buffer:
+            elif buffer:
                 # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
                 for _chunk in divide_chunks(buffer, pcm_sample_size):
@@ -1605,12 +1597,6 @@ class StreamsController(CoreController):
         streamdetails = queue_item.streamdetails
         assert streamdetails
         crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
-        self.logger.debug(
-            "Crossfade data pop for queue %s (track: %s): %s",
-            queue.display_name,
-            queue_item.name,
-            "found" if crossfade_data else "EMPTY - no crossfade data from previous track",
-        )
 
         if crossfade_data and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track
@@ -1802,34 +1788,20 @@ class StreamsController(CoreController):
             # end of queue reached, no next item
             next_queue_item = None
 
-        crossfade_allowed = bool(next_queue_item) and self._crossfade_allowed(
+        if not next_queue_item or not self._crossfade_allowed(
             queue_item,
             smart_fades_mode=smart_fades_mode,
             flow_mode=False,
             next_queue_item=next_queue_item,
             sample_rate=pcm_format.sample_rate,
             next_sample_rate=next_queue_item_pcm_format.sample_rate,
-        )
-        if not crossfade_allowed:
-            if not next_queue_item:
-                self.logger.debug(
-                    "Enqueue mode: no next queue item loaded (QueueEmpty) for queue %s",
-                    queue.display_name,
-                )
-            else:
-                self.logger.debug(
-                    "Enqueue mode: crossfade NOT allowed for track %s -> %s on queue %s",
-                    queue_item.name,
-                    next_queue_item.name,
-                    queue.display_name,
-                )
+        ):
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
             for _chunk in divide_chunks(buffer, pcm_format.pcm_sample_size):
                 yield _chunk
         else:
             # if crossfade is enabled, save fadeout part in buffer to pickup for next track
-            assert next_queue_item is not None
             fade_out_data = buffer
             buffer = b""
             try:
@@ -1902,12 +1874,6 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,  # Format of the data (current track)
                     fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
                     queue_item_id=next_queue_item.queue_item_id,
-                )
-                self.logger.debug(
-                    "Crossfade data STORED for queue %s (outgoing track: %s, incoming track: %s)",
-                    queue.display_name,
-                    queue_item.name,
-                    next_queue_item.name if next_queue_item else "N/A",
                 )
             except AudioError:
                 # no crossfade possible, just yield the fade_out_data
@@ -2070,12 +2036,6 @@ class StreamsController(CoreController):
         )
         if not next_item:
             # there is no next item!
-            self.logger.debug(
-                "Crossfade not allowed: no next item found for %s (flow_mode=%s, queue_id=%s)",
-                queue_item.name,
-                flow_mode,
-                queue_item.queue_id,
-            )
             return False
         # check if next item is a track
         if next_item.media_type != MediaType.TRACK:
