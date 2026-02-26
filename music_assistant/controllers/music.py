@@ -2518,11 +2518,12 @@ class MusicController(CoreController):
             )
             db_rows = await self.mass.music.database.get_rows_from_query(query)
             item_ids = [str(x["item_id"]) for x in db_rows]
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLISTS} SET "
-                'supported_mediatypes = \'["audiobook","podcast_episode","radio","track"]\' '
-                f"WHERE item_id in ({','.join(item_ids)})"
-            )
+            if item_ids:
+                await self.database.execute(
+                    f"UPDATE {DB_TABLE_PLAYLISTS} SET "
+                    'supported_mediatypes = \'["audiobook","podcast_episode","radio","track"]\' '
+                    f"WHERE item_id in ({','.join(item_ids)})"
+                )
 
         # save changes
         await self._database.commit()
