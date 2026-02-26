@@ -57,7 +57,7 @@ class TestHandleZvukErrors:
     async def test_unauthorized_error_raises_login_failed(self) -> None:
         """UnauthorizedError is mapped to LoginFailed."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise UnauthorizedError("bad token")
 
@@ -68,7 +68,7 @@ class TestHandleZvukErrors:
     async def test_network_error_raises_resource_temporarily_unavailable(self) -> None:
         """NetworkError is mapped to ResourceTemporarilyUnavailable."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise NetworkError("connection reset")
 
@@ -79,7 +79,7 @@ class TestHandleZvukErrors:
     async def test_timed_out_error_raises_resource_temporarily_unavailable(self) -> None:
         """TimedOutError is mapped to ResourceTemporarilyUnavailable."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise TimedOutError("timeout")
 
@@ -90,7 +90,7 @@ class TestHandleZvukErrors:
     async def test_bad_request_error_raises_resource_temporarily_unavailable(self) -> None:
         """BadRequestError is mapped to ResourceTemporarilyUnavailable."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise BadRequestError("bad request")
 
@@ -101,7 +101,7 @@ class TestHandleZvukErrors:
     async def test_bot_detected_error_raises_provider_unavailable(self) -> None:
         """BotDetectedError is mapped to ProviderUnavailableError."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise BotDetectedError("bot detected")
 
@@ -112,7 +112,7 @@ class TestHandleZvukErrors:
     async def test_not_found_returns_sentinel_value_when_provided(self) -> None:
         """NotFoundError returns not_found_return when the param is set."""
 
-        @handle_zvuk_errors(not_found_return=None)  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors(not_found_return=None)
         async def failing(_self: object) -> str | None:
             raise NotFoundError("not found")
 
@@ -123,7 +123,7 @@ class TestHandleZvukErrors:
     async def test_not_found_empty_list_sentinel(self) -> None:
         """not_found_return=[] returns an empty list on NotFoundError."""
 
-        @handle_zvuk_errors(not_found_return=[])  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors(not_found_return=[])
         async def failing(_self: object) -> list[str]:
             raise NotFoundError("not found")
 
@@ -134,7 +134,7 @@ class TestHandleZvukErrors:
     async def test_not_found_error_reraised_when_no_sentinel(self) -> None:
         """NotFoundError is re-raised when not_found_return is not provided."""
 
-        @handle_zvuk_errors()  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors()
         async def failing(_self: object) -> None:
             raise NotFoundError("not found")
 
@@ -145,7 +145,7 @@ class TestHandleZvukErrors:
     async def test_success_returns_value(self) -> None:
         """The decorated function returns its value normally on success."""
 
-        @handle_zvuk_errors(not_found_return=None)  # type: ignore[untyped-decorator]
+        @handle_zvuk_errors(not_found_return=None)
         async def succeeding(_self: object) -> str:
             return "ok"
 
@@ -323,7 +323,7 @@ class TestGetEditorialPlaylistIds:
     ) -> None:
         """Wire inner._request.get to return the given response."""
         inner._request.get = AsyncMock(return_value=response)
-        client._ensure_connected = MagicMock(return_value=inner)
+        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
 
     @pytest.mark.asyncio
     async def test_returns_string_ids_not_ints(self) -> None:
@@ -416,7 +416,7 @@ class TestGetDirectStreamUrl:
         """Wire inner._request.get to return the given response."""
         inner = MagicMock()
         inner._request.get = AsyncMock(return_value=response)
-        client._ensure_connected = MagicMock(return_value=inner)
+        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
         return cast("AsyncMock", inner._request.get)
 
     @pytest.mark.asyncio
@@ -474,7 +474,7 @@ class TestGetLyrics:
         """Wire inner._request.get to return the given response."""
         inner = MagicMock()
         inner._request.get = AsyncMock(return_value=response)
-        client._ensure_connected = MagicMock(return_value=inner)
+        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
 
     @pytest.mark.asyncio
     async def test_returns_none_when_result_is_none(self) -> None:

@@ -44,8 +44,8 @@ def _make_provider() -> ZvukMusicProvider:
     provider.instance_id = "zvuk_music"
     provider.supported_features = frozenset({ProviderFeature.BROWSE})
     # Async helpers as mocks — overridden per-test using setattr() to satisfy mypy
-    provider._get_for_you_playlists = AsyncMock(return_value=[])
-    provider._get_editorial_playlists = AsyncMock(return_value=[])
+    setattr(provider, "_get_for_you_playlists", AsyncMock(return_value=[]))
+    setattr(provider, "_get_editorial_playlists", AsyncMock(return_value=[]))
     # Bind real implementations
     provider.remove_playlist_tracks = ZvukMusicProvider.remove_playlist_tracks.__get__(
         provider, ZvukMusicProvider
@@ -75,8 +75,8 @@ class TestRemovePlaylistTracks:
             _make_track_mock(30),
             _make_track_mock(40),
         ]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
-        provider.client.update_playlist = AsyncMock()
+        setattr(provider.client, "get_playlist_tracks", AsyncMock(return_value=tracks))
+        setattr(provider.client, "update_playlist", AsyncMock())
 
         # Remove positions 0 and 2 → keep tracks at positions 1 (id=20) and 3 (id=40)
         await provider.remove_playlist_tracks("playlist-1", (0, 2))
@@ -87,8 +87,8 @@ class TestRemovePlaylistTracks:
     async def test_get_playlist_tracks_called_with_fetch_limit(self) -> None:
         """get_playlist_tracks is always called with limit=PLAYLIST_TRACK_FETCH_LIMIT."""
         provider = _make_provider()
-        provider.client.get_playlist_tracks = AsyncMock(return_value=[])
-        provider.client.update_playlist = AsyncMock()
+        setattr(provider.client, "get_playlist_tracks", AsyncMock(return_value=[]))
+        setattr(provider.client, "update_playlist", AsyncMock())
 
         await provider.remove_playlist_tracks("playlist-2", ())
 
@@ -101,8 +101,8 @@ class TestRemovePlaylistTracks:
         """Removing no positions keeps all track IDs intact."""
         provider = _make_provider()
         tracks = [_make_track_mock(11), _make_track_mock(22)]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
-        provider.client.update_playlist = AsyncMock()
+        setattr(provider.client, "get_playlist_tracks", AsyncMock(return_value=tracks))
+        setattr(provider.client, "update_playlist", AsyncMock())
 
         await provider.remove_playlist_tracks("playlist-3", ())
 
@@ -121,8 +121,10 @@ class TestRecommendations:
     async def test_returns_two_folders_when_both_helpers_have_items(self) -> None:
         """Two RecommendationFolders are returned when both helpers return playlists."""
         provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[_make_playlist("3")])
-        provider._get_editorial_playlists = AsyncMock(return_value=[_make_playlist("99")])
+        setattr(provider, "_get_for_you_playlists", AsyncMock(return_value=[_make_playlist("3")]))
+        setattr(
+            provider, "_get_editorial_playlists", AsyncMock(return_value=[_make_playlist("99")])
+        )
 
         folders = await provider.recommendations()
 
@@ -135,8 +137,10 @@ class TestRecommendations:
     async def test_omits_for_you_folder_when_helper_returns_empty(self) -> None:
         """The «Плейлисты для вас» folder is omitted when _get_for_you_playlists returns []."""
         provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[])
-        provider._get_editorial_playlists = AsyncMock(return_value=[_make_playlist("99")])
+        setattr(provider, "_get_for_you_playlists", AsyncMock(return_value=[]))
+        setattr(
+            provider, "_get_editorial_playlists", AsyncMock(return_value=[_make_playlist("99")])
+        )
 
         folders = await provider.recommendations()
 
@@ -147,8 +151,8 @@ class TestRecommendations:
     async def test_omits_editorial_folder_when_helper_returns_empty(self) -> None:
         """The «Подборки» folder is omitted when _get_editorial_playlists returns []."""
         provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[_make_playlist("3")])
-        provider._get_editorial_playlists = AsyncMock(return_value=[])
+        setattr(provider, "_get_for_you_playlists", AsyncMock(return_value=[_make_playlist("3")]))
+        setattr(provider, "_get_editorial_playlists", AsyncMock(return_value=[]))
 
         folders = await provider.recommendations()
 
@@ -159,8 +163,8 @@ class TestRecommendations:
     async def test_returns_empty_when_both_helpers_return_empty(self) -> None:
         """An empty list is returned when both helpers have no playlists."""
         provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[])
-        provider._get_editorial_playlists = AsyncMock(return_value=[])
+        setattr(provider, "_get_for_you_playlists", AsyncMock(return_value=[]))
+        setattr(provider, "_get_editorial_playlists", AsyncMock(return_value=[]))
 
         folders = await provider.recommendations()
 
@@ -194,8 +198,8 @@ class TestBrowse:
         pl_1, pl_2 = _make_playlist("3"), _make_playlist("4")
         for_you_mock = AsyncMock(return_value=[pl_1, pl_2])
         editorial_mock = AsyncMock(return_value=[])
-        provider._get_for_you_playlists = for_you_mock
-        provider._get_editorial_playlists = editorial_mock
+        setattr(provider, "_get_for_you_playlists", for_you_mock)
+        setattr(provider, "_get_editorial_playlists", editorial_mock)
 
         result = await provider.browse("zvuk_music://for_you")
 
@@ -209,8 +213,8 @@ class TestBrowse:
         pl = _make_playlist("101")
         for_you_mock = AsyncMock(return_value=[])
         editorial_mock = AsyncMock(return_value=[pl])
-        provider._get_for_you_playlists = for_you_mock
-        provider._get_editorial_playlists = editorial_mock
+        setattr(provider, "_get_for_you_playlists", for_you_mock)
+        setattr(provider, "_get_editorial_playlists", editorial_mock)
 
         result = await provider.browse("zvuk_music://editorial")
 

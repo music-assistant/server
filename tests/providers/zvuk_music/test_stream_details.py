@@ -58,7 +58,7 @@ class TestGetDirectStreamUrl:
         """
         mock_inner_client = MagicMock()
         mock_inner_client._request.get = AsyncMock(return_value=response)
-        zvuk_client._ensure_connected = MagicMock(return_value=mock_inner_client)
+        setattr(zvuk_client, "_ensure_connected", MagicMock(return_value=mock_inner_client))
         return cast("AsyncMock", mock_inner_client._request.get)
 
     @pytest.mark.asyncio
