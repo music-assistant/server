@@ -141,7 +141,7 @@ async def get_config_entries(
 
 
 class QobuzProvider(MusicProvider):
-    """Provider for the Qobux music service."""
+    """Provider for the Qobuz music service."""
 
     _user_auth_info: dict[str, Any] | None = None
     # rate limiter needs to be specified on provider-level,
@@ -347,7 +347,12 @@ class QobuzProvider(MusicProvider):
         return [
             await self._parse_album(item)
             for item in result["albums"]["items"]
-            if (item and item["id"] and str(item["artist"]["id"]) == prov_artist_id)
+            if (
+                item
+                and item["id"]
+                and item.get("artist")
+                and str(item["artist"]["id"]) == prov_artist_id
+            )
         ]
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -544,7 +549,7 @@ class QobuzProvider(MusicProvider):
         user_id = self._user_auth_info["user"]["id"]
         async with self.throttler.bypass():
             await self._get_data(
-                "/track/reportStreamingEnd",
+                "track/reportStreamingEnd",
                 user_id=user_id,
                 track_id=str(streamdetails.item_id),
                 duration=try_parse_int(streamdetails.seconds_streamed),
@@ -609,7 +614,8 @@ class QobuzProvider(MusicProvider):
                 )
             },
         )
-        album.external_ids.add((ExternalID.BARCODE, album_obj["upc"]))
+        if upc := album_obj.get("upc"):
+            album.external_ids.add((ExternalID.BARCODE, upc))
         album.artists.append(self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
@@ -683,7 +689,7 @@ class QobuzProvider(MusicProvider):
         )
         if isrc := track_obj.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
-        if track_obj.get("performer") and "Various " not in track_obj["performer"]:
+        if track_obj.get("performer") and "Various" not in track_obj["performer"].get("name", ""):
             artist = self._parse_artist(track_obj["performer"])
             if artist:
                 track.artists.append(artist)
@@ -691,14 +697,16 @@ class QobuzProvider(MusicProvider):
         if not track.artists and (
             track_obj.get("album")
             and track_obj["album"].get("artist")
-            and "Various " not in track_obj["album"]["artist"]
+            and "Various" not in track_obj["album"]["artist"].get("name", "")
         ):
             artist = self._parse_artist(track_obj["album"]["artist"])
             if artist:
                 track.artists.append(artist)
         if not track.artists:
             # last resort: parse from performers string
-            for performer_str in track_obj["performers"].split(" - "):
+            for performer_str in track_obj.get("performers", "").split(" - "):
+                if ", " not in performer_str:
+                    continue
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
@@ -714,7 +722,7 @@ class QobuzProvider(MusicProvider):
                             )
                         },
                     )
-                track.artists.append(artist)
+                    track.artists.append(artist)
         # TODO: fix grabbing composer from details
 
         if "album" in track_obj:
