@@ -51,6 +51,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        **kwargs: Any,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -60,14 +62,17 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
         """
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -80,11 +85,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
             return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
+                genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -231,7 +238,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if resume_info_db_row["seconds_played"]:
                 episode.resume_position_ms = int(resume_info_db_row["seconds_played"] * 1000)
             if resume_info_db_row["fully_played"] is not None:
-                episode.fully_played = resume_info_db_row["fully_played"]
+                episode.fully_played = bool(resume_info_db_row["fully_played"])
 
         # grab the episodes from the provider
         # note that we do not cache any of this because its

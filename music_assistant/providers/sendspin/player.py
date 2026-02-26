@@ -11,12 +11,7 @@ from typing import TYPE_CHECKING, cast
 from aiosendspin.models import AudioCodec, MediaCommand
 from aiosendspin.models.types import PlaybackStateType
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
-from aiosendspin.server import (
-    ClientEvent,
-    GroupEvent,
-    SendspinGroup,
-    VolumeChangedEvent,
-)
+from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.client import DisconnectBehaviour
 from aiosendspin.server.events import (
@@ -60,9 +55,7 @@ from music_assistant.constants import (
     CONF_ENTRY_SAMPLE_RATES,
 )
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.sendspin.playback import (
-    SendspinPlaybackSession,
-)
+from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -205,6 +198,9 @@ class SendspinPlayer(Player):
         )
         self._attr_expose_to_ha_by_default = not self.is_web_player
         self._attr_hidden_by_default = self.is_web_player
+        # register web/app player as native player type because it doesn't need to be linked
+        # every web/app player is just a standalone player.
+        self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
 
     @property
     def _artwork_role(self) -> ArtworkGroupRole | None:
@@ -361,12 +357,20 @@ class SendspinPlayer(Player):
     async def _handle_group_member_removed(self, group: SendspinGroup, client_id: str) -> None:
         """Handle a group member being removed asynchronously."""
         if client_id == self.player_id:
-            if len(group.clients) > 0:
-                # We were just removed as a leader:
-                # 1. stop playback on the old group
+            was_leader = (
+                bool(self._attr_group_members) and self._attr_group_members[0] == self.player_id
+            )
+            if was_leader and len(group.clients) > 0:
+                # We were removed as the group leader:
+                # stop playback on the old group before we continue as solo.
                 await group.stop()
-                # 2. clear our members (since we are now alone in a new group)
-                self._attr_group_members = []
+            elif not was_leader:
+                self.logger.debug(
+                    "Player %s removed from group as non-leader; keeping old group playing",
+                    self.player_id,
+                )
+            # Clear members for our detached/solo state.
+            self._attr_group_members = []
             self.update_state()
         elif client_id in self._attr_group_members:
             # Someone else left our group
@@ -409,14 +413,14 @@ class SendspinPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something
+        # Stop previous stream in case we were already playing something.
+        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
-        await self.api.group.stop()
         await self.playback_session.start(media)
         self.update_state()
 
     async def on_config_updated(self) -> None:
-        """Apply preferred format when config changes."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
 
     async def _apply_preferred_format(self) -> None:

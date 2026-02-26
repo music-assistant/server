@@ -1402,10 +1402,16 @@ def get_player_filter_params(
     """Get player specific filter parameters for ffmpeg (if any)."""
     filter_params = []
 
-    dsp = mass.config.get_player_dsp_config(player_id)
+    player = mass.players.get_player(player_id)
+    # In case this is a protocol player, their DSP config is stored
+    # under the parent (native or universal) player that wraps them.
+    dsp_player_id = player_id
+    if player and player.protocol_parent_id:
+        dsp_player_id = player.protocol_parent_id
+    dsp = mass.config.get_player_dsp_config(dsp_player_id)
     limiter_enabled = True
 
-    if player := mass.players.get_player(player_id):
+    if player:
         if is_grouping_preventing_dsp(player):
             # We can not correctly apply DSP to a grouped player without multi-device DSP support,
             # so we disable it.
