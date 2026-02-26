@@ -359,6 +359,7 @@ class SendspinAirPlayBridge:
             self._protocol = AirPlay2Stream(self.airplay_player)
         else:
             self._protocol = RaopStream(self.airplay_player)
+        self.airplay_player.stream = self._protocol
 
         await self._protocol.start(start_ntp)
         self._protocol_ready.set()
@@ -506,6 +507,7 @@ class SendspinAirPlayBridge:
         if self._protocol:
             await self._protocol.stop(force=True)
             self._protocol = None
+            self.airplay_player.stream = None
 
 
 class SendspinBridgeManager:

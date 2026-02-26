@@ -639,7 +639,7 @@ class AirPlayPlayer(Player):
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running or not self.stream.session:
+        if not self.stream or not self.stream.running:
             return
         metadata = self.state.current_media
         if not metadata:
