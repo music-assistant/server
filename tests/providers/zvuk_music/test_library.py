@@ -59,7 +59,7 @@ class TestGetLibraryArtists:
     async def test_none_collection_yields_nothing(self) -> None:
         """When get_collection() returns None, nothing is yielded."""
         provider = _make_provider()
-        setattr(provider.client, "get_collection", AsyncMock(return_value=None))
+        provider.client.get_collection = AsyncMock(return_value=None)
 
         results = [a async for a in provider.get_library_artists()]
 
@@ -71,7 +71,7 @@ class TestGetLibraryArtists:
         provider = _make_provider()
         collection = Mock()
         collection.artists = []
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
         results = [a async for a in provider.get_library_artists()]
 
@@ -83,10 +83,10 @@ class TestGetLibraryArtists:
         provider = _make_provider()
         collection = Mock()
         collection.artists = [_make_item(1), _make_item(2)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_artists", AsyncMock(return_value=[raw_1, raw_2]))
+        provider.client.get_artists = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
 
@@ -101,10 +101,10 @@ class TestGetLibraryArtists:
         provider = _make_provider()
         collection = Mock()
         collection.artists = [_make_item(1), _make_item(2)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_artists", AsyncMock(return_value=[raw_1, raw_2]))
+        provider.client.get_artists = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_2 = Mock()
 
@@ -124,9 +124,9 @@ class TestGetLibraryArtists:
         total = DEFAULT_LIMIT + 10  # 60 items → 2 batches
         collection = Mock()
         collection.artists = [_make_item(i) for i in range(1, total + 1)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
         mock_get_artists = AsyncMock(return_value=[])
-        setattr(provider.client, "get_artists", mock_get_artists)
+        provider.client.get_artists = mock_get_artists
 
         with patch(f"{_PROVIDER_MODULE}.parse_artist"):
             [a async for a in provider.get_library_artists()]
@@ -150,7 +150,7 @@ class TestGetLibraryAlbums:
     async def test_none_collection_yields_nothing(self) -> None:
         """When get_collection() returns None, nothing is yielded."""
         provider = _make_provider()
-        setattr(provider.client, "get_collection", AsyncMock(return_value=None))
+        provider.client.get_collection = AsyncMock(return_value=None)
 
         results = [a async for a in provider.get_library_albums()]
 
@@ -162,10 +162,10 @@ class TestGetLibraryAlbums:
         provider = _make_provider()
         collection = Mock()
         collection.releases = [_make_item(10), _make_item(20)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_releases", AsyncMock(return_value=[raw_1, raw_2]))
+        provider.client.get_releases = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
 
@@ -180,8 +180,8 @@ class TestGetLibraryAlbums:
         provider = _make_provider()
         collection = Mock()
         collection.releases = [_make_item(10)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
-        setattr(provider.client, "get_releases", AsyncMock(return_value=[Mock()]))
+        provider.client.get_collection = AsyncMock(return_value=collection)
+        provider.client.get_releases = AsyncMock(return_value=[Mock()])
 
         with patch(f"{_PROVIDER_MODULE}.parse_album", side_effect=InvalidDataError("bad release")):
             results = [a async for a in provider.get_library_albums()]
@@ -202,7 +202,7 @@ class TestGetLibraryTracks:
     async def test_none_collection_yields_nothing(self) -> None:
         """When get_collection() returns None, nothing is yielded."""
         provider = _make_provider()
-        setattr(provider.client, "get_collection", AsyncMock(return_value=None))
+        provider.client.get_collection = AsyncMock(return_value=None)
 
         results = [t async for t in provider.get_library_tracks()]
 
@@ -214,10 +214,10 @@ class TestGetLibraryTracks:
         provider = _make_provider()
         collection = Mock()
         collection.tracks = [_make_item(100), _make_item(200)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_tracks", AsyncMock(return_value=[raw_1, raw_2]))
+        provider.client.get_tracks = AsyncMock(return_value=[raw_1, raw_2])
 
         parsed_1, parsed_2 = Mock(), Mock()
 
@@ -232,9 +232,9 @@ class TestGetLibraryTracks:
         provider = _make_provider()
         collection = Mock()
         collection.tracks = [_make_item(100), _make_item(200)]
-        setattr(provider.client, "get_collection", AsyncMock(return_value=collection))
+        provider.client.get_collection = AsyncMock(return_value=collection)
 
-        setattr(provider.client, "get_tracks", AsyncMock(return_value=[Mock(), Mock()]))
+        provider.client.get_tracks = AsyncMock(return_value=[Mock(), Mock()])
         good_track = Mock()
 
         with patch(
@@ -258,7 +258,7 @@ class TestGetLibraryPlaylists:
     async def test_empty_user_playlists_yields_nothing(self) -> None:
         """When get_user_playlists() returns None, nothing is yielded."""
         provider = _make_provider()
-        setattr(provider.client, "get_user_playlists", AsyncMock(return_value=None))
+        provider.client.get_user_playlists = AsyncMock(return_value=None)
 
         results = [p async for p in provider.get_library_playlists()]
 
@@ -268,14 +268,10 @@ class TestGetLibraryPlaylists:
     async def test_user_playlists_are_fetched_and_parsed(self) -> None:
         """User playlists are fetched in batch and parsed."""
         provider = _make_provider()
-        setattr(
-            provider.client,
-            "get_user_playlists",
-            AsyncMock(return_value=[_make_item(1), _make_item(2)]),
-        )
+        provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1), _make_item(2)])
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_playlists", AsyncMock(return_value=[raw_1, raw_2]))
-        setattr(provider.client, "get_short_playlists", AsyncMock(return_value=[]))
+        provider.client.get_playlists = AsyncMock(return_value=[raw_1, raw_2])
+        provider.client.get_short_playlists = AsyncMock(return_value=[])
 
         parsed_1, parsed_2 = Mock(), Mock()
 
@@ -288,11 +284,11 @@ class TestGetLibraryPlaylists:
     async def test_synthesis_playlists_are_also_yielded(self) -> None:
         """Synthesis (personalized) playlists are yielded after user playlists."""
         provider = _make_provider()
-        setattr(provider.client, "get_user_playlists", AsyncMock(return_value=[_make_item(1)]))
+        provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1)])
         raw_user = Mock()
-        setattr(provider.client, "get_playlists", AsyncMock(return_value=[raw_user]))
+        provider.client.get_playlists = AsyncMock(return_value=[raw_user])
         raw_synth = Mock()
-        setattr(provider.client, "get_short_playlists", AsyncMock(return_value=[raw_synth]))
+        provider.client.get_short_playlists = AsyncMock(return_value=[raw_synth])
 
         user_parsed = Mock()
         synth_parsed = Mock()
@@ -307,9 +303,9 @@ class TestGetLibraryPlaylists:
         """InvalidDataError from a synthesis playlist parser is skipped."""
         provider = _make_provider()
         # Need at least one user playlist so the method doesn't return early
-        setattr(provider.client, "get_user_playlists", AsyncMock(return_value=[_make_item(1)]))
-        setattr(provider.client, "get_playlists", AsyncMock(return_value=[Mock()]))
-        setattr(provider.client, "get_short_playlists", AsyncMock(return_value=[Mock()]))
+        provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1)])
+        provider.client.get_playlists = AsyncMock(return_value=[Mock()])
+        provider.client.get_short_playlists = AsyncMock(return_value=[Mock()])
 
         # First call (user playlist) succeeds; second call (synthesis) raises
         good_parsed = Mock()
@@ -327,14 +323,10 @@ class TestGetLibraryPlaylists:
     async def test_invalid_data_error_in_user_playlist_is_skipped(self) -> None:
         """InvalidDataError from parse_playlist on a user playlist is skipped."""
         provider = _make_provider()
-        setattr(
-            provider.client,
-            "get_user_playlists",
-            AsyncMock(return_value=[_make_item(1), _make_item(2)]),
-        )
+        provider.client.get_user_playlists = AsyncMock(return_value=[_make_item(1), _make_item(2)])
         raw_1, raw_2 = Mock(), Mock()
-        setattr(provider.client, "get_playlists", AsyncMock(return_value=[raw_1, raw_2]))
-        setattr(provider.client, "get_short_playlists", AsyncMock(return_value=[]))
+        provider.client.get_playlists = AsyncMock(return_value=[raw_1, raw_2])
+        provider.client.get_short_playlists = AsyncMock(return_value=[])
 
         good_parsed = Mock()
 
