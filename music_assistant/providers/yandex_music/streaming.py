@@ -441,7 +441,7 @@ class YandexMusicStreamingManager:
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
         block_size = 16  # AES-CTR block size in bytes
-        max_retries = 5
+        max_retries = 6
         bytes_yielded = 0  # total decrypted bytes delivered to caller
         retry_delay: float = 0.0  # set per error type in exception handlers
 
