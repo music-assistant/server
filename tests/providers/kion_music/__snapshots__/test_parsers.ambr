@@ -251,9 +251,6 @@
       }),
     ]),
     'sort_name': 'my playlist',
-    'supported_mediatypes': list([
-      'track',
-    ]),
     'translation_key': None,
     'uri': 'kion_music_instance://playlist/12345:3',
     'version': '',
@@ -317,9 +314,6 @@
       }),
     ]),
     'sort_name': 'shared playlist',
-    'supported_mediatypes': list([
-      'track',
-    ]),
     'translation_key': None,
     'uri': 'kion_music_instance://playlist/99999:1',
     'version': '',

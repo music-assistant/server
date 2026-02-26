@@ -13,8 +13,8 @@ from music_assistant.providers.kion_music.constants import DEFAULT_BASE_URL
 
 @pytest.fixture
 def client() -> KionMusicClient:
-    """Return a KionMusicClient with a fake token."""
-    return KionMusicClient("fake_token")
+    """Return a KionMusicClient with a fake token and explicit base URL."""
+    return KionMusicClient("fake_token", base_url=DEFAULT_BASE_URL)
 
 
 async def test_connect_sets_base_url(client: KionMusicClient) -> None:
