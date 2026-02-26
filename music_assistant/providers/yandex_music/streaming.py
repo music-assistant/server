@@ -359,6 +359,54 @@ class YandexMusicStreamingManager:
             return file_info["url"], file_info.get("key", current_key_hex)
         return current_url, current_key_hex
 
+    async def _decrypt_response_stream(
+        self,
+        response: Any,
+        key_bytes: bytes,
+        block_size: int,
+        bytes_delivered: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Decrypt one HTTP response and yield plaintext chunks.
+
+        Aligns the AES-CTR counter to the correct block for resumption.
+        If the server ignores a Range header (200 instead of 206), resets the
+        counter to 0 and skips the already-delivered prefix transparently.
+
+        :param response: aiohttp ClientResponse (open context manager).
+        :param key_bytes: Raw AES key bytes.
+        :param block_size: AES block size (16 for CTR mode).
+        :param bytes_delivered: Total plaintext bytes already sent to the caller.
+        :return: Async generator yielding decrypted audio bytes.
+        """
+        block_start = (bytes_delivered // block_size) * block_size
+        block_skip = bytes_delivered - block_start
+
+        if block_start > 0 and response.status == 200:
+            self.logger.warning(
+                "Server ignored Range header at %d bytes (200 instead of 206)"
+                " — restarting decrypt from position 0, skipping %d already-sent bytes",
+                block_start,
+                bytes_delivered,
+            )
+            block_skip = bytes_delivered
+            block_num = (0).to_bytes(block_size, "big")
+        else:
+            block_num = (block_start // block_size).to_bytes(block_size, "big")
+
+        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(block_num)).decryptor()
+        carry_skip = block_skip
+        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+            decrypted = decryptor.update(chunk)
+            if carry_skip > 0:
+                skip = min(carry_skip, len(decrypted))
+                decrypted = decrypted[skip:]
+                carry_skip -= skip
+            if decrypted:
+                yield decrypted
+        final = decryptor.finalize()
+        if final:
+            yield final
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -395,11 +443,7 @@ class YandexMusicStreamingManager:
             if attempt > 0:
                 await asyncio.sleep(retry_delay)
 
-            # Align resume position to AES-CTR block boundary
             block_start = (bytes_yielded // block_size) * block_size
-            block_skip = bytes_yielded - block_start  # overlap bytes to discard in first chunk
-            block_num = (block_start // block_size).to_bytes(block_size, "big")
-            decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(block_num)).decryptor()
             headers = {"Range": f"bytes={block_start}-"} if block_start > 0 else {}
 
             try:
@@ -433,36 +477,11 @@ class YandexMusicStreamingManager:
                             f"Failed to fetch encrypted stream: {err}"
                         ) from err
 
-                    # Guard: server ignored Range header — reset decryptor to position 0
-                    if block_start > 0 and response.status == 200:
-                        self.logger.warning(
-                            "Server ignored Range header at %d bytes (200 instead of 206)"
-                            " — restarting decrypt from position 0, skipping %d already-sent bytes",
-                            block_start,
-                            bytes_yielded,
-                        )
-                        # Decrypt from the beginning but skip bytes already delivered to caller
-                        block_skip = bytes_yielded
-                        decryptor = Cipher(
-                            algorithms.AES(key_bytes),
-                            modes.CTR((0).to_bytes(block_size, "big")),
-                        ).decryptor()
-
-                    carry_skip = block_skip
-                    async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-                        decrypted = decryptor.update(chunk)
-                        if carry_skip > 0:
-                            skip = min(carry_skip, len(decrypted))
-                            decrypted = decrypted[skip:]
-                            carry_skip -= skip
-                        if decrypted:
-                            bytes_yielded += len(decrypted)
-                            yield decrypted
-
-                    final = decryptor.finalize()
-                    if final:
-                        bytes_yielded += len(final)
-                        yield final
+                    async for chunk in self._decrypt_response_stream(
+                        response, key_bytes, block_size, bytes_yielded
+                    ):
+                        bytes_yielded += len(chunk)
+                        yield chunk
                     return  # stream completed normally
 
             except asyncio.CancelledError:
