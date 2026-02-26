@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -58,7 +58,7 @@ class TestGetDirectStreamUrl:
         """
         mock_inner_client = MagicMock()
         mock_inner_client._request.get = AsyncMock(return_value=response)
-        setattr(zvuk_client, "_ensure_connected", MagicMock(return_value=mock_inner_client))
+        cast("Any", zvuk_client)._ensure_connected = MagicMock(return_value=mock_inner_client)
         return cast("AsyncMock", mock_inner_client._request.get)
 
     @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -18,7 +18,7 @@ from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
 _PROVIDER_MODULE = "music_assistant.providers.zvuk_music.provider"
 
 
-def _make_provider() -> ZvukMusicProvider:
+def _make_provider() -> Any:
     """Create a ZvukMusicProvider mock with library methods and _iter_batched bound."""
     provider = Mock(spec=ZvukMusicProvider)
     provider.client = Mock()

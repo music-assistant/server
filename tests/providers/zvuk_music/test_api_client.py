@@ -323,7 +323,7 @@ class TestGetEditorialPlaylistIds:
     ) -> None:
         """Wire inner._request.get to return the given response."""
         inner._request.get = AsyncMock(return_value=response)
-        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
+        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
 
     @pytest.mark.asyncio
     async def test_returns_string_ids_not_ints(self) -> None:
@@ -416,7 +416,7 @@ class TestGetDirectStreamUrl:
         """Wire inner._request.get to return the given response."""
         inner = MagicMock()
         inner._request.get = AsyncMock(return_value=response)
-        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
+        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
         return cast("AsyncMock", inner._request.get)
 
     @pytest.mark.asyncio
@@ -474,7 +474,7 @@ class TestGetLyrics:
         """Wire inner._request.get to return the given response."""
         inner = MagicMock()
         inner._request.get = AsyncMock(return_value=response)
-        setattr(client, "_ensure_connected", MagicMock(return_value=inner))
+        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
 
     @pytest.mark.asyncio
     async def test_returns_none_when_result_is_none(self) -> None:

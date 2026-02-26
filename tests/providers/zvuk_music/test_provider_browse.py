@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -36,7 +36,7 @@ def _make_track_mock(track_id: int) -> Mock:
 # ---------------------------------------------------------------------------
 
 
-def _make_provider() -> ZvukMusicProvider:
+def _make_provider() -> Any:
     """Create a ZvukMusicProvider mock with client and helpers bound."""
     provider = Mock(spec=ZvukMusicProvider)
     provider.client = Mock()
