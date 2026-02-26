@@ -274,7 +274,7 @@ class TestParseArtist:
         assert result.metadata.images is not None
         assert len(result.metadata.images) == 1
         assert result.metadata.images[0].type == ImageType.THUMB
-        assert result.metadata.images[0].path == "https://zvuk.com/img/600x600.jpg"
+        assert result.metadata.images[0].path == "https://zvuk.com/img/600x600.jpg?size=600x600"
         assert result.metadata.images[0].remotely_accessible is True
 
     def test_parse_artist_unknown_name(self, mock_provider: Mock) -> None:
@@ -315,7 +315,7 @@ class TestParseArtist:
         assert result.metadata.images is not None
         fanart_images = [i for i in result.metadata.images if i.type == ImageType.FANART]
         assert len(fanart_images) == 1
-        assert fanart_images[0].path == "https://zvuk.com/fanart/600x600.jpg"
+        assert fanart_images[0].path == "https://zvuk.com/fanart/600x600.jpg?size=600x600"
 
     def test_parse_artist_with_thumb_and_fanart(self, mock_provider: Mock) -> None:
         """Test parsing an artist with both thumb and fanart images."""
@@ -441,7 +441,7 @@ class TestParseAlbum:
 
         assert result.metadata.images is not None
         assert len(result.metadata.images) == 1
-        assert result.metadata.images[0].path == "https://zvuk.com/cover/600x600.jpg"
+        assert result.metadata.images[0].path == "https://zvuk.com/cover/600x600.jpg?size=600x600"
 
     def test_parse_album_with_version_in_title(self, mock_provider: Mock) -> None:
         """Test parsing an album with version in title."""
@@ -535,7 +535,7 @@ class TestParseTrack:
 
         assert result.metadata.images is not None
         assert len(result.metadata.images) == 1
-        assert result.metadata.images[0].path == "https://zvuk.com/cover/600x600.jpg"
+        assert result.metadata.images[0].path == "https://zvuk.com/cover/600x600.jpg?size=600x600"
 
     def test_parse_track_explicit(self, mock_provider: Mock) -> None:
         """Test parsing an explicit track."""
@@ -682,7 +682,9 @@ class TestParsePlaylist:
 
         assert result.metadata.images is not None
         assert len(result.metadata.images) == 1
-        assert result.metadata.images[0].path == "https://zvuk.com/playlist/600x600.jpg"
+        assert (
+            result.metadata.images[0].path == "https://zvuk.com/playlist/600x600.jpg?size=600x600"
+        )
 
     def test_parse_playlist_unknown_name(self, mock_provider: Mock) -> None:
         """Test parsing a playlist with missing title defaults to Unknown Playlist."""

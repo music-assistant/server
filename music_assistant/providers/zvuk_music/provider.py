@@ -557,44 +557,48 @@ class ZvukMusicProvider(MusicProvider):
         return metadata
 
     async def resolve_image(self, path: str) -> str | bytes:
-        """Fetch a Zvuk static playlist image with authentication.
+        """Fetch a Zvuk image with optional authentication.
 
         Called by MA when a ``MediaItemImage`` has ``remotely_accessible=False``.
         Static playlist avatar images (``/static/avatar/playlist/...``) require
         Zvuk auth cookies and cannot be fetched anonymously.
 
-        Only sends the auth token to trusted Zvuk domains (``zvuk.com``,
-        ``cdn.zvuk.com``, ``cdn-image.zvuk.com``) to prevent token leakage to arbitrary hosts.
+        Auth token is only sent to trusted Zvuk domains (``zvuk.com``,
+        ``cdn.zvuk.com``, ``cdn-image.zvuk.com``) to prevent token leakage.
+        Images from Sbercloud CDN (``*.sbercloud.ru``) are fetched without auth
+        as they are publicly accessible.
 
-        :param path: Full image URL (e.g. ``https://zvuk.com/static/avatar/...``).
+        :param path: Full image URL.
         :return: Raw image bytes on success, original URL string as fallback.
         """
-        _zvuk_image_hosts = frozenset({"zvuk.com", "cdn.zvuk.com", "cdn-image.zvuk.com"})
+        _zvuk_auth_hosts = frozenset({"zvuk.com", "cdn.zvuk.com", "cdn-image.zvuk.com"})
         parsed = urlparse(path)
-        if parsed.hostname not in _zvuk_image_hosts:
-            self.logger.warning("Refusing to fetch image from untrusted host: %s", parsed.hostname)
+        hostname = parsed.hostname or ""
+        is_zvuk = hostname in _zvuk_auth_hosts
+        is_sbercloud = hostname.endswith(".sbercloud.ru")
+        if not is_zvuk and not is_sbercloud:
+            self.logger.warning("Refusing to fetch image from untrusted host: %s", hostname)
             return str(path)
-        token = self.config.get_value(CONF_TOKEN)
-        if not token:
-            return str(path)
+        headers: dict[str, str] = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        }
+        if is_zvuk:
+            token = self.config.get_value(CONF_TOKEN)
+            if not token:
+                return str(path)
+            headers["X-Auth-Token"] = str(token)
+            headers["Referer"] = "https://zvuk.com/"
+            headers["Origin"] = "https://zvuk.com"
         try:
-            async with self.mass.http_session.get(
-                path,
-                headers={
-                    "X-Auth-Token": str(token),
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Referer": "https://zvuk.com/",
-                    "Origin": "https://zvuk.com",
-                },
-            ) as resp:
+            async with self.mass.http_session.get(path, headers=headers) as resp:
                 if resp.status == 200:
                     return bytes(await resp.read())
         except (aiohttp.ClientError, TimeoutError) as err:
-            self.logger.debug("Failed to resolve static image %s: %s", path, err)
+            self.logger.debug("Failed to resolve image %s: %s", path, err)
         return str(path)
 
     # Library edit methods
