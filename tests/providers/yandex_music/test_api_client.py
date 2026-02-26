@@ -266,7 +266,52 @@ def test_hmac_sign_construction_explicit() -> None:
     assert not sign.endswith("=")
 
 
-# -- get_dashboard_stations --------------------------------------------------
+# -- rate-limit detection -----------------------------------------------------
+
+
+def test_is_rate_limit_error_detects_429() -> None:
+    """_is_rate_limit_error returns True for NetworkError with '429' in the message."""
+    client, _ = _make_client()
+    err = NetworkError("Bad Request (429): Too Many Requests")
+    assert client._is_rate_limit_error(err) is True
+
+
+def test_is_rate_limit_error_detects_too_many() -> None:
+    """_is_rate_limit_error returns True when message contains 'too many'."""
+    client, _ = _make_client()
+    err = NetworkError("too many requests from this IP")
+    assert client._is_rate_limit_error(err) is True
+
+
+def test_is_rate_limit_error_false_for_ordinary_network_error() -> None:
+    """_is_rate_limit_error returns False for ordinary connection errors."""
+    client, _ = _make_client()
+    err = NetworkError("timeout")
+    assert client._is_rate_limit_error(err) is False
+
+
+async def test_call_with_retry_raises_resource_unavailable_on_rate_limit() -> None:
+    """_call_with_retry raises ResourceTemporarilyUnavailable when rate-limit is detected."""
+    client, underlying = _make_client()
+
+    underlying.tracks = mock.AsyncMock(
+        side_effect=NetworkError("Bad Request (429): Too Many Requests")
+    )
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    assert exc_info.value.backoff_time == 60
+    # Should not have retried — rate limit errors are not connection errors
+    assert underlying.tracks.await_count == 1
+
+
+async def test_is_connection_error_excludes_rate_limit() -> None:
+    """_is_connection_error returns False for rate-limit NetworkErrors (they have 429 in msg)."""
+    client, _ = _make_client()
+    err = NetworkError("Bad Request (429): Too Many Requests")
+    # Rate limit errors should NOT trigger reconnect logic
+    assert client._is_connection_error(err) is False
 
 
 async def test_get_dashboard_stations_returns_personalized_stations() -> None:
