@@ -942,6 +942,13 @@ class TestQueryMethods:
         genres = await genre_ctrl.get_genres_for_media_item(MediaType.TRACK, track.item_id)
         assert genres == []
 
+    async def test_get_genres_for_media_item_non_integer_id(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list for non-integer provider item IDs (e.g. Bandcamp compound IDs)."""
+        genres = await genre_ctrl.get_genres_for_media_item(MediaType.ALBUM, "3957198221-190478553")
+        assert genres == []
+
     async def test_library_items_hide_empty_true(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:

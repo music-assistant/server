@@ -122,6 +122,7 @@ class AsyncProcess:
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
+            bufsize=0,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid

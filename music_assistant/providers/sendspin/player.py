@@ -357,12 +357,20 @@ class SendspinPlayer(Player):
     async def _handle_group_member_removed(self, group: SendspinGroup, client_id: str) -> None:
         """Handle a group member being removed asynchronously."""
         if client_id == self.player_id:
-            if len(group.clients) > 0:
-                # We were just removed as a leader:
-                # 1. stop playback on the old group
+            was_leader = (
+                bool(self._attr_group_members) and self._attr_group_members[0] == self.player_id
+            )
+            if was_leader and len(group.clients) > 0:
+                # We were removed as the group leader:
+                # stop playback on the old group before we continue as solo.
                 await group.stop()
-                # 2. clear our members (since we are now alone in a new group)
-                self._attr_group_members = []
+            elif not was_leader:
+                self.logger.debug(
+                    "Player %s removed from group as non-leader; keeping old group playing",
+                    self.player_id,
+                )
+            # Clear members for our detached/solo state.
+            self._attr_group_members = []
             self.update_state()
         elif client_id in self._attr_group_members:
             # Someone else left our group
@@ -405,9 +413,9 @@ class SendspinPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something
+        # Stop previous stream in case we were already playing something.
+        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
-        await self.api.group.stop()
         await self.playback_session.start(media)
         self.update_state()
 
