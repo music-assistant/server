@@ -136,7 +136,7 @@ class BandcampProvider(MusicProvider):
         )
         self._converters = BandcampConverters(self.domain, self.instance_id)
 
-        # The provider can function without login (search-only),
+        # The provider can function without login (search and streaming),
         # but if credentials were explicitly configured, validate them now.
         # A bad login fails hard so the user can fix it immediately;
         # transient errors (rate limits, network) are logged and the provider
@@ -161,9 +161,6 @@ class BandcampProvider(MusicProvider):
     ) -> SearchResults:
         """Perform search on music provider."""
         results = SearchResults()
-        if not self._client.identity:
-            return results
-
         if not media_types:
             return results
 
