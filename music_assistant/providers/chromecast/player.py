@@ -8,11 +8,9 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    ConfigEntryType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -35,11 +33,7 @@ from .constants import (
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
-    CONF_SENDSPIN_CODEC,
-    CONF_SENDSPIN_SYNC_DELAY,
     CONF_USE_MASS_APP,
-    DEFAULT_SENDSPIN_CODEC,
-    DEFAULT_SENDSPIN_SYNC_DELAY,
     MASS_APP_ID,
 )
 from .helpers import CastStatusListener, ChromecastInfo
@@ -153,56 +147,10 @@ class ChromecastPlayer(Player):
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
-        # Check if this player has a Sendspin bridge
-        provider = cast("ChromecastProvider", self.provider)
-        has_bridge = provider.bridge_manager.get_bridge(self.player_id) is not None
-
-        sendspin_entries: list[ConfigEntry] = []
-        if has_bridge:
-            sendspin_entries = [
-                ConfigEntry(
-                    key=CONF_SENDSPIN_SYNC_DELAY,
-                    type=ConfigEntryType.INTEGER,
-                    label="Sendspin sync delay (ms)",
-                    description="Static delay in milliseconds to adjust audio synchronization. "
-                    "Positive values delay playback, negative values advance it. "
-                    "Use this to compensate for device-specific audio latency.",
-                    required=False,
-                    default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
-                    range=(-1000, 1000),
-                    advanced=True,
-                ),
-                ConfigEntry(
-                    key=CONF_SENDSPIN_CODEC,
-                    type=ConfigEntryType.STRING,
-                    label="Sendspin audio codec",
-                    description="Audio codec used by the Sendspin Cast receiver app. "
-                    "FLAC offers good compression with lossless quality. "
-                    "Opus provides better compression but may have compatibility issues. "
-                    "PCM is uncompressed and uses more bandwidth.",
-                    required=False,
-                    default_value=DEFAULT_SENDSPIN_CODEC,
-                    options=[
-                        ConfigValueOption("FLAC (lossless, compressed)", "flac"),
-                        ConfigValueOption("Opus (lossy, experimental)", "opus"),
-                        ConfigValueOption("PCM (lossless, uncompressed)", "pcm"),
-                    ],
-                    advanced=True,
-                ),
-            ]
-
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
-            *sendspin_entries,
         ]
-
-    async def on_config_updated(self) -> None:
-        """Handle config updates - resend Sendspin config to Cast app if needed."""
-        provider = cast("ChromecastProvider", self.provider)
-        bridge = provider.bridge_manager.get_bridge(self.player_id)
-        if bridge:
-            await bridge.send_config_update()
 
     async def stop(self) -> None:
         """Send STOP command to given player."""

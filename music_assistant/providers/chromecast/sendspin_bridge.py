@@ -33,16 +33,13 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
+from music_assistant.providers.sendspin.constants import (
+    CONF_SENDSPIN_SYNC_DELAY,
+    DEFAULT_SENDSPIN_SYNC_DELAY,
+)
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
-from .constants import (
-    CONF_SENDSPIN_CODEC,
-    CONF_SENDSPIN_SYNC_DELAY,
-    DEFAULT_SENDSPIN_CODEC,
-    DEFAULT_SENDSPIN_SYNC_DELAY,
-    SENDSPIN_CAST_APP_ID,
-    SENDSPIN_CAST_NAMESPACE,
-)
+from .constants import SENDSPIN_CAST_APP_ID, SENDSPIN_CAST_BLOCKLIST, SENDSPIN_CAST_NAMESPACE
 
 if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
@@ -73,6 +70,18 @@ def get_bridge_client_id(cast_player: ChromecastPlayer) -> str | None:
     if device_mac and is_valid_mac_address(device_mac):
         return bridge_client_id_from_mac(device_mac)
     return None
+
+
+def is_sendspin_cast_blocked(manufacturer: str, model: str) -> bool:
+    """Check if a device is blocked from the Sendspin Cast bridge.
+
+    :param manufacturer: The device manufacturer name.
+    :param model: The device model name.
+    """
+    for blocked_manufacturer, blocked_model in SENDSPIN_CAST_BLOCKLIST:
+        if blocked_manufacturer in (manufacturer, "*") and blocked_model in (model, "*"):
+            return True
+    return False
 
 
 class SendspinChromecastBridge:
@@ -144,7 +153,7 @@ class SendspinChromecastBridge:
             version=1,
             supported_roles=[BRIDGE_ROLE_ID],
             device_info=SendspinDeviceInfo(
-                product_name=self.cast_player.device_info.model,
+                product_name="Chromecast Bridge",
                 manufacturer=self.cast_player.device_info.manufacturer,
             ),
             player_support=ClientHelloPlayerSupport(
@@ -225,7 +234,10 @@ class SendspinChromecastBridge:
             return
 
         try:
-            # Launch the Sendspin Cast App on the Chromecast
+            # Launch the Sendspin Cast App on the Chromecast.
+            # force_launch=True ensures the Cast device kills any running app
+            # (including a stale Sendspin session) and starts a fresh instance,
+            # so an explicit quit_app() beforehand is unnecessary.
             event = asyncio.Event()
 
             def launched_callback(
@@ -235,13 +247,10 @@ class SendspinChromecastBridge:
                 self.mass.loop.call_soon_threadsafe(event.set)
 
             def launch() -> None:
-                cc = self.cast_player.cc
-                if cc.app_id is not None:
-                    cc.quit_app()
                 self.logger.debug(
                     "Launching Sendspin Cast App on %s", self.cast_player.display_name
                 )
-                cc.socket_client.receiver_controller.launch_app(
+                self.cast_player.cc.socket_client.receiver_controller.launch_app(
                     SENDSPIN_CAST_APP_ID,
                     force_launch=True,
                     callback_function=launched_callback,
@@ -249,9 +258,9 @@ class SendspinChromecastBridge:
 
             await self.mass.loop.run_in_executor(None, launch)
             await asyncio.wait_for(event.wait(), timeout=30.0)
-
-            # Send the server URL and client_id to the Cast app
-            await self._send_sendspin_config()
+            # Send config with retry — the Cast app's message listener
+            # may not be ready immediately after the launch callback fires.
+            await self._send_sendspin_config_with_retry()
 
             self.logger.info(
                 "Sendspin Cast App launched on %s (client_id=%s)",
@@ -271,36 +280,46 @@ class SendspinChromecastBridge:
             )
 
     def _get_sync_delay(self) -> int:
-        """Get the sync delay from the player's config."""
+        """Get the sync delay from the Sendspin player's config."""
+        if not self._bridge_client_id:
+            return DEFAULT_SENDSPIN_SYNC_DELAY
         return int(
             self.mass.config.get_raw_player_config_value(
-                self.cast_player.player_id,
+                self._bridge_client_id,
                 CONF_SENDSPIN_SYNC_DELAY,
                 DEFAULT_SENDSPIN_SYNC_DELAY,
             )
         )
 
-    def _get_codec(self) -> str:
-        """Get the codec from the player's config."""
-        return str(
-            self.mass.config.get_raw_player_config_value(
-                self.cast_player.player_id,
-                CONF_SENDSPIN_CODEC,
-                DEFAULT_SENDSPIN_CODEC,
-            )
-        )
+    async def _send_sendspin_config_with_retry(self, max_attempts: int = 3) -> None:
+        """Send the Sendspin config to the Cast app, retrying on failure.
 
-    async def send_config_update(self) -> None:
-        """Resend the Sendspin config to the Cast app.
+        The Cast app may not have its custom message listener registered
+        immediately after launch. Retry with delays to handle this.
 
-        Called when the player's config changes (e.g. sync delay or codec updated).
-        Only sends if the Cast app is currently running on the device.
+        :param max_attempts: Maximum number of send attempts.
         """
-        if not self._bridge_client_id:
-            return
-        if self.cast_player.cc.app_id != SENDSPIN_CAST_APP_ID:
-            return
-        await self._send_sendspin_config()
+        for attempt in range(max_attempts):
+            try:
+                await self._send_sendspin_config()
+                return
+            except Exception as err:
+                if attempt < max_attempts - 1:
+                    self.logger.debug(
+                        "Config send attempt %d/%d failed for %s: %s, retrying...",
+                        attempt + 1,
+                        max_attempts,
+                        self.cast_player.display_name,
+                        err,
+                    )
+                    await asyncio.sleep(2)
+                else:
+                    self.logger.warning(
+                        "Failed to send config to Cast app on %s after %d attempts: %s",
+                        self.cast_player.display_name,
+                        max_attempts,
+                        err,
+                    )
 
     async def _send_sendspin_config(self) -> None:
         """Send the server URL, client_id, and settings to the Sendspin Cast app.
@@ -311,15 +330,21 @@ class SendspinChromecastBridge:
         if not self._bridge_client_id:
             return
 
-        server_url = self.mass.streams.base_url.replace("http", "ws")
+        # The Sendspin server runs on its own port (8927), NOT through
+        # the MA webserver or streams server. Use publish_ip directly.
+        publish_ip = self.mass.streams.publish_ip
+        server_url = f"ws://{publish_ip}:8927/sendspin"
         sync_delay = self._get_sync_delay()
-        codec = self._get_codec()
+        # The Cast receiver JS reads playerId (not clientId) from the config.
+        # It uses this as the client_id in its hello message to the Sendspin server,
+        # allowing the server to match it to the bridge's pre-registered external client.
         message = {
-            "type": "CONFIG",
-            "serverUrl": f"{server_url}/sendspin",
-            "clientId": self._bridge_client_id,
+            "type": "config",
+            "serverUrl": server_url,
+            "playerId": self._bridge_client_id,
+            "playerName": f"{self.cast_player.display_name} (Cast)",
             "syncDelay": sync_delay,
-            "codecs": [codec],
+            "codecs": ["flac"],
         }
 
         def send() -> None:
@@ -327,13 +352,11 @@ class SendspinChromecastBridge:
 
         await self.mass.loop.run_in_executor(None, send)
         self.logger.debug(
-            "Sent Sendspin config to Cast app on %s: "
-            "serverUrl=%s, clientId=%s, syncDelay=%dms, codecs=%s",
+            "Sent Sendspin config to Cast app on %s: serverUrl=%s, playerId=%s, syncDelay=%dms",
             self.cast_player.display_name,
             message["serverUrl"],
             self._bridge_client_id,
             sync_delay,
-            [codec],
         )
 
 
@@ -370,11 +393,24 @@ class SendspinBridgeManager:
         """Set up a Sendspin bridge for a Chromecast player.
 
         Groups and stereo pairs are skipped (they have no MAC address).
+        Devices on the blocklist are skipped so other protocols can handle them.
 
         :param cast_player: The Chromecast player to bridge.
         """
         async with self._lock:
             player_id = cast_player.player_id
+
+            # Skip devices on the blocklist
+            manufacturer = cast_player.device_info.manufacturer or ""
+            model = cast_player.device_info.model or ""
+            if is_sendspin_cast_blocked(manufacturer, model):
+                self.logger.debug(
+                    "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
+                    cast_player.display_name,
+                    manufacturer,
+                    model,
+                )
+                return
 
             sendspin_server = self.sendspin_server
             if not sendspin_server:
