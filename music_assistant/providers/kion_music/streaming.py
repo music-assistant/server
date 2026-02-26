@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientPayloadError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -24,50 +24,13 @@ from .constants import (
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
-
-@runtime_checkable
-class _StreamingProviderProto(Protocol):
-    """Minimal interface required by KionMusicStreamingManager."""
-
-    @property
-    def domain(self) -> str:
-        """Provider domain."""
-        ...
-
-    @property
-    def instance_id(self) -> str:
-        """Provider instance ID."""
-        ...
-
-    @property
-    def client(self) -> Any:
-        """API client."""
-        ...
-
-    @property
-    def mass(self) -> Any:
-        """Music Assistant instance."""
-        ...
-
-    @property
-    def logger(self) -> Any:
-        """Logger."""
-        ...
-
-    @property
-    def config(self) -> Any:
-        """Provider config."""
-        ...
-
-    async def get_track(self, prov_track_id: str) -> Any:
-        """Get track by provider track ID."""
-        ...
+    from .provider import KionMusicProvider
 
 
 class KionMusicStreamingManager:
     """Manages KION Music streaming operations."""
 
-    def __init__(self, provider: _StreamingProviderProto) -> None:
+    def __init__(self, provider: KionMusicProvider) -> None:
         """Initialize streaming manager.
 
         :param provider: The KION Music provider instance.
@@ -220,7 +183,7 @@ class KionMusicStreamingManager:
         )
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized in (QUALITY_LOSSLESS, "lossless"):
+        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
@@ -368,12 +331,7 @@ class KionMusicStreamingManager:
         """
         encrypted_url: str = streamdetails.data["encrypted_url"]
         key_hex: str = streamdetails.data["decryption_key"]
-        try:
-            key_bytes = bytes.fromhex(key_hex)
-        except ValueError as exc:
-            raise MediaNotFoundError(
-                f"Invalid AES decryption key format (expected hex string): {exc}"
-            ) from exc
+        key_bytes = bytes.fromhex(key_hex)
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
@@ -383,7 +341,7 @@ class KionMusicStreamingManager:
 
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                await asyncio.sleep(min(2**attempt, 8))  # backoff: 2s, 4s, 8s for attempts 1-3
+                await asyncio.sleep(min(2**attempt, 8))  # 2s, 4s, 8s
 
             # Align resume position to AES-CTR block boundary
             block_start = (bytes_yielded // block_size) * block_size
