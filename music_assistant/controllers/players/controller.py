@@ -2572,18 +2572,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return  # nothing to do
 
         # ungroup player at power off
-        player_was_synced = bool(
-            player.state.synced_to or player.group_members or player.state.active_group
-        )
-        if player_was_synced and player.type == PlayerType.PLAYER and not powered:
+        player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
+        if (
+            (player_was_sync_child or player.group_members)
+            and player.type == PlayerType.PLAYER
+            and not powered
+        ):
             # ungroup player if it is synced (or is a sync leader itself)
-            # NOTE: ungroup will be ignored if the player is not grouped or synced
             await self.cmd_ungroup(player_id)
 
         # always stop player at power off
         if (
             not powered
-            and not player_was_synced
+            and not player_was_sync_child
             and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             await self._handle_cmd_stop(player_id)
@@ -2735,6 +2736,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
+
+        # power on the player if needed
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True)
 
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.

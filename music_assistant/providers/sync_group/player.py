@@ -20,6 +20,8 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import CONF_ENTRY_SGP_NOTE, CONF_MEMBERS_FILTER, EXTRA_FEATURES_FROM_MEMBERS
 
 if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerSource
+
     from .provider import SyncGroupProvider
 
 
@@ -85,11 +87,6 @@ class SyncGroupPlayer(Player):
         return base_features
 
     @property
-    def playback_state(self) -> PlaybackState:
-        """Return the current playback state of the player."""
-        return self.sync_leader.state.playback_state if self.sync_leader else PlaybackState.IDLE
-
-    @property
     def requires_flow_mode(self) -> bool:
         """Return if the player needs flow mode."""
         if leader := self.sync_leader:
@@ -97,14 +94,40 @@ class SyncGroupPlayer(Player):
         return False
 
     @property
+    def playback_state(self) -> PlaybackState:
+        """Return the current playback state of the player."""
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+
+    @property
     def elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
-        return self.sync_leader.state.elapsed_time if self.sync_leader else None
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.elapsed_time if self.sync_leader else None
 
     @property
     def elapsed_time_last_updated(self) -> float | None:
         """Return when the elapsed time was last updated."""
-        return self.sync_leader.state.elapsed_time_last_updated if self.sync_leader else None
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Return the currently playing media (if any)."""
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.current_media if self.sync_leader else None
+
+    @property
+    def active_source(self) -> str | None:
+        """Return the active source id of the current media (if any)."""
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.active_source if self.sync_leader else None
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return list of available (native) sources for this player."""
+        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
+        return self.sync_leader.source_list if self.sync_leader else []
 
     @property
     def can_group_with(self) -> set[str]:

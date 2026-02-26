@@ -372,8 +372,9 @@ class SendspinPlaybackSession:
             if player_id in self._members:
                 self.pending_join_members.discard(player_id)
                 return
-            # Force a fresh channel identity for every new join cycle.
-            self._preassigned_channels[player_id] = uuid4()
+            # Preserve any channel pre-resolved during add_client so join-time
+            # role requirements and prepared audio stay on the same channel.
+            self._preassigned_channels.setdefault(player_id, uuid4())
         self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
