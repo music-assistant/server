@@ -219,9 +219,15 @@ class ProtocolLinkingMixin:
                 continue
 
             # For universal players, check if this protocol player is in its stored list
+            # or if identifiers match (for new protocol players like Sendspin bridges
+            # that weren't previously known to the Universal Player)
             if native_player.provider.domain == "universal_player":
                 if isinstance(native_player, UniversalPlayer):
-                    if protocol_player.player_id in native_player._protocol_player_ids:
+                    is_known = protocol_player.player_id in native_player._protocol_player_ids
+                    is_match = not is_known and self._identifiers_match(
+                        native_player, protocol_player, protocol_domain
+                    )
+                    if is_known or is_match:
                         self._add_protocol_link(native_player, protocol_player, protocol_domain)
                         # Copy identifiers from protocol player to universal player
                         # This is important for restored universal players which start
@@ -230,6 +236,9 @@ class ProtocolLinkingMixin:
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
                         self._update_universal_device_info(native_player, protocol_player)
+                        # Register newly matched protocol player with the universal player
+                        if is_match:
+                            native_player.add_protocol_player(protocol_player.player_id)
                         # Persist updated data to config (async via task)
                         self._save_universal_player_data(native_player)
                         protocol_player.update_state()
