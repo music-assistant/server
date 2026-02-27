@@ -798,6 +798,7 @@ class PlayerQueuesController(CoreController):
         return playlist
 
     @api_command("player_queues/stop")
+    @handle_play_action
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.

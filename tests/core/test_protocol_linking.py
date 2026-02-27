@@ -4,12 +4,7 @@ import logging
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import (
-    IdentifierType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-)
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
@@ -2412,3 +2407,307 @@ class TestUngroupTranslation:
         # Should translate to the protocol player ID for native removal
         assert "airplay_sonos" in native_members
         assert "sonos_1" not in native_members
+
+
+class TestNativeProtocolDomainPlayerGrouping:
+    """Tests for grouping with native protocol-domain players.
+
+    This tests the scenario where a player's native provider domain IS the protocol
+    domain (e.g., a sendspin web player with PlayerType.PLAYER and provider.domain="sendspin"),
+    rather than having the protocol as a linked protocol player.
+    """
+
+    def test_native_protocol_player_groups_via_active_protocol(self, mock_mass: MagicMock) -> None:
+        """Test grouping a native protocol player via the parent's active protocol.
+
+        Scenario: Kantoor (has sendspin linked protocol, active) groups with
+        Web player (native sendspin PlayerType.PLAYER).
+        This should use Priority 2 (parent's active protocol).
+        """
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        # Kantoor: native Sonos player with sendspin as linked protocol
+        kantoor = MockPlayer(sonos_provider, "sonos_kantoor", "Kantoor")
+        kantoor._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        kantoor._cache.clear()
+
+        # Sendspin protocol player linked to Kantoor
+        sendspin_kantoor = MockPlayer(
+            sendspin_provider,
+            "sendspin_kantoor",
+            "Kantoor (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_kantoor._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sendspin_kantoor._attr_can_group_with = {"sendspin"}
+        sendspin_kantoor._cache.clear()
+        sendspin_kantoor.set_protocol_parent_id("sonos_kantoor")
+
+        # Web player: native sendspin player (PlayerType.PLAYER, standalone)
+        web_player = MockPlayer(sendspin_provider, "sendspin_web", "Web (Chrome on Mac)")
+        web_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        web_player._cache.clear()
+
+        # Link sendspin protocol to Kantoor
+        kantoor.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="sendspin_kantoor",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_kantoor": kantoor,
+            "sendspin_kantoor": sendspin_kantoor,
+            "sendspin_web": web_player,
+        }
+        controller._player_throttlers = {
+            "sonos_kantoor": Throttler(1, 0.05),
+            "sendspin_kantoor": Throttler(1, 0.05),
+            "sendspin_web": Throttler(1, 0.05),
+        }
+
+        # Update states
+        sendspin_kantoor.update_state(signal_event=False)
+        kantoor.update_state(signal_event=False)
+        web_player.update_state(signal_event=False)
+
+        # Group Web player with Kantoor, with sendspin as active protocol
+        protocol_members, native_members, protocol_player, _ = (
+            controller._translate_members_for_protocols(
+                parent_player=kantoor,
+                player_ids=["sendspin_web"],
+                parent_protocol_player=sendspin_kantoor,
+                parent_protocol_domain="sendspin",
+            )
+        )
+
+        # Web player's own player_id should be in protocol_members
+        assert len(protocol_members) == 1
+        assert "sendspin_web" in protocol_members
+        assert len(native_members) == 0
+        assert protocol_player == sendspin_kantoor
+
+    def test_native_protocol_player_groups_via_common_protocol(self, mock_mass: MagicMock) -> None:
+        """Test grouping a native protocol player via common protocol search (Priority 4).
+
+        Same scenario but without a pre-set active protocol — the common protocol
+        search should find sendspin as the shared protocol.
+        """
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        # Kantoor: native Sonos player with sendspin as linked protocol
+        kantoor = MockPlayer(sonos_provider, "sonos_kantoor", "Kantoor")
+        kantoor._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        kantoor._cache.clear()
+
+        # Sendspin protocol player linked to Kantoor
+        sendspin_kantoor = MockPlayer(
+            sendspin_provider,
+            "sendspin_kantoor",
+            "Kantoor (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_kantoor._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sendspin_kantoor._attr_can_group_with = {"sendspin"}
+        sendspin_kantoor._cache.clear()
+        sendspin_kantoor.set_protocol_parent_id("sonos_kantoor")
+
+        # Web player: native sendspin player (PlayerType.PLAYER, standalone)
+        web_player = MockPlayer(sendspin_provider, "sendspin_web", "Web (Chrome on Mac)")
+        web_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        web_player._cache.clear()
+
+        # Link sendspin protocol to Kantoor
+        kantoor.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="sendspin_kantoor",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_kantoor": kantoor,
+            "sendspin_kantoor": sendspin_kantoor,
+            "sendspin_web": web_player,
+        }
+        controller._player_throttlers = {
+            "sonos_kantoor": Throttler(1, 0.05),
+            "sendspin_kantoor": Throttler(1, 0.05),
+            "sendspin_web": Throttler(1, 0.05),
+        }
+
+        # Update states
+        sendspin_kantoor.update_state(signal_event=False)
+        kantoor.update_state(signal_event=False)
+        web_player.update_state(signal_event=False)
+
+        # Group Web player with Kantoor, without pre-set active protocol
+        protocol_members, native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=kantoor,
+                player_ids=["sendspin_web"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # Should find common sendspin protocol via Priority 4
+        assert len(protocol_members) == 1
+        assert "sendspin_web" in protocol_members
+        assert len(native_members) == 0
+        assert protocol_domain == "sendspin"
+        assert protocol_player == sendspin_kantoor
+
+    def test_ungroup_native_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Test ungrouping a native protocol player from a protocol-linked parent.
+
+        When ungrouping a native sendspin web player from Kantoor's sendspin group,
+        the web player's own player_id should be used for removal.
+        """
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        # Kantoor with sendspin linked protocol
+        kantoor = MockPlayer(sonos_provider, "sonos_kantoor", "Kantoor")
+        kantoor._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        kantoor._cache.clear()
+
+        # Sendspin protocol player linked to Kantoor, with web player in group
+        sendspin_kantoor = MockPlayer(
+            sendspin_provider,
+            "sendspin_kantoor",
+            "Kantoor (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_kantoor._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sendspin_kantoor._attr_group_members = ["sendspin_kantoor", "sendspin_web"]
+        sendspin_kantoor._cache.clear()
+        sendspin_kantoor.set_protocol_parent_id("sonos_kantoor")
+
+        # Web player: native sendspin player
+        web_player = MockPlayer(sendspin_provider, "sendspin_web", "Web (Chrome on Mac)")
+        web_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        web_player._cache.clear()
+
+        kantoor.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="sendspin_kantoor",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_kantoor": kantoor,
+            "sendspin_kantoor": sendspin_kantoor,
+            "sendspin_web": web_player,
+        }
+        controller._player_throttlers = {
+            "sonos_kantoor": Throttler(1, 0.05),
+            "sendspin_kantoor": Throttler(1, 0.05),
+            "sendspin_web": Throttler(1, 0.05),
+        }
+
+        sendspin_kantoor.update_state(signal_event=False)
+        kantoor.update_state(signal_event=False)
+        web_player.update_state(signal_event=False)
+
+        # Translate removal — web player's own player_id should be used
+        protocol_members, native_members = controller._translate_members_to_remove_for_protocols(
+            parent_player=kantoor,
+            player_ids=["sendspin_web"],
+            parent_protocol_player=sendspin_kantoor,
+            parent_protocol_domain="sendspin",
+        )
+
+        # Web player's player_id should be in protocol removal list
+        assert "sendspin_web" in protocol_members
+        assert len(native_members) == 0
+
+    def test_filter_protocol_members_accepts_native_protocol_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that _filter_protocol_members accepts native protocol-domain players.
+
+        A PlayerType.PLAYER with matching provider domain should pass through the
+        filter, not just PlayerType.PROTOCOL players.
+        """
+        controller = PlayerController(mock_mass)
+
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        # Protocol player (the parent's linked sendspin)
+        sendspin_parent = MockPlayer(
+            sendspin_provider,
+            "sendspin_parent",
+            "Parent (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_parent._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sendspin_parent._cache.clear()
+
+        # Native sendspin web player (PlayerType.PLAYER)
+        web_player = MockPlayer(sendspin_provider, "sendspin_web", "Web (Chrome on Mac)")
+        web_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        web_player._cache.clear()
+
+        # Another protocol type sendspin player
+        sendspin_other = MockPlayer(
+            sendspin_provider,
+            "sendspin_other",
+            "Other (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_other._cache.clear()
+
+        mock_mass.players = controller
+        controller._players = {
+            "sendspin_parent": sendspin_parent,
+            "sendspin_web": web_player,
+            "sendspin_other": sendspin_other,
+        }
+        controller._player_throttlers = {
+            "sendspin_parent": Throttler(1, 0.05),
+            "sendspin_web": Throttler(1, 0.05),
+            "sendspin_other": Throttler(1, 0.05),
+        }
+
+        sendspin_parent.update_state(signal_event=False)
+        web_player.update_state(signal_event=False)
+        sendspin_other.update_state(signal_event=False)
+
+        # Both native and protocol players should pass through the filter
+        filtered = controller._filter_protocol_members(
+            ["sendspin_web", "sendspin_other"],
+            sendspin_parent,
+        )
+
+        assert "sendspin_web" in filtered
+        assert "sendspin_other" in filtered
+        assert len(filtered) == 2

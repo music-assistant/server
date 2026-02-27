@@ -451,6 +451,9 @@ class AlexaPlayer(Player):
         to the configured Music Assistant / Alexa API so the Alexa side can
         display/update the playing item.
         """
+        if self._last_stream_url is None:
+            return
+
         media = self.state.current_media
 
         async def _upload_metadata() -> None:
