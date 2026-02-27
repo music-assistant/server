@@ -42,7 +42,6 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     ACTIVE_PROTOCOL_FEATURES,
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -50,7 +49,7 @@ from music_assistant.constants import (
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
-    CONF_LINKED_PROTOCOL_PLAYER_IDS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -909,7 +908,7 @@ class Player(ABC):
         Includes:
         - Native playback (if player supports PLAY_MEDIA and is not a protocol/universal player)
         - Active protocol players from linked_output_protocols
-        - Disabled protocols from cached linked_protocol_player_ids in config
+        - Disabled protocols from cached linked_protocol_ids in config
 
         Each entry has an available flag indicating current availability.
         """
@@ -959,7 +958,7 @@ class Player(ABC):
 
         # Add disabled protocols from cache
         cached_protocol_ids: list[str] = self.mass.config.get(
-            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}",
+            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
             [],
         )
         for protocol_id in cached_protocol_ids:
@@ -1475,14 +1474,6 @@ class Player(ABC):
     @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            # if an announcement is in progress, return announcement details
-            return PlayerMedia(
-                uri="announcement",
-                media_type=MediaType.ANNOUNCEMENT,
-                title="ANNOUNCEMENT",
-            )
-
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.__final_active_group or self.__final_synced_to):
             if parent_player_id != self.player_id and (
@@ -1842,7 +1833,10 @@ class Player(ABC):
                 # is reporting the bridged protocol as active source
                 # we need to ignore that
                 output_protocol_domain == "sendspin"
-                and self.active_source.lower() in ("airplay", "cast", "chromecast", "network")
+                and (
+                    self.active_source.lower() in ("airplay", "cast", "chromecast", "network")
+                    or self.active_source.lower().startswith("sendspin_over_")
+                )
             )
         ):
             return self.active_source

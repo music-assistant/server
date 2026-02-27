@@ -58,6 +58,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
+from .constants import CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
 from .helpers import mac_from_bridge_client_id
 from .playback import SendspinPlaybackSession
 
@@ -629,6 +630,24 @@ class SendspinPlayer(Player):
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
             ConfigEntry.from_dict({**CONF_ENTRY_SAMPLE_RATES.to_dict(), "hidden": True}),
         ]
+
+        # Only show the sync delay setting for Chromecast Bridge players
+        if self.device_info.model == "Chromecast Bridge":
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SENDSPIN_SYNC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    label="Sync delay (ms)",
+                    description="Static delay in milliseconds to adjust audio synchronization. "
+                    "Positive values delay playback, negative values advance it. "
+                    "Use this to compensate for device-specific audio latency.",
+                    required=False,
+                    default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
+                    range=(-1000, 1000),
+                    immediate_apply=True,
+                    advanced=True,
+                ),
+            )
 
         # Build dynamic format options from player's supported formats
         player_role = self._player_role

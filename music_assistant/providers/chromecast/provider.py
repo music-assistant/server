@@ -17,6 +17,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import ChromecastInfo
 from .player import ChromecastPlayer
+from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -57,6 +58,7 @@ class ChromecastProvider(PlayerProvider):
             known_hosts=manual_ip_config,
         )
         self._discovery_running = False
+        self.bridge_manager = SendspinBridgeManager(self)
         # set-up pychromecast logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pychromecast").setLevel(logging.DEBUG)
@@ -73,6 +75,9 @@ class ChromecastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        # Stop all Sendspin bridges and remove listeners
+        await self.bridge_manager.close()
+
         if not self.browser:
             return
 
@@ -86,6 +91,7 @@ class ChromecastProvider(PlayerProvider):
 
             self.browser.host_browser.stop.set()
             self.browser.host_browser.join()
+
             self._discovery_running = False
 
         await self.mass.loop.run_in_executor(None, stop_discovery)
@@ -154,6 +160,9 @@ class ChromecastProvider(PlayerProvider):
         """Create and register a new ChromecastPlayer."""
         castplayer = ChromecastPlayer(self, player_id, cast_info=cast_info, chromecast=chromecast)
         await self.mass.players.register_or_update(castplayer)
+        # Set up Sendspin bridge (skipped for groups/stereo pairs - they have no MAC)
+        if not cast_info.is_audio_group:
+            await self.bridge_manager.setup_bridge(castplayer)
 
     def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
