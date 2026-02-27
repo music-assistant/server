@@ -29,19 +29,6 @@ if TYPE_CHECKING:
 ANALYSIS_FPS = 100
 
 
-def _pcm_bytes_to_float32(
-    audio_data: bytes,
-    pcm_format: AudioFormat,
-) -> npt.NDArray[np.float32]:
-    """Convert raw PCM bytes to a normalised float32 numpy array."""
-    if pcm_format.content_type == ContentType.PCM_S16LE:
-        return (np.frombuffer(audio_data, dtype=np.int16) / 32768.0).astype(np.float32)
-    if pcm_format.content_type == ContentType.PCM_S32LE:
-        return (np.frombuffer(audio_data, dtype=np.int32) / 2147483648.0).astype(np.float32)
-    # Default: assume PCM_F32LE
-    return np.frombuffer(audio_data, dtype=np.float32)
-
-
 class SmartFadesAnalyzer:
     """Smart fades analyzer that performs audio analysis."""
 
@@ -80,7 +67,7 @@ class SmartFadesAnalyzer:
                 len(audio_data),
             )
             # Convert PCM bytes to numpy array and then to mono for analysis
-            audio_array = _pcm_bytes_to_float32(audio_data, pcm_format)
+            audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
             if pcm_format.channels > 1:
                 # Ensure array size is divisible by channel count
                 samples_per_channel = len(audio_array) // pcm_format.channels
@@ -269,3 +256,18 @@ class SmartFadesAnalyzer:
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
+
+    def _pcm_bytes_to_float32(
+        self,
+        audio_data: bytes,
+        pcm_format: AudioFormat,
+    ) -> npt.NDArray[np.float32]:
+        """Convert raw PCM bytes to a normalised float32 numpy array."""
+        if pcm_format.content_type == ContentType.PCM_S16LE:
+            return (np.frombuffer(audio_data, dtype="<i2").astype(np.float32)) / np.float32(32768.0)
+        if pcm_format.content_type == ContentType.PCM_S32LE:
+            return (np.frombuffer(audio_data, dtype="<i4").astype(np.float32)) / np.float32(
+                2147483648.0
+            )
+        # Default: assume PCM_F32LE
+        return np.frombuffer(audio_data, dtype="<f4")
