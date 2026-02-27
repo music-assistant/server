@@ -208,6 +208,36 @@ Sendspin players support:
 - `aiortc` - WebRTC implementation for Python (used for WebRTC bridging)
 - `PIL/Pillow` - Image processing for artwork
 
+## External Players (Protocol Bridges)
+
+The Sendspin server supports external player registration for bridging other audio protocols. This enables cross-protocol grouping where Sendspin handles timing and synchronization.
+
+### How External Players Work
+
+External players are registered programmatically via `server_api.register_external_player()`:
+
+1. The bridge provider creates a `ClientHelloPayload` with the device info and supported capabilities
+2. The Sendspin server creates a `SendspinClient` and triggers `ClientAddedEvent`
+3. The Sendspin provider creates a `SendspinPlayer` for this client
+4. Protocol linking matches the SendspinPlayer with the original player via device identifiers (e.g., MAC address)
+
+### Implemented Bridges
+
+| Provider | Bridge Location | Identifier |
+|----------|-----------------|------------|
+| AirPlay | `airplay/sendspin_bridge.py` | MAC address |
+
+### Implementing a New Bridge
+
+To bridge another protocol to Sendspin:
+
+1. Create a `ClientHelloPayload` with the device's capabilities
+2. Call `register_external_player()` with an `on_stream_start` callback
+3. Create a custom `Role` subclass to receive audio via `on_audio_chunk()`
+4. Ensure the client_id matches an identifier the protocol linking system recognizes
+
+See the [AirPlay Sendspin Bridge](../airplay/sendspin_bridge.py) for a complete implementation example.
+
 ## Related Documentation
 
 - [Sendspin Protocol Specification](https://github.com/Sendspin/spec)

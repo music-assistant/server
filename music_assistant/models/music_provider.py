@@ -1005,6 +1005,11 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif prov_item.supported_mediatypes != library_item.supported_mediatypes:
+                    # update if supported mediatypes changed
+                    library_item = await self.mass.music.playlists.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)

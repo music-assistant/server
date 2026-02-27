@@ -1909,7 +1909,7 @@ class ConfigController:
                         label="Enable",
                         description="Enable or disable this output protocol for the player.",
                         value=protocol_player_enabled,
-                        default_value=protocol_player_enabled,
+                        default_value=True,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
                         category_translation_params=[protocol_name],
