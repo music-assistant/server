@@ -2221,6 +2221,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if new_source and new_source.lower() == protocol_player.provider.domain.lower():
             return
 
+        if (
+            new_source
+            and new_source.lower() in ("airplay", "cast", "chromecast", "network")
+            and protocol_player.provider.domain.lower() == "sendspin"
+        ):
+            # Special case for Sendspin bridge: if the new source matches cast or airplay and the
+            # active protocol is Sendspin, we consider this a normal behavior and not a takeover
+            return
+
         # Confirmed external source takeover
         self.logger.info(
             "External source '%s' took over on %s while playing via protocol %s - "

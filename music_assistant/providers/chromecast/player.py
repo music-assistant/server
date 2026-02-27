@@ -7,15 +7,10 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
-    from music_assistant_models.event import MassEvent
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
 from music_assistant_models.enums import (
-    ConfigEntryType,
-    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -38,15 +33,8 @@ from .constants import (
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
-    CONF_SENDSPIN_CODEC,
-    CONF_SENDSPIN_SYNC_DELAY,
     CONF_USE_MASS_APP,
-    CONF_USE_SENDSPIN_MODE,
-    DEFAULT_SENDSPIN_CODEC,
-    DEFAULT_SENDSPIN_SYNC_DELAY,
     MASS_APP_ID,
-    SENDSPIN_CAST_APP_ID,
-    SENDSPIN_CAST_NAMESPACE,
 )
 from .helpers import CastStatusListener, ChromecastInfo
 
@@ -133,24 +121,6 @@ class ChromecastPlayer(Player):
             self.mz_controller = mz_controller
         self.cc.start()
 
-        # Chromecast players can optionally use Sendspin for streaming
-        # when the sendspin-over-cast receiver app is used.
-        # Generate a predictable sendspin player id from the chromecast uuid.
-        # Format: "cast-XXXXXXXX" where X is derived from the UUID
-        uuid_str = player_id.replace("-", "")
-        self.sendspin_player_id = f"cast-{uuid_str[:8].lower()}"
-        self._last_sent_sync_delay: int | None = None
-        self._last_sent_codec: str | None = None
-
-        # Subscribe to sendspin player events for state syncing
-        self._on_unload_callbacks.append(
-            self.mass.subscribe(
-                self._on_sendspin_player_event,
-                (EventType.PLAYER_UPDATED,),
-                self.sendspin_player_id,
-            )
-        )
-
     @staticmethod
     def _is_google_device(cast_info: ChromecastInfo) -> bool:
         """Check if a device is a Google device with native Cast support.
@@ -165,152 +135,12 @@ class ChromecastPlayer(Player):
             return any(google in model for google in ("chromecast", "google", "nest", "home"))
         return cast_info.manufacturer.lower() in ("google", "google inc.")
 
-    @property
-    def sendspin_mode_enabled(self) -> bool:
-        """Return if sendspin mode is enabled for the player."""
-        return bool(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_USE_SENDSPIN_MODE, False
-            )
-        )
-
-    def get_linked_sendspin_player(self, enabled_only: bool = True) -> Player | None:
-        """Return the linked sendspin player if available/enabled."""
-        if enabled_only and not self.sendspin_mode_enabled:
-            return None
-        if not (sendspin_player := self.mass.players.get_player(self.sendspin_player_id)):
-            return None
-        if not sendspin_player.available:
-            return None
-        return sendspin_player
-
-    @property
-    def _supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features for this player."""
-        try:
-            if self.sendspin_mode_enabled:
-                # Features for Sendspin mode - grouping happens via Sendspin player
-                return {
-                    PlayerFeature.POWER,
-                    PlayerFeature.VOLUME_SET,
-                    PlayerFeature.VOLUME_MUTE,
-                    PlayerFeature.PAUSE,
-                }
-        except Exception:  # noqa: S110
-            pass  # May fail during early initialization
-        return self._attr_supported_features
-
-    def _translate_from_sendspin_player_id(self, sendspin_player_id: str) -> str | None:
-        """Translate a Sendspin player ID back to its Chromecast player ID if applicable."""
-        # Sendspin player IDs for Chromecast are "cast-XXXXXXXX" where X is from UUID
-        if not sendspin_player_id.startswith("cast-"):
-            return None
-        # Search for a Chromecast player with matching sendspin_player_id
-        for player in self.mass.players.all_players():
-            if hasattr(player, "sendspin_player_id"):
-                if player.sendspin_player_id == sendspin_player_id:
-                    return player.player_id
-        return None
-
-    async def _on_sendspin_player_event(self, event: MassEvent) -> None:
-        """Handle incoming event from linked sendspin player."""
-        if not self.sendspin_mode_enabled:
-            return
-        if event.object_id != self.sendspin_player_id:
-            return
-        # Sync state from sendspin player to this player
-        if sendspin_player := self.get_linked_sendspin_player(False):
-            self._attr_playback_state = sendspin_player.playback_state
-            self._attr_current_media = sendspin_player.current_media
-            self._attr_elapsed_time = sendspin_player.elapsed_time
-            self._attr_elapsed_time_last_updated = sendspin_player.elapsed_time_last_updated
-            # Sync active_source so queue lookup works correctly
-            self._attr_active_source = sendspin_player.active_source
-            # Translate group_members from Sendspin player IDs to Chromecast player IDs
-            translated_members = []
-            for member_id in sendspin_player.group_members:
-                if cc_id := self._translate_from_sendspin_player_id(member_id):
-                    translated_members.append(cc_id)
-                else:
-                    # Keep original if no translation (e.g. non-Chromecast Sendspin player)
-                    translated_members.append(member_id)
-            self._attr_group_members = translated_members
-            # Translate synced_to from Sendspin player ID to Chromecast player ID
-            if sendspin_player.synced_to:
-                self._attr_synced_to = (
-                    self._translate_from_sendspin_player_id(sendspin_player.synced_to)
-                    or sendspin_player.synced_to
-                )
-            else:
-                self._attr_synced_to = None
-            self.update_state()
-            # Check if sync delay config changed and resend if needed
-            current_sync_delay = int(
-                self.mass.config.get_raw_player_config_value(
-                    self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
-                )
-            )
-            if self._last_sent_sync_delay != current_sync_delay:
-                # Update immediately to prevent duplicate sends from concurrent events
-                self._last_sent_sync_delay = current_sync_delay
-                self.mass.create_task(self._send_sendspin_sync_delay(current_sync_delay))
-
     async def get_config_entries(
         self,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        # Sendspin mode config entry
-        sendspin_config = ConfigEntry(
-            key=CONF_USE_SENDSPIN_MODE,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable experimental Sendspin mode",
-            description="When enabled, Music Assistant will use the Sendspin protocol "
-            "for synchronized audio streaming instead of the standard Chromecast protocol. "
-            "This allows grouping Chromecast devices with other Sendspin-compatible players "
-            "for multi-room synchronized playback.\n\n"
-            "NOTE: Requires the Sendspin provider to be enabled.",
-            required=False,
-            default_value=False,
-            hidden=self.type == PlayerType.GROUP,
-        )
-
-        # Sync delay config entry (only visible when sendspin provider is available)
-        sendspin_sync_delay_config = ConfigEntry(
-            key=CONF_SENDSPIN_SYNC_DELAY,
-            type=ConfigEntryType.INTEGER,
-            label="Sendspin sync delay (ms)",
-            description="Static delay in milliseconds to adjust audio synchronization. "
-            "Positive values delay playback, negative values advance it. "
-            "Use this to compensate for device-specific audio latency. "
-            "Changes take effect immediately.",
-            required=False,
-            default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
-            range=(-1000, 1000),
-            hidden=self.type == PlayerType.GROUP,
-            immediate_apply=True,
-        )
-
-        # Codec config entry (only visible when sendspin provider is available)
-        sendspin_codec_config = ConfigEntry(
-            key=CONF_SENDSPIN_CODEC,
-            type=ConfigEntryType.STRING,
-            label="Sendspin audio codec",
-            description="Audio codec used for the experimental Sendspin mode. "
-            "FLAC offers good compression with lossless quality. "
-            "Opus provides better compression but may have compatibility issues. "
-            "PCM is uncompressed and uses more bandwidth.",
-            required=False,
-            default_value=DEFAULT_SENDSPIN_CODEC,
-            options=[
-                ConfigValueOption("FLAC (lossless, compressed)", "flac"),
-                ConfigValueOption("Opus (lossy, experimental)", "opus"),
-                ConfigValueOption("PCM (lossless, uncompressed)", "pcm"),
-            ],
-            hidden=self.type == PlayerType.GROUP,
-        )
-
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
@@ -320,59 +150,10 @@ class ChromecastPlayer(Player):
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
-            sendspin_config,
-            sendspin_sync_delay_config,
-            sendspin_codec_config,
         ]
-
-    async def on_config_updated(self) -> None:
-        """Handle config load/update - resend Sendspin config if needed."""
-        if not self.sendspin_mode_enabled:
-            return
-
-        # Get current config values
-        current_sync_delay = int(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
-            )
-        )
-        current_codec = str(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SENDSPIN_CODEC, DEFAULT_SENDSPIN_CODEC
-            )
-        )
-
-        sync_delay_changed = self._last_sent_sync_delay != current_sync_delay
-        codec_changed = self._last_sent_codec != current_codec
-
-        if sync_delay_changed or codec_changed:
-            # Store old values for logging before updating state
-            old_codec = self._last_sent_codec
-            # Update immediately to prevent duplicate sends from concurrent events
-            self._last_sent_sync_delay = current_sync_delay
-            self._last_sent_codec = current_codec
-            try:
-                if codec_changed:
-                    # Codec changed - need full reconnection
-                    self.logger.debug(
-                        "Sendspin codec changed (%s -> %s), sending full config",
-                        old_codec,
-                        current_codec,
-                    )
-                    await self._send_sendspin_server_url()
-                else:
-                    # Only sync delay changed, don't reconnect, just send updated delay
-                    await self._send_sendspin_sync_delay(current_sync_delay)
-            except Exception as err:
-                self.logger.warning("Failed to send updated Sendspin config to Chromecast: %s", err)
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        if sendspin_player := self.get_linked_sendspin_player(True):
-            # Sendspin mode is active - direct call to stop (NOT cmd_stop to avoid recursion)
-            self.logger.debug("Redirecting STOP command to linked sendspin player.")
-            await sendspin_player.stop()
-            return
         await asyncio.to_thread(self.cc.media_controller.stop)
 
     async def play(self) -> None:
@@ -381,13 +162,6 @@ class ChromecastPlayer(Player):
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
-        if self.sendspin_mode_enabled:
-            # In Sendspin mode, there's no native Cast media session to pause.
-            # Sendspin doesn't support pause, so stop the stream instead.
-            if sendspin_player := self.get_linked_sendspin_player(True):
-                self.logger.debug("Sendspin mode: stopping stream (pause not supported)")
-                await sendspin_player.stop()
-            return
         await asyncio.to_thread(self.cc.media_controller.pause)
 
     async def next_track(self) -> None:
@@ -405,26 +179,7 @@ class ChromecastPlayer(Player):
     async def power(self, powered: bool) -> None:
         """Send POWER command to given player."""
         if powered:
-            if self.sendspin_mode_enabled:
-                # Launch Sendspin app and connect to server
-                self.logger.info("Powering on with Sendspin mode enabled.")
-                launch_success = await self._launch_sendspin_app()
-                if launch_success:
-                    await asyncio.sleep(1)  # Give app time to initialize
-                    await self._send_sendspin_server_url()
-                    # Wait for the Sendspin player to connect
-                    sendspin_player = await self._wait_for_sendspin_player()
-                    if sendspin_player:
-                        self.logger.info(
-                            "Sendspin player %s connected successfully.",
-                            sendspin_player.player_id,
-                        )
-                    else:
-                        self.logger.warning("Sendspin player did not connect, but app is running.")
-                else:
-                    raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
-            else:
-                await self._launch_app()
+            await self._launch_app()
             self._attr_active_source = None
         else:
             self._attr_active_source = None
@@ -446,12 +201,6 @@ class ChromecastPlayer(Player):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        if self.sendspin_mode_enabled:
-            # Sendspin mode is enabled, launch sendspin-over-cast app and redirect
-            self.logger.info("Redirecting PLAY_MEDIA command to sendspin mode.")
-            await self._play_media_sendspin(media)
-            return
-
         media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         queuedata = {
             "type": "LOAD",
@@ -688,9 +437,6 @@ class ChromecastPlayer(Player):
             self.display_name,
             status.player_state,
         )
-        # In Sendspin mode, state is synced from the Sendspin player - skip Cast media status
-        if self.sendspin_mode_enabled:
-            return
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
@@ -845,160 +591,3 @@ class ChromecastPlayer(Player):
             "metadata": metadata,
             "duration": media.duration,
         }
-
-    async def _launch_sendspin_app(self) -> bool:
-        """Launch the sendspin-over-cast receiver app on the Chromecast.
-
-        :return: True if app launched successfully, False otherwise.
-        """
-        event = asyncio.Event()
-        launch_success = False
-
-        if self.cc.app_id == SENDSPIN_CAST_APP_ID:
-            self.logger.debug("Sendspin Cast App already active.")
-            return True
-
-        def launched_callback(success: bool, response: dict[str, Any] | None) -> None:
-            nonlocal launch_success
-            launch_success = success
-            if not success:
-                self.logger.warning("Failed to launch Sendspin Cast App: %s", response)
-            else:
-                self.logger.debug("Sendspin Cast App launched successfully.")
-            self.mass.loop.call_soon_threadsafe(event.set)
-
-        def launch() -> None:
-            # Quit the previous app before starting sendspin receiver
-            if self.cc.app_id is not None:
-                self.cc.quit_app()
-            self.logger.info(
-                "Launching Sendspin Cast App %s on %s.",
-                SENDSPIN_CAST_APP_ID,
-                self.display_name,
-            )
-            self.cc.socket_client.receiver_controller.launch_app(
-                SENDSPIN_CAST_APP_ID,
-                force_launch=True,
-                callback_function=launched_callback,
-            )
-
-        await self.mass.loop.run_in_executor(None, launch)
-        try:
-            await asyncio.wait_for(event.wait(), timeout=10.0)
-        except TimeoutError:
-            self.logger.error("Timeout waiting for Sendspin Cast App to launch.")
-            return False
-        return launch_success
-
-    async def _send_sendspin_server_url(self) -> None:
-        """Send the Sendspin server URL to the Cast receiver via custom messaging."""
-        # Get the Sendspin server URL from the streams controller
-        server_url = f"http://{self.mass.streams.publish_ip}:8927"
-        # Player name with (Sendspin) suffix for the Sendspin player
-        player_name = f"{self._attr_name} (Sendspin)"
-        # Get sync delay from config (in milliseconds)
-        sync_delay = int(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
-            )
-        )
-        # Get codec from config (default to flac)
-        codec = str(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SENDSPIN_CODEC, DEFAULT_SENDSPIN_CODEC
-            )
-        )
-        codecs = [codec]
-
-        def send_message() -> None:
-            # Send custom message to receiver with server URL, player ID, name, sync delay, codecs
-            self.cc.socket_client.send_app_message(
-                SENDSPIN_CAST_NAMESPACE,
-                {
-                    "serverUrl": server_url,
-                    "playerId": self.sendspin_player_id,
-                    "playerName": player_name,
-                    "syncDelay": sync_delay,
-                    "codecs": codecs,
-                },
-            )
-
-        self.logger.debug(
-            "Sending Sendspin config to Cast receiver: url=%s, name=%s, syncDelay=%dms, codecs=%s",
-            server_url,
-            player_name,
-            sync_delay,
-            codecs,
-        )
-        await self.mass.loop.run_in_executor(None, send_message)
-        self._last_sent_sync_delay = sync_delay
-        self._last_sent_codec = codec
-
-    async def _send_sendspin_sync_delay(self, sync_delay: int) -> None:
-        """Send only the sync delay update to the Cast receiver (no reconnection)."""
-
-        def send_message() -> None:
-            self.cc.socket_client.send_app_message(
-                SENDSPIN_CAST_NAMESPACE,
-                {"syncDelay": sync_delay},
-            )
-
-        self.logger.debug(
-            "Sending Sendspin sync delay update to Cast receiver: syncDelay=%dms",
-            sync_delay,
-        )
-        await self.mass.loop.run_in_executor(None, send_message)
-        self._last_sent_sync_delay = sync_delay
-
-    async def _wait_for_sendspin_player(self, timeout: float = 15.0) -> Player | None:
-        """Wait for the Sendspin player to connect and become available."""
-        start_time = time.time()
-        while (time.time() - start_time) < timeout:
-            if sendspin_player := self.mass.players.get_player(self.sendspin_player_id):
-                if sendspin_player.available:
-                    self.logger.debug(
-                        "Sendspin player %s is now available", self.sendspin_player_id
-                    )
-                    return sendspin_player
-            await asyncio.sleep(0.5)
-        self.logger.warning(
-            "Timeout waiting for Sendspin player %s to become available",
-            self.sendspin_player_id,
-        )
-        return None
-
-    async def _play_media_sendspin(self, media: PlayerMedia) -> None:
-        """Handle PLAY MEDIA using the Sendspin protocol via sendspin-over-cast."""
-        self.logger.info(
-            "Starting Sendspin playback on %s (sendspin_player_id=%s)",
-            self.display_name,
-            self.sendspin_player_id,
-        )
-
-        # Check if the sendspin player is already connected (available)
-        if sendspin_player := self.get_linked_sendspin_player(False):
-            # Sendspin player is already connected, just redirect the media
-            self.logger.debug(
-                "Sendspin player already connected (state=%s), redirecting media.",
-                sendspin_player.playback_state,
-            )
-            await self.mass.players.play_media(sendspin_player.player_id, media)
-            return
-
-        # Sendspin player not connected yet - launch app and connect
-        launch_success = await self._launch_sendspin_app()
-        if not launch_success:
-            raise PlayerUnavailableError("Failed to launch Sendspin Cast App")
-
-        # Give the app a moment to initialize
-        await asyncio.sleep(1)
-        # Send the Sendspin server URL to the receiver
-        await self._send_sendspin_server_url()
-        # Wait for the Sendspin player to connect
-        sendspin_player = await self._wait_for_sendspin_player()
-        if not sendspin_player:
-            raise PlayerUnavailableError("Failed to establish Sendspin connection")
-
-        # Redirect playback to the Sendspin player
-        self.logger.info("Starting playback on Sendspin player %s", sendspin_player.player_id)
-        await self.mass.players.play_media(sendspin_player.player_id, media)

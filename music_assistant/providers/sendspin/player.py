@@ -40,6 +40,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     ImageType,
     PlaybackState,
     PlayerFeature,
@@ -54,8 +55,12 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     CONF_ENTRY_SAMPLE_RATES,
 )
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+
+from .constants import CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
+from .helpers import mac_from_bridge_client_id
+from .playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -180,6 +185,12 @@ class SendspinPlayer(Player):
             )
         else:
             self._attr_device_info = DeviceInfo()
+        # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
+        # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
+        if _mac := mac_from_bridge_client_id(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
+        elif is_valid_mac_address(player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
@@ -619,6 +630,24 @@ class SendspinPlayer(Player):
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
             ConfigEntry.from_dict({**CONF_ENTRY_SAMPLE_RATES.to_dict(), "hidden": True}),
         ]
+
+        # Only show the sync delay setting for Chromecast Bridge players
+        if self.device_info.model == "Chromecast Bridge":
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SENDSPIN_SYNC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    label="Sync delay (ms)",
+                    description="Static delay in milliseconds to adjust audio synchronization. "
+                    "Positive values delay playback, negative values advance it. "
+                    "Use this to compensate for device-specific audio latency.",
+                    required=False,
+                    default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
+                    range=(-1000, 1000),
+                    immediate_apply=True,
+                    advanced=True,
+                ),
+            )
 
         # Build dynamic format options from player's supported formats
         player_role = self._player_role

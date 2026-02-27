@@ -91,15 +91,11 @@ from .constants import (
     CACHE_KEY_LIBRARIES,
     CONF_API_TOKEN,
     CONF_HIDE_EMPTY_PODCASTS,
-    CONF_HLS_FORMATS,
     CONF_OLD_TOKEN,
     CONF_PASSWORD,
     CONF_URL,
-    CONF_USE_HLS,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    HLS_ALL_FORMATS,
-    HLS_FORMATS_SPLIT,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -109,7 +105,6 @@ from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard, SessionHelpe
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
-    from aioaudiobookshelf.schema.streams import Stream as AbsStream
     from aioaudiobookshelf.schema.user import User
     from music_assistant_models.media_items import Podcast
     from music_assistant_models.provider import ProviderManifest
@@ -192,26 +187,6 @@ async def get_config_entries(
             label="old token",
             required=False,
             hidden=True,
-        ),
-        ConfigEntry(
-            key=CONF_USE_HLS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Stream via HLS from ABS.",
-            description="Use an HLS stream when streaming from audiobookshelf.",
-            required=False,
-            default_value=False,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_HLS_FORMATS,
-            type=ConfigEntryType.STRING,
-            label=f"Use HLS for these file extensions. Separate with ';'. Use {HLS_ALL_FORMATS} for"
-            " all formats.",
-            description="Use HLS only for these file extensions."
-            f" Separate with ;. E.g. m4b or m4b;aac or {HLS_ALL_FORMATS}",
-            required=False,
-            default_value="m4b",
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -363,8 +338,6 @@ for more details.
         self._client_socket.set_refresh_token_expired_callback(
             on_refresh_token_expired=self._socket_abs_refresh_token_expired
         )
-
-        self._client_socket.set_stream_callbacks(on_stream_open=self._socket_stream_open)
 
         # progress guard
         self.progress_guard = ProgressGuard()
@@ -595,8 +568,6 @@ for more details.
         # We always create a playback session. The default is direct playback.
         # In that case, session.tracks holds the exact same as the audiobook/ podcast.track,
         # so we only use the session to update our progress.
-        #
-        # In the case of hls the session has an hls stream as track.
         if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
             session = await self._get_playback_session(mass_item_id=item_id)
             return await self._get_stream_details_session(
@@ -636,29 +607,19 @@ for more details.
                 # to ensure token is always valid, we create a dynamic url
                 # this ensures that we always get a fresh token on each part
                 # without having to deal with a custom stream etc.
-                # we also use this for a single track/ hls stream, otherwise we can't seek
+                # we also use this for a single track, otherwise we can't seek
                 stream_url = (
                     f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
                     f"session_id={abs_session.id_}&part_id={idx}"
                 )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
-        stream_type = StreamType.HLS if "hls" in file_parts[0].path else StreamType.HTTP
-        if stream_type == StreamType.HLS:
-            # wait for stream to be ready
-            try:
-                await asyncio.wait_for(session_helper.hls_stream_open.wait(), 10)
-            except TimeoutError:
-                self.logger.warning(
-                    "Did not receive HLS stream open event after 10s, continuing anyways."
-                )
-
         return StreamDetails(
             provider=self.instance_id,
             item_id=abs_session.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=media_type,
-            stream_type=stream_type,
+            stream_type=StreamType.HTTP,
             duration=int(abs_session.duration),
             path=file_parts[0].path if len(file_parts) == 1 else file_parts,
             can_seek=True,
@@ -681,31 +642,6 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
-            # Create a new session
-            ## Check HLS usage
-            use_hls = bool(self.config.get_value(CONF_USE_HLS))
-            hls_formats = str(self.config.get_value(CONF_HLS_FORMATS))
-            if use_hls and hls_formats != HLS_ALL_FORMATS:
-                use_hls = False  # only for certain formats
-                extensions = [x.lstrip(".") for x in hls_formats.split(HLS_FORMATS_SPLIT)]
-                if episode_id is None:
-                    if (
-                        metadata := (await self._get_abs_expanded_audiobook(abs_item_id))
-                        .media.tracks[0]
-                        .metadata
-                    ):
-                        if metadata.ext.lstrip(".") in extensions:
-                            use_hls = True
-                else:
-                    podcast = await self._get_abs_expanded_podcast(prov_podcast_id=abs_item_id)
-                    episode = None
-                    for episode in podcast.media.episodes:
-                        if episode.id_ == episode_id:
-                            break
-                    if episode and (metadata := episode.audio_track.metadata):
-                        if metadata.ext.lstrip(".") in extensions:
-                            use_hls = True
-
             client_name = f"Music Assistant {self.instance_id}"
             device_info = AbsDeviceInfo(
                 device_id=self.instance_id,
@@ -716,12 +652,14 @@ for more details.
             )
 
             session = await self._client.get_playback_session(
-                # These parameters give an hls if we don't enforce direct play stream,
-                # which is only a concat of the individual file's at abs
+                # Direct play gives us the individual files. Transcode give an HLS session.
+                # Sessions without HLS proved to be stable. See:
+                # https://github.com/music-assistant/support/issues/4754
+                # https://github.com/music-assistant/support/issues/4586
                 session_parameters=AbsPlaybackSessionParameters(
                     device_info=device_info,
-                    force_direct_play=not use_hls,
-                    force_transcode=use_hls,
+                    force_direct_play=True,
+                    force_transcode=False,
                     # mimetypes are only checked for abs' internal "should transcode
                     # see https://github.com/advplyr/audiobookshelf/blob/master/server/managers/PlaybackSessionManager.js
                     supported_mime_types=[],
@@ -731,17 +669,9 @@ for more details.
                 episode_id=episode_id,
             )
 
-            if use_hls:
-                # Safety check.
-                track_url = session.audio_tracks[0].content_url
-                if track_url.split("/")[1] != "hls":
-                    raise MediaNotFoundError("Did expect HLS stream for session playback")
-                self.logger.debug("Using an HLS stream for playback.")
-
             self.sessions[mass_item_id] = SessionHelper(
                 abs_session_id=session.id_,
                 last_sync_time=time.time(),
-                hls_stream_open=asyncio.Event(),
             )
             return session
 
@@ -1543,13 +1473,6 @@ for more details.
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()
-
-    async def _socket_stream_open(self, stream: AbsStream) -> None:
-        # stream's id is the same as the playback session id
-        for session_helper in self.sessions.values():
-            if session_helper.abs_session_id == stream.id_:
-                session_helper.hls_stream_open.set()
-                break
 
     async def reauthenticate(self) -> None:
         """Reauthorize the abs session config if refresh token expired."""

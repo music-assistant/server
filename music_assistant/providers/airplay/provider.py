@@ -28,6 +28,7 @@ from .constants import (
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
 # Implement Companion protocol for communicating with original Apple (TV) devices
@@ -40,9 +41,13 @@ class AirPlayProvider(PlayerProvider):
 
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
+    _bridge_manager: SendspinBridgeManager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Initialize Sendspin bridge manager for protocol linking
+        self._bridge_manager = SendspinBridgeManager(self)
+
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
         # Use first 16 hex chars of server_id as a persistent DACP ID
@@ -91,6 +96,8 @@ class AirPlayProvider(PlayerProvider):
             if _player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", _player.display_name)
+                # Remove the Sendspin bridge first
+                await self._bridge_manager.remove_bridge(player_id)
                 await self.mass.players.unregister(player_id)
             return
         # handle update for existing device
@@ -104,6 +111,10 @@ class AirPlayProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # Stop all Sendspin bridges
+        bridge_manager = getattr(self, "_bridge_manager", None)
+        if bridge_manager:
+            await bridge_manager.stop_all()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -209,6 +220,9 @@ class AirPlayProvider(PlayerProvider):
             initial_volume=volume,
         )
         await self.mass.players.register(player)
+
+        # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
+        await self._bridge_manager.setup_bridge(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

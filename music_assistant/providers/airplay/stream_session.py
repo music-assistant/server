@@ -368,8 +368,8 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.write_eof()
             await ffmpeg.wait_with_timeout(30)
-            if airplay_player.stream and airplay_player.stream._cli_proc:
-                await airplay_player.stream._cli_proc.write_eof()
+            if airplay_player.stream:
+                await airplay_player.stream.write_audio_eof()
 
     async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
         """Start CLI process and ffmpeg for a single client."""
