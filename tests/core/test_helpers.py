@@ -1,5 +1,7 @@
 """Tests for utility/helper functions."""
 
+from unittest.mock import MagicMock
+
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
@@ -157,3 +159,83 @@ async def test_uri_parsing() -> None:
     # test invalid uri
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("invalid://blah")
+
+
+def test_format_ip_for_url() -> None:
+    """Test IPv6 bracket wrapping for URLs (RFC 2732)."""
+    # IPv4 should pass through unchanged
+    assert util.format_ip_for_url("192.168.1.1") == "192.168.1.1"
+    assert util.format_ip_for_url("10.0.0.1") == "10.0.0.1"
+    assert util.format_ip_for_url("0.0.0.0") == "0.0.0.0"
+    # IPv6 should be wrapped in brackets
+    assert util.format_ip_for_url("::1") == "[::1]"
+    assert util.format_ip_for_url("fe80::1") == "[fe80::1]"
+    assert util.format_ip_for_url("2001:db8::1") == "[2001:db8::1]"
+    assert util.format_ip_for_url("fd00::cafe:1") == "[fd00::cafe:1]"
+
+
+def test_get_primary_ip_address_from_zeroconf_prefer_ipv4() -> None:
+    """Test zeroconf IP extraction preferring IPv4 (default)."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda version: {
+        "IPVersion.V4Only": ["192.168.1.100"],
+        "IPVersion.V6Only": ["fd00::1"],
+    }[str(version)]
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False)
+    assert result == "192.168.1.100"
+
+
+def test_get_primary_ip_address_from_zeroconf_prefer_ipv6() -> None:
+    """Test zeroconf IP extraction preferring IPv6."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda version: {
+        "IPVersion.V4Only": ["192.168.1.100"],
+        "IPVersion.V6Only": ["fd00::1"],
+    }[str(version)]
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True)
+    assert result == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_ipv6_fallback() -> None:
+    """Test zeroconf IP extraction falls back to IPv6 when no IPv4 available."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda version: {
+        "IPVersion.V4Only": [],
+        "IPVersion.V6Only": ["fd00::1"],
+    }[str(version)]
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False)
+    assert result == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_ipv4_fallback() -> None:
+    """Test zeroconf IP extraction falls back to IPv4 when no IPv6 available."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda version: {
+        "IPVersion.V4Only": ["192.168.1.100"],
+        "IPVersion.V6Only": [],
+    }[str(version)]
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True)
+    assert result == "192.168.1.100"
+
+
+def test_get_primary_ip_address_from_zeroconf_skips_link_local() -> None:
+    """Test zeroconf IP extraction skips loopback and link-local addresses."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda version: {
+        "IPVersion.V4Only": ["127.0.0.1", "169.254.1.1", "192.168.1.100"],
+        "IPVersion.V6Only": ["::1", "fe80::1", "fd00::1"],
+    }[str(version)]
+    # IPv4 preferred: should skip 127.x and 169.254.x
+    assert (
+        util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False) == "192.168.1.100"
+    )
+    # IPv6 preferred: should skip ::1 and fe80::
+    assert util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True) == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_no_addresses() -> None:
+    """Test zeroconf IP extraction returns None when no addresses available."""
+    mock_info = MagicMock()
+    mock_info.parsed_addresses = lambda _version: []
+    assert util.get_primary_ip_address_from_zeroconf(mock_info) is None
+    assert util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True) is None
