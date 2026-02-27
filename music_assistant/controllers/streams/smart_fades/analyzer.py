@@ -38,7 +38,7 @@ def _pcm_bytes_to_float32(
         return (np.frombuffer(audio_data, dtype=np.int16) / 32768.0).astype(np.float32)
     if pcm_format.content_type == ContentType.PCM_S32LE:
         return (np.frombuffer(audio_data, dtype=np.int32) / 2147483648.0).astype(np.float32)
-    # Default: assume default PCM_F32LE
+    # Default: assume PCM_F32LE
     return np.frombuffer(audio_data, dtype=np.float32)
 
 
