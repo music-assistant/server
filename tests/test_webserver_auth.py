@@ -82,23 +82,6 @@ async def auth_manager(mass_minimal: MusicAssistant) -> AuthenticationManager:
     return mass_minimal.webserver.auth
 
 
-class MockProvider:
-    """Minimal mock provider for join code tests."""
-
-    def __init__(self, domain: str = "test_provider") -> None:
-        """Initialize mock provider with a domain name.
-
-        :param domain: The provider domain name.
-        """
-        self.domain = domain
-
-
-@pytest.fixture
-def mock_provider() -> MockProvider:
-    """Create a mock provider for join code tests."""
-    return MockProvider("test_provider")
-
-
 async def test_auth_manager_initialization(auth_manager: AuthenticationManager) -> None:
     """Test that the authentication manager initializes correctly.
 
@@ -929,19 +912,16 @@ async def test_ingress_auth_existing_username(auth_manager: AuthenticationManage
 # ==================== Join Code Tests ====================
 
 
-async def test_generate_join_code(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     """Test generating a join code for a user.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="joincodeuser", role=UserRole.GUEST)
 
     code, expires_at = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
         max_uses=0,
         device_name="Test Device",
@@ -955,52 +935,32 @@ async def test_generate_join_code(
 
 
 async def test_generate_join_code_non_guest_rejected(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
+    auth_manager: AuthenticationManager,
 ) -> None:
     """Test that generating a join code for non-guest users is rejected.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     admin = await auth_manager.create_user(username="joinadmin", role=UserRole.ADMIN)
     user = await auth_manager.create_user(username="joinuser", role=UserRole.USER)
 
     with pytest.raises(ValueError, match="guest accounts"):
-        await auth_manager.generate_join_code(user_id=admin.user_id, provider=mock_provider)
+        await auth_manager.generate_join_code(user=admin, provider_name="test_provider")
 
     with pytest.raises(ValueError, match="guest accounts"):
-        await auth_manager.generate_join_code(user_id=user.user_id, provider=mock_provider)
+        await auth_manager.generate_join_code(user=user, provider_name="test_provider")
 
 
-async def test_generate_join_code_invalid_user(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
-    """Test that generating a join code for non-existent user raises error.
-
-    :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
-    """
-    with pytest.raises(ValueError, match="User not found"):
-        await auth_manager.generate_join_code(
-            user_id="nonexistent-user-id",
-            provider=mock_provider,
-            expires_in_hours=24,
-        )
-
-
-async def test_exchange_join_code(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_exchange_join_code(auth_manager: AuthenticationManager) -> None:
     """Test exchanging a valid join code for a JWT token.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="exchangeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
         device_name="Exchange Test",
     )
@@ -1018,19 +978,16 @@ async def test_exchange_join_code(
     assert authenticated_user.username == user.username
 
 
-async def test_exchange_join_code_case_insensitive(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_exchange_join_code_case_insensitive(auth_manager: AuthenticationManager) -> None:
     """Test that join codes are case-insensitive.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="caseuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
     )
 
@@ -1053,19 +1010,16 @@ async def test_exchange_join_code_invalid(auth_manager: AuthenticationManager) -
     assert token is None
 
 
-async def test_exchange_join_code_expired(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_exchange_join_code_expired(auth_manager: AuthenticationManager) -> None:
     """Test that expired join codes are rejected.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="expiredcodeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
     )
 
@@ -1085,19 +1039,16 @@ async def test_exchange_join_code_expired(
     assert token is None
 
 
-async def test_exchange_join_code_max_uses(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_exchange_join_code_max_uses(auth_manager: AuthenticationManager) -> None:
     """Test that join codes respect max_uses limit.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="maxusesuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
         max_uses=2,  # Only allow 2 uses
     )
@@ -1115,19 +1066,16 @@ async def test_exchange_join_code_max_uses(
     assert token3 is None
 
 
-async def test_exchange_join_code_unlimited_uses(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_exchange_join_code_unlimited_uses(auth_manager: AuthenticationManager) -> None:
     """Test that join codes with max_uses=0 have unlimited uses.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user = await auth_manager.create_user(username="unlimiteduser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=mock_provider,
+        user=user,
+        provider_name="test_provider",
         expires_in_hours=24,
         max_uses=0,  # Unlimited
     )
@@ -1146,11 +1094,10 @@ async def test_exchange_join_code_provider_name_in_token(
     :param auth_manager: AuthenticationManager instance.
     """
     user = await auth_manager.create_user(username="provideruser", role=UserRole.GUEST)
-    party_provider = MockProvider("party_mode")
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=party_provider,
+        user=user,
+        provider_name="party_mode",
         expires_in_hours=24,
     )
 
@@ -1162,25 +1109,20 @@ async def test_exchange_join_code_provider_name_in_token(
     assert payload.get("provider_name") == "party_mode"
 
 
-async def test_revoke_join_codes_for_user(
-    auth_manager: AuthenticationManager, mock_provider: MockProvider
-) -> None:
+async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -> None:
     """Test revoking join codes for a specific user.
 
     :param auth_manager: AuthenticationManager instance.
-    :param mock_provider: Mock provider instance.
     """
     user1 = await auth_manager.create_user(username="revokeuser1", role=UserRole.GUEST)
     user2 = await auth_manager.create_user(username="revokeuser2", role=UserRole.GUEST)
 
-    # Create codes for both users under the same provider
-    code1, _ = await auth_manager.generate_join_code(user_id=user1.user_id, provider=mock_provider)
-    code2, _ = await auth_manager.generate_join_code(user_id=user2.user_id, provider=mock_provider)
+    # Create codes for both users
+    code1, _ = await auth_manager.generate_join_code(user=user1, provider_name="test_provider")
+    code2, _ = await auth_manager.generate_join_code(user=user2, provider_name="test_provider")
 
-    # Revoke codes for user1 only (scoped to provider)
-    revoked_count = await auth_manager.revoke_join_codes(
-        provider=mock_provider, user_id=user1.user_id
-    )
+    # Revoke codes for user1 only
+    revoked_count = await auth_manager.revoke_join_codes(user1)
     assert revoked_count == 1
 
     # User1's code should no longer work
@@ -1190,35 +1132,6 @@ async def test_revoke_join_codes_for_user(
     # User2's code should still work
     token2 = await auth_manager._exchange_join_code(code2)
     assert token2 is not None
-
-
-async def test_revoke_join_codes_scoped_to_provider(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """Test that revoking join codes is scoped to the calling provider.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    provider_a = MockProvider("provider_a")
-    provider_b = MockProvider("provider_b")
-
-    user = await auth_manager.create_user(username="scopeuser", role=UserRole.GUEST)
-
-    # Create codes under different providers
-    code_a, _ = await auth_manager.generate_join_code(user_id=user.user_id, provider=provider_a)
-    code_b, _ = await auth_manager.generate_join_code(user_id=user.user_id, provider=provider_b)
-
-    # Revoking via provider_a should only affect provider_a's codes
-    revoked_count = await auth_manager.revoke_join_codes(provider=provider_a)
-    assert revoked_count == 1
-
-    # Provider A's code should no longer work
-    token_a = await auth_manager._exchange_join_code(code_a)
-    assert token_a is None
-
-    # Provider B's code should still work
-    token_b = await auth_manager._exchange_join_code(code_b)
-    assert token_b is not None
 
 
 async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManager) -> None:
@@ -1231,11 +1144,10 @@ async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManag
         role=UserRole.GUEST,
         display_name="API Guest",
     )
-    party_provider = MockProvider("party_mode")
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        provider=party_provider,
+        user=user,
+        provider_name="party_mode",
         expires_in_hours=24,
     )
 
@@ -1274,9 +1186,8 @@ async def test_list_join_codes(auth_manager: AuthenticationManager) -> None:
     set_current_user(admin)
 
     # Create codes for both guests
-    party_provider = MockProvider("party_mode")
-    await auth_manager.generate_join_code(user_id=guest1.user_id, provider=party_provider)
-    await auth_manager.generate_join_code(user_id=guest2.user_id, provider=party_provider)
+    await auth_manager.generate_join_code(user=guest1, provider_name="party_mode")
+    await auth_manager.generate_join_code(user=guest2, provider_name="party_mode")
 
     # List all codes
     codes = await auth_manager.list_join_codes()
@@ -1297,9 +1208,7 @@ async def test_revoke_join_code_api(auth_manager: AuthenticationManager) -> None
     guest = await auth_manager.create_user(username="revokeguest", role=UserRole.GUEST)
     set_current_user(admin)
 
-    code, _ = await auth_manager.generate_join_code(
-        user_id=guest.user_id, provider=MockProvider("test_provider")
-    )
+    code, _ = await auth_manager.generate_join_code(user=guest, provider_name="test_provider")
 
     # Get the code_id from the database
     codes = await auth_manager.list_join_codes(user_id=guest.user_id)

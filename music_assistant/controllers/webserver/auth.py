@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
-
 # Database schema version
 DB_SCHEMA_VERSION = 5
 
@@ -950,16 +949,18 @@ class AuthenticationManager:
         # Disconnect any WebSocket connections using this token
         self.webserver.disconnect_websockets_for_token(token_id)
 
-    async def revoke_tokens_for_user(self, user_id: str) -> int:
+    async def revoke_tokens_for_user(self, user: User) -> int:
         """Revoke all auth tokens for a user.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
 
-        :param user_id: The user ID whose tokens should be revoked.
+        :param user: The user whose tokens should be revoked.
         :return: Number of tokens revoked.
         """
-        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user_id}, limit=1000)
+        token_rows = await self.database.get_rows(
+            "auth_tokens", {"user_id": user.user_id}, limit=1000
+        )
         revoked_count = 0
         for token_row in token_rows:
             token_id = token_row["token_id"]

@@ -892,7 +892,7 @@ class PartyModePlugin(PluginProvider):
             self.logger.info("Revoked %d pending join codes", codes_revoked)
 
         # Revoke all tokens and disconnect WebSocket connections for the guest user
-        revoked_count = await auth.revoke_tokens_for_user(guest_user.user_id)
+        revoked_count = await auth.revoke_tokens_for_user(guest_user)
         if revoked_count > 0:
             self.logger.info(
                 "Revoked %d guest access tokens for user '%s'",
