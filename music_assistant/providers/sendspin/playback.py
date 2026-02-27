@@ -735,6 +735,25 @@ class SendspinPlaybackSession:
                 commit_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await commit_task
+            # On clean EOF, wait for clients to finish playing their
+            # buffered audio before sending stream/end (which clears
+            # client buffers per the SendSpin spec).  The sleep keeps
+            # _run_playback alive so MA still considers the track
+            # "playing" and the UI stays in sync with actual audio.
+            if producer_stopped_cleanly:
+                drain_wait_s = self._get_stream_end_delay_s()
+                if drain_wait_s > 0:
+                    self.player.logger.debug(
+                        "Waiting %.1fs for client buffer drain before stream/end",
+                        drain_wait_s,
+                    )
+                    try:
+                        await asyncio.sleep(drain_wait_s)
+                    except asyncio.CancelledError:
+                        # play_media → cancel() interrupted the drain.
+                        # Treat as non-clean stop so we skip group.stop()
+                        # and let the new playback handle the transition.
+                        producer_stopped_cleanly = False
             with suppress(Exception):
                 self._stop_push_stream()
             await self._clear_join_catchup()
@@ -748,11 +767,22 @@ class SendspinPlaybackSession:
                 self._history.clear()
                 # Drop cached DSP decisions so next playback reflects latest config.
                 self._pipeline_config_cache.clear()
-            # Only emit a group STOP when MA stream playback reached natural EOF.
-            # Skip this on cancellation/error paths to avoid stop-event races with transitions.
             if producer_stopped_cleanly:
-                with suppress(Exception):
-                    await self.player.api.group.stop()
+                # Check whether a track was enqueued during the drain
+                # (e.g. user pressed "play next" while the last track
+                # was finishing).  If so, start it instead of stopping.
+                next_result = self._peek_next_queue_index()
+                if next_result is not None:
+                    queue_id, next_index = next_result
+                    self.player.logger.debug(
+                        "New queue item detected after drain, resuming playback"
+                    )
+                    self.player.mass.create_task(
+                        self.player.mass.player_queues.play_index(queue_id, next_index)
+                    )
+                else:
+                    with suppress(Exception):
+                        await self.player.api.group.stop()
 
     # -- Join injection --------------------------------------------------------
 
@@ -1082,6 +1112,56 @@ class SendspinPlaybackSession:
     def _create_push_stream(self) -> PushStream:
         """Create PushStream with channel resolver for per-member routing."""
         return self.player.api.group.start_stream(channel_resolver=self._resolve_channel_for_player)
+
+    def _peek_next_queue_index(self) -> tuple[str, int] | None:
+        """Return (queue_id, index) of the next queue item, or None if unavailable."""
+        queue = self.player.mass.player_queues.get_active_queue(self.player.player_id)
+        if queue is None or queue.current_index is None:
+            return None
+        next_item = self.player.mass.player_queues.get_next_item(
+            queue.queue_id, queue.current_index
+        )
+        if next_item is None:
+            return None
+        index = self.player.mass.player_queues.index_by_id(queue.queue_id, next_item.queue_item_id)
+        if index is None:
+            return None
+        return (queue.queue_id, index)
+
+    def _get_stream_end_delay_s(self) -> float:
+        """Return seconds until the last committed audio finishes playing.
+
+        The push stream's channel timing tracks the server-clock end timestamp
+        of the last committed chunk for each channel.  Clients play audio at
+        server-clock time, so we wait until the server clock reaches that point
+        before sending stream/end (which clears client buffers per spec).
+
+        Only active audio channels are considered, matching the filter used by
+        ``sleep_to_limit_buffer`` to avoid stale channels from disconnected
+        members inflating the wait.
+        """
+        ps = self._push_stream
+        if ps is None:
+            return 0.0
+        try:
+            active_channels = ps._get_active_audio_channels()
+            timings = ps._channel_timing
+            active_timings = [t for ch, t in timings.items() if ch in active_channels]
+            if not active_timings:
+                return 0.0
+            last_us = max(active_timings)
+            now_us = ps._clock.now_us()
+            ahead_us = last_us - now_us
+            if ahead_us <= 0:
+                return 0.0
+            # Cap at the producer buffer limit as a safety bound.
+            return min(ahead_us / 1_000_000, _PRODUCER_BUFFER_LIMIT_US / 1_000_000)
+        except Exception:
+            self.player.logger.debug(
+                "Failed to compute stream end delay",
+                exc_info=True,
+            )
+            return 0.0
 
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
