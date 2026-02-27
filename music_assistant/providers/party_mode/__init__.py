@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -443,15 +443,15 @@ class PartyModePlugin(PluginProvider):
 
     # ==================== Configuration API Commands ====================
 
-    async def _get_or_create_party_guest_user(self) -> str:
+    async def _get_or_create_party_guest_user(self) -> User:
         """Get or create the party mode guest user.
 
-        :returns: The user ID of the party guest user.
+        :returns: The party guest User.
         """
         auth = self.mass.webserver.auth
         user = await auth.get_user_by_username(PARTY_GUEST_USERNAME)
         if user:
-            return user.user_id
+            return user
 
         # Create the party guest user
         user = await auth.create_user(
@@ -460,7 +460,7 @@ class PartyModePlugin(PluginProvider):
             display_name=PARTY_GUEST_DISPLAY_NAME,
         )
         self.logger.info("Created party mode guest user account")
-        return user.user_id
+        return user
 
     async def _get_join_code(self) -> str:
         """Get an active join code for party mode, creating one if needed.
@@ -471,17 +471,17 @@ class PartyModePlugin(PluginProvider):
         :returns: The active join code string.
         """
         auth = self.mass.webserver.auth
+        guest_user = await self._get_or_create_party_guest_user()
 
         # Check for an existing active join code
-        existing_code = await auth.get_active_join_code(self)
+        existing_code = await auth.get_active_join_code(guest_user)
         if existing_code:
             return existing_code
 
         # No active code found, generate a new one
-        guest_user_id = await self._get_or_create_party_guest_user()
         code, _expires_at = await auth.generate_join_code(
-            user_id=guest_user_id,
-            provider=self,
+            user=guest_user,
+            provider_name=self.domain,
             expires_in_hours=8,
             max_uses=0,
             device_name="Party Mode Guest",
@@ -880,16 +880,16 @@ class PartyModePlugin(PluginProvider):
         """
         auth = self.mass.webserver.auth
 
-        # Revoke pending join codes for party mode only
-        codes_revoked = await auth.revoke_join_codes(provider=self)
-        if codes_revoked > 0:
-            self.logger.info("Revoked %d pending join codes", codes_revoked)
-
         # Find the party mode guest user
         guest_user = await auth.get_user_by_username(PARTY_GUEST_USERNAME)
         if not guest_user:
-            self.logger.debug("No party guest user found, nothing more to revoke")
+            self.logger.debug("No party guest user found, nothing to revoke")
             return
+
+        # Revoke pending join codes for the guest user
+        codes_revoked = await auth.revoke_join_codes(guest_user)
+        if codes_revoked > 0:
+            self.logger.info("Revoked %d pending join codes", codes_revoked)
 
         # Revoke all tokens and disconnect WebSocket connections for the guest user
         revoked_count = await auth.revoke_tokens_for_user(guest_user.user_id)

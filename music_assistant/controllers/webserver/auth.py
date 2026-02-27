@@ -8,7 +8,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import jwt as pyjwt
 from music_assistant_models.auth import (
@@ -47,15 +47,6 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
-
-
-class HasDomain(Protocol):
-    """Protocol for objects that have a domain attribute."""
-
-    @property
-    def domain(self) -> str:
-        """Return the provider domain."""
-        ...
 
 
 # Database schema version
@@ -1569,8 +1560,8 @@ class AuthenticationManager:
 
     async def generate_join_code(
         self,
-        user_id: str,
-        provider: HasDomain,
+        user: User,
+        provider_name: str,
         expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
         max_uses: int = 1,
         device_name: str = "Short Code Login",
@@ -1578,27 +1569,20 @@ class AuthenticationManager:
         """Generate a short join code for link/QR-based login.
 
         This creates a short alphanumeric code that can be exchanged for a JWT token.
-        Providers can use this to implement features like party mode guest access,
-        device pairing, or other short-code authentication flows.
+        Used for features like party mode guest access, device pairing,
+        or other short-code authentication flows.
 
-        The provider_name is derived from the provider instance's domain to ensure
-        providers can only manage their own join codes.
-
-        :param user_id: The user ID that tokens created from this code will belong to.
-        :param provider: The provider instance generating this code.
+        :param user: The guest user that tokens created from this code will belong to.
+        :param provider_name: Provider name to include in JWT claims (e.g., "party_mode").
         :param expires_in_hours: Hours until code expires (default: 8).
         :param max_uses: Maximum number of uses (0 = unlimited).
         :param device_name: Device name for tokens created with this code.
         :return: Tuple of (code, expires_at datetime).
         """
-        provider_name = provider.domain
         if expires_in_hours <= 0:
             raise ValueError("expires_in_hours must be positive")
         if max_uses < 0:
             raise ValueError("max_uses must be non-negative (0 = unlimited)")
-        user = await self.get_user(user_id)
-        if not user:
-            raise ValueError(f"User not found: {user_id}")
         if user.role != UserRole.GUEST:
             raise ValueError("Join codes can only be generated for guest accounts")
 
@@ -1610,7 +1594,7 @@ class AuthenticationManager:
             code_data = {
                 "code_id": secrets.token_urlsafe(32),
                 "code": code,
-                "user_id": user_id,
+                "user_id": user.user_id,
                 "created_at": now.isoformat(),
                 "expires_at": expires_at.isoformat(),
                 "max_uses": max_uses,
@@ -1687,59 +1671,39 @@ class AuthenticationManager:
         )
         return token
 
-    async def revoke_join_codes(
-        self,
-        provider: HasDomain,
-        user_id: str | None = None,
-    ) -> int:
-        """Revoke join codes for a provider, optionally filtered by user.
+    async def revoke_join_codes(self, user: User) -> int:
+        """Revoke all join codes for a user.
 
-        The provider_name is derived from the provider instance's domain to ensure
-        providers can only revoke their own join codes.
-
-        :param provider: The provider instance revoking codes.
-        :param user_id: Optional user ID to further filter codes for.
+        :param user: The user whose join codes should be revoked.
         :return: Number of codes revoked.
         """
-        provider_name = provider.domain
-
-        conditions = ["provider_name = :provider_name"]
-        params: dict[str, str] = {"provider_name": provider_name}
-
-        if user_id:
-            conditions.append("user_id = :user_id")
-            params["user_id"] = user_id
-
         cursor = await self.database.execute(
-            f"DELETE FROM join_codes WHERE {' AND '.join(conditions)}", params
+            "DELETE FROM join_codes WHERE user_id = :user_id",
+            {"user_id": user.user_id},
         )
         await self.database.commit()
 
         count = int(cursor.rowcount)
         if count > 0:
-            self.logger.info("Revoked %d join code(s)", count)
+            self.logger.info("Revoked %d join code(s) for user %s", count, user.username)
         return count
 
-    async def get_active_join_code(self, provider: HasDomain) -> str | None:
-        """Get the most recently created, non-expired join code for a provider.
+    async def get_active_join_code(self, user: User) -> str | None:
+        """Get the most recently created, non-expired join code for a user.
 
-        The provider_name is derived from the provider instance's domain to ensure
-        providers can only query their own join codes.
-
-        :param provider: The provider instance to look up codes for.
+        :param user: The user to look up codes for.
         :return: The join code string if found, None otherwise.
         """
-        provider_name = provider.domain
         now = utc()
         cursor = await self.database.execute(
             """
             SELECT code FROM join_codes
-            WHERE provider_name = :provider_name
+            WHERE user_id = :user_id
             AND expires_at > :now
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            {"provider_name": provider_name, "now": now.isoformat()},
+            {"user_id": user.user_id, "now": now.isoformat()},
         )
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
