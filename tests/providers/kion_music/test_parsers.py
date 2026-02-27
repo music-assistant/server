@@ -78,7 +78,7 @@ def test_parse_artist(example: pathlib.Path, provider_stub: ProviderStub) -> Non
     assert result.provider == provider_stub.instance_id
     assert len(result.provider_mappings) == 1
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/artist/{artist_obj.id}" in (mapping.url or "")
+    assert f"music.yandex.ru/artist/{artist_obj.id}" in (mapping.url or "")
 
 
 def test_parse_artist_with_cover(provider_stub: ProviderStub) -> None:
@@ -105,7 +105,7 @@ def test_parse_album(example: pathlib.Path, provider_stub: ProviderStub) -> None
     assert result.name
     assert result.provider == provider_stub.instance_id
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/album/{album_obj.id}" in (mapping.url or "")
+    assert f"music.yandex.ru/album/{album_obj.id}" in (mapping.url or "")
     if album_obj.year:
         assert result.year == album_obj.year
 
@@ -120,7 +120,7 @@ def test_parse_track(example: pathlib.Path, provider_stub: ProviderStub) -> None
     assert result.name
     assert result.duration == (track_obj.duration_ms or 0) // 1000
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/track/{track_obj.id}" in (mapping.url or "")
+    assert f"music.yandex.ru/track/{track_obj.id}" in (mapping.url or "")
 
 
 def test_parse_track_with_artist_and_album(provider_stub: ProviderStub) -> None:
@@ -152,7 +152,7 @@ def test_parse_playlist(example: pathlib.Path, provider_stub: ProviderStub) -> N
     assert result.item_id == f"{owner_id}:{kind}"
     assert result.name == (playlist_obj.title or "Unknown Playlist")
     mapping = next(iter(result.provider_mappings))
-    assert f"music.mts.ru/users/{owner_id}/playlists/{kind}" in (mapping.url or "")
+    assert f"music.yandex.ru/users/{owner_id}/playlists/{kind}" in (mapping.url or "")
 
 
 def test_parse_playlist_editable(provider_stub: ProviderStub) -> None:

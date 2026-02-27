@@ -26,7 +26,7 @@ from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
-from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
 
 if TYPE_CHECKING:
     from yandex_music import DownloadInfo
@@ -87,11 +87,6 @@ class KionMusicClient:
             return True
         except UnauthorizedError as err:
             raise LoginFailed("Invalid KION Music token") from err
-        except BadRequestError as err:
-            # KION API returns HTTP 400 for expired/invalid tokens (not 401)
-            raise LoginFailed(
-                f"KION Music authentication failed — token may be expired: {err}"
-            ) from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
             raise ResourceTemporarilyUnavailable(msg) from err
@@ -152,7 +147,8 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        await self._throttler.acquire()
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
         client = await self._ensure_connected()
         try:
             return await func(client)
@@ -183,7 +179,8 @@ class KionMusicClient:
         :param func: Async callable that takes a ClientAsync and returns a result.
         :return: The result of the API call.
         """
-        await self._throttler.acquire()
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
         client = await self._ensure_connected()
         return await func(client)
 
@@ -347,18 +344,14 @@ class KionMusicClient:
         ]
         if not album_ids:
             return []
-
         # Fetch full album details in batches to get cover_uri and other metadata
-        def _fetch_albums_batch(
-            album_ids_batch: list[str],
-        ) -> Callable[[ClientAsync], Any]:
-            return lambda c: c.albums(album_ids_batch)
-
         full_albums: list[YandexAlbum] = []
         for i in range(0, len(album_ids), batch_size):
             batch = album_ids[i : i + batch_size]
             try:
-                batch_result = await self._call_with_retry(_fetch_albums_batch(batch))
+                batch_result = await self._call_with_retry(
+                    lambda c, _b=batch: c.albums(_b)  # type: ignore[misc]
+                )
                 if batch_result:
                     full_albums.extend(batch_result)
             except (BadRequestError, NetworkError, ProviderUnavailableError) as batch_err:
@@ -520,7 +513,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -723,10 +716,10 @@ class KionMusicClient:
                 param_string.encode(),
                 hashlib.sha256,
             )
-            # SHA-256 (32 bytes) -> base64 = 44 chars with one "=" padding.
-            # Kion API expects the unpadded base64 (43 chars).
+            # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
+            # Kion API expects exactly 43 chars (one "=" removed).
             # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
 
