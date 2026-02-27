@@ -529,7 +529,7 @@ class KionMusicStreamingManager:
                     raise MediaNotFoundError(
                         "Encrypted stream ended early after retries were exhausted"
                     ) from err
-            except TimeoutError as err:
+            except asyncio.TimeoutError as err:  # noqa: UP041 — aiohttp raises asyncio.TimeoutError
                 retry_delay = _STALL_DELAYS[min(attempt, len(_STALL_DELAYS) - 1)]
                 attempt += 1
                 if attempt <= max_retries:
