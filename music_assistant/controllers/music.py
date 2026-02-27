@@ -2503,11 +2503,8 @@ class MusicController(CoreController):
             # add supported_mediatypes column to playlist table, and populated it with
             # {MediaType.TRACK}, i.e. ["track"], as this was the only media type supported.
             await self._database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes json DEFAULT '' "
-                "NOT NULL"
-            )
-            await self._database.execute(
-                f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = '[\"track\"]'"
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
+                " json DEFAULT '[\"track\"]' NOT NULL"
             )
             # The builtin provider is special, as it supports all media types for
             # user-created playlists already prior to this schema version.
@@ -2637,7 +2634,7 @@ class MusicController(CoreController):
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
-            [supported_mediatypes] json NOT NULL
+            [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]'
             );"""
         )
         await self.database.execute(
