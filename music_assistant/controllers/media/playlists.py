@@ -523,6 +523,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "supported_mediatypes": serialize_to_json(update.supported_mediatypes),
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
