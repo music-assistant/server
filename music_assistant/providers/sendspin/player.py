@@ -644,6 +644,7 @@ class SendspinPlayer(Player):
                     required=False,
                     default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
                     range=(-1000, 1000),
+                    immediate_apply=True,
                     advanced=True,
                 ),
             )

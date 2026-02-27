@@ -24,6 +24,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+from music_assistant_models.enums import EventType
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_role import (
@@ -43,6 +44,7 @@ from .constants import SENDSPIN_CAST_APP_ID, SENDSPIN_CAST_BLOCKLIST, SENDSPIN_C
 
 if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
+    from music_assistant_models.event import MassEvent
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -123,6 +125,16 @@ class SendspinChromecastBridge:
     def is_registered(self) -> bool:
         """Return whether the bridge is registered with Sendspin."""
         return self._sendspin_client is not None
+
+    @property
+    def bridge_client_id(self) -> str | None:
+        """Return the bridge client_id."""
+        return self._bridge_client_id
+
+    @property
+    def is_cast_app_active(self) -> bool:
+        """Return whether the Sendspin Cast app is active on the device."""
+        return self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
 
     async def start(self) -> None:
         """Register the Chromecast player as an external Sendspin client."""
@@ -321,6 +333,12 @@ class SendspinChromecastBridge:
                         err,
                     )
 
+    async def push_runtime_config_update(self) -> None:
+        """Push updated runtime config (including sync delay) to active Cast app."""
+        if not self._bridge_client_id:
+            return
+        await self._send_sendspin_config_with_retry()
+
     async def _send_sendspin_config(self) -> None:
         """Send the server URL, client_id, and settings to the Sendspin Cast app.
 
@@ -373,6 +391,9 @@ class SendspinBridgeManager:
         self.logger = provider.logger.getChild("bridge_manager")
         self._bridges: dict[str, SendspinChromecastBridge] = {}
         self._lock = asyncio.Lock()
+        self._unsub_config_updated = self.mass.subscribe(
+            self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED
+        )
 
     @property
     def sendspin_provider(self) -> SendspinProvider | None:
@@ -464,9 +485,40 @@ class SendspinBridgeManager:
 
         self.logger.debug("All Sendspin bridges stopped")
 
+    async def close(self) -> None:
+        """Stop all bridges and unsubscribe event listeners."""
+        self._unsub_config_updated()
+        await self.stop_all()
+
     def get_bridge(self, cast_player_id: str) -> SendspinChromecastBridge | None:
         """Get the bridge for a Chromecast player.
 
         :param cast_player_id: The player ID to look up.
         """
         return self._bridges.get(cast_player_id)
+
+    async def _on_player_config_updated(self, event: MassEvent) -> None:
+        """Handle player config updates for bridged Sendspin Chromecast players."""
+        # NOTE: This is a temporary solution for updating the sync delay until https://github.com/Sendspin/spec/pull/67
+        # is implemented in aiosendspin, sendspin-js, and the cast app
+        if not event.object_id:
+            return
+
+        bridge: SendspinChromecastBridge | None = None
+        async with self._lock:
+            for candidate in self._bridges.values():
+                if candidate.bridge_client_id == event.object_id:
+                    bridge = candidate
+                    break
+
+        if not bridge:
+            return
+
+        if not bridge.is_cast_app_active:
+            return
+
+        self.mass.create_task(
+            bridge.push_runtime_config_update,
+            task_id=f"chromecast_sendspin_config_update_{bridge.cast_player.player_id}",
+            abort_existing=True,
+        )

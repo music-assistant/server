@@ -75,8 +75,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
-        # Stop all Sendspin bridges
-        await self.bridge_manager.stop_all()
+        # Stop all Sendspin bridges and remove listeners
+        await self.bridge_manager.close()
 
         if not self.browser:
             return
