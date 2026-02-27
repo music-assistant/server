@@ -1517,7 +1517,16 @@ class Player(ABC):
         active_queue: PlayerQueue | None = None
         if not active_queue and active_source:
             active_queue = self.mass.player_queues.get(active_source)
-        if not active_queue and self.active_source is None:
+        protocol_active = bool(
+            self.active_output_protocol and self.active_output_protocol != "native"
+        )
+        if (
+            not active_queue
+            and (active_source is None or protocol_active)
+            and not self._has_external_source_active()
+        ):
+            # During protocol playback, players may report bridge/app-specific source IDs.
+            # If no external source is active, fall back to the player's own MA queue metadata.
             active_queue = self.mass.player_queues.get(self.player_id)
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
