@@ -25,7 +25,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
-    CONF_LINKED_PROTOCOL_PLAYER_IDS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_PARENT_ID,
@@ -607,9 +607,7 @@ class ProtocolLinkingMixin:
         disabled protocol players in the cache. This allows disabled protocols to be
         shown in the UI so they can be re-enabled.
         """
-        conf_key = (
-            f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
-        )
+        conf_key = f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         # Get existing cached IDs to preserve disabled protocols
         existing_ids: list[str] = self.mass.config.get(conf_key, [])
         # Get currently active protocol IDs
@@ -623,7 +621,7 @@ class ProtocolLinkingMixin:
 
     def _get_cached_protocol_ids(self, player_id: str) -> list[str]:
         """Get cached linked protocol IDs from config."""
-        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         result = self.mass.config.get(conf_key, [])
         return list(result) if result else []
 
@@ -635,7 +633,7 @@ class ProtocolLinkingMixin:
 
         Use this when a protocol player config is being deleted, not just disabled.
         """
-        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         cached_ids: list[str] = self.mass.config.get(conf_key, [])
         if protocol_player_id in cached_ids:
             cached_ids.remove(protocol_player_id)
@@ -674,7 +672,7 @@ class ProtocolLinkingMixin:
         cached_protocol_ids = self._get_cached_protocol_ids(native_player.player_id)
 
         # Also check all protocol players that have protocol_parent_id pointing to this player
-        # (this handles disabled protocols that may not be in linked_protocol_player_ids)
+        # (this handles disabled protocols that may not be in linked_protocol_ids)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for protocol_id, protocol_config in all_player_configs.items():
             # Skip if not a protocol player

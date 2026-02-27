@@ -114,9 +114,7 @@ CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
-CONF_LINKED_PROTOCOL_PLAYER_IDS: Final[str] = (
-    "linked_protocol_player_ids"  # cached for fast restart
-)
+CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
