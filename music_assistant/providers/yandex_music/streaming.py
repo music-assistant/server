@@ -417,6 +417,39 @@ class YandexMusicStreamingManager:
         if final:
             yield final
 
+    def _handle_stream_error(
+        self,
+        err: Exception,
+        attempt: int,
+        max_retries: int,
+        bytes_yielded: int,
+        delays: tuple[float, ...],
+        label: str,
+    ) -> tuple[int, float]:
+        """Increment retry counter, log a warning, or raise if retries are exhausted.
+
+        :param err: The exception that caused the retry.
+        :param attempt: Current retry attempt count (0-based).
+        :param max_retries: Maximum number of retries allowed.
+        :param bytes_yielded: Bytes delivered so far (for log context).
+        :param delays: Backoff delay sequence to pick from.
+        :param label: Short verb describing the failure (e.g. "dropped", "stalled").
+        :return: (new_attempt, retry_delay) tuple when retrying.
+        :raises MediaNotFoundError: When attempt count exceeds max_retries.
+        """
+        delay = delays[min(attempt, len(delays) - 1)]
+        attempt += 1
+        if attempt <= max_retries:
+            self.logger.warning(
+                "Encrypted stream %s at %d bytes (attempt %d/%d) — retrying",
+                label,
+                bytes_yielded,
+                attempt,
+                max_retries,
+            )
+            return attempt, delay
+        raise MediaNotFoundError(f"Encrypted stream {label} after retries were exhausted") from err
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -512,31 +545,10 @@ class YandexMusicStreamingManager:
             except asyncio.CancelledError:
                 raise  # propagate cancellation immediately, do not retry
             except (ClientPayloadError, ServerDisconnectedError) as err:
-                retry_delay = _TCP_DROP_DELAYS[min(attempt, len(_TCP_DROP_DELAYS) - 1)]
-                attempt += 1
-                if attempt <= max_retries:
-                    self.logger.warning(
-                        "Encrypted stream dropped at %d bytes (attempt %d/%d): %s — retrying",
-                        bytes_yielded,
-                        attempt,
-                        max_retries,
-                        err,
-                    )
-                else:
-                    raise MediaNotFoundError(
-                        "Encrypted stream ended early after retries were exhausted"
-                    ) from err
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _TCP_DROP_DELAYS, "dropped"
+                )
             except TimeoutError as err:
-                retry_delay = _STALL_DELAYS[min(attempt, len(_STALL_DELAYS) - 1)]
-                attempt += 1
-                if attempt <= max_retries:
-                    self.logger.warning(
-                        "Encrypted stream stalled at %d bytes (attempt %d/%d) — retrying",
-                        bytes_yielded,
-                        attempt,
-                        max_retries,
-                    )
-                else:
-                    raise MediaNotFoundError(
-                        "Encrypted stream stalled after retries were exhausted"
-                    ) from err
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _STALL_DELAYS, "stalled"
+                )
