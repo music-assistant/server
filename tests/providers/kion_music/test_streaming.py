@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from aiohttp import ClientPayloadError
@@ -16,6 +16,7 @@ from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
+    from music_assistant.providers.kion_music.provider import KionMusicProvider
     from tests.providers.kion_music.conftest import (
         StreamingProviderStub,
         StreamingProviderStubWithTracking,
@@ -44,7 +45,7 @@ def streaming_manager(
     streaming_provider_stub: StreamingProviderStub,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with real stub (no Mock)."""
-    return KionMusicStreamingManager(streaming_provider_stub)
+    return KionMusicStreamingManager(cast("KionMusicProvider", streaming_provider_stub))
 
 
 @pytest.fixture
@@ -52,7 +53,9 @@ def streaming_manager_with_tracking(
     streaming_provider_stub_with_tracking: StreamingProviderStubWithTracking,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with tracking logger for assertions."""
-    return KionMusicStreamingManager(streaming_provider_stub_with_tracking)
+    return KionMusicStreamingManager(
+        cast("KionMusicProvider", streaming_provider_stub_with_tracking)
+    )
 
 
 def test_select_best_quality_lossless_returns_flac(
