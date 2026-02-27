@@ -8,5 +8,6 @@
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/party-mode",
   "multi_instance": false,
-  "builtin": false
+  "builtin": false,
+  "icon": "party-popper"
 }
