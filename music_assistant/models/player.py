@@ -1842,7 +1842,10 @@ class Player(ABC):
                 # is reporting the bridged protocol as active source
                 # we need to ignore that
                 output_protocol_domain == "sendspin"
-                and self.active_source.lower() in ("airplay", "cast", "chromecast", "network")
+                and (
+                    self.active_source.lower() in ("airplay", "cast", "chromecast", "network")
+                    or self.active_source.lower().startswith("sendspin_over_")
+                )
             )
         ):
             return self.active_source
