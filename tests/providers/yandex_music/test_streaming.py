@@ -505,8 +505,8 @@ async def test_get_audio_stream_reconnects_with_range_header(
 
     assert result == plaintext
     assert len(session.calls) == 2
-    assert session.calls[0].get("headers") == {}
-    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-"}
+    assert session.calls[0]["headers"] == {"Range": "bytes=0-4194303"}
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
 
 
 async def test_get_audio_stream_refreshes_url_on_410(
@@ -606,7 +606,7 @@ async def test_get_audio_stream_retries_on_server_disconnected(
 
     assert result == plaintext
     assert len(session.calls) == 2
-    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-"}
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
 
 
 async def test_get_audio_stream_retries_on_read_timeout(
@@ -636,7 +636,7 @@ async def test_get_audio_stream_retries_on_read_timeout(
 
     assert result == plaintext
     assert len(session.calls) == 2
-    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-"}
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
 
 
 async def test_get_audio_stream_resets_decrypt_when_range_ignored(

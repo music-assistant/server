@@ -33,7 +33,11 @@ if TYPE_CHECKING:
 # Encrypted-stream tuning constants
 _CHUNK_SIZE = 16384  # smaller than default 65536 for faster first-byte after retry
 _STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_read=30)
-# Flat short delays for server-side TCP drops (ContentLengthError, ServerDisconnectedError)
+# Yandex CDN drops TCP every ~6-7 MB per connection (observed via live traffic capture).
+# By capping each Range request to 4 MB we stay well below that limit, so CDN drops
+# should never occur during normal windowed playback.
+_RANGE_WINDOW = 4 * 1024 * 1024  # 4 MB — must be a multiple of AES block size (16)
+# Flat short delays for any residual TCP drops (network glitches within a 4 MB window)
 _TCP_DROP_DELAYS = (0.5, 1.0, 2.0)
 # Exponential delays for true network stalls (read timeout)
 _STALL_DELAYS = (2.0, 4.0, 8.0)
@@ -418,13 +422,17 @@ class YandexMusicStreamingManager:
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
 
-        Downloads and decrypts the encrypted stream chunk-by-chunk without buffering.
-        On connection drop (ClientPayloadError, ServerDisconnectedError), resumes with a
-        Range header using a flat short backoff (0.5s/1.0s/2.0s) — these are server-side
-        rate-limit cuts, not network errors.
-        On read stall (asyncio.TimeoutError), resumes with exponential backoff (2s/4s/8s).
+        Downloads and decrypts the encrypted stream in windowed Range requests of
+        _RANGE_WINDOW bytes each. Yandex CDN drops TCP every ~6-7 MB per connection;
+        keeping each request at 4 MB prevents that limit from being reached.
+
+        On connection drop (ClientPayloadError, ServerDisconnectedError), the current
+        window is retried with a flat short backoff (0.5s/1.0s/2.0s).
+        On read stall (asyncio.TimeoutError), the current window is retried with
+        exponential backoff (2s/4s/8s).
         On URL expiry (HTTP 4xx), re-fetches the URL and resumes from bytes_yielded.
-        Up to 5 retries total.
+        Up to max_retries retries per window; the retry counter resets on each
+        successful window so long tracks get the same protection as short ones.
 
         If the server ignores a Range header (returns 200 instead of 206), the decryptor
         is reset to position 0 so decryption stays consistent with the restarted byte stream.
@@ -443,14 +451,16 @@ class YandexMusicStreamingManager:
         block_size = 16  # AES-CTR block size in bytes
         max_retries = 6
         bytes_yielded = 0  # total decrypted bytes delivered to caller
-        retry_delay: float = 0.0  # set per error type in exception handlers
+        attempt = 0  # retry counter; resets to 0 after each successful window
+        retry_delay: float = 0.0
 
-        for attempt in range(max_retries + 1):
+        while True:
             if attempt > 0:
                 await asyncio.sleep(retry_delay)
 
             block_start = (bytes_yielded // block_size) * block_size
-            headers = {"Range": f"bytes={block_start}-"} if block_start > 0 else {}
+            window_end = block_start + _RANGE_WINDOW - 1
+            headers = {"Range": f"bytes={block_start}-{window_end}"}
 
             try:
                 async with self.mass.http_session.get(
@@ -474,8 +484,9 @@ class YandexMusicStreamingManager:
                             )
                         encrypted_url, key_hex = refreshed
                         key_bytes = bytes.fromhex(key_hex)
-                        retry_delay = 0.0  # fresh URL is immediately available
-                        continue  # retry with fresh URL
+                        retry_delay = 0.0
+                        attempt += 1  # consume one retry slot, same as TCP-drop path
+                        continue
                     try:
                         response.raise_for_status()
                     except Exception as err:
@@ -483,22 +494,31 @@ class YandexMusicStreamingManager:
                             f"Failed to fetch encrypted stream: {err}"
                         ) from err
 
+                    bytes_before = bytes_yielded
                     async for chunk in self._decrypt_response_stream(
                         response, key_bytes, block_size, bytes_yielded
                     ):
                         bytes_yielded += len(chunk)
                         yield chunk
-                    return  # stream completed normally
+
+                    # window complete — check if EOF
+                    window_got = bytes_yielded - bytes_before
+                    if response.status == 200 or window_got < _RANGE_WINDOW:
+                        return  # full file received or last partial window
+                    # more data expected: advance to next window
+                    attempt = 0
+                    retry_delay = 0.0
 
             except asyncio.CancelledError:
                 raise  # propagate cancellation immediately, do not retry
             except (ClientPayloadError, ServerDisconnectedError) as err:
                 retry_delay = _TCP_DROP_DELAYS[min(attempt, len(_TCP_DROP_DELAYS) - 1)]
-                if attempt < max_retries:
+                attempt += 1
+                if attempt <= max_retries:
                     self.logger.warning(
                         "Encrypted stream dropped at %d bytes (attempt %d/%d): %s — retrying",
                         bytes_yielded,
-                        attempt + 1,
+                        attempt,
                         max_retries,
                         err,
                     )
@@ -508,11 +528,12 @@ class YandexMusicStreamingManager:
                     ) from err
             except TimeoutError as err:
                 retry_delay = _STALL_DELAYS[min(attempt, len(_STALL_DELAYS) - 1)]
-                if attempt < max_retries:
+                attempt += 1
+                if attempt <= max_retries:
                     self.logger.warning(
                         "Encrypted stream stalled at %d bytes (attempt %d/%d) — retrying",
                         bytes_yielded,
-                        attempt + 1,
+                        attempt,
                         max_retries,
                     )
                 else:
