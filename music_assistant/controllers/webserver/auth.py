@@ -219,7 +219,6 @@ class AuthenticationManager:
                 use_count INTEGER DEFAULT 0,
                 last_used_at TEXT,
                 device_name TEXT,
-                provider_name TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
             """
@@ -296,7 +295,6 @@ class AuthenticationManager:
                     use_count INTEGER DEFAULT 0,
                     last_used_at TEXT,
                     device_name TEXT,
-                    provider_name TEXT,
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
                 """
@@ -874,9 +872,7 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(
-        self, user: User, name: str, is_long_lived: bool = False, provider_name: str | None = None
-    ) -> str:
+    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
         """
         Create a new JWT access token for a user.
 
@@ -885,7 +881,6 @@ class AuthenticationManager:
         :param is_long_lived: Whether this is a long-lived token (default: False).
             Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
             Long-lived tokens (True): No auto-renewal, expire after 10 years.
-        :param provider_name: Optional provider name that created this token (e.g., "party_mode").
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -907,7 +902,6 @@ class AuthenticationManager:
             token_name=name,
             expires_at=expires_at,
             is_long_lived=is_long_lived,
-            provider_name=provider_name,
         )
 
         # Store token hash in database for revocation checking
@@ -1568,7 +1562,6 @@ class AuthenticationManager:
     async def generate_join_code(
         self,
         user: User,
-        provider_name: str,
         expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
         max_uses: int = 1,
         device_name: str = "Short Code Login",
@@ -1580,7 +1573,6 @@ class AuthenticationManager:
         or other short-code authentication flows.
 
         :param user: The guest user that tokens created from this code will belong to.
-        :param provider_name: Provider name to include in JWT claims (e.g., "party_mode").
         :param expires_in_hours: Hours until code expires (default: 8).
         :param max_uses: Maximum number of uses (0 = unlimited).
         :param device_name: Device name for tokens created with this code.
@@ -1607,17 +1599,15 @@ class AuthenticationManager:
                 "max_uses": max_uses,
                 "use_count": 0,
                 "device_name": device_name,
-                "provider_name": provider_name,
             }
             try:
                 await self.database.insert("join_codes", code_data)
                 await self.database.commit()
                 self.logger.info(
-                    "Join code generated for user %s (expires: %s, max_uses: %s, provider: %s)",
+                    "Join code generated for user %s (expires: %s, max_uses: %s)",
                     user.username,
                     expires_at,
                     max_uses,
-                    provider_name,
                 )
                 return code, expires_at
             except IntegrityError:
@@ -1629,8 +1619,7 @@ class AuthenticationManager:
     async def _exchange_join_code(self, code: str) -> str | None:
         """Exchange a join code for a JWT access token.
 
-        The token is created for the user associated with the join code,
-        using the provider_name that was specified when the code was generated.
+        The token is created for the user associated with the join code.
 
         :param code: The short join code.
         :return: JWT token string if valid, None otherwise.
@@ -1645,7 +1634,7 @@ class AuthenticationManager:
             WHERE code = :code
             AND expires_at > :now
             AND (max_uses = 0 OR use_count < max_uses)
-            RETURNING user_id, provider_name, device_name
+            RETURNING user_id, device_name
             """,
             {"now": now.isoformat(), "code": code.upper()},
         )
@@ -1668,13 +1657,11 @@ class AuthenticationManager:
             user,
             device_name,
             is_long_lived=False,
-            provider_name=row["provider_name"],
         )
 
         self.logger.info(
-            "Join code exchanged for token (user=%s, provider=%s)",
+            "Join code exchanged for token (user=%s)",
             user.username,
-            row["provider_name"],
         )
         return token
 

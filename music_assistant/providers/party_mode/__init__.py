@@ -481,7 +481,6 @@ class PartyModePlugin(PluginProvider):
         # No active code found, generate a new one
         code, _expires_at = await auth.generate_join_code(
             user=guest_user,
-            provider_name=self.domain,
             expires_in_hours=8,
             max_uses=0,
             device_name="Party Mode Guest",
