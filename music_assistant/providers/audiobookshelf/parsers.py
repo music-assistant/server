@@ -46,6 +46,7 @@ def parse_playlist(
     domain: str,
     token: str,
     base_url: str,
+    owner: str,
     media_type: MediaType,
 ) -> MassPlaylist:
     """Translate AbsPlaylist to MassPlaylist."""
@@ -61,6 +62,7 @@ def parse_playlist(
         },
         supported_mediatypes={media_type},
         is_editable=True,
+        owner=owner,
     )
     # cover
     if abs_playlist.cover_path is not None:

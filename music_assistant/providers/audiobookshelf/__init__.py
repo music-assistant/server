@@ -337,6 +337,9 @@ for more details.
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
 
+        # cache username
+        self.abs_username = (await self._client.get_my_user()).username
+
         # set socket callbacks
         self._client_socket.set_item_callbacks(
             on_item_added=self._socket_abs_item_changed,
@@ -464,6 +467,7 @@ for more details.
                             domain=self.domain,
                             token=self._client.token,
                             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                            owner=self.abs_username,
                             media_type=media_type,
                         )
 
@@ -541,6 +545,7 @@ for more details.
                 domain=self.domain,
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                owner=self.abs_username,
                 media_type=media_type,
             )
 
@@ -1736,6 +1741,7 @@ for more details.
                 domain=self.domain,
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)),
+                owner=self.abs_username,
                 media_type=media_type,
             )
 
