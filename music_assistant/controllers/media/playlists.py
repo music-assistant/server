@@ -475,8 +475,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Remove multiple tracks from playlist."""
         db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
-        self.logger.error("DB ID %s", db_playlist_id)
-        self.logger.error("POSITIONS: %s", positions_to_remove)
         if not playlist:
             msg = f"Playlist with id {db_id} not found"
             raise MediaNotFoundError(msg)
