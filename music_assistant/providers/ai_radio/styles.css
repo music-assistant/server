@@ -254,14 +254,15 @@ textarea:focus-visible {
 
 .run-player-start {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
   align-items: end;
   margin-bottom: 0;
 }
 
 .run-player-label {
   margin: 0;
+  min-width: 0;
 }
 
 .station-primary-grid {
@@ -333,6 +334,7 @@ textarea:focus-visible {
   min-width: 170px;
   font-weight: 600;
   min-height: 40px;
+  align-self: end;
 }
 
 .hint {
@@ -437,7 +439,7 @@ textarea:focus-visible {
 
 label {
   display: grid;
-  gap: 5px;
+  gap: 8px;
   font-size: 0.88rem;
   color: var(--ma-muted);
 }
@@ -708,7 +710,9 @@ tbody tr:last-child td {
 }
 
 .flow-body {
-  margin-top: 8px;
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
 }
 
 .messages {
@@ -832,6 +836,20 @@ tbody tr:last-child td {
   border-radius: 10px;
   padding: 10px;
   background: color-mix(in oklab, var(--ma-surface-soft) 85%, black 15%);
+}
+
+.wizard-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--ma-warn) 55%, var(--ma-border) 45%);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ma-warn) 12%, var(--ma-surface) 88%);
+  color: color-mix(in oklab, var(--ma-text) 88%, #6d5600 12%);
+}
+
+.wizard-warning strong {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .wizard-summary-list {

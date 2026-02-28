@@ -16,11 +16,9 @@ from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
 from .constants import (
     DEFAULT_ELEVENLABS_MODEL,
-    DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_LLM_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OPENAI_TTS_INSTRUCTIONS,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
     DEFAULT_SECTION_STORE_PATH,
@@ -94,7 +92,9 @@ class AIRadioStorageMixin:
     async def _load_stations(self) -> None:
         """Load station profiles from disk."""
         if not self._stations_file.exists():
-            self._stations = {}
+            default_station = self._default_station_template()
+            self._stations = {default_station["id"]: default_station}
+            await self._write_stations()
             return
         async with aiofiles.open(self._stations_file) as file_handle:
             content = await file_handle.read()
@@ -115,6 +115,10 @@ class AIRadioStorageMixin:
                     continue
                 parsed[normalized["id"]] = normalized
         self._stations = parsed
+        if not self._stations:
+            default_station = self._default_station_template()
+            self._stations = {default_station["id"]: default_station}
+            await self._write_stations()
         if sections_changed:
             await self._write_sections()
 
@@ -291,6 +295,13 @@ class AIRadioStorageMixin:
         self._validate_section_order(raw_section_order, set(section_ids))
 
         general = self._normalize_general(station.get("general"))
+        merge_section_id = str(station.get("merge_section_id", "")).strip()
+        if merge_section_id:
+            if merge_section_id not in section_ids:
+                raise InvalidDataError("merge_section_id must be selected in station section_ids")
+            merge_section = self._sections.get(merge_section_id)
+            if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
+                raise InvalidDataError("merge_section_id must reference an ai_meta section")
 
         return {
             "id": station_id,
@@ -306,6 +317,7 @@ class AIRadioStorageMixin:
                 1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)
             ),
             "clear_queue_on_start": bool(station.get("clear_queue_on_start", True)),
+            "merge_section_id": merge_section_id,
             "general": general,
             "section_ids": section_ids,
             "sections": sections,
@@ -391,7 +403,12 @@ class AIRadioStorageMixin:
                 "name": "Song Introduction Start",
                 "type": "ai_text",
                 "web_search": "disabled",
-                "prompt": "First track: <next_songinfo>. Open the show with energy.",
+                "prompt": (
+                    "The next track is <next_songinfo>. Open the program like a "
+                    "polished radio host: brief welcome, confident energy, one "
+                    "concrete hook about the song or artist, and a clean handoff "
+                    "into the music."
+                ),
                 "constraints": {"max_chars": 650},
             },
             {
@@ -399,8 +416,26 @@ class AIRadioStorageMixin:
                 "name": "Song Transition",
                 "type": "ai_text",
                 "web_search": "allow",
-                "prompt": "Transition from <prev_songinfo> to <next_songinfo>.",
+                "prompt": (
+                    "The previous track was <prev_songinfo> and the next track is "
+                    "<next_songinfo>. Create a natural radio transition that "
+                    "connects both songs, sounds informed but concise, and avoids "
+                    "filler or repetition."
+                ),
                 "constraints": {"max_chars": 650},
+            },
+            {
+                "id": "Global_News",
+                "name": "Global News",
+                "type": "ai_text",
+                "web_search": "force",
+                "prompt": (
+                    "Create a short global news bulletin anchored to <timestamp>. "
+                    "Use web search. Include two or three current items that are "
+                    "broadly relevant, clearly separated, fact-focused, and "
+                    "written for spoken delivery."
+                ),
+                "constraints": {"max_chars": 700},
             },
             {
                 "id": "Weather_Short",
@@ -408,7 +443,9 @@ class AIRadioStorageMixin:
                 "type": "ai_text",
                 "web_search": "disabled",
                 "prompt": (
-                    "Short weather update from <weather_hourly> with time context <timestamp>."
+                    "Using <weather_hourly> and <timestamp>, deliver a short "
+                    "spoken weather update with the current outlook, a useful "
+                    "next-hours summary, and smooth radio phrasing."
                 ),
                 "constraints": {"max_chars": 500},
             },
@@ -417,14 +454,23 @@ class AIRadioStorageMixin:
                 "name": "Song Introduction End",
                 "type": "ai_text",
                 "web_search": "disabled",
-                "prompt": "Last track: <prev_songinfo>. Leave a memorable close.",
+                "prompt": (
+                    "The last track played was <prev_songinfo>. Close the program "
+                    "with a memorable sign-off: brief reflection, warm farewell, "
+                    "and language that sounds like the end of a real radio segment."
+                ),
                 "constraints": {"max_chars": 650},
             },
             {
                 "id": "Between_Songs_Smoother",
                 "name": "Between Songs Mix",
                 "type": "ai_meta",
-                "prompt": "Merge snippets into one coherent segment.\n<section_drafts>",
+                "prompt": (
+                    "Merge the drafts below into one coherent radio break. "
+                    "Preserve factual content, remove duplication, and make the "
+                    "final segment sound like one host speaking naturally.\n"
+                    "<section_drafts>"
+                ),
             },
         ]
 
@@ -433,8 +479,8 @@ class AIRadioStorageMixin:
         default_sections = self._default_sections_template()
         default_section_ids = [item["id"] for item in default_sections]
         return {
-            "id": "my_station",
-            "name": "My AI Radio Station",
+            "id": "example_station",
+            "name": "Example AI Radio Station",
             "source_playlist_id": "",
             "source_playlist_provider": "library",
             "target_playlist_provider": "builtin",
@@ -444,6 +490,7 @@ class AIRadioStorageMixin:
             "dynamic_poll_seconds": 5,
             "dynamic_prefetch_remaining_tracks": 2,
             "clear_queue_on_start": True,
+            "merge_section_id": "Between_Songs_Smoother",
             "general": {
                 "timezone": "UTC",
                 "location": {
@@ -453,7 +500,14 @@ class AIRadioStorageMixin:
                 "model": DEFAULT_LLM_MODEL,
                 "temperature": DEFAULT_TEMPERATURE,
                 "max_tokens": DEFAULT_MAX_TOKENS,
-                "instructions": DEFAULT_LLM_INSTRUCTIONS,
+                "instructions": (
+                    "Host personality: warm, sharp, music-literate, and slightly "
+                    "premium without sounding formal. Program instructions: "
+                    "write for spoken delivery, keep segments concise, avoid "
+                    "bullet-point phrasing, avoid clichés, mention concrete "
+                    "details when available, and maintain a believable radio flow "
+                    "between sections."
+                ),
                 "openai_base_url": DEFAULT_OPENAI_BASE_URL,
                 "section_store_path": DEFAULT_SECTION_STORE_PATH,
                 "weather_provider": DEFAULT_WEATHER_PROVIDER,
@@ -461,7 +515,11 @@ class AIRadioStorageMixin:
                 "tts_provider": DEFAULT_TTS_PROVIDER,
                 "openai_tts_model": DEFAULT_OPENAI_TTS_MODEL,
                 "openai_tts_voice": DEFAULT_OPENAI_TTS_VOICE,
-                "openai_tts_instructions": DEFAULT_OPENAI_TTS_INSTRUCTIONS,
+                "openai_tts_instructions": (
+                    "Delivery instructions: confident radio host, natural pacing, "
+                    "clear sentence endings, subtle energy lift on intros and "
+                    "transitions, and a warm close without exaggerated theatrics."
+                ),
                 "elevenlabs_model": DEFAULT_ELEVENLABS_MODEL,
                 "elevenlabs_voice_id": "",
             },
@@ -487,6 +545,17 @@ class AIRadioStorageMixin:
                                     "min_gap_songs": 3,
                                     "max_per_60min": 1,
                                     "require_placeholders_present": ["<weather_hourly>"],
+                                },
+                            }
+                        },
+                        {
+                            "OPTIONAL": {
+                                "section": "Global_News",
+                                "chance": 0.12,
+                                "guards": {
+                                    "min_gap_songs": 4,
+                                    "max_per_60min": 1,
+                                    "require_placeholders_present": ["<timestamp>"],
                                 },
                             }
                         },

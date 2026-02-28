@@ -269,6 +269,12 @@
         <span class="field-help">Use Cmd/Ctrl-click to select multiple sections.</span>
         <a id="station_manage_sections_link" href="./?view=sections" target="_blank" rel="noopener">Manage Sections (opens new tab)</a>
       </label>
+      <label>Merge Section (optional)
+        <select id="station_merge_section_id">
+          <option value="">-- None --</option>
+        </select>
+        <span class="field-help">Used only when one between-song slot produces multiple spoken sections. Select an <code>ai_meta</code> section here.</span>
+      </label>
     </div>
 
     <details class="guide advanced-settings">
@@ -369,7 +375,7 @@
       Flow item types: <code>MUST</code> (always include), <code>ALTERNATIVE</code> (pick one weighted choice), <code>OPTIONAL</code> (independent chance + guard checks).
     </p>
     <p class="hint compact">
-      Merge behavior: if one slot ends up with multiple spoken sections and you have a section of type <code>ai_meta</code>, AI Radio uses that merge section to combine them into one natural segment.
+      Merge behavior: if one slot ends up with multiple spoken sections and a merge section is selected above, AI Radio uses that <code>ai_meta</code> section to combine them into one natural segment.
     </p>
     <div id="order_rules" class="list"></div>
     <button id="add_order_rule" type="button">Add Flow Rule</button>
@@ -418,7 +424,7 @@
       </label>
     </div>
 
-    <label>Prompt Template
+    <label>Prompt
       <span class="field-help">Placeholders (see overview below) can be used in prompts.</span>
       <textarea id="section_prompt" rows="4" placeholder="Use placeholders like <next_songinfo>, <prev_songinfo>, <timestamp>"></textarea>
     </label>
@@ -544,7 +550,7 @@
               <input id="wizard_custom_section_max_chars" type="number" min="0" step="1" value="0">
             </label>
           </div>
-          <label>Prompt Template
+          <label>Prompt
             <textarea id="wizard_custom_section_prompt" rows="3"></textarea>
           </label>
           <button id="wizard_custom_section_add" type="button">Create and Add to Station</button>
@@ -555,6 +561,10 @@
         <h3>Step 4: AI + Voice + Flow Style</h3>
         <p class="hint compact">Flow style controls how often transitions are inserted. Under the hood it creates <code>ALTERNATIVE</code> choices and <code>OPTIONAL</code> weather inserts.</p>
         <p class="hint compact"><code>ALTERNATIVE</code> = one weighted pick. <code>OPTIONAL</code> = try section only if probability and guards pass.</p>
+        <div class="wizard-warning">
+          <strong>Usage cost notice</strong>
+          OpenAI and ElevenLabs are paid services. Typical AI Radio runs are usually low-cost, but every text generation, web-search-assisted generation, and TTS render can create billable usage. Review provider pricing and API quotas before use. AI Radio and Music Assistant do not assume responsibility for external API charges, quota exhaustion, or related damage.
+        </div>
         <div class="grid two-col">
           <label>LLM Model
             <input id="wizard_model" type="text" value="gpt-4o-mini">

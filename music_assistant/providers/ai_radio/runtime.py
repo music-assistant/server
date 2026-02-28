@@ -638,14 +638,8 @@ class AIRadioRuntimeMixin:
                         selected.append((section_id, slot, placeholders))
                         register_event(section_id, slot)
 
-        meta_section = next(
-            (
-                section
-                for section in sections
-                if str(section.get("type", "ai_text")).strip().lower() == "ai_meta"
-            ),
-            None,
-        )
+        merge_section_id = str(station.get("merge_section_id", "")).strip()
+        meta_section = section_by_id.get(merge_section_id) if merge_section_id else None
         grouped: dict[str, list[tuple[str, Slot, dict[str, str]]]] = defaultdict(list)
         for item in selected:
             section_id, slot, placeholders = item
@@ -897,7 +891,14 @@ class AIRadioRuntimeMixin:
             async with aiofiles.open(file_path, "wb") as file_handle:
                 await file_handle.write(audio_bytes)
             title = f"{section.section_name} [{run_id}]"
-            await asyncio.to_thread(write_id3_tags, str(file_path), title, "AI Radio")
+            cover_art_path = Path(__file__).with_name("air.png")
+            await asyncio.to_thread(
+                write_id3_tags,
+                str(file_path),
+                title,
+                "AI Radio",
+                str(cover_art_path) if cover_art_path.exists() else None,
+            )
             self.logger.debug(
                 "TTS section done: section=%s bytes=%d elapsed=%.2fs file=%s",
                 section.section_id,

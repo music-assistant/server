@@ -7,6 +7,7 @@ const RECOMMENDED_SECTION_IDS = [
   'Song_Introduction_Start',
   'Song_Transition',
   'Song_Introduction_End',
+  'Global_News',
   'Weather_Short',
 ];
 const BUTTON_ICON_MAP = {
@@ -185,6 +186,7 @@ function cacheElements() {
     'station_dynamic_poll_seconds',
     'station_clear_queue_on_start',
     'station_section_ids',
+    'station_merge_section_id',
     'station_manage_sections_link',
     'general_timezone',
     'general_location_city',
@@ -616,6 +618,8 @@ function errorMessage(err) {
 
 async function loadAllData() {
   try {
+    // Refresh all editor/runtime inputs together so dependent selectors
+    // are rebuilt from one consistent snapshot of backend state.
     const [stations, sections, players, playlists, status, uiSettings] = await Promise.all([
       rpc('ai_radio/stations/list'),
       rpc('ai_radio/sections/list'),
@@ -715,6 +719,19 @@ function renderSectionSelectors() {
 
   const selectedStationSectionIds = getSelectedMultiValues(el.station_section_ids);
   fillMultiSelect(el.station_section_ids, options, selectedStationSectionIds);
+  fillSelect(
+    el.station_merge_section_id,
+    [
+      { value: '', label: '-- None --' },
+      ...state.sections
+        .filter((section) => section.type === 'ai_meta')
+        .map((section) => ({
+          value: section.id,
+          label: `${section.id} (${section.name || section.id})`,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ]
+  );
 }
 
 function renderPlayerSelectors() {
@@ -756,6 +773,8 @@ function renderPlayerSelectors() {
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
+  // The run selector exposes the resolved station default as a synthetic first option,
+  // while the station editor keeps the raw player list for persistent config.
   const controlPlayerOptions = stationDefaultOption ? [stationDefaultOption, ...runOptions] : runOptions;
   fillSelect(el.control_player_id, controlPlayerOptions);
   fillSelect(el.station_default_player_id, [{ value: '', label: '-- None --' }, ...stationOptions]);
@@ -957,6 +976,8 @@ function updateRunActionState() {
   const effectivePlayer = findPlayer(effectivePlayerId);
   const availablePlayers = state.players.filter((player) => isPlayerAvailable(player));
 
+  // Live mode runs against the effective player after override resolution,
+  // so the hint/disabled state must follow that exact resolution path.
   let hint = '';
   let hintLevel = '';
   let disablePlaylistStart = false;
@@ -1073,6 +1094,8 @@ function renderSessionInfo(session) {
     : progress;
   const phaseKey = String(payload.phase || payload.step || status || '').trim();
 
+  // Completed runs may move detail fields from progress into result,
+  // so the UI flattens both shapes into one presentation model here.
   const chips = [];
   if (phaseKey) {
     chips.push(`<span class="session-chip">${escapeHtml(getSessionPhaseLabel(phaseKey))}</span>`);
@@ -1280,6 +1303,7 @@ function populateStationEditor(station) {
   );
   el.station_dynamic_poll_seconds.value = String(station.dynamic_poll_seconds || 5);
   el.station_clear_queue_on_start.checked = station.clear_queue_on_start !== false;
+  el.station_merge_section_id.value = station.merge_section_id || '';
 
   const sectionIds = Array.isArray(station.section_ids) && station.section_ids.length
     ? station.section_ids
@@ -1361,6 +1385,7 @@ function collectStationFromEditor() {
       parseInt(el.station_dynamic_prefetch_remaining_tracks.value || '2', 10) || 2,
     dynamic_poll_seconds: parseInt(el.station_dynamic_poll_seconds.value || '5', 10) || 5,
     clear_queue_on_start: Boolean(el.station_clear_queue_on_start.checked),
+    merge_section_id: (el.station_merge_section_id.value || '').trim(),
     section_ids: getSelectedMultiValues(el.station_section_ids),
     general: {
       timezone: (el.general_timezone.value || 'UTC').trim() || 'UTC',
@@ -1389,6 +1414,7 @@ function collectStationFromEditor() {
 
 async function saveCurrentStation() {
   const station = collectStationFromEditor();
+  const orderErrors = validateSectionOrderEditor();
   if (!station.name) {
     setMessage('Station name is required.', 'msg-error');
     return;
@@ -1399,6 +1425,10 @@ async function saveCurrentStation() {
   }
   if (!station.section_ids.length) {
     setMessage('Select at least one section for this station.', 'msg-error');
+    return;
+  }
+  if (orderErrors.length) {
+    setMessage(orderErrors[0], 'msg-error');
     return;
   }
 
@@ -1415,6 +1445,11 @@ async function saveCurrentStation() {
 
 async function validateCurrentStation() {
   const station = collectStationFromEditor();
+  const orderErrors = validateSectionOrderEditor();
+  if (orderErrors.length) {
+    setMessage(orderErrors[0], 'msg-error');
+    return;
+  }
   try {
     await rpc('ai_radio/stations/validate', { station });
     setMessage('Station config is valid.', 'msg-ok');
@@ -1789,7 +1824,7 @@ function renderFlowBody(item, flowType, flowData) {
     : '';
 
   const sectionWrap = document.createElement('label');
-  sectionWrap.textContent = 'Section Key';
+  sectionWrap.textContent = 'Section';
   const sectionSelect = document.createElement('select');
   sectionSelect.className = 'optional-section-select';
   sectionSelect.dataset.role = 'flow-section';
@@ -1800,10 +1835,10 @@ function renderFlowBody(item, flowType, flowData) {
   const grid = document.createElement('div');
   grid.className = 'grid two-col';
   grid.innerHTML = `
-    <label>Chance (0..1 or 0..100)
-      <input class="optional-chance" type="number" min="0" step="0.01" value="${escapeAttr(String(optional.chance ?? 0.5))}">
+    <label>Chance (%)
+      <input class="optional-chance" type="number" min="0" max="100" step="1" value="${escapeAttr(String(normalizeOptionalChance(optional.chance ?? 50)))}">
     </label>
-    <label>Guard: Minimum Song Gap
+    <label>Guard: Minimum Songs Between Repeats
       <input class="optional-min-gap" type="number" min="0" step="1" value="${escapeAttr(String(guards.min_gap_songs || 0))}">
     </label>
     <label>Guard: Max Per 60 Minutes
@@ -1844,6 +1879,17 @@ function createAlternativeChoice(choice = {}) {
   return row;
 }
 
+function normalizeOptionalChance(value) {
+  const parsed = parseFloat(String(value ?? '50'));
+  if (!Number.isFinite(parsed)) {
+    return 50;
+  }
+  if (parsed <= 1) {
+    return Math.max(0, Math.min(100, Math.round(parsed * 100)));
+  }
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
 function moveElement(element, direction) {
   const sibling = direction < 0 ? element.previousElementSibling : element.nextElementSibling;
   if (!sibling) return;
@@ -1859,6 +1905,8 @@ function collectSectionOrder() {
   el.order_rules.querySelectorAll('.order-rule').forEach((ruleElem) => {
     const when = ruleElem.querySelector('.rule-when').value;
     const flow = [];
+    // The flow editor is DOM-driven, so this block reconstructs the nested
+    // section_order payload expected by the backend from heterogeneous rule rows.
     ruleElem.querySelectorAll('.flow-item').forEach((flowElem) => {
       const type = flowElem.querySelector('.flow-type').value;
       if (type === 'MUST') {
@@ -1899,7 +1947,8 @@ function collectSectionOrder() {
       if (minGap > 0) guards.min_gap_songs = minGap;
       if (maxPer > 0) guards.max_per_60min = maxPer;
       if (placeholderList.length) guards.require_placeholders_present = placeholderList;
-      flow.push({ OPTIONAL: { section: optionalSection, chance: Number.isFinite(chance) ? chance : 0.5, guards } });
+      const normalizedChance = Number.isFinite(chance) ? Math.max(0, Math.min(100, chance)) / 100 : 0.5;
+      flow.push({ OPTIONAL: { section: optionalSection, chance: normalizedChance, guards } });
     });
 
     if (flow.length) {
@@ -1907,6 +1956,64 @@ function collectSectionOrder() {
     }
   });
   return output;
+}
+
+function validateSectionOrderEditor() {
+  const errors = [];
+  el.order_rules.querySelectorAll('.order-rule').forEach((ruleElem, ruleIndex) => {
+    const flowItems = Array.from(ruleElem.querySelectorAll('.flow-item'));
+    if (!flowItems.length) {
+      errors.push(`Placement rule ${ruleIndex + 1} has no flow items.`);
+      return;
+    }
+    flowItems.forEach((flowElem, flowIndex) => {
+      const flowType = flowElem.querySelector('.flow-type').value;
+      if (flowType === 'MUST') {
+        const section = String(flowElem.querySelector('.must-section-select').value || '').trim();
+        if (!section) {
+          errors.push(`Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: MUST requires a section.`);
+        }
+        return;
+      }
+      if (flowType === 'ALTERNATIVE') {
+        const validChoices = Array.from(flowElem.querySelectorAll('.alt-choice'))
+          .map((choiceElem) => ({
+            section: String(choiceElem.querySelector('.alt-section-select').value || '').trim(),
+            weight: parseFloat(choiceElem.querySelector('.alt-weight').value || '0'),
+          }))
+          .filter((choice) => choice.section);
+        if (!validChoices.length) {
+          errors.push(
+            `Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: ALTERNATIVE requires at least one section choice.`
+          );
+          return;
+        }
+        if (!validChoices.some((choice) => Number.isFinite(choice.weight) && choice.weight > 0)) {
+          errors.push(
+            `Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: ALTERNATIVE requires at least one positive weight.`
+          );
+        }
+        return;
+      }
+      const section = String(flowElem.querySelector('.optional-section-select').value || '').trim();
+      const chance = parseFloat(flowElem.querySelector('.optional-chance').value || '0');
+      const minGap = parseInt(flowElem.querySelector('.optional-min-gap').value || '0', 10);
+      const maxPer = parseInt(flowElem.querySelector('.optional-max-per').value || '0', 10);
+      if (!section) {
+        errors.push(`Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: OPTIONAL requires a section.`);
+      }
+      if (!Number.isFinite(chance) || chance < 0) {
+        errors.push(`Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: OPTIONAL chance must be 0 or higher.`);
+      }
+      if (!Number.isFinite(minGap) || minGap < 0) {
+        errors.push(`Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: minimum song gap must be 0 or higher.`);
+      }
+      if (!Number.isFinite(maxPer) || maxPer < 0) {
+        errors.push(`Rule ${ruleIndex + 1}, flow ${flowIndex + 1}: max per 60 minutes must be 0 or higher.`);
+      }
+    });
+  });
+  return errors;
 }
 
 async function ensureStationTemplate() {

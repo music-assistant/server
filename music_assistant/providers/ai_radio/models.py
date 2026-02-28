@@ -238,7 +238,9 @@ def coerce_int(value: Any, default: int) -> int:
         return default
 
 
-def write_id3_tags(mp3_path: str, title: str, artist: str) -> None:
+def write_id3_tags(
+    mp3_path: str, title: str, artist: str, cover_art_path: str | None = None
+) -> None:
     """Write simple ID3 metadata to an MP3 file."""
     id3: Any = mutagen_id3
     try:
@@ -253,4 +255,17 @@ def write_id3_tags(mp3_path: str, title: str, artist: str) -> None:
     tags.add(id3.TPE2(encoding=1, text=artist))
     tags.delall("TALB")
     tags.add(id3.TALB(encoding=1, text="AI Radio Sections"))
+    if cover_art_path:
+        with open(cover_art_path, "rb") as cover_file:
+            cover_data = cover_file.read()
+        tags.delall("APIC")
+        tags.add(
+            id3.APIC(
+                encoding=3,
+                mime="image/png",
+                type=3,
+                desc="Cover",
+                data=cover_data,
+            )
+        )
     tags.save(mp3_path, v2_version=3)
