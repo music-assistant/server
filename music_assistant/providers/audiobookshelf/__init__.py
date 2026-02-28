@@ -1728,17 +1728,26 @@ for more details.
         else:
             return
         async with self.playlist_lock:
-            await self.mass.music.playlists.add_item_to_library(
-                item=parse_playlist(
-                    abs_playlist=abs_playlist,
-                    instance_id=self.instance_id,
-                    domain=self.domain,
-                    token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)),
-                    media_type=media_type,
-                ),
-                overwrite_existing=True,
+            parsed_playlist = parse_playlist(
+                abs_playlist=abs_playlist,
+                instance_id=self.instance_id,
+                domain=self.domain,
+                token=self._client.token,
+                base_url=str(self.config.get_value(CONF_URL)),
+                media_type=media_type,
             )
+
+            if ma_library_playlist := await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.PLAYLIST,
+                item_id=abs_playlist.id_,
+                provider_instance_id_or_domain=self.instance_id,
+            ):
+                assert isinstance(ma_library_playlist, Playlist)  # for type checking
+                await self.mass.music.playlists.update_item_in_library(
+                    item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
+                )
+            else:
+                await self.mass.music.playlists.add_item_to_library(item=parsed_playlist)
             if media_type == MediaType.AUDIOBOOK:
                 self.libraries.playlists_audiobooks[abs_playlist.library_id].add(abs_playlist.id_)
             elif media_type == MediaType.PODCAST_EPISODE:
