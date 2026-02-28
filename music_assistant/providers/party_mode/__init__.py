@@ -576,7 +576,7 @@ class PartyModePlugin(PluginProvider):
         user = get_current_user()
 
         # Verify user is a guest
-        if not user or user.role != UserRole.GUEST:
+        if not user or user.username != PARTY_GUEST_USERNAME:
             raise InvalidDataError("This endpoint is only available to party mode guests")
 
         # Check if guest access is enabled
@@ -837,7 +837,7 @@ class PartyModePlugin(PluginProvider):
         user = get_current_user()
 
         # Verify user is a guest
-        if not user or user.role != UserRole.GUEST:
+        if not user or user.username != PARTY_GUEST_USERNAME:
             raise InvalidDataError("This endpoint is only available to party mode guests")
 
         # Check if guest access and skip are enabled
