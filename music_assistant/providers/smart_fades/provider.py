@@ -210,6 +210,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.pcm_buffer.clear()
             data.feature_blocks.clear()
             data.features.reset()
+        await super().cancel(session_id)
 
     @staticmethod
     def _decode_chunk_sync(data: SmartFadesData, pcm_chunk: bytes) -> np.ndarray:

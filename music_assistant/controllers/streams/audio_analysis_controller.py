@@ -98,12 +98,6 @@ class AudioAnalysisController:
                     audio_format=audio_format,
                 )
                 provider_ids.add(provider.instance_id)
-                self.logger.debug(
-                    "Started analysis session %s on provider %s for %s",
-                    session_key,
-                    provider.name,
-                    stream_details.uri,
-                )
             except Exception as err:
                 self.logger.warning(
                     "Failed to start analysis on provider %s: %s",
@@ -163,6 +157,7 @@ class AudioAnalysisController:
 
         :param session_key: The session key from start_analysis.
         """
+        self.logger.debug("Cancelling analysis session %s", session_key)
         self._queues.pop(session_key, None)
         worker = self._workers.pop(session_key, None)
         if worker is not None:
