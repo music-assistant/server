@@ -376,7 +376,8 @@ class SyncGroupPlayer(Player):
             if member_id in self._attr_static_group_members:
                 # static members can not be removed from the group
                 raise PlayerCommandFailed(
-                    f"Cannot remove {self.display_name} from group since it's a static member!"
+                    f"Cannot remove {member_id} from group {self.display_name} "
+                    "since it's a static member!"
                 )
             if self.sync_leader and member_id == self.sync_leader.player_id:
                 leader_removed = True
