@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 # Same sample format expressed in both MA and Sendspin type systems.
 _PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S32LE,
+    content_type=ContentType.PCM_F32LE,
     sample_rate=48000,
     bit_depth=32,
     channels=2,
@@ -36,6 +36,7 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     sample_rate=48000,
     bit_depth=32,
     channels=2,
+    sample_type="float",
 )
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000

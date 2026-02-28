@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEvent, SendspinServer
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import IdentifierType, ProviderFeature
 from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.mass import MusicAssistant
@@ -27,6 +27,7 @@ class SendspinProvider(PlayerProvider):
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
+    _bridge_identifiers: dict[str, dict[IdentifierType, str]]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -37,6 +38,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
         self._pending_unregisters = {}
+        self._bridge_identifiers = {}
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
         ]
@@ -50,6 +52,20 @@ class SendspinProvider(PlayerProvider):
                 self.mass.create_task(self._handle_client_removed(client_id))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
+
+    def register_bridge_identifiers(
+        self, client_id: str, identifiers: dict[IdentifierType, str]
+    ) -> None:
+        """Pre-register extra identifiers for a bridge client.
+
+        Called by bridge managers (Chromecast, AirPlay) before registering an
+        external player, so that the resulting SendspinPlayer carries the parent
+        player's protocol-specific identifiers for cross-protocol matching.
+
+        :param client_id: The bridge client_id that will be used for registration.
+        :param identifiers: Extra identifiers to attach to the SendspinPlayer.
+        """
+        self._bridge_identifiers[client_id] = identifiers
 
     async def _handle_client_added(self, client_id: str) -> None:
         """Handle a new client connection asynchronously."""
@@ -83,6 +99,11 @@ class SendspinProvider(PlayerProvider):
             )
             return
         player = SendspinPlayer(self, client_id)
+        # Apply any bridge identifiers that were pre-registered by the bridge manager.
+        # This enables cross-protocol matching (e.g., Sendspin ↔ Chromecast via CAST_UUID).
+        if extra_ids := self._bridge_identifiers.pop(client_id, None):
+            for id_type, id_value in extra_ids.items():
+                player.device_info.add_identifier(id_type, id_value)
         self.logger.debug("Client %s connected", client_id)
         if player.device_info.manufacturer == "ESPHome" and (
             hass := self.mass.get_provider("hass")

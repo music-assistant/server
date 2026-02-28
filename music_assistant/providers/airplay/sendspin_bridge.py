@@ -25,6 +25,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+from music_assistant_models.enums import IdentifierType
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_role import (
@@ -123,19 +124,6 @@ class SendspinAirPlayBridge:
             )
             return
 
-        # Check if another bridge (e.g. Chromecast) already registered this client_id.
-        # Devices that support both AirPlay and Chromecast share the same MAC,
-        # so only the first bridge to register wins.
-        if self.sendspin_server.get_client(self._bridge_client_id):
-            self.logger.debug(
-                "Sendspin client %s already registered (likely by another bridge), "
-                "skipping AirPlay bridge for %s",
-                self._bridge_client_id,
-                self.airplay_player.display_name,
-            )
-            self._bridge_client_id = None
-            return
-
         hello = ClientHelloPayload(
             client_id=self._bridge_client_id,
             name=f"{self.airplay_player.display_name} (AirPlay)",
@@ -164,6 +152,14 @@ class SendspinAirPlayBridge:
             self.airplay_player.display_name,
             self._bridge_client_id,
         )
+
+        # Pre-register the AirPlay player_id so the resulting SendspinPlayer
+        # carries it as an AIRPLAY_ID identifier for cross-protocol matching.
+        if sendspin_prov := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
+            sendspin_prov.register_bridge_identifiers(
+                self._bridge_client_id,
+                {IdentifierType.AIRPLAY_ID: self.airplay_player.player_id},
+            )
 
         self._sendspin_client = self.sendspin_server.register_external_player(
             hello, on_stream_start=self._on_stream_start
@@ -212,6 +208,12 @@ class SendspinAirPlayBridge:
             self.airplay_player.display_name,
             request.connection_reason,
         )
+        if not self.airplay_player.available:
+            self.logger.warning(
+                "Cannot start Sendspin stream for %s: player not available",
+                self.airplay_player.display_name,
+            )
+            return
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
         # stream's resources, which reuse the same instance variables.
@@ -256,6 +258,7 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
+        self.airplay_player.sync_volume_level()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",

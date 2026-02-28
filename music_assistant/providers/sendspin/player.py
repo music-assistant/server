@@ -50,11 +50,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    CONF_ENTRY_SAMPLE_RATES,
-)
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -183,8 +178,22 @@ class SendspinPlayer(Player):
                 manufacturer=device_info.manufacturer or "Unknown Manufacturer",
                 software_version=device_info.software_version,
             )
+            # determine if this is a web/app player based on product name or manufacturer
+            # TODO: make this part of the spec and let clients explicitly report if they
+            # are a web/app player instead of relying on heuristics
+            self.is_web_player = (
+                device_info.product_name
+                in (
+                    "Web Browser",
+                    "Web Player",
+                    "Mobile Application",
+                    "PWA",
+                )
+                or device_info.manufacturer == "Music Assistant"
+            )
         else:
             self._attr_device_info = DeviceInfo()
+            self.is_web_player = False
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
         if _mac := mac_from_bridge_client_id(player_id):
@@ -202,11 +211,6 @@ class SendspinPlayer(Player):
                 if volume is not None or muted is not None:
                     break
         self._attr_available = True
-        self.is_web_player = sendspin_client.name.startswith(
-            "Web ("  # The regular Web Interface
-        ) or sendspin_client.name.startswith(
-            "PWA ("  # The PWA App
-        )
         self._attr_expose_to_ha_by_default = not self.is_web_player
         self._attr_hidden_by_default = self.is_web_player
         # register web/app player as native player type because it doesn't need to be linked
@@ -623,14 +627,7 @@ class SendspinPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries(action=action, values=values)
-        entries = [
-            *default_entries,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-            ConfigEntry.from_dict({**CONF_ENTRY_SAMPLE_RATES.to_dict(), "hidden": True}),
-        ]
-
+        entries: list[ConfigEntry] = []
         # Only show the sync delay setting for Chromecast Bridge players
         if self.device_info.model == "Chromecast Bridge":
             entries.append(

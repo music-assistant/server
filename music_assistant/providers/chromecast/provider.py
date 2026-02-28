@@ -160,9 +160,8 @@ class ChromecastProvider(PlayerProvider):
         """Create and register a new ChromecastPlayer."""
         castplayer = ChromecastPlayer(self, player_id, cast_info=cast_info, chromecast=chromecast)
         await self.mass.players.register_or_update(castplayer)
-        # Set up Sendspin bridge (skipped for groups/stereo pairs - they have no MAC)
-        if not cast_info.is_audio_group:
-            await self.bridge_manager.setup_bridge(castplayer)
+        # Set up Sendspin bridge
+        await self.bridge_manager.setup_bridge(castplayer)
 
     def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""

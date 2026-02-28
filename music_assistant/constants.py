@@ -1020,10 +1020,10 @@ NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
 
 # Protocol priority values (lower = more preferred)
 PROTOCOL_PRIORITY: Final[dict[str, int]] = {
-    "sendspin": 10,
+    "airplay": 10,
     "squeezelite": 20,
     "chromecast": 30,
-    "airplay": 40,
+    "sendspin": 40,
     "dlna": 50,
 }
 

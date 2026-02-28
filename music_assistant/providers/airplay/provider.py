@@ -20,8 +20,8 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    CACHE_CATEGORY_PREV_VOLUME,
     CONF_IGNORE_VOLUME,
+    CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
@@ -183,13 +183,12 @@ class AirPlayProvider(PlayerProvider):
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
 
-        # Get volume from cache
-        if not (
-            volume := await self.mass.cache.get(
-                key=player_id, provider=self.instance_id, category=CACHE_CATEGORY_PREV_VOLUME
+        # Get stored volume from playerconfig
+        volume = int(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_STORED_VOLUME, FALLBACK_VOLUME
             )
-        ):
-            volume = FALLBACK_VOLUME
+        )
 
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)

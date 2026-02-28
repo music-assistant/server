@@ -21,8 +21,6 @@ class StreamingProtocol(IntEnum):
     AIRPLAY2 = 2  # AirPlay 2
 
 
-CACHE_CATEGORY_PREV_VOLUME: Final[int] = 1
-
 CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
@@ -30,6 +28,7 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
+CONF_STORED_VOLUME: Final[str] = "stored_volume"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."

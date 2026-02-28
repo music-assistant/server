@@ -373,6 +373,8 @@ class AirPlayStreamSession:
 
     async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
         """Start CLI process and ffmpeg for a single client."""
+        # sync volume from parent player if needed
+        airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         if airplay_player.protocol == StreamingProtocol.AIRPLAY2:

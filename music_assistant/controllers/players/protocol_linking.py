@@ -153,21 +153,35 @@ class ProtocolLinkingMixin:
         # Try to resolve real MAC via ARP
         real_mac = await resolve_real_mac_address(reported_mac, ip_address)
         if real_mac and real_mac.upper() != (reported_mac or "").upper():
-            # Replace the invalid/virtual MAC with the real MAC address
-            # (add_identifier will store multiple values if the implementation supports it)
-            player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
-            if reported_mac and not is_valid_mac_address(reported_mac):
+            if not reported_mac or not is_valid_mac_address(reported_mac):
+                # No MAC reported or MAC is invalid (00:00:00:00:00:00 etc.) - use ARP result
+                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
                 self.logger.debug(
-                    "Replaced invalid MAC for %s: %s -> %s",
+                    "Resolved MAC for %s: %s -> %s",
+                    player.state.name,
+                    reported_mac or "none",
+                    real_mac,
+                )
+            elif normalize_mac_for_matching(reported_mac) == normalize_mac_for_matching(real_mac):
+                # Only the locally-administered bit differs - safe to replace
+                # (e.g., 54:78:C9:E6:0D:A0 vs 56:78:C9:E6:0D:A0)
+                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
+                self.logger.debug(
+                    "Resolved real MAC for %s: %s -> %s",
                     player.state.name,
                     reported_mac,
                     real_mac,
                 )
             else:
+                # ARP resolved a completely different MAC (e.g., Apple devices use
+                # random private MACs for Bonjour that differ entirely from the
+                # hardware MAC). Keep the original MAC to preserve matching with
+                # other protocols/bridges that use the same reported MAC.
                 self.logger.debug(
-                    "Resolved real MAC for %s: %s -> %s",
+                    "Keeping original MAC for %s: reported=%s, ARP=%s "
+                    "(completely different - likely a private/random MAC)",
                     player.state.name,
-                    reported_mac or "none",
+                    reported_mac,
                     real_mac,
                 )
 
@@ -202,6 +216,16 @@ class ProtocolLinkingMixin:
                     self._add_protocol_link(parent_player, protocol_player, protocol_domain)
                     protocol_player.update_state()
                     parent_player.update_state()
+                # Copy identifiers from protocol player to universal player on restore.
+                # Restored universal players start with empty identifiers which must be
+                # repopulated from their protocol players so that new protocol players
+                # (like Sendspin bridges) can match via identifiers.
+                if parent_player.provider.domain == "universal_player" and isinstance(
+                    parent_player, UniversalPlayer
+                ):
+                    for conn_type, value in protocol_player.device_info.identifiers.items():
+                        parent_player.device_info.add_identifier(conn_type, value)
+                    self._update_universal_device_info(parent_player, protocol_player)
                 return
             # Parent not registered yet - skip evaluation (no universal player created)
             return
@@ -801,11 +825,13 @@ class ProtocolLinkingMixin:
         identifiers_b = player_b.device_info.identifiers
 
         # Check identifiers in order of reliability
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID
+        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
         for conn_type in (
             IdentifierType.MAC_ADDRESS,
             IdentifierType.SERIAL_NUMBER,
             IdentifierType.UUID,
+            IdentifierType.CAST_UUID,
+            IdentifierType.AIRPLAY_ID,
         ):
             val_a = identifiers_a.get(conn_type)
             val_b = identifiers_b.get(conn_type)
