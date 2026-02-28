@@ -961,13 +961,19 @@ class AuthenticationManager:
         token_rows = await self.database.get_rows(
             "auth_tokens", {"user_id": user.user_id}, limit=1000
         )
-        revoked_count = 0
+        if not token_rows:
+            return 0
+
+        # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
-            token_id = token_row["token_id"]
-            await self.database.delete("auth_tokens", {"token_id": token_id})
-            self.webserver.disconnect_websockets_for_token(token_id)
-            revoked_count += 1
-        return revoked_count
+            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
+
+        # Delete all tokens in one go
+        await self.database.execute(
+            "DELETE FROM auth_tokens WHERE user_id = :user_id",
+            {"user_id": user.user_id},
+        )
+        return len(token_rows)
 
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
