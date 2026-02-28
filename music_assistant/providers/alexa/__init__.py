@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -63,7 +64,21 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
+async def normalize_language(value: str) -> str:
+    parts = value.split("-")
+    if len(parts) != 2:
+        raise ValueError("Ungültiges Sprachformat")
 
+    lang = parts[0].lower()
+    country = parts[1].upper()
+
+    normalized = f"{lang}-{country}"
+
+    if not re.match(r"^[a-z]{2}-[A-Z]{2}$", normalized):
+        raise ValueError("Ungültiges Sprachformat")
+
+    return normalized
+    
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
@@ -202,7 +217,7 @@ async def get_config_entries(
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
         ConfigEntry(
-            key=CONF_ALEXA_LANGUAGE,
+            key=normalize_language(CONF_ALEXA_LANGUAGE),
             type=ConfigEntryType.STRING,
             label="Alexa Language",
             required=True,
