@@ -121,7 +121,41 @@ class SyncGroupPlayer(Player):
     def active_source(self) -> str | None:
         """Return the active source id of the current media (if any)."""
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
-        return self.sync_leader.active_source if self.sync_leader else None
+        if not self.sync_leader:
+            return None
+        # if a plugin source is active on the syncleader, return that
+        for plugin_source in self.mass.players.get_plugin_sources():
+            if plugin_source.in_use_by == self.sync_leader.player_id:
+                return plugin_source.id
+        # deal with output protocols on the sync leader
+        output_protocol_domain: str | None = None
+        if (
+            self.sync_leader.active_output_protocol
+            and self.sync_leader.active_output_protocol != "native"
+        ):
+            if protocol_player := self.mass.players.get_player(
+                self.sync_leader.active_output_protocol
+            ):
+                output_protocol_domain = protocol_player.provider.domain
+        # active source as reported by the player itself
+        if (
+            self.sync_leader.active_source
+            # try to catch cases where player reports an active source
+            # that is actually from an active output protocol (e.g. AirPlay)
+            and self.sync_leader.active_source.lower() != output_protocol_domain
+            and not (
+                # try to handle sendspin bridge where the player itself
+                # is reporting the bridged protocol as active source
+                # we need to ignore that
+                output_protocol_domain == "sendspin"
+                and (
+                    self.sync_leader.active_source.lower()
+                    in ("airplay", "cast", "chromecast", "network")
+                )
+            )
+        ):
+            return self.sync_leader.active_source
+        return None
 
     @property
     def source_list(self) -> list[PlayerSource]:

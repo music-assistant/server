@@ -514,7 +514,10 @@ class SonosPlayer(Player):
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
-        elif container_type == ContainerType.AIRPLAY:
+        elif container_type == ContainerType.AIRPLAY and self.active_output_protocol not in (
+            "airplay",
+            "sendspin",
+        ):
             self._attr_active_source = SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION

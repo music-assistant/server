@@ -20,11 +20,7 @@ from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import (
-    CONF_DEVICE_IDENTIFIERS,
-    CONF_DEVICE_INFO,
-    UNIVERSAL_PLAYER_PREFIX,
-)
+from .constants import CONF_DEVICE_IDENTIFIERS, CONF_DEVICE_INFO, UNIVERSAL_PLAYER_PREFIX
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
@@ -394,6 +390,12 @@ class UniversalPlayerProvider(PlayerProvider):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a player."""
+        # TODO: should we only allow this if the universal player has no
+        # more linked protocol players?
+        await self.remove_universal_player(player_id)
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """
