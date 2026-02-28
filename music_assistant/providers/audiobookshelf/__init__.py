@@ -507,6 +507,8 @@ for more details.
                         add_cover=bool(item.library_item.media.cover_path or False),
                     )
                 )
+        for cnt, item in enumerate(playlist_items):
+            item.position = cnt
 
         return playlist_items
 
