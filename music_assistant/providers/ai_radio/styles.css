@@ -1,12 +1,12 @@
 :root {
-  --ma-bg: rgb(var(--v-theme-background, 24, 24, 24));
-  --ma-surface: rgb(var(--v-theme-surface, 35, 35, 35));
-  --ma-surface-soft: color-mix(in oklab, var(--ma-surface) 88%, white 4%);
-  --ma-text: rgb(var(--v-theme-on-surface, 255, 255, 255));
-  --ma-muted: color-mix(in oklab, var(--ma-text) 70%, var(--ma-bg) 30%);
+  --ma-bg: #f1f3f5;
+  --ma-surface: #ffffff;
+  --ma-surface-soft: #f8fbff;
+  --ma-text: #101114;
+  --ma-muted: #5b5e63;
   --ma-primary: rgb(var(--v-theme-primary, 3, 169, 244));
-  --ma-border: color-mix(in oklab, var(--ma-text) 20%, transparent);
-  --ma-border-strong: color-mix(in oklab, var(--ma-text) 34%, transparent);
+  --ma-border: #cfd8e3;
+  --ma-border-strong: #adbac9;
   --ma-danger: #ff5f67;
   --ma-ok: #40c97c;
   --ma-warn: #f6c243;
@@ -24,9 +24,9 @@ body {
 body {
   position: relative;
   margin: 0;
-  font-family: "Roboto", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+  font-family: Roboto, sans-serif;
   background:
-    radial-gradient(1200px 520px at 100% 0%, rgb(3 169 244 / 8%), transparent 50%),
+    radial-gradient(1200px 520px at 100% 0%, rgb(3 169 244 / 6%), transparent 52%),
     var(--ma-bg);
   color: var(--ma-text);
   padding: 16px;
@@ -39,31 +39,26 @@ body::before {
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.88;
-  mix-blend-mode: screen;
+  opacity: 0.55;
   background-image:
-    repeating-linear-gradient(
-      to right,
-      transparent 0 116px,
-      rgb(3 169 244 / 16%) 116px 118px,
-      transparent 118px 232px
-    ),
-    radial-gradient(circle at 18px 22px, rgb(3 169 244 / 28%) 0 1.5px, transparent 2.2px),
-    radial-gradient(circle at 18px 42px, rgb(3 169 244 / 20%) 0 1.4px, transparent 2.1px),
-    radial-gradient(circle at 18px 62px, rgb(3 169 244 / 24%) 0 1.2px, transparent 2px),
-    radial-gradient(circle at 18px 82px, rgb(3 169 244 / 18%) 0 1.3px, transparent 2px);
+    radial-gradient(circle at 20px 22px, rgb(3 169 244 / 30%) 0 1.4px, transparent 2.2px),
+    radial-gradient(circle at 58px 76px, rgb(3 169 244 / 20%) 0 1.2px, transparent 2px),
+    radial-gradient(circle at 90px 30px, rgb(3 169 244 / 23%) 0 1.15px, transparent 1.9px),
+    radial-gradient(circle at 124px 104px, rgb(3 169 244 / 18%) 0 1.25px, transparent 2.1px),
+    radial-gradient(circle at 36px 114px, rgb(3 169 244 / 16%) 0 0.95px, transparent 1.6px);
   background-size:
-    232px 100%,
-    232px 104px,
-    232px 104px,
-    232px 104px,
-    232px 104px;
+    148px 148px,
+    148px 148px,
+    148px 148px,
+    148px 148px,
+    148px 148px;
   background-position:
     0 0,
-    0 0,
-    0 0,
-    0 0,
-    0 0;
+    26px 34px,
+    50px 12px,
+    66px 48px,
+    18px 62px;
+  mix-blend-mode: multiply;
 }
 
 h1,
@@ -108,7 +103,7 @@ a:hover {
   padding: 10px 12px;
   border: 1px solid var(--ma-border);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--ma-surface) 78%, transparent 22%);
+  background: var(--ma-surface);
   backdrop-filter: blur(6px);
 }
 
@@ -134,7 +129,7 @@ a:hover {
 
 nav {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -144,7 +139,7 @@ select,
 textarea {
   border-radius: 10px;
   border: 1px solid var(--ma-border);
-  background: color-mix(in oklab, var(--ma-surface-soft) 92%, black 8%);
+  background: var(--ma-surface);
   color: var(--ma-text);
   font-family: inherit;
   font-size: 0.92rem;
@@ -180,11 +175,14 @@ button {
 
 button:hover {
   border-color: var(--ma-border-strong);
-  background: color-mix(in oklab, var(--ma-surface-soft) 84%, white 4%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 82%, var(--ma-surface) 18%);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 1;
+  color: #8b99aa;
+  border-color: #b9d6ee;
+  background: #d9edf9;
   cursor: not-allowed;
 }
 
@@ -199,19 +197,19 @@ textarea:focus-visible {
 
 .nav-btn.active {
   border-color: color-mix(in oklab, var(--ma-primary) 75%, white 6%);
-  background: color-mix(in oklab, var(--ma-primary) 18%, var(--ma-surface) 82%);
-  color: white;
+  background: color-mix(in oklab, var(--ma-primary) 22%, var(--ma-surface) 78%);
+  color: color-mix(in oklab, var(--ma-primary) 96%, #0a2942 4%);
 }
 
 .panel {
   position: relative;
   z-index: 1;
-  background: color-mix(in oklab, var(--ma-surface) 70%, transparent 30%);
+  background: var(--ma-surface);
   border: 1px solid var(--ma-border);
   border-radius: 12px;
   padding: 14px;
-  margin-bottom: 14px;
-  box-shadow: 0 2px 12px rgb(0 0 0 / 14%);
+  margin-bottom: 18px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
 }
 
 .panel > :first-child {
@@ -286,15 +284,15 @@ textarea:focus-visible {
 .run-subsections {
   display: grid;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 14px;
+  margin-bottom: 16px;
 }
 
 .run-subsection {
   border: 1px solid var(--ma-border);
   border-radius: 10px;
   padding: 10px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 84%, black 16%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 94%, var(--ma-bg) 6%);
 }
 
 .run-subsection > h3 {
@@ -374,7 +372,7 @@ textarea:focus-visible {
   border: 1px solid var(--ma-border);
   border-radius: 8px;
   padding: 8px 10px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 84%, black 16%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 92%, var(--ma-bg) 8%);
   display: grid;
   gap: 3px;
 }
@@ -395,13 +393,17 @@ textarea:focus-visible {
   padding: 10px;
   border: 1px solid var(--ma-border);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 90%, var(--ma-bg) 10%);
   overflow: auto;
 }
 
 .api-docs code {
   font-family: "JetBrains Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
   font-size: 0.82rem;
+}
+
+.api-docs {
+  margin-top: 14px;
 }
 
 .btn-link {
@@ -412,7 +414,7 @@ textarea:focus-visible {
   padding: 7px 12px;
   border-radius: 10px;
   border: 1px solid var(--ma-border);
-  background: color-mix(in oklab, var(--ma-surface-soft) 92%, black 8%);
+  background: var(--ma-surface);
   color: var(--ma-text);
   text-decoration: none;
   font-size: 0.92rem;
@@ -420,7 +422,7 @@ textarea:focus-visible {
 
 .btn-link:hover {
   border-color: var(--ma-border-strong);
-  background: color-mix(in oklab, var(--ma-surface-soft) 84%, white 4%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 82%, var(--ma-surface) 18%);
 }
 
 .field-help {
@@ -500,7 +502,7 @@ textarea {
 details {
   border: 1px solid var(--ma-border);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 90%, var(--ma-bg) 10%);
   padding: 8px 10px;
 }
 
@@ -517,11 +519,11 @@ table {
   border: 1px solid var(--ma-border);
   border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 92%, var(--ma-bg) 8%);
 }
 
 thead {
-  background: color-mix(in oklab, var(--ma-surface-soft) 70%, black 30%);
+  background: color-mix(in oklab, var(--ma-primary) 14%, var(--ma-surface) 86%);
 }
 
 th,
@@ -546,7 +548,7 @@ tbody tr:last-child td {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--ma-border);
-  background: color-mix(in oklab, var(--ma-surface-soft) 88%, black 12%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 95%, var(--ma-bg) 5%);
   font-size: 0.78rem;
   font-weight: 600;
   text-transform: capitalize;
@@ -620,7 +622,7 @@ tbody tr:last-child td {
   padding: 8px;
   border: 1px solid var(--ma-border);
   border-radius: 8px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 90%, black 10%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 95%, var(--ma-bg) 5%);
   font-size: 0.74rem;
   line-height: 1.35;
   max-height: 180px;
@@ -643,7 +645,7 @@ tbody tr:last-child td {
   border: 1px solid var(--ma-border);
   border-radius: 10px;
   padding: 10px;
-  background: color-mix(in oklab, var(--ma-surface-soft) 80%, black 20%);
+  background: color-mix(in oklab, var(--ma-surface-soft) 94%, var(--ma-bg) 6%);
 }
 
 .section-item,
@@ -772,7 +774,7 @@ tbody tr:last-child td {
   width: min(920px, 100%);
   max-height: calc(100vh - 40px);
   overflow: auto;
-  background: color-mix(in oklab, var(--ma-surface) 92%, black 8%);
+  background: color-mix(in oklab, var(--ma-surface) 98%, var(--ma-bg) 2%);
   border: 1px solid var(--ma-border-strong);
   border-radius: 14px;
   padding: 14px;

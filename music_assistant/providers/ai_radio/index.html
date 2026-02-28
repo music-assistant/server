@@ -26,10 +26,6 @@
         <i data-lucide="list" class="lucide" aria-hidden="true"></i>
         <span class="btn-label">Sections</span>
       </button>
-      <button id="nav_api_docs" class="nav-btn" type="button">
-        <i data-lucide="book-open" class="lucide" aria-hidden="true"></i>
-        <span class="btn-label">API Docs</span>
-      </button>
       <button id="nav_about" class="nav-btn" type="button">
         <i data-lucide="badge-info" class="lucide" aria-hidden="true"></i>
         <span class="btn-label">About</span>
@@ -92,7 +88,7 @@
       <li><strong>Flow rules</strong>: MUST / ALTERNATIVE / OPTIONAL determine section ordering.</li>
     </ul>
     <div class="row">
-      <a class="btn-link" href="./docs.html" target="_blank" rel="noopener">Open API Docs</a>
+      <a class="btn-link" href="/api-docs" target="_blank" rel="noopener">Open API Docs</a>
       <a class="btn-link" href="/api-docs/commands" target="_blank" rel="noopener">Open Global Commands</a>
     </div>
   </section>
@@ -195,24 +191,12 @@
     </table>
 
     <details class="guide api-docs">
-      <summary>AI Radio API Documentation</summary>
+      <summary>API Documentation</summary>
       <p>
-        AI Radio command docs are available in a dedicated page:
-        <a href="./docs.html" target="_blank" rel="noopener">Open AI Radio API Docs</a>.
-      </p>
-      <p>
-        This documentation is based on the same backend source as MA global docs:
+        Use MA's built-in docs:
         <a href="/api-docs" target="_blank" rel="noopener">/api-docs</a> and
-        <a href="/api-docs/commands" target="_blank" rel="noopener">/api-docs/commands</a>,
-        but filtered to <code>ai_radio/*</code> commands.
+        <a href="/api-docs/commands" target="_blank" rel="noopener">/api-docs/commands</a>.
       </p>
-      <h3>Quick Integration Flow</h3>
-      <ol class="guide-list">
-        <li>Load stations/sections: <code>ai_radio/stations/list</code>, <code>ai_radio/sections/list</code>.</li>
-        <li>Start a run: <code>ai_radio/start</code> with <code>mode: "playlist"</code> or <code>"dynamic"</code>.</li>
-        <li>Poll status: <code>ai_radio/status</code> and render <code>progress.phase</code>.</li>
-        <li>Stop when needed: <code>ai_radio/stop</code>.</li>
-      </ol>
     </details>
   </section>
 

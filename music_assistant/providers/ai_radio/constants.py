@@ -33,7 +33,6 @@ AI_RADIO_WEB_FILES = {
     "/": "index.html",
     "/index.html": "index.html",
     "/air.png": "air.png",
-    "/docs.html": "docs.html",
     "/app.js": "app.js",
     "/styles.css": "styles.css",
     "/example_station.json": "example_station.json",
