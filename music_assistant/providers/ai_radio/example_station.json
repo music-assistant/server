@@ -1,11 +1,11 @@
 {
   "id": "example_station",
   "name": "Example AI Radio Station",
-  "source_playlist_id": "replace_with_playlist_id",
+  "source_playlist_id": "4",
   "source_playlist_provider": "library",
   "target_playlist_provider": "builtin",
   "default_player_id": "",
-  "max_duration_minutes": 0,
+  "max_duration_minutes": 60,
   "dynamic_batch_size": 1,
   "dynamic_prefetch_remaining_tracks": 2,
   "dynamic_poll_seconds": 5,

@@ -19,7 +19,6 @@ const BUTTON_ICON_MAP = {
   station_new: 'plus-circle',
   station_new_template: 'file-plus',
   station_delete: 'trash-2',
-  station_validate: 'check-circle',
   station_save: 'save',
   station_export: 'download',
   section_new: 'plus-circle',
@@ -168,7 +167,6 @@ function cacheElements() {
     'station_new',
     'station_new_template',
     'station_delete',
-    'station_validate',
     'station_save',
     'station_export',
     'station_import',
@@ -322,7 +320,6 @@ function bindEvents() {
   el.station_new.addEventListener('click', () => openStationWizard());
   el.station_new_template.addEventListener('click', loadTemplateStation);
   el.station_delete.addEventListener('click', deleteCurrentStation);
-  el.station_validate.addEventListener('click', validateCurrentStation);
   el.station_save.addEventListener('click', saveCurrentStation);
   el.station_export.addEventListener('click', exportCurrentStation);
   el.station_import.addEventListener('change', importStationJson);
@@ -468,10 +465,18 @@ function setMessage(text, level = '') {
   }
 }
 
-function setWizardError(text) {
+function showActionError(message, level = 'msg-error') {
+  setMessage(message, level);
+  window.alert(message);
+}
+
+function setWizardError(text, alertUser = false) {
   const message = String(text || '').trim();
   el.wizard_error.textContent = message;
   el.wizard_error.classList.toggle('hidden', !message);
+  if (message && alertUser) {
+    window.alert(message);
+  }
 }
 
 function looksLikeToken(value) {
@@ -594,9 +599,21 @@ async function rpc(command, args = {}) {
       args,
     }),
   });
-  const payload = await response.json().catch(() => null);
+  const rawText = await response.text();
+  let payload = null;
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = null;
+    }
+  }
   if (!response.ok) {
-    const message = payload && payload.error ? payload.error : JSON.stringify(payload);
+    const message = payload && payload.error
+      ? payload.error
+      : rawText && rawText.trim()
+        ? rawText.trim()
+        : 'No error details returned by server';
     throw new Error(`${response.status} ${response.statusText}: ${message}`);
   }
   return payload;
@@ -689,14 +706,14 @@ function renderStationSelectors() {
     el.control_station_id,
     state.stations.map((station) => ({
       value: station.id,
-      label: `${station.name} (${station.id})`,
+      label: station.name || station.id,
     }))
   );
   fillSelect(
     el.station_selector,
     state.stations.map((station) => ({
       value: station.id,
-      label: `${station.name} (${station.id})`,
+      label: station.name || station.id,
     }))
   );
 
@@ -711,7 +728,7 @@ function renderSectionSelectors() {
   const options = state.sections
     .map((section) => ({
       value: section.id,
-      label: `${section.id} (${section.name || section.id})`,
+      label: section.name || section.id,
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
@@ -727,7 +744,7 @@ function renderSectionSelectors() {
         .filter((section) => section.type === 'ai_meta')
         .map((section) => ({
           value: section.id,
-          label: `${section.id} (${section.name || section.id})`,
+          label: section.name || section.id,
         }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]
@@ -1205,6 +1222,14 @@ function startDynamicRun() {
   return startRun('dynamic');
 }
 
+async function validateStationBeforeRun(stationId) {
+  const station = state.stations.find((item) => item.id === stationId);
+  if (!station) {
+    throw new Error(`Selected station not found: ${stationId}`);
+  }
+  await rpc('ai_radio/stations/validate', { station });
+}
+
 async function startRun(mode) {
   const stationId = el.control_station_id.value;
   if (!stationId) {
@@ -1255,11 +1280,12 @@ async function startRun(mode) {
   }
 
   try {
+    await validateStationBeforeRun(stationId);
     const result = await rpc('ai_radio/start', args);
     await refreshSessions();
     setMessage(`Started session ${result.session_id}.`, 'msg-ok');
   } catch (err) {
-    setMessage(`Failed to start session: ${errorMessage(err)}`, 'msg-error');
+    showActionError(`Failed to start session: ${errorMessage(err)}`);
   }
 }
 
@@ -1416,19 +1442,19 @@ async function saveCurrentStation() {
   const station = collectStationFromEditor();
   const orderErrors = validateSectionOrderEditor();
   if (!station.name) {
-    setMessage('Station name is required.', 'msg-error');
+    showActionError('Station name is required.');
     return;
   }
   if (!station.source_playlist_id) {
-    setMessage('Source playlist is required.', 'msg-error');
+    showActionError('Source playlist is required.');
     return;
   }
   if (!station.section_ids.length) {
-    setMessage('Select at least one section for this station.', 'msg-error');
+    showActionError('Select at least one section for this station.');
     return;
   }
   if (orderErrors.length) {
-    setMessage(orderErrors[0], 'msg-error');
+    showActionError(orderErrors[0]);
     return;
   }
 
@@ -1439,22 +1465,7 @@ async function saveCurrentStation() {
     await loadStation(saved.id);
     setMessage(`Saved station ${saved.name}.`, 'msg-ok');
   } catch (err) {
-    setMessage(`Save failed: ${errorMessage(err)}`, 'msg-error');
-  }
-}
-
-async function validateCurrentStation() {
-  const station = collectStationFromEditor();
-  const orderErrors = validateSectionOrderEditor();
-  if (orderErrors.length) {
-    setMessage(orderErrors[0], 'msg-error');
-    return;
-  }
-  try {
-    await rpc('ai_radio/stations/validate', { station });
-    setMessage('Station config is valid.', 'msg-ok');
-  } catch (err) {
-    setMessage(`Validation failed: ${errorMessage(err)}`, 'msg-error');
+    showActionError(`Save failed: ${errorMessage(err)}`);
   }
 }
 
@@ -1580,15 +1591,15 @@ function collectSectionFromEditor() {
 async function saveCurrentSection() {
   const section = collectSectionFromEditor();
   if (!section.id) {
-    setMessage('Section ID is required.', 'msg-error');
+    showActionError('Section ID is required.');
     return;
   }
   if (!section.name) {
-    setMessage('Section name is required.', 'msg-error');
+    showActionError('Section name is required.');
     return;
   }
   if (!String(section.prompt || '').trim()) {
-    setMessage('Section prompt is required.', 'msg-error');
+    showActionError('Section prompt is required.');
     return;
   }
   try {
@@ -1598,7 +1609,7 @@ async function saveCurrentSection() {
     loadSectionIntoEditor(saved.id);
     setMessage(`Saved section ${saved.id}.`, 'msg-ok');
   } catch (err) {
-    setMessage(`Section save failed: ${errorMessage(err)}`, 'msg-error');
+    showActionError(`Section save failed: ${errorMessage(err)}`);
   }
 }
 
@@ -1673,7 +1684,13 @@ async function importSectionJson(event) {
 
 function getStationSectionOptions(includeEmpty = false) {
   const selectedIds = getSelectedMultiValues(el.station_section_ids);
-  const options = selectedIds.map((id) => ({ value: id, label: id }));
+  const options = selectedIds.map((id) => {
+    const section = state.sections.find((item) => item.id === id);
+    return {
+      value: id,
+      label: section?.name || id,
+    };
+  });
   if (includeEmpty) {
     options.push({ value: 'EMPTY_SECTION', label: 'EMPTY_SECTION (no spoken segment)' });
   }
@@ -2104,21 +2121,21 @@ function wizardNext() {
   refreshWizardSummary();
 }
 
-function validateWizardStep(step) {
+function validateWizardStep(step, alertUser = false) {
   if (step === 1) {
     if (!el.wizard_name.value.trim()) {
-      setWizardError('Station name is required.');
+      setWizardError('Station name is required.', alertUser);
       return false;
     }
     if (!el.wizard_id.value.trim()) {
-      setWizardError('Station ID is required.');
+      setWizardError('Station ID is required.', alertUser);
       return false;
     }
   }
 
   if (step === 2) {
     if (!el.wizard_source_playlist.value) {
-      setWizardError('Select a source playlist.');
+      setWizardError('Select a source playlist.', alertUser);
       return false;
     }
   }
@@ -2126,7 +2143,7 @@ function validateWizardStep(step) {
   if (step === 3) {
     const selectedSections = getSelectedMultiValues(el.wizard_section_ids);
     if (!selectedSections.length) {
-      setWizardError('Select at least one section.');
+      setWizardError('Select at least one section.', alertUser);
       return false;
     }
     const hasCore = selectedSections.includes('Song_Introduction_Start')
@@ -2134,7 +2151,8 @@ function validateWizardStep(step) {
       && selectedSections.includes('Song_Introduction_End');
     if (!hasCore) {
       setWizardError(
-        'Recommended core sections are required for the starter flow. Click "Select Recommended Sections" first.'
+        'Recommended core sections are required for the starter flow. Click "Select Recommended Sections" first.',
+        alertUser
       );
       return false;
     }
@@ -2313,6 +2331,10 @@ function refreshWizardSummary() {
     light: 'Lighter talk, more music',
   };
   const selectedSectionIds = getSelectedMultiValues(el.wizard_section_ids);
+  const selectedSectionLabels = selectedSectionIds.map((sectionId) => {
+    const section = state.sections.find((item) => item.id === sectionId);
+    return section?.name || sectionId;
+  });
 
   el.wizard_summary.innerHTML = `
     <ul class="guide-list wizard-summary-list">
@@ -2320,7 +2342,7 @@ function refreshWizardSummary() {
       <li><strong>ID:</strong> ${escapeHtml(el.wizard_id.value || '-')}</li>
       <li><strong>Source Playlist:</strong> ${escapeHtml(sourceProvider)}:${escapeHtml(sourcePlaylistId || '(none)')}</li>
       <li><strong>Default Player:</strong> ${escapeHtml(el.wizard_default_player.value || '(none)')}</li>
-      <li><strong>Selected Sections:</strong> ${escapeHtml(selectedSectionIds.join(', ') || '(none)')}</li>
+      <li><strong>Selected Sections:</strong> ${escapeHtml(selectedSectionLabels.join(', ') || '(none)')}</li>
       <li><strong>Model:</strong> ${escapeHtml(el.wizard_model.value || '-')}</li>
       <li><strong>TTS:</strong> ${escapeHtml(providerLabel)} / ${escapeHtml(voiceLabel)}</li>
       <li><strong>Timezone:</strong> ${escapeHtml(el.wizard_timezone.value || 'UTC')}</li>
@@ -2371,7 +2393,7 @@ function buildStationFromWizard() {
 }
 
 async function saveWizardStation() {
-  if (!validateWizardStep(1) || !validateWizardStep(2) || !validateWizardStep(3)) {
+  if (!validateWizardStep(1, true) || !validateWizardStep(2, true) || !validateWizardStep(3, true)) {
     return;
   }
 
@@ -2385,7 +2407,7 @@ async function saveWizardStation() {
     showView('stations');
     setMessage(`Created station ${saved.name}.`, 'msg-ok');
   } catch (err) {
-    setMessage(`Wizard save failed: ${errorMessage(err)}`, 'msg-error');
+    showActionError(`Wizard save failed: ${errorMessage(err)}`);
   }
 }
 

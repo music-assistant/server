@@ -223,6 +223,7 @@ textarea:focus-visible {
 .grid {
   display: grid;
   gap: 10px;
+  align-items: start;
 }
 
 .two-col {
@@ -242,6 +243,7 @@ textarea:focus-visible {
 
 .station-toolbar {
   margin-bottom: 12px;
+  align-items: end;
 }
 
 .section-head {
@@ -440,8 +442,16 @@ textarea:focus-visible {
 label {
   display: grid;
   gap: 8px;
+  align-content: start;
   font-size: 0.88rem;
   color: var(--ma-muted);
+}
+
+label > input,
+label > select,
+label > textarea,
+label > a {
+  align-self: start;
 }
 
 .is-important {
@@ -493,6 +503,19 @@ label {
 input,
 select {
   min-height: 38px;
+}
+
+input[type="number"],
+input[type="text"],
+input[type="password"],
+select:not([multiple]) {
+  height: 38px;
+}
+
+select[multiple] {
+  min-height: 180px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 textarea {
@@ -737,9 +760,36 @@ tbody tr:last-child td {
   color: color-mix(in oklab, var(--ma-primary) 88%, white 12%);
 }
 
+.import-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface);
+  color: var(--ma-text);
+  cursor: pointer;
+}
+
+.import-label:hover {
+  border-color: var(--ma-border-strong);
+  background: color-mix(in oklab, var(--ma-surface-soft) 82%, var(--ma-surface) 18%);
+}
+
 .import-label input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: 0;
   padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
   border: 0;
+  opacity: 0;
+  pointer-events: none;
   background: transparent;
 }
 
