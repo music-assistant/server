@@ -943,6 +943,12 @@ class AuthenticationManager:
         # Disconnect any WebSocket connections using this token
         self.webserver.disconnect_websockets_for_token(token_id)
 
+        self.logger.info(
+            "Token revoked by user '%s' (token_id=%s)",
+            user.username,
+            token_id,
+        )
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """Revoke all auth tokens for a user.
 
@@ -967,6 +973,8 @@ class AuthenticationManager:
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
         )
+
+        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
         return len(token_rows)
 
     @api_command("auth/tokens")
@@ -1042,10 +1050,18 @@ class AuthenticationManager:
         if not user_row:
             return False
 
+        old_role = user_row["role"]
         await self.database.update(
             "users",
             {"user_id": user_id},
             {"role": new_role.value},
+        )
+        self.logger.info(
+            "User role changed: '%s' from '%s' to '%s' by admin '%s'",
+            user_row["username"],
+            old_role,
+            new_role.value,
+            admin_user.username,
         )
         return True
 
@@ -1061,6 +1077,7 @@ class AuthenticationManager:
             {"user_id": user_id},
             {"enabled": 1},
         )
+        self.logger.info("User account enabled (user_id=%s)", user_id)
 
     @api_command("auth/user/disable", required_role="admin")
     async def disable_user(self, user_id: str) -> None:
@@ -1085,6 +1102,8 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        self.logger.info("User account disabled (user_id=%s)", user_id)
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
         """Get list of available login providers (dynamically checks for HA provider)."""
@@ -1134,6 +1153,11 @@ class AuthenticationManager:
         auth_result = await self.authenticate_with_credentials(provider_id, credentials)
 
         if not auth_result.success:
+            self.logger.warning(
+                "Login failed for username '%s' via provider '%s'",
+                username or "<not provided>",
+                provider_id,
+            )
             return {
                 "success": False,
                 "error": auth_result.error or "Authentication failed",
@@ -1151,6 +1175,12 @@ class AuthenticationManager:
             auth_result.user,
             is_long_lived=False,
             name=token_name,
+        )
+
+        self.logger.info(
+            "User '%s' logged in via provider '%s'",
+            auth_result.user.username,
+            provider_id,
         )
 
         return {
@@ -1345,12 +1375,23 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot delete your own account")
 
+        # Look up the username before deleting
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         # Delete user from database
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        self.logger.info(
+            "User '%s' deleted by admin '%s'",
+            user_row["username"],
+            admin_user.username,
+        )
 
     @api_command("auth/me")
     async def get_current_user_info(self) -> User:
@@ -1526,6 +1567,8 @@ class AuthenticationManager:
             # Disconnect any WebSocket connections using this token
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
+        self.logger.info("User '%s' logged out", user.username)
+
     @api_command("auth/user/providers")
     async def get_my_providers(self) -> list[dict[str, Any]]:
         """
@@ -1555,6 +1598,12 @@ class AuthenticationManager:
             "user_auth_providers", {"user_id": user_id, "provider_type": provider_type}
         )
         await self.database.commit()
+
+        self.logger.info(
+            "Auth provider '%s' unlinked from user (user_id=%s)",
+            provider_type,
+            user_id,
+        )
         return True
 
     # ==================== Join Code Methods ====================
