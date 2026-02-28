@@ -141,23 +141,16 @@
       <div class="run-subsection">
         <h3>Live Radio</h3>
         <p class="hint compact">Inject generated sections directly into the player queue.</p>
-        <div class="run-player-start">
-          <label class="run-player-label is-important">
-            <span class="label-row">
-              <span>Playback Device</span>
-              <span class="help-tip" title="Important for live mode: choose which player gets the injected queue items.">?</span>
-            </span>
-            <select id="control_player_id">
-              <option value="">Use station/default</option>
-            </select>
-            <span id="control_player_hint" class="field-help">Selecting an available player is required for dynamic mode.</span>
-          </label>
-          <button id="control_start_dynamic" class="btn-primary play-btn" type="button">
-            <i data-lucide="play" class="lucide" aria-hidden="true"></i>
-            <i data-lucide="sparkles" class="lucide" aria-hidden="true"></i>
-            <span class="btn-label">Start Radio</span>
-          </button>
-        </div>
+        <label class="run-player-label is-important">
+          <span class="label-row">
+            <span>Playback Device</span>
+            <span class="help-tip" title="Important for live mode: choose which player gets the injected queue items.">?</span>
+          </span>
+          <select id="control_player_id">
+            <option value="">Use station/default</option>
+          </select>
+          <span id="control_player_hint" class="field-help">Selecting an available player is required for dynamic mode.</span>
+        </label>
         <div class="grid run-live-overrides">
           <label class="optional-field">
             <span class="label-row">
@@ -166,6 +159,13 @@
             </span>
             <input id="control_dynamic_batch_size" type="number" min="1" step="1" placeholder="Use station default">
           </label>
+        </div>
+        <div class="run-action-row run-live-action-row">
+          <button id="control_start_dynamic" class="btn-primary play-btn" type="button">
+            <i data-lucide="play" class="lucide" aria-hidden="true"></i>
+            <i data-lucide="sparkles" class="lucide" aria-hidden="true"></i>
+            <span class="btn-label">Start Radio</span>
+          </button>
         </div>
       </div>
     </div>
@@ -230,7 +230,7 @@
         flow rules + host/voice settings.
       </p>
       <ul class="guide-list">
-        <li><code>Station ID</code>: internal key used by APIs and references.</li>
+        <li><code>Station ID</code>: internal key used by APIs and references. It is auto-generated from the station name for new stations and only shown in advanced settings.</li>
         <li><code>Playback Device</code>: player used in dynamic mode if no override is selected at run start.</li>
         <li><code>Selected Sections</code>: shared section definitions managed in the Sections menu.</li>
         <li><code>ALTERNATIVE</code> flow: picks exactly one choice from a weighted list for that slot.</li>
@@ -241,10 +241,7 @@
     </details>
 
     <h3>Basics</h3>
-    <div class="grid two-col">
-      <label>Station ID (technical key)
-        <input id="station_id" type="text">
-      </label>
+    <div class="grid station-basics-grid">
       <label>Station Name
         <input id="station_name" type="text">
       </label>
@@ -263,16 +260,16 @@
         <input id="station_max_duration_minutes" type="number" min="0" step="1">
         <span class="field-help">0 = no cap.</span>
       </label>
-      <label>Selected Sections (shared library)
-        <select id="station_section_ids" multiple size="8"></select>
-        <span class="field-help">Use Cmd/Ctrl-click to select multiple sections.</span>
-        <a id="station_manage_sections_link" href="./?view=sections" target="_blank" rel="noopener">Manage Sections (opens new tab)</a>
-      </label>
       <label>Merge Section (optional)
         <select id="station_merge_section_id">
           <option value="">-- None --</option>
         </select>
         <span class="field-help">Used only when one between-song slot produces multiple spoken sections. Select an <code>ai_meta</code> section here.</span>
+      </label>
+      <label class="station-sections-field">Selected Sections (shared library)
+        <select id="station_section_ids" multiple size="8"></select>
+        <span class="field-help">Use Cmd/Ctrl-click to select multiple sections.</span>
+        <a id="station_manage_sections_link" href="./?view=sections" target="_blank" rel="noopener">Manage Sections (opens new tab)</a>
       </label>
     </div>
 
@@ -280,6 +277,9 @@
       <summary>Advanced Runtime and Provider Settings</summary>
       <p class="hint compact">Optional; usually not needed for first setup.</p>
       <div class="grid two-col">
+        <label>Station ID (advanced technical key)
+          <input id="station_id" type="text">
+        </label>
         <label class="checkbox-label source-manual-toggle">Manual Source Setup (advanced)
           <input id="station_source_manual_mode" type="checkbox">
         </label>
@@ -398,9 +398,6 @@
     </div>
 
     <div class="grid two-col">
-      <label>Section ID
-        <input id="section_id" type="text" placeholder="e.g. Song_Transition">
-      </label>
       <label>Section Name
         <input id="section_name" type="text" placeholder="e.g. Song Transition">
       </label>
@@ -422,6 +419,16 @@
         <input id="section_max_chars" type="number" min="0" step="1" value="0">
       </label>
     </div>
+
+    <details class="guide advanced-settings">
+      <summary>Advanced Section Settings</summary>
+      <p class="hint compact">The technical section ID is generated automatically from the section name for new sections.</p>
+      <div class="grid two-col">
+        <label>Section ID (advanced technical key)
+          <input id="section_id" type="text" placeholder="auto-generated from section name">
+        </label>
+      </div>
+    </details>
 
     <label>Prompt
       <span class="field-help">Placeholders (see overview below) can be used in prompts.</span>
@@ -479,14 +486,11 @@
 
       <div id="wizard_step_1" class="wizard-step">
         <h3>Step 1: What is a Station?</h3>
-        <p class="hint">A station is a reusable preset. You can change everything later.</p>
+      <p class="hint">A station is a reusable preset. It can be edited in more detail later.</p>
         <p class="hint compact">A station stores your source playlist, selected reusable sections, flow behavior, and AI voice settings.</p>
         <div class="grid two-col">
           <label>Station Name
             <input id="wizard_name" type="text" placeholder="e.g. Morning Energy Radio">
-          </label>
-          <label>Station ID (auto-generated, editable)
-            <input id="wizard_id" type="text" placeholder="e.g. morning_energy_radio">
           </label>
         </div>
       </div>
@@ -525,9 +529,6 @@
         <details class="guide">
           <summary>Create Additional Section</summary>
           <div class="grid two-col">
-            <label>New Section ID
-              <input id="wizard_custom_section_id" type="text" placeholder="e.g. Song_FunFact_Custom">
-            </label>
             <label>New Section Name
               <input id="wizard_custom_section_name" type="text" placeholder="e.g. Song Fun Fact">
             </label>
@@ -552,6 +553,14 @@
           <label>Prompt
             <textarea id="wizard_custom_section_prompt" rows="3"></textarea>
           </label>
+          <details class="guide advanced-settings">
+            <summary>Advanced Section Settings</summary>
+            <div class="grid two-col">
+              <label>Section ID (advanced technical key)
+                <input id="wizard_custom_section_id" type="text" placeholder="auto-generated from section name">
+              </label>
+            </div>
+          </details>
           <button id="wizard_custom_section_add" type="button">Create and Add to Station</button>
         </details>
       </div>

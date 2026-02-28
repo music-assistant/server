@@ -116,7 +116,6 @@ const state = {
   stationTemplate: null,
   sectionTemplate: null,
   wizardStep: 1,
-  wizardIdTouched: false,
   tourStep: 0,
   tourShownThisSession: false,
 };
@@ -225,7 +224,6 @@ function cacheElements() {
     'wizard_next',
     'wizard_save',
     'wizard_name',
-    'wizard_id',
     'wizard_source_playlist',
     'wizard_default_player',
     'wizard_max_duration_minutes',
@@ -325,7 +323,10 @@ function bindEvents() {
   el.station_import.addEventListener('change', importStationJson);
 
   el.station_source_playlist_pick.addEventListener('change', () => {
-    if (el.station_source_manual_mode.checked) return;
+    if (el.station_source_manual_mode.checked) {
+      el.station_source_manual_mode.checked = false;
+      syncSourceModeUi();
+    }
     const value = el.station_source_playlist_pick.value;
     if (!value) return;
     const [provider, itemId] = splitComboValue(value);
@@ -361,16 +362,19 @@ function bindEvents() {
   el.wizard_next.addEventListener('click', wizardNext);
   el.wizard_save.addEventListener('click', saveWizardStation);
 
-  el.wizard_name.addEventListener('input', () => {
-    if (!state.wizardIdTouched) {
-      el.wizard_id.value = slugify(el.wizard_name.value);
+  el.station_name.addEventListener('input', () => {
+    if (!String(el.station_id.value || '').trim()) {
+      el.station_id.value = slugify(el.station_name.value);
     }
-    refreshWizardSummary();
   });
-  el.wizard_id.addEventListener('input', () => {
-    state.wizardIdTouched = true;
-    refreshWizardSummary();
+
+  el.section_name.addEventListener('input', () => {
+    if (!String(el.section_id.value || '').trim()) {
+      el.section_id.value = slugify(el.section_name.value);
+    }
   });
+
+  el.wizard_name.addEventListener('input', refreshWizardSummary);
 
   [
     'wizard_source_playlist',
@@ -811,7 +815,7 @@ function renderPlaylistSelectors() {
       const itemId = String(playlist.item_id || '');
       return {
         value: comboValue(provider, itemId),
-        label: `${playlist.name || itemId} (${provider}:${itemId})`,
+        label: playlist.name || itemId,
       };
     })
     .sort((a, b) => a.label.localeCompare(b.label));
@@ -842,7 +846,7 @@ function renderWizardOptions() {
   const sectionOptions = state.sections
     .map((section) => ({
       value: section.id,
-      label: `${section.id} (${section.name || section.id})`,
+      label: section.name || section.id,
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
@@ -1336,7 +1340,7 @@ function populateStationEditor(station) {
     : (Array.isArray(station.sections) ? station.sections.map((item) => item.id).filter(Boolean) : []);
 
   const sectionOptions = state.sections
-    .map((section) => ({ value: section.id, label: `${section.id} (${section.name || section.id})` }))
+    .map((section) => ({ value: section.id, label: section.name || section.id }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
   const missing = sectionIds
@@ -1398,9 +1402,12 @@ function collectStationFromEditor() {
     sourcePlaylistId = itemId;
   }
 
+  const stationName = (el.station_name.value || '').trim();
+  const stationId = (el.station_id.value || '').trim() || slugify(stationName);
+
   return {
-    id: (el.station_id.value || '').trim(),
-    name: (el.station_name.value || '').trim(),
+    id: stationId,
+    name: stationName,
     source_playlist_id: sourcePlaylistId,
     source_playlist_provider: sourcePlaylistProvider,
     target_playlist_provider: (el.station_target_playlist_provider.value || 'builtin').trim() || 'builtin',
@@ -1574,9 +1581,10 @@ async function loadSectionTemplate() {
 
 function collectSectionFromEditor() {
   const sectionType = (el.section_type.value || 'ai_text').trim();
+  const sectionName = (el.section_name.value || '').trim();
   const section = {
-    id: (el.section_id.value || '').trim(),
-    name: (el.section_name.value || '').trim(),
+    id: (el.section_id.value || '').trim() || slugify(sectionName),
+    name: sectionName,
     type: sectionType,
     prompt: el.section_prompt.value || '',
   };
@@ -1601,6 +1609,22 @@ async function saveCurrentSection() {
   if (!String(section.prompt || '').trim()) {
     showActionError('Section prompt is required.');
     return;
+  }
+  if (!['ai_text', 'ai_meta'].includes(String(section.type || ''))) {
+    showActionError('Section type must be ai_text or ai_meta.');
+    return;
+  }
+  if (section.type === 'ai_text') {
+    const validWebSearchModes = ['disabled', 'allow', 'force'];
+    if (!validWebSearchModes.includes(String(section.web_search || 'disabled'))) {
+      showActionError('Web search mode must be disabled, allow, or force.');
+      return;
+    }
+    const maxChars = Number(section.constraints?.max_chars ?? 0);
+    if (!Number.isFinite(maxChars) || maxChars < 0) {
+      showActionError('Character limit must be 0 or a positive number.');
+      return;
+    }
   }
   try {
     const saved = await rpc('ai_radio/sections/save', { section });
@@ -2049,13 +2073,11 @@ async function openStationWizard() {
     await ensureSectionTemplate();
 
     state.wizardStep = 1;
-    state.wizardIdTouched = false;
     setWizardError('');
 
     const template = deepClone(state.stationTemplate);
     const suggestedName = `My AI Radio ${state.stations.length + 1}`;
     el.wizard_name.value = suggestedName;
-    el.wizard_id.value = slugify(suggestedName);
 
     const sourceCombo = comboValue(
       template.source_playlist_provider || 'library',
@@ -2127,10 +2149,6 @@ function validateWizardStep(step, alertUser = false) {
       setWizardError('Station name is required.', alertUser);
       return false;
     }
-    if (!el.wizard_id.value.trim()) {
-      setWizardError('Station ID is required.', alertUser);
-      return false;
-    }
   }
 
   if (step === 2) {
@@ -2191,13 +2209,13 @@ function selectRecommendedWizardSections() {
 async function createWizardCustomSection() {
   const sectionType = (el.wizard_custom_section_type.value || 'ai_text').trim();
   const section = {
-    id: (el.wizard_custom_section_id.value || '').trim(),
+    id: (el.wizard_custom_section_id.value || '').trim() || slugify(el.wizard_custom_section_name.value || ''),
     name: (el.wizard_custom_section_name.value || '').trim(),
     type: sectionType,
     prompt: (el.wizard_custom_section_prompt.value || '').trim(),
   };
-  if (!section.id || !section.name || !section.prompt) {
-    setWizardError('Custom section requires ID, name, and prompt.');
+  if (!section.name || !section.prompt) {
+    setWizardError('Custom section requires a name and prompt.');
     return;
   }
   if (sectionType === 'ai_text') {
@@ -2339,7 +2357,6 @@ function refreshWizardSummary() {
   el.wizard_summary.innerHTML = `
     <ul class="guide-list wizard-summary-list">
       <li><strong>Name:</strong> ${escapeHtml(el.wizard_name.value || '-')}</li>
-      <li><strong>ID:</strong> ${escapeHtml(el.wizard_id.value || '-')}</li>
       <li><strong>Source Playlist:</strong> ${escapeHtml(sourceProvider)}:${escapeHtml(sourcePlaylistId || '(none)')}</li>
       <li><strong>Default Player:</strong> ${escapeHtml(el.wizard_default_player.value || '(none)')}</li>
       <li><strong>Selected Sections:</strong> ${escapeHtml(selectedSectionLabels.join(', ') || '(none)')}</li>
@@ -2358,8 +2375,8 @@ function buildStationFromWizard() {
 
   const [sourceProvider, sourcePlaylistId] = splitComboValue(el.wizard_source_playlist.value);
 
-  station.id = (el.wizard_id.value || '').trim();
   station.name = (el.wizard_name.value || '').trim();
+  station.id = station.id || slugify(station.name);
   station.source_playlist_provider = sourceProvider || 'library';
   station.source_playlist_id = sourcePlaylistId || '';
   station.default_player_id = (el.wizard_default_player.value || '').trim();

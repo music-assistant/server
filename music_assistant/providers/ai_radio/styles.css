@@ -230,6 +230,16 @@ textarea:focus-visible {
   grid-template-columns: repeat(2, minmax(230px, 1fr));
 }
 
+.station-basics-grid {
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 14px 12px;
+  align-items: start;
+}
+
+.station-sections-field {
+  grid-column: 1 / -1;
+}
+
 .auth-grid {
   grid-template-columns: 1fr;
 }
@@ -252,14 +262,6 @@ textarea:focus-visible {
   align-items: flex-end;
   gap: 12px;
   margin-bottom: 12px;
-}
-
-.run-player-start {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: end;
-  margin-bottom: 0;
 }
 
 .run-player-label {
@@ -317,6 +319,10 @@ textarea:focus-visible {
   margin-top: 10px;
 }
 
+.run-live-action-row {
+  margin-top: 12px;
+}
+
 .run-playlist-overrides {
   margin-top: 10px;
 }
@@ -334,6 +340,7 @@ textarea:focus-visible {
 
 .play-btn {
   min-width: 170px;
+  max-width: 100%;
   font-weight: 600;
   min-height: 40px;
   align-self: end;
@@ -350,6 +357,10 @@ textarea:focus-visible {
 
 .guide {
   margin: 0 0 14px;
+}
+
+.advanced-settings {
+  margin-top: 16px;
 }
 
 .guide-list {
@@ -516,6 +527,10 @@ select[multiple] {
   min-height: 180px;
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+#station_section_ids {
+  min-height: 236px;
 }
 
 textarea {
@@ -934,10 +949,6 @@ tbody tr:last-child td {
   .section-head {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .run-player-start {
-    grid-template-columns: 1fr;
   }
 
   .run-subsections {
