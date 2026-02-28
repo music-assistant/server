@@ -49,6 +49,7 @@ from aioaudiobookshelf.schema.shelf import (
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -361,8 +362,11 @@ for more details.
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
-        await self._client.logout()
-        await self._client_socket.logout()
+        try:
+            await self._client.logout()
+            await self._client_socket.logout()
+        except ClientError as err:
+            self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
             callback()
 
