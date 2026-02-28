@@ -732,7 +732,7 @@ class ProtocolLinkingMixin:
                 continue
 
             # Determine protocol domain from provider
-            protocol_provider = protocol_config.get("provider")
+            protocol_provider: str = protocol_config.get("provider")
             if not protocol_provider:
                 continue
 
@@ -740,11 +740,9 @@ class ProtocolLinkingMixin:
             protocol_domain = protocol_provider.split("--")[0]
 
             # Get provider name for display
-            provider_name = "Protocol"  # Default fallback
-            for provider in self.mass.get_providers(ProviderType.PLAYER):
-                if provider.domain == protocol_domain:
-                    provider_name = provider.name
-                    break
+            provider_name = protocol_domain.title()  # Default fallback
+            if provider := self.mass.get_provider(protocol_domain, return_unavailable=True):
+                provider_name = provider.name
 
             # Get priority for this protocol
             priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
