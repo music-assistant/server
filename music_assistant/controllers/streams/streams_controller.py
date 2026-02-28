@@ -401,22 +401,47 @@ class StreamsController(CoreController):
         player_id: str,
         media: PlayerMedia,
     ) -> str:
-        """Resolve the stream URL for the given PlayerMedia."""
-        conf_output_codec = await self.mass.config.get_player_config_value(
-            player_id, CONF_OUTPUT_CODEC, default="flac", return_type=str
+        """
+        Resolve the stream URL for the given PlayerMedia.
+
+        :param player_id: The (protocol) player ID requesting the stream.
+        :param media: The PlayerMedia object for which to resolve the stream URL.
+        :return: The resolved stream URL as a string.
+        """
+        protocol_player = self.mass.players.get_player(player_id)
+        conf_output_codec = cast(
+            "str",
+            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+            if protocol_player
+            else "flac",
         )
-        output_codec = ContentType.try_parse(conf_output_codec or "flac")
+        output_codec = ContentType.try_parse(conf_output_codec)
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
         extra_data = media.custom_data or {}
-        flow_mode = extra_data.get("flow_mode", False)
         session_id = extra_data.get("session_id")
         queue_item_id = media.queue_item_id
         if not session_id or not queue_item_id:
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
+        crossfade_needs_flow_mode = (
+            # if the player(queue) has crossfade enabled but the player(protocol) does not support
+            # gapless playback, we need to enforce flow mode
+            queue_id
+            and (queue_player := self.mass.players.get_player(queue_id))
+            and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+            and protocol_player
+            and not protocol_player.supports_gapless
+        )
+        # Determine flow_mode based on the actual player's capabilities.
+        # This is done here (just-in-time) because the player's protocol determines this
+        flow_mode = (
+            protocol_player is not None
+            and (protocol_player.flow_mode or crossfade_needs_flow_mode)
+            and media.media_type not in (MediaType.RADIO, MediaType.PLUGIN_SOURCE)
+        )
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"  # noqa: E501
 
@@ -534,6 +559,7 @@ class StreamsController(CoreController):
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback!
             audio_input = self.get_queue_item_stream_with_smartfade(
+                player=player,
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 smart_fades_mode=smart_fades_mode,
@@ -545,6 +571,9 @@ class StreamsController(CoreController):
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 seek_position=queue_item.streamdetails.seek_position,
+                playback_speed=cast(
+                    "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                ),
             )
         # stream the audio
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
@@ -891,37 +920,47 @@ class StreamsController(CoreController):
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     def get_stream(
-        self, media: PlayerMedia, pcm_format: AudioFormat, force_flow_mode: bool = False
+        self,
+        media: PlayerMedia,
+        pcm_format: AudioFormat,
+        player_id: str | None = None,
+        force_flow_mode: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
 
         This is used as helper for player providers that can consume the raw PCM
         audio stream directly (e.g. AirPlay) and not rely on HTTP transport.
+
+        :param media: The PlayerMedia to stream.
+        :param pcm_format: The desired output PCM format.
+        :param player_id: The player ID requesting the stream. Used to determine
+            if flow mode should be used based on the player's capabilities.
+        :param force_flow_mode: Force flow mode regardless of player capabilities.
+            Used for multi-client streaming scenarios that require continuous streams.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             assert media.custom_data
-            audio_source = self.get_announcement_stream(
+            return self.get_announcement_stream(
                 media.custom_data["announcement_url"],
                 output_format=pcm_format,
                 pre_announce=media.custom_data["pre_announce"],
                 pre_announce_url=media.custom_data["pre_announce_url"],
             )
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
+        if media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
             assert media.custom_data
-            audio_source = self.get_plugin_source_stream(
+            return self.get_plugin_source_stream(
                 plugin_source_id=media.custom_data["source_id"],
                 output_format=pcm_format,
                 # need to pass player_id from the PlayerMedia object
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif (
-            media.media_type == MediaType.FLOW_STREAM
-            and media.source_id
+        if (
+            media.source_id
             and media.source_id.startswith(UGP_PREFIX)
             and media.uri
             and "/ugp/" in media.uri
@@ -933,47 +972,64 @@ class StreamsController(CoreController):
             assert ugp_stream is not None  # for type checker
             if ugp_stream.base_pcm_format == pcm_format:
                 # no conversion needed
-                audio_source = ugp_stream.subscribe_raw()
-            else:
-                audio_source = ugp_stream.get_stream(output_format=pcm_format)
-        elif (
-            media.source_id
-            and media.queue_item_id
-            and (media.media_type == MediaType.FLOW_STREAM or force_flow_mode)
-        ):
-            # regular queue (flow) stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            assert queue
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
+                return ugp_stream.subscribe_raw()
+            return ugp_stream.get_stream(output_format=pcm_format)
+        if media.source_id and media.queue_item_id:
+            # Queue stream request - determine flow_mode based on player capabilities
+            # or force it if explicitly requested (e.g., for multi-client streaming)
+            protocol_player = self.mass.players.get_player(player_id) if player_id else None
+            queue_id = media.source_id
+            crossfade_needs_flow_mode = (
+                # if the player(queue) has crossfade enabled but the player(protocol)
+                # does not support gapless playback, we need to enforce flow mode
+                queue_id
+                and (queue_player := self.mass.players.get_player(queue_id))
+                and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+                and protocol_player
+                and not protocol_player.supports_gapless
             )
-            assert start_queue_item
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=pcm_format,
+            flow_mode = (
+                force_flow_mode
+                or (protocol_player is not None and protocol_player.flow_mode)
+                or crossfade_needs_flow_mode
             )
-        elif media.source_id and media.queue_item_id:
-            # single item stream (e.g. radio)
+            if media.media_type == MediaType.RADIO:
+                # flow_mode for radio is pointless
+                flow_mode = False
+            if flow_mode:
+                # flow stream request
+                queue = self.mass.player_queues.get(media.source_id)
+                assert queue
+                start_queue_item = self.mass.player_queues.get_item(
+                    media.source_id, media.queue_item_id
+                )
+                assert start_queue_item
+                return self.mass.streams.get_queue_flow_stream(
+                    queue=queue,
+                    start_queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                )
+            # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
-            audio_source = buffered(
+            return buffered(
                 self.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
                 ),
                 buffer_size=10,
                 min_buffer_before_yield=2,
             )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=pcm_format,
-            )
-        return audio_source
+        # assume url or some other direct path
+        # NOTE: this will fail if its an uri not playable by ffmpeg
+        return get_ffmpeg_stream(
+            audio_input=media.uri,
+            input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
+            output_format=pcm_format,
+        )
 
     @use_buffer(buffer_size=30, min_buffer_before_yield=2)
     async def get_queue_flow_stream(
@@ -1089,6 +1145,9 @@ class StreamsController(CoreController):
                 queue_track,
                 pcm_format=pcm_format,
                 seek_position=queue_track.streamdetails.seek_position,
+                playback_speed=cast(
+                    "float", queue_track.extra_attributes.get("playback_speed", 1.0)
+                ),
                 raise_on_error=False,
             ):
                 total_chunks_received += 1
@@ -1216,10 +1275,9 @@ class StreamsController(CoreController):
                     del _chunk
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
-            crossfade_allowed = self._crossfade_allowed(
+            if self._crossfade_allowed(
                 queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
-            )
-            if crossfade_allowed:
+            ):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_buffer_size:]
                 last_streamdetails = queue_track.streamdetails
@@ -1229,14 +1287,7 @@ class StreamsController(CoreController):
                     yield remaining_bytes
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif smart_fades_mode != SmartFadesMode.DISABLED:
-                self.logger.debug(
-                    "Flow mode: crossfade NOT allowed for track %s on queue %s"
-                    " - fadeout part not saved",
-                    queue_track.name,
-                    queue.display_name,
-                )
-            if not crossfade_allowed and buffer:
+            elif buffer:
                 # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
                 for _chunk in divide_chunks(buffer, pcm_sample_size):
@@ -1409,6 +1460,7 @@ class StreamsController(CoreController):
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         seek_position: int = 0,
+        playback_speed: float = 1.0,
         raise_on_error: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         """Get the (PCM) audio stream for a single queue item."""
@@ -1455,6 +1507,10 @@ class StreamsController(CoreController):
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+
+        # handle playback speed
+        if playback_speed != 1.0:
+            filter_params.append(f"atempo={playback_speed}")
 
         allow_buffer = bool(
             self.mass.config.get_raw_core_config_value(
@@ -1580,6 +1636,7 @@ class StreamsController(CoreController):
     @use_buffer(buffer_size=30, min_buffer_before_yield=2)
     async def get_queue_item_stream_with_smartfade(
         self,
+        player: Player,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
@@ -1593,12 +1650,6 @@ class StreamsController(CoreController):
         streamdetails = queue_item.streamdetails
         assert streamdetails
         crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
-        self.logger.debug(
-            "Crossfade data pop for queue %s (track: %s): %s",
-            queue.display_name,
-            queue_item.name,
-            "found" if crossfade_data else "EMPTY - no crossfade data from previous track",
-        )
 
         if crossfade_data and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track
@@ -1670,7 +1721,10 @@ class StreamsController(CoreController):
         total_chunks_received = 0
         req_buffer_size = crossfade_buffer_size
         async for chunk in self.get_queue_item_stream(
-            queue_item, pcm_format, seek_position=discard_seconds
+            queue_item,
+            pcm_format,
+            seek_position=discard_seconds,
+            playback_speed=cast("float", queue_item.extra_attributes.get("playback_speed", 1.0)),
         ):
             total_chunks_received += 1
             if discard_leftover:
@@ -1801,10 +1855,8 @@ class StreamsController(CoreController):
             queue.index_in_buffer = self.mass.player_queues.index_by_id(
                 queue.queue_id, next_queue_item.queue_item_id
             )
-            queue_player = self.mass.players.get_player(queue.queue_id)
-            assert queue_player is not None
             next_queue_item_pcm_format = await self._select_pcm_format(
-                player=queue_player,
+                player=player,
                 streamdetails=next_queue_item.streamdetails,
                 smartfades_enabled=True,
             )
@@ -1812,39 +1864,29 @@ class StreamsController(CoreController):
             # end of queue reached, no next item
             next_queue_item = None
 
-        crossfade_allowed = bool(next_queue_item) and self._crossfade_allowed(
+        if not next_queue_item or not self._crossfade_allowed(
             queue_item,
             smart_fades_mode=smart_fades_mode,
             flow_mode=False,
             next_queue_item=next_queue_item,
             sample_rate=pcm_format.sample_rate,
             next_sample_rate=next_queue_item_pcm_format.sample_rate,
-        )
-        if not crossfade_allowed:
-            if not next_queue_item:
-                self.logger.debug(
-                    "Enqueue mode: no next queue item loaded (QueueEmpty) for queue %s",
-                    queue.display_name,
-                )
-            else:
-                self.logger.debug(
-                    "Enqueue mode: crossfade NOT allowed for track %s -> %s on queue %s",
-                    queue_item.name,
-                    next_queue_item.name,
-                    queue.display_name,
-                )
+        ):
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
             for _chunk in divide_chunks(buffer, pcm_format.pcm_sample_size):
                 yield _chunk
         else:
             # if crossfade is enabled, save fadeout part in buffer to pickup for next track
-            assert next_queue_item is not None
             fade_out_data = buffer
             buffer = b""
             try:
                 async for chunk in self.get_queue_item_stream(
-                    next_queue_item, next_queue_item_pcm_format
+                    next_queue_item,
+                    next_queue_item_pcm_format,
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
                 ):
                     # append to buffer until we reach crossfade size
                     # we only need the first X seconds of the NEXT track so we can
@@ -1908,12 +1950,6 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,  # Format of the data (current track)
                     fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
                     queue_item_id=next_queue_item.queue_item_id,
-                )
-                self.logger.debug(
-                    "Crossfade data STORED for queue %s (outgoing track: %s, incoming track: %s)",
-                    queue.display_name,
-                    queue_item.name,
-                    next_queue_item.name if next_queue_item else "N/A",
                 )
             except AudioError:
                 # no crossfade possible, just yield the fade_out_data
@@ -2076,12 +2112,6 @@ class StreamsController(CoreController):
         )
         if not next_item:
             # there is no next item!
-            self.logger.debug(
-                "Crossfade not allowed: no next item found for %s (flow_mode=%s, queue_id=%s)",
-                queue_item.name,
-                flow_mode,
-                queue_item.queue_id,
-            )
             return False
         # check if next item is a track
         if next_item.media_type != MediaType.TRACK:

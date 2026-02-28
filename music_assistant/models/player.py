@@ -12,6 +12,7 @@ The final active source can be retrieved by using the 'state' property.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC
 from collections.abc import Callable
@@ -41,7 +42,6 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     ACTIVE_PROTOCOL_FEATURES,
-    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -49,11 +49,10 @@ from music_assistant.constants import (
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
-    CONF_LINKED_PROTOCOL_PLAYER_IDS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
-    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -129,6 +128,7 @@ class Player(ABC):
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.__active_mass_source: str | None = None
+        self.__initialized = asyncio.Event()
         # The PlayerState is the (snapshotted) final state of the player
         # after applying any config overrides and other transformations,
         # such as the display name and player controls.
@@ -171,20 +171,9 @@ class Player(ABC):
 
     @property
     def requires_flow_mode(self) -> bool:
-        """
-        Return if the player needs flow mode.
-
-        Default implementation: True if the player does not support PlayerFeature.ENQUEUE
-        or has crossfade enabled without gapless support. Can be overridden by providers if needed.
-        """
-        if PlayerFeature.ENQUEUE not in self.supported_features:
-            # without enqueue support, flow mode is required
-            return True
-        return (
-            # player has crossfade enabled without gapless support - flow mode is required
-            PlayerFeature.GAPLESS_PLAYBACK not in self.supported_features
-            and str(self._config.get_value(CONF_SMART_FADES_MODE)) != "disabled"
-        )
+        """Return if the player needs flow mode for (queue) playback."""
+        # Default implementation: True if the player does not support PlayerFeature.ENQUEUE
+        return PlayerFeature.ENQUEUE not in self.supported_features
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -728,6 +717,16 @@ class Player(ABC):
         return self._config.enabled
 
     @property
+    @final
+    def initialized(self) -> asyncio.Event:
+        """
+        Return if the player is initialized.
+
+        Used by player controller to indicate initial registration completed.
+        """
+        return self.__initialized
+
+    @property
     def corrected_elapsed_time(self) -> float | None:
         """Return the corrected/realtime elapsed time."""
         if self.elapsed_time is None or self.elapsed_time_last_updated is None:
@@ -833,7 +832,7 @@ class Player(ABC):
         This is a convenience property that returns True if the player is set to be exposed
         to Home Assistant, based on the config entry.
         """
-        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
+        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
 
     @property
     @final
@@ -850,22 +849,11 @@ class Player(ABC):
     @final
     def flow_mode(self) -> bool:
         """
-        Return if the player needs flow mode.
+        Return if the player(protocol) needs flow mode.
 
         Will use 'requires_flow_mode' unless overridden by flow_mode config.
-        Considers the active output protocol's flow_mode if a protocol is active.
         """
-        # If an output protocol is active (and not native), use the protocol player's flow_mode
-        # The protocol player will handle its own config check
-        if (
-            self.__attr_active_output_protocol
-            and self.__attr_active_output_protocol != "native"
-            and (
-                protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
-            )
-        ):
-            return protocol_player.flow_mode
-        # Check native player's config override
+        # Check config override
         if bool(self._config.get_value(CONF_FLOW_MODE)) is True:
             # flow mode explicitly enabled in config
             return True
@@ -882,6 +870,18 @@ class Player(ABC):
         Otherwise checks the native player's ENQUEUE feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.ENQUEUE)
+
+    @property
+    @final
+    def supports_gapless(self) -> bool:
+        """
+        Return if the player supports gapless playback.
+
+        This considers the active output protocol's capabilities if one is active.
+        If a protocol player is active, checks that protocol's GAPLESS_PLAYBACK feature.
+        Otherwise checks the native player's GAPLESS_PLAYBACK feature.
+        """
+        return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
 
     @property
     @final
@@ -908,7 +908,7 @@ class Player(ABC):
         Includes:
         - Native playback (if player supports PLAY_MEDIA and is not a protocol/universal player)
         - Active protocol players from linked_output_protocols
-        - Disabled protocols from cached linked_protocol_player_ids in config
+        - Disabled protocols from cached linked_protocol_ids in config
 
         Each entry has an available flag indicating current availability.
         """
@@ -958,7 +958,7 @@ class Player(ABC):
 
         # Add disabled protocols from cache
         cached_protocol_ids: list[str] = self.mass.config.get(
-            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}",
+            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
             [],
         )
         for protocol_id in cached_protocol_ids:
@@ -1122,7 +1122,11 @@ class Player(ABC):
         changed_values = self.__calculate_player_state()
         if prev_media_checksum != self._get_player_media_checksum():
             # current media changed, call the media updated callback
-            self._on_player_media_updated()
+            # debounce the callback to avoid multiple calls when multiple
+            # state updates happen in a short time
+            self.mass.call_later(
+                1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
+            )
         # ignore some values that are not relevant for the state
         changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
@@ -1196,7 +1200,11 @@ class Player(ABC):
         """
         # TODO: validate that caller is the PlayerController ?
         self._config = config
-        self.mass.players.trigger_player_update(self.player_id)
+
+    @final
+    def set_initialized(self) -> None:
+        """Set the player as initialized."""
+        self.__initialized.set()
 
     @final
     def to_dict(self) -> dict[str, Any]:
@@ -1342,7 +1350,6 @@ class Player(ABC):
             self.mass.call_later(
                 2, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
-
         return get_changed_dataclass_values(
             prev_state,
             self._state,
@@ -1467,14 +1474,6 @@ class Player(ABC):
     @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            # if an announcement is in progress, return announcement details
-            return PlayerMedia(
-                uri="announcement",
-                media_type=MediaType.ANNOUNCEMENT,
-                title="ANNOUNCEMENT",
-            )
-
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.__final_active_group or self.__final_synced_to):
             if parent_player_id != self.player_id and (
@@ -1829,6 +1828,13 @@ class Player(ABC):
             # try to catch cases where player reports an active source
             # that is actually from an active output protocol (e.g. AirPlay)
             and self.active_source.lower() != output_protocol_domain
+            and not (
+                # try to handle sendspin bridge where the player itself
+                # is reporting the bridged protocol as active source
+                # we need to ignore that
+                output_protocol_domain == "sendspin"
+                and (self.active_source.lower() in ("airplay", "cast", "chromecast", "network"))
+            )
         ):
             return self.active_source
         # return the (last) known MA source - fallback to player's own queue source if none

@@ -16,11 +16,12 @@ APP_MEDIA_RECEIVER = "CC1AD845"
 SENDSPIN_CAST_APP_ID = "938CBF87"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
-CONF_USE_SENDSPIN_MODE = "use_sendspin_mode"
-CONF_SENDSPIN_SYNC_DELAY = "sendspin_sync_delay"
-CONF_SENDSPIN_CODEC = "sendspin_codec"
-DEFAULT_SENDSPIN_SYNC_DELAY = -300
-DEFAULT_SENDSPIN_CODEC = "flac"
+
+# Devices known to not work with the Sendspin Cast bridge.
+# Tuple of (manufacturer, model) where "*" is a wildcard.
+# These devices will not get a Sendspin bridge, allowing other protocols
+# (e.g. AirPlay bridge) to handle them instead.
+SENDSPIN_CAST_BLOCKLIST: tuple[tuple[str, str], ...] = (("Harman Luxury Audio", "*"),)
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,

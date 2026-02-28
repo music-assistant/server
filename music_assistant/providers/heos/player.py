@@ -264,6 +264,8 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
+        await self._device.clear_queue()
+
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._device.play_url(url)
 

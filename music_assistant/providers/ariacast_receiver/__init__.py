@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections import deque
 from collections.abc import AsyncGenerator
@@ -262,13 +263,17 @@ class AriaCastBridge(PluginProvider):
         if not artwork_url:
             return
 
+        # The binary often sends a static local URL (like http://127.0.0.1/image/artwork).
+        # We combine it with the track title to detect actual song/artwork changes.
+        current_identifier = f"{artwork_url}_{meta.title}_{meta.artist}"
+
         last_artwork_identifier = getattr(self, "_last_artwork_identifier", None)
-        if artwork_url != last_artwork_identifier:
+        if current_identifier != last_artwork_identifier:
             # New artwork detected
             self.logger.debug(
-                "New artwork detected: %s (was: %s)", artwork_url, last_artwork_identifier
+                "New artwork detected for track: %s (was: %s)", meta.title, last_artwork_identifier
             )
-            self._last_artwork_identifier = artwork_url
+            self._last_artwork_identifier = current_identifier
             # Clear old artwork data to prevent serving stale image
             self._artwork_bytes = None
             if meta:
@@ -402,18 +407,18 @@ class AriaCastBridge(PluginProvider):
                         self.logger.info(
                             "Artwork downloaded successfully, size: %d bytes", len(img_data)
                         )
-
+                        # Use a content-derived hash to prevent unbounded cache growth
+                        img_hash = hashlib.md5(img_data).hexdigest()[:8]
                         image = MediaItemImage(
                             type=ImageType.THUMB,
-                            path="artwork",
+                            path=f"artwork_{img_hash}",
                             provider=self.instance_id,
                             remotely_accessible=False,
                         )
-                        base_url = self.mass.metadata.get_image_url(image)
 
                         if self._source_details.metadata:
                             self._source_details.metadata.image_url = (
-                                f"{base_url}&t={self._artwork_timestamp}"
+                                self.mass.metadata.get_image_url(image)
                             )
 
                         if self._source_details.in_use_by:
@@ -425,7 +430,7 @@ class AriaCastBridge(PluginProvider):
 
     async def resolve_image(self, path: str) -> bytes:
         """Return raw image bytes to Music Assistant."""
-        if path == "artwork" and self._artwork_bytes:
+        if path.startswith("artwork") and self._artwork_bytes:
             return self._artwork_bytes
         return b""
 

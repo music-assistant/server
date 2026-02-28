@@ -25,7 +25,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
-    CONF_LINKED_PROTOCOL_PLAYER_IDS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_PARENT_ID,
@@ -153,21 +153,35 @@ class ProtocolLinkingMixin:
         # Try to resolve real MAC via ARP
         real_mac = await resolve_real_mac_address(reported_mac, ip_address)
         if real_mac and real_mac.upper() != (reported_mac or "").upper():
-            # Replace the invalid/virtual MAC with the real MAC address
-            # (add_identifier will store multiple values if the implementation supports it)
-            player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
-            if reported_mac and not is_valid_mac_address(reported_mac):
+            if not reported_mac or not is_valid_mac_address(reported_mac):
+                # No MAC reported or MAC is invalid (00:00:00:00:00:00 etc.) - use ARP result
+                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
                 self.logger.debug(
-                    "Replaced invalid MAC for %s: %s -> %s",
+                    "Resolved MAC for %s: %s -> %s",
+                    player.state.name,
+                    reported_mac or "none",
+                    real_mac,
+                )
+            elif normalize_mac_for_matching(reported_mac) == normalize_mac_for_matching(real_mac):
+                # Only the locally-administered bit differs - safe to replace
+                # (e.g., 54:78:C9:E6:0D:A0 vs 56:78:C9:E6:0D:A0)
+                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
+                self.logger.debug(
+                    "Resolved real MAC for %s: %s -> %s",
                     player.state.name,
                     reported_mac,
                     real_mac,
                 )
             else:
+                # ARP resolved a completely different MAC (e.g., Apple devices use
+                # random private MACs for Bonjour that differ entirely from the
+                # hardware MAC). Keep the original MAC to preserve matching with
+                # other protocols/bridges that use the same reported MAC.
                 self.logger.debug(
-                    "Resolved real MAC for %s: %s -> %s",
+                    "Keeping original MAC for %s: reported=%s, ARP=%s "
+                    "(completely different - likely a private/random MAC)",
                     player.state.name,
-                    reported_mac or "none",
+                    reported_mac,
                     real_mac,
                 )
 
@@ -202,6 +216,16 @@ class ProtocolLinkingMixin:
                     self._add_protocol_link(parent_player, protocol_player, protocol_domain)
                     protocol_player.update_state()
                     parent_player.update_state()
+                # Copy identifiers from protocol player to universal player on restore.
+                # Restored universal players start with empty identifiers which must be
+                # repopulated from their protocol players so that new protocol players
+                # (like Sendspin bridges) can match via identifiers.
+                if parent_player.provider.domain == "universal_player" and isinstance(
+                    parent_player, UniversalPlayer
+                ):
+                    for conn_type, value in protocol_player.device_info.identifiers.items():
+                        parent_player.device_info.add_identifier(conn_type, value)
+                    self._update_universal_device_info(parent_player, protocol_player)
                 return
             # Parent not registered yet - skip evaluation (no universal player created)
             return
@@ -219,9 +243,15 @@ class ProtocolLinkingMixin:
                 continue
 
             # For universal players, check if this protocol player is in its stored list
+            # or if identifiers match (for new protocol players like Sendspin bridges
+            # that weren't previously known to the Universal Player)
             if native_player.provider.domain == "universal_player":
                 if isinstance(native_player, UniversalPlayer):
-                    if protocol_player.player_id in native_player._protocol_player_ids:
+                    is_known = protocol_player.player_id in native_player._protocol_player_ids
+                    is_match = not is_known and self._identifiers_match(
+                        native_player, protocol_player, protocol_domain
+                    )
+                    if is_known or is_match:
                         self._add_protocol_link(native_player, protocol_player, protocol_domain)
                         # Copy identifiers from protocol player to universal player
                         # This is important for restored universal players which start
@@ -230,6 +260,9 @@ class ProtocolLinkingMixin:
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
                         self._update_universal_device_info(native_player, protocol_player)
+                        # Register newly matched protocol player with the universal player
+                        if is_match:
+                            native_player.add_protocol_player(protocol_player.player_id)
                         # Persist updated data to config (async via task)
                         self._save_universal_player_data(native_player)
                         protocol_player.update_state()
@@ -607,9 +640,7 @@ class ProtocolLinkingMixin:
         disabled protocol players in the cache. This allows disabled protocols to be
         shown in the UI so they can be re-enabled.
         """
-        conf_key = (
-            f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
-        )
+        conf_key = f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         # Get existing cached IDs to preserve disabled protocols
         existing_ids: list[str] = self.mass.config.get(conf_key, [])
         # Get currently active protocol IDs
@@ -623,7 +654,7 @@ class ProtocolLinkingMixin:
 
     def _get_cached_protocol_ids(self, player_id: str) -> list[str]:
         """Get cached linked protocol IDs from config."""
-        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         result = self.mass.config.get(conf_key, [])
         return list(result) if result else []
 
@@ -635,7 +666,7 @@ class ProtocolLinkingMixin:
 
         Use this when a protocol player config is being deleted, not just disabled.
         """
-        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         cached_ids: list[str] = self.mass.config.get(conf_key, [])
         if protocol_player_id in cached_ids:
             cached_ids.remove(protocol_player_id)
@@ -674,7 +705,7 @@ class ProtocolLinkingMixin:
         cached_protocol_ids = self._get_cached_protocol_ids(native_player.player_id)
 
         # Also check all protocol players that have protocol_parent_id pointing to this player
-        # (this handles disabled protocols that may not be in linked_protocol_player_ids)
+        # (this handles disabled protocols that may not be in linked_protocol_ids)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for protocol_id, protocol_config in all_player_configs.items():
             # Skip if not a protocol player
@@ -794,11 +825,13 @@ class ProtocolLinkingMixin:
         identifiers_b = player_b.device_info.identifiers
 
         # Check identifiers in order of reliability
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID
+        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
         for conn_type in (
             IdentifierType.MAC_ADDRESS,
             IdentifierType.SERIAL_NUMBER,
             IdentifierType.UUID,
+            IdentifierType.CAST_UUID,
+            IdentifierType.AIRPLAY_ID,
         ):
             val_a = identifiers_a.get(conn_type)
             val_b = identifiers_b.get(conn_type)
@@ -1053,18 +1086,22 @@ class ProtocolLinkingMixin:
 
             # Check if this member is in the parent's group via protocol
             if parent_protocol_domain and parent_protocol_player:
-                child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
-                if (
-                    child_protocol
-                    and child_protocol.output_protocol_id in parent_protocol_player.group_members
-                ):
-                    self.logger.debug(
-                        "Translating removal: %s -> protocol %s",
-                        child_player_id,
-                        child_protocol.output_protocol_id,
+                child_protocol = child_player.get_output_protocol_by_domain(parent_protocol_domain)
+                if child_protocol and child_protocol.available:
+                    # For native protocol players, use the child's player_id directly
+                    child_protocol_id = (
+                        child_player.player_id
+                        if child_protocol.is_native
+                        else child_protocol.output_protocol_id
                     )
-                    protocol_members.append(child_protocol.output_protocol_id)
-                    continue
+                    if child_protocol_id in parent_protocol_player.group_members:
+                        self.logger.debug(
+                            "Translating removal: %s -> protocol %s",
+                            child_player_id,
+                            child_protocol_id,
+                        )
+                        protocol_members.append(child_protocol_id)
+                        continue
 
             # Check if child's protocol player is in parent's native group_members
             # This handles native protocol players (e.g., native AirPlay player like Apple TV)
@@ -1087,13 +1124,11 @@ class ProtocolLinkingMixin:
         return protocol_members, native_members
 
     def _filter_protocol_members(self, member_ids: list[str], protocol_player: Player) -> list[str]:
-        """Filter member IDs to only include protocol players from the same domain."""
+        """Filter member IDs to only include players from the same protocol domain."""
         return [
             pid
             for pid in member_ids
-            if (p := self.get_player(pid))
-            and p.type == PlayerType.PROTOCOL
-            and p.provider.domain == protocol_player.provider.domain
+            if (p := self.get_player(pid)) and p.provider.domain == protocol_player.provider.domain
         ]
 
     def _filter_native_members(self, member_ids: list[str], parent_player: Player) -> list[str]:
@@ -1178,7 +1213,7 @@ class ProtocolLinkingMixin:
         for parent_output_protocol in parent_player.output_protocols:
             if not parent_output_protocol.available:
                 continue
-            child_protocol = child_player.get_linked_protocol(
+            child_protocol = child_player.get_output_protocol_by_domain(
                 parent_output_protocol.protocol_domain
             )
             if not child_protocol or not child_protocol.available:
@@ -1205,8 +1240,8 @@ class ProtocolLinkingMixin:
 
         Selection priority when grouping:
         1. Try child's preferred output protocol (from player settings)
-        2. Try native grouping (if parent and child are compatible)
-        3. Try parent's active output protocol (if any and child supports it)
+        2. Try parent's active output protocol (if any and child supports it)
+        3. Try native grouping (if parent and child are compatible)
         4. Search for common protocol that supports set_members
         5. Log warning if no option works
 
@@ -1266,25 +1301,22 @@ class ProtocolLinkingMixin:
                 )
                 continue
 
-            # Priority 2: Try native grouping
-            if self._can_use_native_grouping(
-                child_player, parent_player, parent_supports_native_grouping
-            ):
-                native_members.append(child_player_id)
-                self.logger.log(
-                    VERBOSE_LOG_LEVEL,
-                    "Using native grouping for %s",
-                    child_player.state.name,
-                )
-                continue
-
-            # Priority 3: Try parent's active output protocol (if it supports SET_MEMBERS)
+            # Priority 2: Try parent's active output protocol (if it supports SET_MEMBERS)
             if parent_protocol_domain and parent_protocol_player:
                 # Verify the active protocol supports SET_MEMBERS
                 if PlayerFeature.SET_MEMBERS in parent_protocol_player.state.supported_features:
-                    child_protocol = child_player.get_linked_protocol(parent_protocol_domain)
+                    child_protocol = child_player.get_output_protocol_by_domain(
+                        parent_protocol_domain
+                    )
                     if child_protocol and child_protocol.available:
-                        protocol_members.append(child_protocol.output_protocol_id)
+                        # For native protocol players, use the child's player_id directly
+                        # (e.g., a native sendspin web player IS the protocol player)
+                        child_protocol_id = (
+                            child_player.player_id
+                            if child_protocol.is_native
+                            else child_protocol.output_protocol_id
+                        )
+                        protocol_members.append(child_protocol_id)
                         self.logger.log(
                             VERBOSE_LOG_LEVEL,
                             "Using parent's active protocol %s for %s",
@@ -1303,6 +1335,18 @@ class ProtocolLinkingMixin:
                     parent_protocol_player = None
                     parent_protocol_domain = None
 
+            # Priority 3: Try native grouping
+            if self._can_use_native_grouping(
+                child_player, parent_player, parent_supports_native_grouping
+            ):
+                native_members.append(child_player_id)
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Using native grouping for %s",
+                    child_player.state.name,
+                )
+                continue
+
             # Priority 4: Search for common protocol that supports set_members
             parent_protocol, child_protocol = self._try_find_common_protocol(
                 child_player, parent_player
@@ -1317,7 +1361,13 @@ class ProtocolLinkingMixin:
                     )
                     if parent_protocol_player:
                         parent_protocol_domain = parent_protocol_player.provider.domain
-                protocol_members.append(child_protocol.output_protocol_id)
+                # For native protocol players, use the child's player_id directly
+                child_protocol_id = (
+                    child_player.player_id
+                    if child_protocol.is_native
+                    else child_protocol.output_protocol_id
+                )
+                protocol_members.append(child_protocol_id)
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Selected common protocol %s for grouping %s with %s",
@@ -1442,7 +1492,7 @@ class ProtocolLinkingMixin:
                     parent_protocol_player.provider.domain,
                 )
                 # Use resume to restart from current position
-                await self.mass.players.cmd_resume(parent_player.player_id)
+                await self.mass.players._handle_cmd_resume(parent_player.player_id)
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
@@ -1450,30 +1500,3 @@ class ProtocolLinkingMixin:
             parent_protocol_player.group_members,
             parent_protocol_player.synced_to,
         )
-
-        # Clear active protocol if all protocol members were removed
-        if (
-            filtered_protocol_remove
-            and not filtered_protocol_add
-            and parent_protocol_player.player_id == parent_player.active_output_protocol
-        ):
-            # Check group_members count to see if we should clear
-            members_count = len(parent_protocol_player.group_members)
-            self.logger.debug(
-                "Checking if should clear active protocol on %s: "
-                "protocol_members_count=%s, removing=%s",
-                parent_player.state.name,
-                members_count,
-                filtered_protocol_remove,
-            )
-            if members_count <= 1 and parent_player.state.playback_state == PlaybackState.IDLE:
-                parent_player.set_active_output_protocol(None)
-
-        # Clear active output protocol on removed child players
-        if filtered_protocol_remove:
-            for child_protocol_id in filtered_protocol_remove:
-                if child_protocol := self.get_player(child_protocol_id):
-                    if child_protocol.protocol_parent_id:
-                        if child_player := self.get_player(child_protocol.protocol_parent_id):
-                            if child_player.active_output_protocol == child_protocol_id:
-                                child_player.set_active_output_protocol(None)

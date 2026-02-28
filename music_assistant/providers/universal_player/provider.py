@@ -15,17 +15,12 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerType
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_LINKED_PROTOCOL_IDS, CONF_PLAYERS
 from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import (
-    CONF_DEVICE_IDENTIFIERS,
-    CONF_DEVICE_INFO,
-    CONF_LINKED_PROTOCOL_IDS,
-    UNIVERSAL_PLAYER_PREFIX,
-)
+from .constants import CONF_DEVICE_IDENTIFIERS, CONF_DEVICE_INFO, UNIVERSAL_PLAYER_PREFIX
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
@@ -136,7 +131,7 @@ class UniversalPlayerProvider(PlayerProvider):
                     await self.mass.config.remove_player_config(player_id)
                     return
 
-            # Check if native player has this protocol in linked_protocol_player_ids
+            # Check if native player has this protocol in linked_protocol_ids
             all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
             for other_player_id, other_config in all_player_configs.items():
                 if other_player_id == player_id:
@@ -144,7 +139,7 @@ class UniversalPlayerProvider(PlayerProvider):
                 if other_config.get("provider") == "universal_player":
                     continue
                 other_values = other_config.get("values", {})
-                linked_protocols = other_values.get("linked_protocol_player_ids", [])
+                linked_protocols = other_values.get(CONF_LINKED_PROTOCOL_IDS, [])
                 if protocol_id in linked_protocols:
                     self.logger.info(
                         "Deleting stale universal player %s - "
@@ -395,6 +390,12 @@ class UniversalPlayerProvider(PlayerProvider):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a player."""
+        # TODO: should we only allow this if the universal player has no
+        # more linked protocol players?
+        await self.remove_universal_player(player_id)
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """

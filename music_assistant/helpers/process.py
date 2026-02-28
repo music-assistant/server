@@ -122,6 +122,7 @@ class AsyncProcess:
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
+            bufsize=0,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
@@ -359,14 +360,13 @@ class AsyncProcess:
             with suppress(asyncio.CancelledError, Exception):
                 await self._stderr_reader_task
 
-        # Close all pipes first to prevent any I/O blocking
-        # This helps processes stuck on blocked I/O to receive signals
+        # Close stdin to signal we're done sending data
+        # Note: Don't manually call feed_eof() on stdout/stderr - this causes
+        # "feed_data after feed_eof" assertion errors when the subprocess transport
+        # still has buffered data to deliver. Let the process termination naturally
+        # close the streams.
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
-        if self.proc.stdout:
-            self.proc.stdout.feed_eof()
-        if self.proc.stderr:
-            self.proc.stderr.feed_eof()
 
         # Send SIGKILL immediately using os.kill for more direct signal delivery
         self.logger.debug("Killing process %s with PID %s", self.name, pid)
