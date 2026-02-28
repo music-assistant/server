@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -22,7 +23,7 @@ CH_STALE = uuid4()  # channel for a disconnected member
 
 def _make_session(
     *,
-    push_stream: object | None = None,
+    push_stream: Any = None,
 ) -> SendspinPlaybackSession:
     """Build a minimal SendspinPlaybackSession with mocked player."""
     player = MagicMock()
@@ -37,8 +38,8 @@ def _make_session(
 
 def _make_push_stream(
     *,
-    channel_timing: dict | None = None,
-    active_channels: set | None = None,
+    channel_timing: dict[UUID, int] | None = None,
+    active_channels: set[UUID] | None = None,
     now_us: int = 0,
 ) -> MagicMock:
     """Build a mock PushStream with controllable timing internals."""
@@ -57,7 +58,7 @@ def _make_session_with_queue(
 ) -> SendspinPlaybackSession:
     """Build a session with mocked queue API."""
     session = _make_session()
-    pq = session.player.mass.player_queues
+    pq = cast("MagicMock", session.player.mass.player_queues)
     pq.get_active_queue.return_value = queue
     pq.get_next_item.return_value = next_item
     pq.index_by_id.return_value = index_by_id_result
@@ -196,7 +197,7 @@ def test_peek_returns_queue_id_and_index() -> None:
     )
     assert session._peek_next_queue_index() == ("q1", 6)
     # Verify correct args were passed through
-    pq = session.player.mass.player_queues
+    pq = cast("MagicMock", session.player.mass.player_queues)
     pq.get_next_item.assert_called_once_with("q1", 5)
     pq.index_by_id.assert_called_once_with("q1", "item-6")
 
