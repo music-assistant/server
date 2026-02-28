@@ -1453,17 +1453,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 if removed_player := self.get_player(_removed_player_id):
                     removed_player.update_state()
 
-        # Handle external source takeover - detect when active_source changes to
+        # detect when active_source changes to
         # something external while we have a grouped protocol active
         if ATTR_ACTIVE_SOURCE in changed_values:
-            prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
             task_id = f"external_source_takeover_{player_id}"
             self.mass.call_later(
-                3,
-                self._handle_external_source_takeover,
+                5,
+                self._check_external_source_takeover,
                 player,
-                prev_source,
-                new_source,
                 task_id=task_id,
             )
         became_inactive = (
@@ -2178,9 +2175,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
 
-    def _handle_external_source_takeover(
-        self, player: Player, prev_source: str | None, new_source: str | None
-    ) -> None:
+    def _check_external_source_takeover(self, player: Player) -> None:
         """
         Handle when an external source takes over playback on a player.
 
@@ -2192,8 +2187,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         but is actually playing from a different source.
 
         :param player: The player whose active_source changed.
-        :param prev_source: The previous active_source value.
-        :param new_source: The new active_source value.
         """
         # Only relevant for non-protocol players
         if player.type == PlayerType.PROTOCOL:
@@ -2206,6 +2199,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Only relevant if we have an active output protocol (not native)
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
+
+        new_source = player.state.active_source
 
         # Check if new source is external (not MA-managed)
         if self._is_ma_managed_source(player, new_source):

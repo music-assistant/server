@@ -79,7 +79,7 @@ class AirPlayStreamSession:
         wait_start = (
             AIRPLAY2_CONNECT_TIME_MS + max_output_buffer_ms
             if has_airplay2_client
-            else RAOP_CONNECT_TIME_MS
+            else RAOP_CONNECT_TIME_MS + max_output_buffer_ms
         )
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
@@ -373,6 +373,8 @@ class AirPlayStreamSession:
 
     async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
         """Start CLI process and ffmpeg for a single client."""
+        # sync volume from parent player if needed
+        airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         if airplay_player.protocol == StreamingProtocol.AIRPLAY2:

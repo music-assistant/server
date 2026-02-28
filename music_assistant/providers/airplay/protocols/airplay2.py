@@ -12,9 +12,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
-    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
     CONF_AIRPLAY_CREDENTIALS,
-    CONF_AIRPLAY_LATENCY,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -62,10 +60,6 @@ class AirPlay2Stream(AirPlayProtocol):
         player_id = self.player.player_id
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
         assert isinstance(sync_adjust, int)
-        latency = self.player.config.get_value(
-            CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS
-        )
-        assert isinstance(latency, int)
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
@@ -108,7 +102,7 @@ class AirPlay2Stream(AirPlayProtocol):
             "--command_pipe",
             self.commands_pipe.path,
             "--latency",
-            str(latency),
+            str(self.player.output_buffer_duration_ms),
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
