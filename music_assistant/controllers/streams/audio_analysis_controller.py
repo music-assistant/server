@@ -68,8 +68,26 @@ class AudioAnalysisController:
             self.logger.debug("No audio analysis providers available")
             return None
 
-        prefix = stream_details.queue_id or "bg"
-        session_key = f"{prefix}:{stream_details.provider}:{stream_details.item_id}"
+        # We only want to start analysis from the start of a track (i.e. no seek)
+        if stream_details.seek_position > 0:
+            self.logger.debug(
+                "Not starting analysis for %s because seek position is %d",
+                stream_details.uri,
+                stream_details.seek_position,
+            )
+            return None
+
+        session_key = (
+            f"{stream_details.provider}:{stream_details.media_type}:{stream_details.item_id}"
+        )
+
+        # Only start an analysis if not other queue has an analysis running for the same stream details
+        if session_key in self._active_sessions:
+            self.logger.debug(
+                "Analysis session already active for %s, ignoring start request",
+                stream_details.uri,
+            )
+            return None
 
         provider_ids: set[str] = set()
         for provider in providers:
