@@ -528,11 +528,11 @@ for more details.
             library_id = next(iter(self.libraries.podcasts.keys()))
         else:
             raise InvalidDataError(error_msg)
-        abs_playlist = await self._client.create_playlist(
-            parameters=AbsCreatePlaylistParameters(name=name, library_id=library_id)
-        )
         async with self.playlist_lock:
             self.playlist_last = time.time()
+            abs_playlist = await self._client.create_playlist(
+                parameters=AbsCreatePlaylistParameters(name=name, library_id=library_id)
+            )
             return parse_playlist(
                 abs_playlist=abs_playlist,
                 instance_id=self.instance_id,
@@ -1737,7 +1737,7 @@ for more details.
                 media_type=media_type,
             )
 
-            if ma_library_playlist := await self.mass.music.get_library_item_by_prov_id(
+            if ma_library_playlist := self.mass.music.get_library_item_by_prov_id(
                 media_type=MediaType.PLAYLIST,
                 item_id=abs_playlist.id_,
                 provider_instance_id_or_domain=self.instance_id,

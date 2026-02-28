@@ -60,6 +60,7 @@ def parse_playlist(
             )
         },
         supported_mediatypes={media_type},
+        is_editable=True,
     )
     # cover
     if abs_playlist.cover_path is not None:
