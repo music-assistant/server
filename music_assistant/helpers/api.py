@@ -19,6 +19,20 @@ from music_assistant.helpers.util import try_parse_bool
 
 LOGGER = logging.getLogger(__name__)
 
+# Allowlist of types that can be resolved from API string values.
+# Used by parse_value() when a parameter is annotated as type[...].
+_SAFE_TYPE_FROM_STRING: dict[str, type] = {
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "set": set,
+    "NoneType": NoneType,
+}
+
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 # Cache for resolved type alias strings to avoid repeated imports
@@ -324,7 +338,7 @@ def parse_utc_timestamp(datetime_string: str) -> datetime:
     return datetime.fromisoformat(datetime_string)
 
 
-def parse_value(  # noqa: PLR0911
+def parse_value(  # noqa: PLR0911, PLR0915
     name: str,
     value: Any,
     value_type: Any,
@@ -403,8 +417,13 @@ def parse_value(  # noqa: PLR0911
         logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
+        # Resolve string to a type using a safe allowlist.
+        # Never use eval() here — the value comes from API input.
         assert isinstance(value, str)  # for type checking
-        return eval(value)
+        if value not in _SAFE_TYPE_FROM_STRING:
+            msg = f"Cannot resolve type from string: {value!r}"
+            raise ValueError(msg)
+        return _SAFE_TYPE_FROM_STRING[value]
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:
