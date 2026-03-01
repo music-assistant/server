@@ -9,6 +9,7 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
@@ -2838,8 +2839,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_no_ip_skips_enrichment(self, mock_mass: MagicMock) -> None:
         """Test that enrichment is skipped when no IP address is available."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("sendspin", mass=mock_mass)
         # Sendspin bridge player has MAC but no IP
         player = MockPlayer(
@@ -2850,7 +2849,7 @@ class TestEnrichPlayerIdentifiers:
             identifiers={IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3"},
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged (no IP = no ARP lookup)
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
@@ -2858,8 +2857,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_valid_hardware_mac_skips_enrichment(self, mock_mass: MagicMock) -> None:
         """Test that a valid, non-locally-administered MAC skips enrichment."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("sonos", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2872,7 +2869,7 @@ class TestEnrichPlayerIdentifiers:
             },
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged (valid hardware MAC, not locally administered)
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "54:78:C9:E6:0D:A0"
@@ -2886,8 +2883,6 @@ class TestEnrichPlayerIdentifiers:
         Example: AirPlay reports 56:78:C9:E6:0D:A0, ARP resolves 54:78:C9:E6:0D:A0.
         These differ only in bit 1 of the first octet (locally-administered bit).
         """
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2901,26 +2896,24 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="54:78:C9:E6:0D:A0",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should be replaced with the ARP-resolved hardware MAC
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "54:78:C9:E6:0D:A0"
 
     @pytest.mark.asyncio
-    async def test_completely_different_mac_preserved(self, mock_mass: MagicMock) -> None:
-        """Test that the original MAC is preserved when ARP resolves a completely different MAC.
+    async def test_completely_different_mac_replaced_by_arp(self, mock_mass: MagicMock) -> None:
+        """Test that ARP result always replaces a locally-administered MAC.
 
-        This is the critical fix for Apple devices: AirPlay reports a random private MAC
-        (e.g., 62:E5:97:45:93:D3) while ARP resolves to the actual hardware MAC
-        (e.g., C0:95:6D:51:34:E0). These are completely different and replacing the
-        original would break Sendspin bridge matching.
+        Even when the ARP MAC is completely different from the reported MAC
+        (e.g., Apple devices with random private MACs), the ARP result is used
+        because it's the hardware truth that reliably unifies protocols.
+        Sendspin bridges match via AIRPLAY_ID/CAST_UUID, not MAC.
         """
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2934,20 +2927,18 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="C0:95:6D:51:34:E0",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
-        # MAC should NOT be replaced - the ARP MAC is completely different
-        assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
+        # MAC should be replaced with ARP result (hardware truth)
+        assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "C0:95:6D:51:34:E0"
 
     @pytest.mark.asyncio
     async def test_no_reported_mac_uses_arp_result(self, mock_mass: MagicMock) -> None:
         """Test that ARP MAC is used when no MAC was reported at all."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("chromecast", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2958,11 +2949,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="AA:BB:CC:DD:EE:FF",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should be set from ARP since there was none before
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
@@ -2970,8 +2961,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_invalid_mac_replaced_by_arp(self, mock_mass: MagicMock) -> None:
         """Test that an invalid MAC (00:00:00:00:00:00) is replaced by ARP result."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("dlna", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2985,11 +2974,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="11:22:33:44:55:66",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # Invalid MAC should be replaced
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "11:22:33:44:55:66"
@@ -2997,8 +2986,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_arp_returns_none_no_change(self, mock_mass: MagicMock) -> None:
         """Test that MAC is unchanged when ARP lookup returns None."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -3012,11 +2999,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value=None,
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
@@ -3024,8 +3011,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_ipv6_mapped_ipv4_normalized(self, mock_mass: MagicMock) -> None:
         """Test that IPv6-mapped IPv4 addresses are normalized."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -3038,7 +3023,7 @@ class TestEnrichPlayerIdentifiers:
             },
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # IP should be normalized to IPv4
         assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.100"
@@ -3452,16 +3437,12 @@ class TestEnrichAndMatchIntegration:
     """
 
     @pytest.mark.asyncio
-    async def test_apple_device_mac_preserved_enables_sendspin_match(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_apple_device_sendspin_matches_via_airplay_id(self, mock_mass: MagicMock) -> None:
         """Test the full Apple device scenario end-to-end.
 
         1. AirPlay player registers with private MAC 62:E5:97:45:93:D3
-        2. ARP resolves completely different hardware MAC C0:95:6D:51:34:E0
-        3. Original MAC is preserved (Fix 3)
-        4. Sendspin bridge registers with same private MAC 62:E5:97:45:93:D3
-        5. Identifier matching succeeds because the original MAC was preserved
+        2. ARP resolves to hardware MAC C0:95:6D:51:34:E0 (always used)
+        3. Sendspin bridge matches via AIRPLAY_ID, not MAC
         """
         controller = PlayerController(mock_mass)
 
@@ -3474,44 +3455,44 @@ class TestEnrichAndMatchIntegration:
             player_type=PlayerType.PLAYER,
             identifiers={
                 IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3",
+                IdentifierType.AIRPLAY_ID: "62:E5:97:45:93:D3",
                 IdentifierType.IP_ADDRESS: "192.168.1.200",
             },
         )
 
-        # Simulate ARP enrichment - resolves completely different MAC
+        # ARP enrichment replaces MAC with hardware truth
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="C0:95:6D:51:34:E0",
         ):
-            await controller._enrich_player_identifiers(airplay_player)
+            await enrich_device_mac_address(airplay_player.device_info)
 
-        # Verify original MAC is preserved (Fix 3)
+        # MAC replaced with ARP result
         assert (
             airplay_player.device_info.identifiers[IdentifierType.MAC_ADDRESS]
-            == "62:E5:97:45:93:D3"
+            == "C0:95:6D:51:34:E0"
         )
 
-        # Create Sendspin bridge player with same private MAC
+        # Create Sendspin bridge player with AIRPLAY_ID (how Sendspin actually matches)
         sendspin_provider = MockProvider("sendspin", mass=mock_mass)
         sendspin_player = MockPlayer(
             sendspin_provider,
             "spb_62e5974593d3",
             "Apple TV (Sendspin)",
             player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3"},
+            identifiers={IdentifierType.AIRPLAY_ID: "62:E5:97:45:93:D3"},
         )
 
-        # Identifiers should match because original MAC was preserved
+        # Identifiers match via AIRPLAY_ID
         assert controller._identifiers_match(airplay_player, sendspin_player, "sendspin") is True
 
     @pytest.mark.asyncio
     async def test_wiim_device_mac_replaced_still_matches(self, mock_mass: MagicMock) -> None:
-        """Test that WiiM devices still work after locally-administered bit replacement.
+        """Test that WiiM devices match after ARP enrichment.
 
-        WiiM reports 56:78:C9:E6:0D:A0 (locally administered), ARP resolves to
-        54:78:C9:E6:0D:A0 (hardware). The replacement is safe because
-        normalize_mac_for_matching handles this difference.
+        WiiM AirPlay reports 56:78:C9:E6:0D:A0 (locally administered), ARP resolves to
+        54:78:C9:E6:0D:A0 (hardware). The MAC is always replaced with the ARP result.
         """
         controller = PlayerController(mock_mass)
 
@@ -3530,11 +3511,11 @@ class TestEnrichAndMatchIntegration:
 
         # ARP resolves MAC that differs only in locally-administered bit
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="54:78:C9:E6:0D:A0",
         ):
-            await controller._enrich_player_identifiers(airplay_player)
+            await enrich_device_mac_address(airplay_player.device_info)
 
         # MAC should be replaced (only bit difference)
         assert (

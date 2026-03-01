@@ -33,11 +33,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import (
-    is_locally_administered_mac,
     is_valid_mac_address,
-    normalize_ip_address,
     normalize_mac_for_matching,
-    resolve_real_mac_address,
 )
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
@@ -99,91 +96,6 @@ class ProtocolLinkingMixin:
         without vendor-specific native support in Music Assistant.
         """
         return player.state.type == PlayerType.PROTOCOL
-
-    async def _enrich_player_identifiers(self, player: Player) -> None:
-        """
-        Enrich player identifiers with real MAC address if needed.
-
-        Some devices report different virtual/locally administered MAC addresses per protocol
-        (AirPlay, DLNA, Chromecast may all have different MACs for the same device).
-        This also applies to native players that may report virtual MACs.
-        This method tries to resolve the actual hardware MAC via ARP and adds it as an
-        additional identifier to enable proper matching between protocols and native players.
-
-        Invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff) are discarded and
-        replaced with the real MAC via ARP lookup.
-
-        IP addresses are normalized (IPv6-mapped IPv4 addresses are converted to IPv4).
-        """
-        identifiers = player.device_info.identifiers
-        reported_mac = identifiers.get(IdentifierType.MAC_ADDRESS)
-        ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
-
-        # Normalize IP address (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
-        if ip_address:
-            normalized_ip = normalize_ip_address(ip_address)
-            if normalized_ip and normalized_ip != ip_address:
-                player.device_info.add_identifier(IdentifierType.IP_ADDRESS, normalized_ip)
-                self.logger.debug(
-                    "Normalized IP address for %s: %s -> %s",
-                    player.state.name,
-                    ip_address,
-                    normalized_ip,
-                )
-                ip_address = normalized_ip
-
-        # Skip MAC enrichment if no IP available (can't do ARP lookup)
-        if not ip_address:
-            return
-
-        # Check if we need to do ARP lookup:
-        # 1. No MAC reported at all
-        # 2. MAC is invalid (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
-        # 3. MAC is locally administered (virtual)
-        should_lookup = (
-            not reported_mac
-            or not is_valid_mac_address(reported_mac)
-            or is_locally_administered_mac(reported_mac)
-        )
-
-        if not should_lookup:
-            # MAC looks valid and is a real hardware MAC
-            return
-
-        # Try to resolve real MAC via ARP
-        real_mac = await resolve_real_mac_address(reported_mac, ip_address)
-        if real_mac and real_mac.upper() != (reported_mac or "").upper():
-            if not reported_mac or not is_valid_mac_address(reported_mac):
-                # No MAC reported or MAC is invalid (00:00:00:00:00:00 etc.) - use ARP result
-                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
-                self.logger.debug(
-                    "Resolved MAC for %s: %s -> %s",
-                    player.state.name,
-                    reported_mac or "none",
-                    real_mac,
-                )
-            elif normalize_mac_for_matching(reported_mac) == normalize_mac_for_matching(real_mac):
-                # Only the locally-administered bit differs - safe to replace
-                # (e.g., 54:78:C9:E6:0D:A0 vs 56:78:C9:E6:0D:A0)
-                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
-                self.logger.debug(
-                    "Resolved real MAC for %s: %s -> %s",
-                    player.state.name,
-                    reported_mac,
-                    real_mac,
-                )
-            else:
-                # ARP resolved a completely different MAC (e.g., Apple devices use
-                # random private MACs for Bonjour that differ entirely from the
-                # hardware MAC). Keep the original MAC to preserve matching with
-                # other protocols/bridges that use the same reported MAC.
-                self.logger.debug(
-                    "Keeping original MAC for %s: reported=%s, ARP=%s "
-                    "(completely different - likely a private/random MAC)",
-                    player.state.name,
-                    reported_mac,
-                    real_mac,
-                )
 
     def _evaluate_protocol_links(self, player: Player) -> None:
         """
@@ -812,9 +724,10 @@ class ProtocolLinkingMixin:
         Check if identifiers match between two players.
 
         Matching is done by comparing connection identifiers (MAC, serial, UUID).
-        IP address is used as a fallback for protocol players only, because some
-        devices report different virtual MAC addresses per protocol (e.g., DLNA vs
-        AirPlay vs Chromecast may all have different MACs for the same device).
+        IP address is never used for matching as it can change with DHCP and
+        cause incorrect matches. The player controller validates and enriches
+        MAC addresses during registration (invalidating bad MACs and resolving
+        real hardware MACs via ARP for locally-administered addresses).
 
         Invalid identifiers (e.g., 00:00:00:00:00:00 MAC addresses) are filtered out
         to prevent false matches between unrelated devices.
@@ -873,38 +786,7 @@ class ProtocolLinkingMixin:
                 if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
 
-        # Fallback: IP address matching for protocol players only
-        # Some devices report different virtual MAC addresses per protocol,
-        # but the IP address remains the same. Only use this for protocol-to-protocol
-        # or protocol-to-universal matching to avoid false positives.
-        if self._can_use_ip_matching(player_a, player_b):
-            ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
-            ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
-
-            # Normalize IP addresses (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
-            ip_a_normalized = normalize_ip_address(ip_a)
-            ip_b_normalized = normalize_ip_address(ip_b)
-
-            if ip_a_normalized and ip_b_normalized and ip_a_normalized == ip_b_normalized:
-                return True
-
         return False
-
-    def _can_use_ip_matching(self, player_a: Player, player_b: Player) -> bool:
-        """
-        Check if IP address matching can be used between two players.
-
-        IP matching is only allowed when at least one player is a protocol player
-        or universal player, to avoid false positives between unrelated devices.
-        """
-        # Check if at least one is a protocol player or universal player
-        a_is_protocol = (
-            player_a.type == PlayerType.PROTOCOL or player_a.provider.domain == "universal_player"
-        )
-        b_is_protocol = (
-            player_b.type == PlayerType.PROTOCOL or player_b.provider.domain == "universal_player"
-        )
-        return a_is_protocol or b_is_protocol
 
     def _select_best_output_protocol(self, player: Player) -> tuple[Player, OutputProtocol | None]:
         """

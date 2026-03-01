@@ -735,6 +735,17 @@ class SendspinPlaybackSession:
                 commit_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await commit_task
+            # On clean EOF, wait for clients to finish playing their
+            # buffered audio before sending stream/end (which clears
+            # client buffers per the SendSpin spec).
+            if producer_stopped_cleanly:
+                try:
+                    await self._wait_for_buffer_drain()
+                except asyncio.CancelledError:
+                    # New playback interrupted the drain — treat as
+                    # non-clean stop so we skip group.stop() below
+                    # and let the new playback handle the transition.
+                    producer_stopped_cleanly = False
             with suppress(Exception):
                 self._stop_push_stream()
             await self._clear_join_catchup()
@@ -1082,6 +1093,33 @@ class SendspinPlaybackSession:
     def _create_push_stream(self) -> PushStream:
         """Create PushStream with channel resolver for per-member routing."""
         return self.player.api.group.start_stream(channel_resolver=self._resolve_channel_for_player)
+
+    async def _wait_for_buffer_drain(self) -> None:
+        """Wait for clients to finish playing buffered audio.
+
+        Called before stopping the push stream on natural EOF to prevent
+        stream/end from clearing client buffers while audio is still playing.
+
+        Uses the push stream's public backpressure API with a zero buffer
+        target to sleep until the clock catches up with all committed audio.
+        Each internal sleep is capped at 1 second, so we loop until drained.
+
+        Raises asyncio.CancelledError if a new playback request interrupts.
+        """
+        ps = self._push_stream
+        if ps is None or ps.is_stopped:
+            return
+        self.player.logger.debug("Waiting for client buffer drain before stream/end")
+        # Safety timeout: never wait longer than the max buffer depth.
+        deadline = time.monotonic() + (_PRODUCER_BUFFER_LIMIT_US / 1_000_000)
+        while time.monotonic() < deadline:
+            t0 = time.monotonic()
+            await ps.sleep_to_limit_buffer(0)
+            # sleep_to_limit_buffer returns immediately when the clock has
+            # caught up with all committed audio (nothing left to drain).
+            if time.monotonic() - t0 < 0.05:
+                break
+        self.player.logger.debug("Client buffer drain complete")
 
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
