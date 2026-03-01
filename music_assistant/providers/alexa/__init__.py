@@ -64,18 +64,18 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
-async def normalize_language(value: str) -> str:
+def validate_alexa_language(value: str) -> str:
+    """Validate and normalize Alexa language."""
     parts = value.split("-")
     if len(parts) != 2:
-        raise ValueError("Ungültiges Sprachformat")
+        raise ValueError("Alexa language must be in format xx-YY")
 
-    lang = parts[0].lower()
-    country = parts[1].upper()
+    normalized = f"{parts[0].lower()}-{parts[1].upper()}"
 
-    normalized = f"{lang}-{country}"
-
-    if not re.match(r"^[a-z]{2}-[A-Z]{2}$", normalized):
-        raise ValueError("Ungültiges Sprachformat")
+    if not LANGUAGE_PATTERN.match(normalized):
+        raise ValueError(
+            "Alexa language must be in format xx-YY (e.g. de-DE)"
+        )
 
     return normalized
     
@@ -217,11 +217,12 @@ async def get_config_entries(
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
         ConfigEntry(
-            key=normalize_language(CONF_ALEXA_LANGUAGE),
+            key=CONF_ALEXA_LANGUAGE,
             type=ConfigEntryType.STRING,
             label="Alexa Language",
             required=True,
             default_value="en-US",
+            validator=validate_alexa_language,
         ),
     )
 
