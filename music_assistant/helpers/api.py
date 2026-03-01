@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import builtins as _builtins_module
 import importlib
 import inspect
 import logging
@@ -19,11 +18,6 @@ from music_assistant_models.media_items.media_item import MediaItem
 from music_assistant.helpers.util import try_parse_bool
 
 LOGGER = logging.getLogger(__name__)
-
-# Builtins restricted to only type objects — no functions like __import__, exec, open, etc.
-_SAFE_BUILTINS: dict[str, type] = {
-    k: v for k, v in vars(_builtins_module).items() if isinstance(v, type)
-}
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -296,6 +290,19 @@ def api_command(
     return decorate
 
 
+def _is_type_hint(value_type: Any) -> bool:
+    """Check if a type annotation is or contains type[X].
+
+    Handles both ``type[X]`` and ``type[X] | None``.
+    """
+    origin = get_origin(value_type)
+    if origin is type:
+        return True
+    if origin is Union or origin is UnionType:
+        return any(get_origin(arg) is type for arg in get_args(value_type))
+    return False
+
+
 def parse_arguments(
     func_sig: inspect.Signature,
     func_types: dict[str, Any],
@@ -313,14 +320,19 @@ def parse_arguments(
                 raise KeyError(f"Invalid parameter: '{key}'")
     # parse arguments to correct type
     for name, param in func_sig.parameters.items():
+        value_type = func_types[name]
+        # Skip type[X] parameters — these are for static type checking only
+        # and must not be resolved from API input.
+        if _is_type_hint(value_type):
+            continue
         value = args.get(name)
         default = MISSING if param.default is inspect.Parameter.empty else param.default
         try:
-            final_args[name] = parse_value(name, value, func_types[name], default)
+            final_args[name] = parse_value(name, value, value_type, default)
         except TypeError:
             # retry one more time with allow_value_convert=True
             final_args[name] = parse_value(
-                name, value, func_types[name], default, allow_value_convert=True
+                name, value, value_type, default, allow_value_convert=True
             )
     return final_args
 
@@ -330,7 +342,7 @@ def parse_utc_timestamp(datetime_string: str) -> datetime:
     return datetime.fromisoformat(datetime_string)
 
 
-def parse_value(  # noqa: PLR0911, PLR0915
+def parse_value(  # noqa: PLR0911
     name: str,
     value: Any,
     value_type: Any,
@@ -409,18 +421,10 @@ def parse_value(  # noqa: PLR0911, PLR0915
         logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
-        # Resolve a type name string (e.g. "str", "list[int]") to the actual type.
-        # Uses eval with __builtins__ restricted to only type objects, removing
-        # dangerous functions like __import__, exec, open, compile etc.
-        assert isinstance(value, str)  # for type checking
-        safe_globals = {k: v for k, v in globals().items() if k != "__builtins__"}
-        safe_globals["__builtins__"] = _SAFE_BUILTINS
-        try:
-            resolved = eval(value, safe_globals)
-        except (NameError, SyntaxError) as err:
-            msg = f"Cannot resolve type from string: {value!r}"
-            raise ValueError(msg) from err
-        return resolved
+        # type[X] parameters are skipped in parse_arguments so this branch
+        # should not be reachable from API input. Reject as a safeguard.
+        msg = f"Cannot resolve type from string: {value!r}"
+        raise ValueError(msg)
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:
