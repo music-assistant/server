@@ -66,7 +66,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio_analysis_controller import AudioAnalysisController
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
-from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
@@ -181,7 +180,6 @@ class StreamsController(CoreController):
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
         self._smart_fades_mixer = SmartFadesMixer(self)
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self)
         self._audio_analysis = AudioAnalysisController(self)
         # PCM capture for testing smart fades (enabled via SMART_FADES_TEST_MODE env var)
         self._pcm_captures: dict[str, PCMCaptureSession] = {}
@@ -200,11 +198,6 @@ class StreamsController(CoreController):
     def smart_fades_mixer(self) -> SmartFadesMixer:
         """Return the SmartFadesMixer instance."""
         return self._smart_fades_mixer
-
-    @property
-    def smart_fades_analyzer(self) -> SmartFadesAnalyzer:
-        """Return the SmartFadesAnalyzer instance."""
-        return self._smart_fades_analyzer
 
     async def get_config_entries(
         self,
@@ -1171,7 +1164,7 @@ class StreamsController(CoreController):
                         )
 
                     if analysis_session_key:
-                        await self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
+                        self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
 
                     # Write chunk to PCM capture file (test mode)
                     if pcm_capture_key:
@@ -1252,7 +1245,7 @@ class StreamsController(CoreController):
                     if analysis_pcm_complete:
                         await self._audio_analysis.finalize(analysis_session_key)
                     else:
-                        await self._audio_analysis.cancel(analysis_session_key)
+                        self._audio_analysis.cancel(analysis_session_key)
                     analysis_session_key = None  # Prevent double cancellation
                 # Finalize PCM capture (test mode)
                 if pcm_capture_key:
@@ -1749,7 +1742,7 @@ class StreamsController(CoreController):
 
                 # Queue chunk for audio analysis
                 if analysis_session_key:
-                    await self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
+                    self._audio_analysis.process_pcm_chunk(analysis_session_key, chunk)
 
                 # Write chunk to PCM capture file (test mode)
                 if pcm_capture_key:
@@ -1809,7 +1802,7 @@ class StreamsController(CoreController):
                 if analysis_pcm_complete:
                     await self._audio_analysis.finalize(analysis_session_key)
                 else:
-                    await self._audio_analysis.cancel(analysis_session_key)
+                    self._audio_analysis.cancel(analysis_session_key)
                 analysis_session_key = None  # Prevent double finalization/cancellation
 
         #### HANDLE END OF TRACK

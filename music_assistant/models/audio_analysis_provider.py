@@ -116,11 +116,11 @@ class AudioAnalysisProvider(Provider):
         """
 
     async def cancel(self, session_id: str) -> None:
-        """Cancel an in-progress analysis session.
-
-        Called if streaming is interrupted (skip, stop, error).
-        Default implementation removes the session data.
-
-        :param session_id: The analysis session ID to cancel.
-        """
+        """Cancel an in-progress analysis session."""
         self._sessions.pop(session_id, None)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload, cancelling any active analysis sessions."""
+        for session_id in list(self._sessions):
+            await self.cancel(session_id)
+        await super().unload(is_removed)

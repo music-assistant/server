@@ -23,11 +23,6 @@ class AudioAnalysisController:
 
     This is a child controller owned by StreamsController. It coordinates analysis
     across multiple providers, each of which can process audio independently.
-    Providers are responsible for storing their own results.
-
-    Each session gets an asyncio.Queue with a background worker that processes
-    chunks sequentially, keeping the streaming pipeline non-blocking while
-    preserving chunk ordering for stateful providers.
     """
 
     def __init__(self, streams: StreamsController) -> None:
@@ -38,7 +33,6 @@ class AudioAnalysisController:
         self.streams = streams
         self.mass = streams.mass
         self.logger = logging.getLogger(MASS_LOGGER_NAME).getChild("audio_analysis")
-        # session_key -> set of provider instance IDs that accepted this session
         self._active_sessions: dict[str, set[str]] = {}
         self._queues: dict[str, asyncio.Queue[bytes | None]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
@@ -47,9 +41,9 @@ class AudioAnalysisController:
     def providers(self) -> list[AudioAnalysisProvider]:
         """Return all available audio analysis providers."""
         return [
-            p
-            for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
-            if isinstance(p, AudioAnalysisProvider) and p.available
+            prov
+            for prov in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
+            if isinstance(prov, AudioAnalysisProvider) and prov.available
         ]
 
     async def start_analysis(
@@ -115,7 +109,7 @@ class AudioAnalysisController:
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
         return session_key
 
-    async def process_pcm_chunk(self, session_key: str, pcm_chunk: bytes) -> None:
+    def process_pcm_chunk(self, session_key: str, pcm_chunk: bytes) -> None:
         """Queue a PCM chunk for processing by all providers in a session.
 
         Returns immediately — the background worker processes chunks sequentially.
@@ -135,7 +129,6 @@ class AudioAnalysisController:
 
         :param session_key: The session key from start_analysis.
         """
-        # Send sentinel to stop the worker and wait for it to drain all chunks
         queue = self._queues.pop(session_key, None)
         if queue is not None:
             queue.put_nowait(None)
@@ -152,7 +145,7 @@ class AudioAnalysisController:
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
                 self.mass.create_task(provider.finalize(session_key))
 
-    async def cancel(self, session_key: str) -> None:
+    def cancel(self, session_key: str) -> None:
         """Cancel an in-progress analysis session.
 
         :param session_key: The session key from start_analysis.

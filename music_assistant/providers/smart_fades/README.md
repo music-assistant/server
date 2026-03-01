@@ -55,25 +55,3 @@ The feature extractor aligns the start of each audio segment to a `hop_length` (
 #### 4. Single-pass model inference at finalize
 
 Unlike the feature extraction (which runs incrementally per block), model inference runs once on the concatenated features when the track ends. The Beat This! transformer (`Spect2Frames`) processes the full spectrogram in a single forward pass, and the postprocessor converts frame-level logits to beat/downbeat timestamps.
-
-## File structure
-
-| File | Purpose |
-|---|---|
-| `__init__.py` | Provider entry point and `setup()` function |
-| `provider.py` | `SmartFadesProvider` — session management, PCM decoding, block processing, model inference |
-| `feature_extractor.py` | `AdvancedBeatFeatureExtractor` — streaming log-mel extraction with delayed frames |
-| `helpers.py` | `build_smart_fades_analysis()` — converts raw beats/downbeats to `SmartFadesAnalysis` model |
-| `manifest.json` | Provider metadata |
-
-## Beat This! model details
-
-- **Model**: `Spect2Frames` with checkpoint `final0` (default pretrained weights)
-- **Postprocessor**: `minimal` mode (peak-picking, no Dynamic Bayesian Network)
-- **Input**: Log-mel spectrogram — 128 mel bins, 50 fps (hop=441 at 22050 Hz)
-- **Output**: Per-frame beat and downbeat logits, converted to timestamps
-- **License**: MIT
-
-## Streaming vs offline parity
-
-With the delayed-frame and per-block resampling approach, the streaming pipeline produces output identical to Beat This! `File2Beats` on the test fixture (32 beats, 8 downbeats, 0ms maximum difference). On real-world music across 49 test songs, 44/49 songs achieve >= 99% beat match within 20ms tolerance. The remaining differences are inherent to 10-second block boundaries where minor spectrogram edge effects can shift a beat by one frame (20ms).
