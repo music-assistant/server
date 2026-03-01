@@ -676,6 +676,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
+        if cur_volume is None:
+            return
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -695,6 +697,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
+        if cur_volume is None:
+            return
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -1453,17 +1457,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 if removed_player := self.get_player(_removed_player_id):
                     removed_player.update_state()
 
-        # Handle external source takeover - detect when active_source changes to
+        # detect when active_source changes to
         # something external while we have a grouped protocol active
         if ATTR_ACTIVE_SOURCE in changed_values:
-            prev_source, new_source = changed_values[ATTR_ACTIVE_SOURCE]
             task_id = f"external_source_takeover_{player_id}"
             self.mass.call_later(
-                3,
-                self._handle_external_source_takeover,
+                5,
+                self._check_external_source_takeover,
                 player,
-                prev_source,
-                new_source,
                 task_id=task_id,
             )
         became_inactive = (
@@ -1617,6 +1618,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
         """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
         cur_volume = group_player.state.group_volume
+        if cur_volume is None:
+            return
         volume_dif = volume_level - cur_volume
         coros = []
         # handle group volume by only applying the volume to powered members
@@ -2178,9 +2181,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
 
-    def _handle_external_source_takeover(
-        self, player: Player, prev_source: str | None, new_source: str | None
-    ) -> None:
+    def _check_external_source_takeover(self, player: Player) -> None:
         """
         Handle when an external source takes over playback on a player.
 
@@ -2192,8 +2193,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         but is actually playing from a different source.
 
         :param player: The player whose active_source changed.
-        :param prev_source: The previous active_source value.
-        :param new_source: The new active_source value.
         """
         # Only relevant for non-protocol players
         if player.type == PlayerType.PROTOCOL:
@@ -2207,6 +2206,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
 
+        new_source = player.state.active_source
+
         # Check if new source is external (not MA-managed)
         if self._is_ma_managed_source(player, new_source):
             return
@@ -2219,6 +2220,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If the source matches the active protocol's domain, it's expected - not a takeover
         # e.g., source "airplay" when using AirPlay protocol is normal
         if new_source and new_source.lower() == protocol_player.provider.domain.lower():
+            return
+
+        if (
+            new_source
+            and new_source.lower() in ("airplay", "cast", "chromecast", "network")
+            and protocol_player.provider.domain.lower() == "sendspin"
+        ):
+            # Special case for Sendspin bridge: if the new source matches cast or airplay and the
+            # active protocol is Sendspin, we consider this a normal behavior and not a takeover
             return
 
         # Confirmed external source takeover

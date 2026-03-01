@@ -90,6 +90,10 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS,
+    ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES,
+    ProviderFeature.PLAYLIST_CREATE_RADIOS,
+    ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
@@ -242,6 +246,12 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            supported_mediatypes={
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+                MediaType.RADIO,
+                MediaType.TRACK,
+            },
             is_editable=True,
         )
         if image_url := stored_item.get("image_url"):
@@ -358,7 +368,7 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(  # type: ignore[override]
+    async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks.
@@ -435,7 +445,7 @@ class BuiltinProvider(MusicProvider):
             stored_item["last_updated"] = int(time.time())
             self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         item_id = shortuuid.random(8)
         stored_item = StoredItem(item_id=item_id, name=name)

@@ -851,7 +851,7 @@ class MusicAssistant:
         """
         # handle default providers setup
         self.config.set_default(CONF_DEFAULT_PROVIDERS_SETUP, set())
-        default_providers_setup = cast("set[str]", self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
+        default_providers_setup = set(self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
         changes_made = False
         for default_provider, require_mdns in DEFAULT_PROVIDERS:
             if default_provider in default_providers_setup:

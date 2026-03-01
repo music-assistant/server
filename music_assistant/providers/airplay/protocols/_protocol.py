@@ -106,6 +106,21 @@ class AirPlayProtocol(ABC):
         if not force:
             self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
+    async def write_audio(self, data: bytes) -> None:
+        """Write raw audio data to the CLI process stdin.
+
+        :param data: Raw audio bytes to send to the streaming process.
+        """
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write(data)
+
+    async def write_audio_eof(self) -> None:
+        """Signal end-of-stream to the CLI process stdin."""
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write_eof()
+
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLI binary."""
         if self._stopped or not self._cli_proc or self._cli_proc.closed:

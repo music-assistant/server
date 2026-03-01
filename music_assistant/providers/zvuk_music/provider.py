@@ -405,7 +405,7 @@ class ZvukMusicProvider(MusicProvider):
 
     # Playlist management
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist.
 
         :param name: Playlist name.
