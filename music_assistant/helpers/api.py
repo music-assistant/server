@@ -19,9 +19,9 @@ from music_assistant.helpers.util import try_parse_bool
 
 LOGGER = logging.getLogger(__name__)
 
-# Allowlist of types that can be resolved from API string values.
-# Used by parse_value() when a parameter is annotated as type[...].
-_SAFE_TYPE_FROM_STRING: dict[str, type] = {
+# Safe namespace for resolving type strings from API input.
+# Used with eval() with __builtins__={} so only these names are accessible.
+_SAFE_TYPE_NAMESPACE: dict[str, type] = {
     "str": str,
     "int": int,
     "float": float,
@@ -30,6 +30,12 @@ _SAFE_TYPE_FROM_STRING: dict[str, type] = {
     "dict": dict,
     "tuple": tuple,
     "set": set,
+    "frozenset": frozenset,
+    "bytes": bytes,
+    "bytearray": bytearray,
+    "complex": complex,
+    "object": object,
+    "type": type,
     "NoneType": NoneType,
 }
 
@@ -417,13 +423,16 @@ def parse_value(  # noqa: PLR0911, PLR0915
         logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
-        # Resolve string to a type using a safe allowlist.
-        # Never use eval() here — the value comes from API input.
+        # Resolve a type name string (e.g. "str", "list[int]") to the actual type.
+        # Uses eval with an empty __builtins__ and a safe namespace of only
+        # type names, so no functions or modules are accessible.
         assert isinstance(value, str)  # for type checking
-        if value not in _SAFE_TYPE_FROM_STRING:
+        try:
+            resolved = eval(value, {"__builtins__": {}}, _SAFE_TYPE_NAMESPACE)
+        except (NameError, SyntaxError) as err:
             msg = f"Cannot resolve type from string: {value!r}"
-            raise ValueError(msg)
-        return _SAFE_TYPE_FROM_STRING[value]
+            raise ValueError(msg) from err
+        return resolved
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:
