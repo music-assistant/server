@@ -122,14 +122,14 @@ class AirPlayPlayer(Player):
         return self._get_protocol_for_config_value(preferred_option)
 
     @property
-    def available(self) -> bool:
-        """Return if the player is currently available."""
+    def needs_setup(self) -> bool:
+        """Return if the player needs setup."""
         if self._requires_pairing():
             # check if we have credentials stored for the current protocol
             creds_key = self._get_credentials_key(self.protocol)
             if not self.config.get_value(creds_key):
-                return False
-        return super().available
+                return True
+        return False
 
     @property
     def requires_flow_mode(self) -> bool:

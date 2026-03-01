@@ -101,7 +101,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 29
+DB_SCHEMA_VERSION: Final[int] = 30
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2481,6 +2481,14 @@ class MusicController(CoreController):
             # to the crossfade mixer. Truncate the table so all analyses are re-computed.
             await self._database.execute(f"DELETE FROM {DB_TABLE_SMART_FADES_ANALYSIS}")
 
+        if prev_version <= 30:
+            # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
+            # i.e. ["track"] the default, as this was the only media type supported.
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
+                " json DEFAULT '[\"track\"]' NOT NULL"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2592,7 +2600,8 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]'
             );"""
         )
         await self.database.execute(

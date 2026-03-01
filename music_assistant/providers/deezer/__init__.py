@@ -713,7 +713,7 @@ class DeezerProvider(MusicProvider):
         playlist = await self.client.get_playlist(int(prov_playlist_id))
         await playlist.delete_tracks(playlist_track_ids)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         playlist_id = await self.client.create_playlist(playlist_name=name)
         playlist = await self.client.get_playlist(playlist_id)

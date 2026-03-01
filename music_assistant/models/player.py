@@ -98,6 +98,7 @@ class Player(ABC):
     _attr_hidden_by_default: bool = False
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
+    _attr_needs_setup: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -234,6 +235,16 @@ class Player(ABC):
         the user. For all other player types return an empty list.
         """
         return self._attr_static_group_members
+
+    @property
+    def needs_setup(self) -> bool:
+        """
+        Return if the player needs setup.
+
+        If True, the player needs some sort of (initial) setup before it can be used,
+        such as completing an authentication flow or providing additional configuration.
+        """
+        return self._attr_needs_setup
 
     @property
     def powered(self) -> bool | None:
@@ -787,31 +798,75 @@ class Player(ABC):
 
     @cached_property
     @final
-    def group_volume(self) -> int:
+    def group_volume(self) -> int | None:
         """
         Return the group volume level.
 
         If this player is a group player or syncgroup, this will return the average volume
-        level of all (powered on) child players in the group.
+        level of all (powered on) child players in the group or None if none of the players
+        within the group support volume control.
+
         If the player is not a group player or syncgroup, this will return the volume level
-        of the player itself (if set), or 0 if not set.
+        of the player itself (if set), or None if not supported.
         """
         if len(self.state.group_members) == 0:
             # player is not a group or syncgroup
-            return self.state.volume_level or 0
+            if self.state.volume_control == PLAYER_CONTROL_NONE:
+                return None
+            return self.state.volume_level
         # calculate group volume from all (turned on) players
         group_volume = 0
         active_players = 0
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
         ):
+            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
             if (child_volume := child_player.state.volume_level) is None:
                 continue
             group_volume += child_volume
             active_players += 1
         if active_players:
             group_volume = int(group_volume / active_players)
-        return group_volume
+        return group_volume if active_players else None
+
+    @cached_property
+    @final
+    def group_volume_muted(self) -> bool | None:
+        """
+        Return the group mute state.
+
+        If this player is a group player or syncgroup, this will return True if all (powered on)
+        child players in the group are muted, False if at least one is not muted, or None if
+        none of the players within the group support mute control.
+
+        If the player is not a group player or syncgroup, this will return the mute state of the
+        player itself (if set), or None if not supported.
+        """
+        if len(self.state.group_members) == 0:
+            # player is not a group or syncgroup
+            if self.state.mute_control == PLAYER_CONTROL_NONE:
+                return None
+            return self.state.volume_muted
+        # calculate group mute state from all (turned on) players
+        any_unmuted = False
+        any_muted = False
+        for child_player in self.mass.players.iter_group_members(
+            self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
+        ):
+            if child_player.state.mute_control == PLAYER_CONTROL_NONE:
+                continue
+            if (child_muted := child_player.state.volume_muted) is None:
+                continue
+            if child_muted:
+                any_muted = True
+            else:
+                any_unmuted = True
+        if any_unmuted and not any_muted:
+            return False
+        if any_muted and not any_unmuted:
+            return True
+        return None
 
     @cached_property
     @final
@@ -1298,7 +1353,7 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available,
+            available=self.enabled and self.available and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,
@@ -1324,12 +1379,14 @@ class Player(ABC):
             expose_to_ha=self.expose_to_ha,
             icon=self.icon,
             group_volume=self.group_volume,
+            group_volume_muted=self.group_volume_muted,
             extra_attributes=self.extra_attributes,
             power_control=self.power_control,
             volume_control=self.volume_control,
             mute_control=self.mute_control,
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
+            needs_setup=self.needs_setup,
         )
 
         # track stop called state

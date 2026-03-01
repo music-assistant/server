@@ -21,7 +21,10 @@ CONF_USE_MASS_APP = "use_mass_app"
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
 # (e.g. AirPlay bridge) to handle them instead.
-SENDSPIN_CAST_BLOCKLIST: tuple[tuple[str, str], ...] = (("Harman Luxury Audio", "*"),)
+SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
+    ("Harman Luxury Audio", "*"),
+    ("*", "HK OMNI ADAPT+AMP"),
+}
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
