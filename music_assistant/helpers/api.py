@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins as _builtins_module
 import importlib
 import inspect
 import logging
@@ -19,24 +20,9 @@ from music_assistant.helpers.util import try_parse_bool
 
 LOGGER = logging.getLogger(__name__)
 
-# Safe namespace for resolving type strings from API input.
-# Used with eval() with __builtins__={} so only these names are accessible.
-_SAFE_TYPE_NAMESPACE: dict[str, type] = {
-    "str": str,
-    "int": int,
-    "float": float,
-    "bool": bool,
-    "list": list,
-    "dict": dict,
-    "tuple": tuple,
-    "set": set,
-    "frozenset": frozenset,
-    "bytes": bytes,
-    "bytearray": bytearray,
-    "complex": complex,
-    "object": object,
-    "type": type,
-    "NoneType": NoneType,
+# Builtins restricted to only type objects — no functions like __import__, exec, open, etc.
+_SAFE_BUILTINS: dict[str, type] = {
+    k: v for k, v in vars(_builtins_module).items() if isinstance(v, type)
 }
 
 _F = TypeVar("_F", bound=Callable[..., Any])
@@ -424,11 +410,13 @@ def parse_value(  # noqa: PLR0911, PLR0915
         return None
     if origin is type:
         # Resolve a type name string (e.g. "str", "list[int]") to the actual type.
-        # Uses eval with an empty __builtins__ and a safe namespace of only
-        # type names, so no functions or modules are accessible.
+        # Uses eval with __builtins__ restricted to only type objects, removing
+        # dangerous functions like __import__, exec, open, compile etc.
         assert isinstance(value, str)  # for type checking
+        safe_globals = {k: v for k, v in globals().items() if k != "__builtins__"}
+        safe_globals["__builtins__"] = _SAFE_BUILTINS
         try:
-            resolved = eval(value, {"__builtins__": {}}, _SAFE_TYPE_NAMESPACE)
+            resolved = eval(value, safe_globals)
         except (NameError, SyntaxError) as err:
             msg = f"Cannot resolve type from string: {value!r}"
             raise ValueError(msg) from err

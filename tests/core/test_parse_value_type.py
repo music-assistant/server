@@ -9,6 +9,7 @@ from __future__ import annotations
 from types import NoneType
 
 import pytest
+from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.api import parse_value
 
@@ -59,6 +60,15 @@ class TestParseValueTypeParameterized:
         """Parameterized generics should resolve correctly."""
         result = parse_value("return_type", value, _CONFIG_RETURN_TYPE)
         assert result == expected
+
+
+class TestParseValueTypeModuleScope:
+    """Test that types imported in the api module's scope resolve correctly."""
+
+    def test_media_item_resolves(self) -> None:
+        """MediaItem (imported in api.py) should resolve."""
+        result = parse_value("return_type", "MediaItem", _CONFIG_RETURN_TYPE)
+        assert result is MediaItem
 
 
 class TestParseValueTypeRejectsInvalid:
