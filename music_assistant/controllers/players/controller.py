@@ -676,6 +676,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
+        if cur_volume is None:
+            return
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -695,6 +697,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
+        if cur_volume is None:
+            return
         if cur_volume < 5 or cur_volume > 95:
             step_size = 1
         elif cur_volume < 20 or cur_volume > 80:
@@ -1614,6 +1618,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
         """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
         cur_volume = group_player.state.group_volume
+        if cur_volume is None:
+            return
         volume_dif = volume_level - cur_volume
         coros = []
         # handle group volume by only applying the volume to powered members

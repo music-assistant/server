@@ -96,20 +96,47 @@ class SyncGroupPlayer(Player):
     @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
-        # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
-        return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+        return self.sync_leader.state.playback_state if self.sync_leader else PlaybackState.IDLE
 
     @property
     def elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
-        return self.sync_leader.elapsed_time if self.sync_leader else None
+        if sync_leader := self.sync_leader:
+            # If an output protocol is active (and not native), use the protocol player's state
+            if (
+                sync_leader.active_output_protocol
+                and sync_leader.active_output_protocol != "native"
+                and (
+                    protocol_player := self.mass.players.get_player(
+                        sync_leader.active_output_protocol
+                    )
+                )
+                and protocol_player.playback_state != PlaybackState.IDLE
+            ):
+                return protocol_player.elapsed_time
+            return sync_leader.elapsed_time
+        return None
 
     @property
     def elapsed_time_last_updated(self) -> float | None:
         """Return when the elapsed time was last updated."""
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
-        return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
+        if sync_leader := self.sync_leader:
+            # If an output protocol is active (and not native), use the protocol player's state
+            if (
+                sync_leader.active_output_protocol
+                and sync_leader.active_output_protocol != "native"
+                and (
+                    protocol_player := self.mass.players.get_player(
+                        sync_leader.active_output_protocol
+                    )
+                )
+                and protocol_player.playback_state != PlaybackState.IDLE
+            ):
+                return protocol_player.elapsed_time_last_updated
+            return sync_leader.elapsed_time_last_updated
+        return None
 
     @property
     def current_media(self) -> PlayerMedia | None:
