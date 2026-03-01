@@ -18,9 +18,17 @@ from aioaudiobookshelf.client.items import (
 from aioaudiobookshelf.client.items import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
 from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlaybackSessionParameters
 from aioaudiobookshelf.client.session import SyncOpenSessionParameters
-from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
+from aioaudiobookshelf.exceptions import (
+    LoginError as AbsLoginError,
+)
+from aioaudiobookshelf.exceptions import (
+    NotFoundError as AbsNotFoundError,
+)
 from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
+from aioaudiobookshelf.exceptions import (
+    SessionSyncError as AbsSessionSyncError,
+)
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
@@ -480,7 +488,25 @@ for more details.
             # no pages in abs' playlist items api
             return []
         playlist_items: list[PlaylistPlayableItem] = []
-        playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        try:
+            playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        except AbsNotFoundError:
+            # this is an edge case - abs deletes the playlist automatically, when
+            # the last item is removed, but the frontend then still asks for tracks.
+            # Due to our guard, we also block playlist removal via a socket update, so we can
+            # do that here
+            if ma_playlist := await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.PLAYLIST,
+                item_id=prov_playlist_id,
+                provider_instance_id_or_domain=self.instance_id,
+            ):
+                self.logger.debug(
+                    "Removing a playlist with not tracks from MA library, %s", ma_playlist.name
+                )
+                await self.mass.music.remove_item_from_library(
+                    media_type=MediaType.PLAYLIST, library_item_id=ma_playlist.item_id
+                )
+            return []
         for item in playlist.items:
             if isinstance(item, AbsPlaylistItemExpandedBook):
                 progress = await self._client.get_my_media_progress(item_id=item.library_item.id_)
@@ -571,7 +597,10 @@ for more details.
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove items from playlist."""
-        abs_playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        try:
+            abs_playlist = await self._client.get_playlist(playlist_id=prov_playlist_id)
+        except AbsNotFoundError:
+            return
         items_to_remove: list[AbsPlaylistItem] = []
         for item_cnt, item in enumerate(abs_playlist.items):
             if item_cnt in positions_to_remove:
@@ -583,7 +612,7 @@ for more details.
         if items_to_remove:
             async with self.playlist_lock:
                 self.playlist_last = time.time()
-                await self._client.remove_item_to_playlist_batch(
+                await self._client.remove_item_from_playlist_batch(
                     playlist_id=prov_playlist_id, items=items_to_remove
                 )
 
@@ -593,7 +622,9 @@ for more details.
         assert media_type == MediaType.PLAYLIST
         async with self.playlist_lock:
             self.playlist_last = time.time()
-            await self._client.delete_playlist(playlist_id=prov_item_id)
+            with suppress(AbsNotFoundError):
+                # suppress due to edge case in add_library_tracks
+                await self._client.delete_playlist(playlist_id=prov_item_id)
             return True
 
     @handle_refresh_token
@@ -1179,8 +1210,10 @@ for more details.
                 session_helper.last_sync_time = now
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
-            except AbsSessionNotFoundError:
-                self.logger.error("Was unable to sync session.")
+            except AbsSessionSyncError:
+                self.logger.debug(
+                    "Was unable to sync session. Falling back to non-session approach."
+                )
             return False
 
         if media_type == MediaType.PODCAST_EPISODE:
@@ -1744,13 +1777,12 @@ for more details.
                 owner=self.abs_username,
                 media_type=media_type,
             )
-
-            if ma_library_playlist := self.mass.music.get_library_item_by_prov_id(
+            ma_library_playlist = await self.mass.music.get_library_item_by_prov_id(
                 media_type=MediaType.PLAYLIST,
                 item_id=abs_playlist.id_,
                 provider_instance_id_or_domain=self.instance_id,
-            ):
-                assert isinstance(ma_library_playlist, Playlist)  # for type checking
+            )
+            if ma_library_playlist is not None and isinstance(ma_library_playlist, Playlist):
                 await self.mass.music.playlists.update_item_in_library(
                     item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
                 )
