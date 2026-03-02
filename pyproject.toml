@@ -36,7 +36,7 @@ dependencies = [
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
-  "xmltodict==1.0.2",
+  "xmltodict==1.0.4",
   "shortuuid==1.0.13",
   "zeroconf==0.148.0",
   "uv>=0.8.0",
