@@ -392,9 +392,12 @@ class BuiltinProvider(MusicProvider):
                     # controller's own media_type, which is wrong for podcast
                     # episodes (controller has PODCAST, not PODCAST_EPISODE).
                     item_prov = self.mass.get_provider(provider_instance_id_or_domain)
-                    if item_prov:
-                        item_prov = cast("MusicProvider", item_prov)
-                        media_item = await item_prov.get_item(media_type, item_id)
+                    if not item_prov:
+                        raise ProviderUnavailableError(
+                            f"{provider_instance_id_or_domain} is not available"
+                        )
+                    item_prov = cast("MusicProvider", item_prov)
+                    media_item = await item_prov.get_item(media_type, item_id)
                 if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
                     playlist_item = cast("PlaylistPlayableItem", media_item)
                     playlist_item.position = index
