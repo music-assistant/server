@@ -701,6 +701,9 @@ class PlayerController(CoreController):
         """
         if not (player := self.get(player_id)):
             return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_up(player_id)
+            return
         current_volume = player.volume_level or 0
         if current_volume < 5 or current_volume > 95:
             step_size = 1
@@ -719,6 +722,9 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         if not (player := self.get(player_id)):
+            return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.volume_level or 0
         if current_volume < 5 or current_volume > 95:
