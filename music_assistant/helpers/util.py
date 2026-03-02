@@ -7,6 +7,7 @@ import functools
 import importlib
 import logging
 import os
+import platform
 import re
 import shutil
 import socket
@@ -53,6 +54,63 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 
 T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
+
+
+async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
+    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
+
+    :param logger: Logger instance to write the warning to.
+    """
+    if platform.machine() not in ("x86_64", "AMD64"):
+        return
+
+    def _check() -> bool | None:
+        try:
+            cpuinfo = Path("/proc/cpuinfo").read_text()
+        except (FileNotFoundError, PermissionError):
+            return None
+
+        flags: set[str] = set()
+        for line in cpuinfo.splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split())
+                break
+
+        if not flags:
+            return None
+
+        # x86-64-v2 requires: CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3, SSE4.1, SSE4.2
+        # SSE3 may appear as "pni" (Prescott New Instructions) on older kernels
+        required = {"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"}
+        has_sse3 = bool({"sse3", "pni"} & flags)
+        return required.issubset(flags) and has_sse3
+
+    if await asyncio.to_thread(_check) is False:
+        logger.warning(
+            "\n\n"
+            "########################################################"
+            "########################\n"
+            "###               CPU DEPRECATION WARNING"
+            "                                    ###\n"
+            "########################################################"
+            "########################\n"
+            "\n"
+            "Your CPU does not support the x86-64-v2 instruction "
+            "set, which will be\n"
+            "required starting with Music Assistant 2.9.\n"
+            "\n"
+            "If you are running in a virtual machine (e.g. Proxmox),"
+            " change the CPU type\n"
+            "to 'host' or select a more modern CPU type preset "
+            "(e.g. x86-64-v2 or newer).\n"
+            "\n"
+            "If your physical CPU predates 2009, you will likely "
+            "need to upgrade\n"
+            "your hardware before updating Music Assistant to 2.9.\n"
+            "\n"
+            "########################################################"
+            "########################\n"
+        )
 
 
 def get_total_system_memory() -> float:
