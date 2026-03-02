@@ -56,11 +56,11 @@ from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
-    check_x86_64_v2_support,
     get_ip_pton,
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
+    warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
@@ -174,24 +174,7 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
-        if await check_x86_64_v2_support() is False:
-            LOGGER.warning(
-                "\n\n"
-                "################################################################################\n"
-                "###               CPU DEPRECATION WARNING                                    ###\n"
-                "################################################################################\n"
-                "\n"
-                "Your CPU does not support the x86-64-v2 instruction set, which will be\n"
-                "required starting with Music Assistant 2.9.\n"
-                "\n"
-                "If you are running in a virtual machine (e.g. Proxmox), change the CPU type\n"
-                "to 'host' or select a more modern CPU type preset (e.g. x86-64-v2 or newer).\n"
-                "\n"
-                "If your physical CPU predates 2009, you will likely need to upgrade\n"
-                "your hardware before updating Music Assistant to 2.9.\n"
-                "\n"
-                "################################################################################\n"
-            )
+        await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         self.cache = CacheController(self)
         self.webserver = WebserverController(self)

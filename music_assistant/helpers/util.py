@@ -57,13 +57,13 @@ T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
 
 
-async def check_x86_64_v2_support() -> bool | None:
-    """Check if the CPU supports the x86-64-v2 microarchitecture level.
+async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
+    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
 
-    :return: True if supported, False if not, None if not applicable (non-x86_64).
+    :param logger: Logger instance to write the warning to.
     """
     if platform.machine() not in ("x86_64", "AMD64"):
-        return None
+        return
 
     def _check() -> bool | None:
         try:
@@ -86,7 +86,32 @@ async def check_x86_64_v2_support() -> bool | None:
         has_sse3 = bool({"sse3", "pni"} & flags)
         return required.issubset(flags) and has_sse3
 
-    return await asyncio.to_thread(_check)
+    if await asyncio.to_thread(_check) is False:
+        logger.warning(
+            "\n\n"
+            "########################################################"
+            "########################\n"
+            "###               CPU DEPRECATION WARNING"
+            "                                    ###\n"
+            "########################################################"
+            "########################\n"
+            "\n"
+            "Your CPU does not support the x86-64-v2 instruction "
+            "set, which will be\n"
+            "required starting with Music Assistant 2.9.\n"
+            "\n"
+            "If you are running in a virtual machine (e.g. Proxmox),"
+            " change the CPU type\n"
+            "to 'host' or select a more modern CPU type preset "
+            "(e.g. x86-64-v2 or newer).\n"
+            "\n"
+            "If your physical CPU predates 2009, you will likely "
+            "need to upgrade\n"
+            "your hardware before updating Music Assistant to 2.9.\n"
+            "\n"
+            "########################################################"
+            "########################\n"
+        )
 
 
 def get_total_system_memory() -> float:
