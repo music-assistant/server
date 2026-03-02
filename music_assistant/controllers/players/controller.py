@@ -85,7 +85,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
+from music_assistant.helpers.util import (
+    TaskManager,
+    enrich_device_mac_address,
+    validate_announcement_chime_url,
+)
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
@@ -610,12 +614,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not (player := self.get_player(player_id)):
             return
         current_volume = player.state.volume_level or 0
-        if current_volume < 5 or current_volume > 95:
+        if current_volume < 10 or current_volume > 90:
             step_size = 1
-        elif current_volume < 20 or current_volume > 80:
+        elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
-            step_size = 5
+            step_size = 3
         new_volume = min(100, current_volume + step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
@@ -629,12 +633,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not (player := self.get_player(player_id)):
             return
         current_volume = player.state.volume_level or 0
-        if current_volume < 5 or current_volume > 95:
+        if current_volume < 10 or current_volume > 90:
             step_size = 1
-        elif current_volume < 20 or current_volume > 80:
+        elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
-            step_size = 5
+            step_size = 3
         new_volume = max(0, current_volume - step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
@@ -676,12 +680,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
-        if cur_volume < 5 or cur_volume > 95:
+        if cur_volume is None:
+            return
+        if cur_volume < 10 or cur_volume > 90:
             step_size = 1
-        elif cur_volume < 20 or cur_volume > 80:
+        elif cur_volume < 30 or cur_volume > 70:
             step_size = 2
         else:
-            step_size = 5
+            step_size = 3
         new_volume = min(100, cur_volume + step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
@@ -695,12 +701,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         group_player_state = self.get_player_state(player_id, True)
         assert group_player_state
         cur_volume = group_player_state.group_volume
-        if cur_volume < 5 or cur_volume > 95:
+        if cur_volume is None:
+            return
+        if cur_volume < 10 or cur_volume > 90:
             step_size = 1
-        elif cur_volume < 20 or cur_volume > 80:
+        elif cur_volume < 30 or cur_volume > 70:
             step_size = 2
         else:
-            step_size = 5
+            step_size = 3
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
@@ -736,7 +744,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Set/clear mute lock for players in a group
         # This prevents auto-unmute when group volume changes
-        is_in_group = bool(player.state.synced_to or player.state.group_members)
+        is_in_group = bool(player.state.synced_to or player.state.active_group)
         if muted and is_in_group:
             player.extra_data[ATTR_MUTE_LOCK] = True
         elif not muted:
@@ -1232,6 +1240,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if not player.state.enabled:
                 return
 
+            # Enrich device MAC address via ARP if needed
+            # (handles invalid MACs, locally-administered MACs, and missing MACs)
+            await enrich_device_mac_address(player.device_info, self.logger)
+
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
 
@@ -1265,8 +1277,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await player.on_config_updated()
 
             # Handle protocol linking
-            # First enrich identifiers with real MAC (resolves virtual MACs via ARP)
-            await self._enrich_player_identifiers(player)
             self._evaluate_protocol_links(player)
 
             # now we're ready to signal the player is added and available
@@ -1614,6 +1624,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
         """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
         cur_volume = group_player.state.group_volume
+        if cur_volume is None:
+            return
         volume_dif = volume_level - cur_volume
         coros = []
         # handle group volume by only applying the volume to powered members
@@ -2672,7 +2684,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
             not has_mute_lock
-            # use player.state here to get accumulated mute control from any linked protocol players
             and player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.state.volume_muted
         ):
@@ -2683,6 +2694,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             await self.cmd_volume_mute(player_id, False)
+
+        # always reset fake mute when controlling volume
+        player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
         # Check if a plugin source is active with a volume callback
         if plugin_source := self._get_active_plugin_source(player):

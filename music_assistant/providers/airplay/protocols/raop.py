@@ -11,7 +11,6 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
-    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
@@ -68,7 +67,7 @@ class RaopStream(AirPlayProtocol):
             "-port",
             str(self.player.raop_discovery_info.port),
             "-latency",
-            str(AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
+            str(self.player.output_buffer_duration_ms),
             "-volume",
             str(self.player.volume_level),
             *extra_args,

@@ -12,7 +12,7 @@ from aioslimproto.server import SlimServer
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -183,7 +183,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             status=200,
             reason="OK",
             headers={
-                "Content-Type": f"audio/{fmt}",
+                "Content-Type": get_mime_type(fmt),
             },
         )
         await resp.prepare(request)

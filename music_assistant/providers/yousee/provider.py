@@ -171,7 +171,7 @@ class YouSeeMusikProvider(MusicProvider):
         """Remove track(s) from playlist."""
         return await self.playlist.remove_tracks(prov_playlist_id, positions_to_remove)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         return await self.playlist.create(name)
 

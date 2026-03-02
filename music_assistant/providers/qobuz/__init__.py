@@ -283,7 +283,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on Qobuz with the given name."""
         playlist_obj = await self._get_data(
             "playlist/create",

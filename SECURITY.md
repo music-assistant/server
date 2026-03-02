@@ -78,7 +78,7 @@ The following are **not** considered security vulnerabilities:
 
 We will publish GitHub Security Advisories and through those, will also request CVEs, for valid vulnerabilities that meet the following criteria:
 
-* The vulnerability is in Home Assistant itself, not a third-party library.
+* The vulnerability is in Music Assistant itself, not a third-party library.
 * The vulnerability is not already known to us.
 * The vulnerability is not already known to the public.
 * CVEs will only be requested for vulnerabilities with a severity of medium or higher.

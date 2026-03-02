@@ -22,7 +22,8 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
-    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
@@ -121,14 +122,14 @@ class AirPlayPlayer(Player):
         return self._get_protocol_for_config_value(preferred_option)
 
     @property
-    def available(self) -> bool:
-        """Return if the player is currently available."""
+    def needs_setup(self) -> bool:
+        """Return if the player needs setup."""
         if self._requires_pairing():
             # check if we have credentials stored for the current protocol
             creds_key = self._get_credentials_key(self.protocol)
             if not self.config.get_value(creds_key):
-                return False
-        return super().available
+                return True
+        return False
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -152,7 +153,7 @@ class AirPlayPlayer(Player):
         """Get the configured output buffer duration in milliseconds."""
         return cast(
             "int",
-            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS),
+            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
         )
 
     async def get_config_entries(
@@ -240,8 +241,11 @@ class AirPlayPlayer(Player):
             ConfigEntry(
                 key=CONF_AIRPLAY_LATENCY,
                 type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
-                range=(AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS, AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
+                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+                range=(
+                    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
+                    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
+                ),
                 label="Milliseconds of data to buffer",
                 description=(
                     "The number of milliseconds of data to buffer\n"
@@ -251,8 +255,6 @@ class AirPlayPlayer(Player):
                 ),
                 category="protocol_generic",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.AIRPLAY2.value,
-                hidden=self.protocol != StreamingProtocol.AIRPLAY2,
                 advanced=True,
             ),
         ]

@@ -77,6 +77,26 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
+# Mapping of audio format identifiers to their correct IANA MIME types
+# where the format name differs from the MIME subtype.
+# Strict DLNA/UPnP devices reject non-standard MIME types (e.g. audio/mp3).
+_MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
+    "mp3": "audio/mpeg",
+}
+
+
+def get_mime_type(format_str: str) -> str:
+    """Get the proper IANA MIME type for a given audio format string.
+
+    :param format_str: The audio format string (e.g. "mp3", "flac",
+        "pcm;codec=pcm;rate=44100;bitrate=16;channels=2").
+    """
+    base_format = format_str.split(";")[0]
+    if override := _MIME_TYPE_OVERRIDES.get(base_format):
+        return override
+    return f"audio/{format_str}"
+
+
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
 

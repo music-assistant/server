@@ -225,7 +225,7 @@ class TidalProvider(MusicProvider):
         """Remove item from library."""
         return await self.library.remove_item(prov_item_id, media_type)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         return await self.playlists.create(name)
 

@@ -55,6 +55,7 @@ JSON_KEYS = (
     "narrators",
     "authors",
     "genre_aliases",
+    "supported_mediatypes",
 )
 
 SORT_KEYS = {
