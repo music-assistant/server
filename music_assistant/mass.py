@@ -174,7 +174,7 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
-        if check_x86_64_v2_support() is False:
+        if await check_x86_64_v2_support() is False:
             LOGGER.warning(
                 "\n\n"
                 "################################################################################\n"
