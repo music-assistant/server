@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, Any, cast
 import aiohttp
 from aiohttp import BasicAuth, web
 from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlaybackState,
