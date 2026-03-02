@@ -265,6 +265,14 @@ class SmartFadesAnalyzer:
         """Convert raw PCM bytes to a normalised float32 numpy array."""
         if pcm_format.content_type == ContentType.PCM_S16LE:
             return (np.frombuffer(audio_data, dtype="<i2").astype(np.float32)) / np.float32(32768.0)
+        if pcm_format.content_type == ContentType.PCM_S24LE:
+            # no native numpy dtype, calculate manually
+            raw = np.frombuffer(audio_data, dtype=np.uint8)
+            num_samples = len(raw) // 3
+            raw = raw[: num_samples * 3].reshape(-1, 3)
+            padded = np.zeros((num_samples, 4), dtype=np.uint8)
+            padded[:, 1:] = raw
+            return padded.view("<i4").reshape(-1).astype(np.float32) / np.float32(2147483648.0)
         if pcm_format.content_type == ContentType.PCM_S32LE:
             return (np.frombuffer(audio_data, dtype="<i4").astype(np.float32)) / np.float32(
                 2147483648.0
