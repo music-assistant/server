@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 import chardet
 import ifaddr
-from music_assistant_models.enums import AlbumType
+from music_assistant_models.enums import AlbumType, IdentifierType
 from zeroconf import IPVersion
 
 from music_assistant.constants import (
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from chardet.resultdict import ResultDict
+    from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -902,6 +903,72 @@ async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | N
             return real_mac.upper()
 
     return None
+
+
+async def enrich_device_mac_address(
+    device_info: DeviceInfo,
+    logger: logging.Logger | None = None,
+) -> None:
+    """
+    Enrich a player's device_info with a real MAC address via ARP if needed.
+
+    Called automatically during player registration. It validates the existing MAC,
+    normalizes IPv6-mapped IPv4 addresses, and performs an ARP lookup to resolve the
+    real hardware MAC when the reported MAC is missing, invalid, or locally-administered.
+
+    The ARP result is always preferred over the reported MAC because it reflects
+    the true hardware address and reliably unifies protocols on the same device.
+
+    :param device_info: The player's DeviceInfo to enrich in-place.
+    :param logger: Optional logger for debug messages.
+    """
+    identifiers = device_info.identifiers
+    reported_mac = identifiers.get(IdentifierType.MAC_ADDRESS)
+    ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
+
+    # Blank out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, etc.)
+    # so they can't cause false matches in protocol linking.
+    if reported_mac and not is_valid_mac_address(reported_mac):
+        if logger:
+            logger.debug("Removing invalid MAC address: %s", reported_mac)
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, None)
+        reported_mac = None
+
+    # Normalize IP address (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
+    if ip_address:
+        normalized_ip = normalize_ip_address(ip_address)
+        if normalized_ip and normalized_ip != ip_address:
+            device_info.add_identifier(IdentifierType.IP_ADDRESS, normalized_ip)
+            if logger:
+                logger.debug(
+                    "Normalized IP address: %s -> %s",
+                    ip_address,
+                    normalized_ip,
+                )
+            ip_address = normalized_ip
+
+    # Skip ARP enrichment if no IP available (can't do ARP lookup)
+    if not ip_address:
+        return
+
+    # Check if we need to do ARP lookup:
+    # - No MAC reported (or was blanked out above)
+    # - MAC is locally administered (virtual/random)
+    if reported_mac and not is_locally_administered_mac(reported_mac):
+        return
+
+    # Try to resolve real MAC via ARP
+    real_mac = await resolve_real_mac_address(reported_mac, ip_address)
+    if real_mac and real_mac.upper() != (reported_mac or "").upper():
+        # Always use the ARP result - it's the hardware truth and reliably
+        # unifies different protocols on the same physical device.
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
+        if logger:
+            logger.debug(
+                "Resolved MAC via ARP: %s -> %s",
+                reported_mac or "none",
+                real_mac,
+            )
 
 
 class TaskManager:
