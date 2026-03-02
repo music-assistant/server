@@ -580,7 +580,7 @@ class PlayerQueuesController(CoreController):
                     elif start_item is not None:
                         start_item_uri = start_item.uri
                     media_items += await self._resolve_media_items(
-                        media_item, start_item_uri, queue_id=queue_id
+                        media_item, start_item_uri, userid=queue.userid, queue_id=queue_id
                     )
 
             except MusicAssistantError as err:
@@ -2093,7 +2093,9 @@ class PlayerQueuesController(CoreController):
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
-                self.mass.music.mark_item_played(media_item, queue_id=queue_id, user_initiated=True)
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
             )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
