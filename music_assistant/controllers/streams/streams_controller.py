@@ -70,6 +70,7 @@ from music_assistant.helpers.audio import (
     get_buffered_media_stream,
     get_chunksize,
     get_media_stream,
+    get_mime_type,
     get_player_filter_params,
     get_stream_details,
     resample_pcm_audio,
@@ -442,14 +443,14 @@ class StreamsController(CoreController):
             "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers=headers,
         )
-        resp.content_type = f"audio/{output_format.output_format_str}"
+        resp.content_type = get_mime_type(output_format.output_format_str)
         http_profile = await self.mass.config.get_player_config_value(
             queue_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
@@ -616,7 +617,7 @@ class StreamsController(CoreController):
             **ICY_HEADERS,
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -738,7 +739,7 @@ class StreamsController(CoreController):
                 data += chunk
             return web.Response(
                 body=data,
-                content_type=f"audio/{audio_format.output_format_str}",
+                content_type=get_mime_type(audio_format.output_format_str),
                 headers=DEFAULT_STREAM_HEADERS,
             )
 
@@ -747,7 +748,7 @@ class StreamsController(CoreController):
             reason="OK",
             headers=DEFAULT_STREAM_HEADERS,
         )
-        resp.content_type = f"audio/{audio_format.output_format_str}"
+        resp.content_type = get_mime_type(audio_format.output_format_str)
         if http_profile == "chunked":
             resp.enable_chunked_encoding()
 
@@ -806,7 +807,7 @@ class StreamsController(CoreController):
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "icy-name": plugin_source.name,
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
 
         resp = web.StreamResponse(
@@ -814,7 +815,7 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        resp.content_type = f"audio/{output_format.output_format_str}"
+        resp.content_type = get_mime_type(output_format.output_format_str)
         http_profile = await self.mass.config.get_player_config_value(
             player_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
