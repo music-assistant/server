@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -63,21 +62,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-def validate_alexa_language(value: str) -> str:
-    """Validate and normalize Alexa language."""
-    parts = value.split("-")
-    if len(parts) != 2:
-        raise ValueError("Alexa language must be in format xx-YY")
-
-    normalized = f"{parts[0].lower()}-{parts[1].upper()}"
-
-    if not LANGUAGE_PATTERN.match(normalized):
-        raise ValueError(
-            "Alexa language must be in format xx-YY (e.g. de-DE)"
-        )
-
-    return normalized
     
 async def get_config_entries(
     mass: MusicAssistant,
@@ -221,9 +205,16 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Alexa Language",
             required=True,
-            default_value="en-US",
-            validator=validate_alexa_language,
-        ),
+            options=[
+                ConfigValueOption("English (USA)", "en-US"),
+                ConfigValueOption("German (Germany)", "de-DE"),
+                ConfigValueOption("Spanish (Spain)", "es-ES"),
+                ConfigValueOption("French (France)", "fr-FR"),
+                ConfigValueOption("Italian (Italy)", "it-IT"),
+                ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
+            ],
+            default_value="en-US",  # oder was für dich sinnvoll ist
+        )
     )
 
 
