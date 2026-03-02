@@ -36,6 +36,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -452,7 +453,7 @@ class SqueezelitePlayer(Player):
         )
         await slimplayer.play_url(
             url=url,
-            mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+            mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -476,7 +477,7 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+                    mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,

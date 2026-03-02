@@ -9,6 +9,7 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
@@ -34,6 +35,13 @@ def create_mock_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvi
     provider.mass = mock_mass
     provider.manifest = manifest
     provider.logger = logging.getLogger("test.universal_player")
+    # Add config mock for instance_id property
+    config = MagicMock()
+    config.instance_id = "universal_player"
+    config.name = None
+    provider.config = config
+    # Initialize the locks dict that would normally be set in handle_async_init
+    provider._universal_player_locks = {}
     return provider
 
 
@@ -2838,8 +2846,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_no_ip_skips_enrichment(self, mock_mass: MagicMock) -> None:
         """Test that enrichment is skipped when no IP address is available."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("sendspin", mass=mock_mass)
         # Sendspin bridge player has MAC but no IP
         player = MockPlayer(
@@ -2850,7 +2856,7 @@ class TestEnrichPlayerIdentifiers:
             identifiers={IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3"},
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged (no IP = no ARP lookup)
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
@@ -2858,8 +2864,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_valid_hardware_mac_skips_enrichment(self, mock_mass: MagicMock) -> None:
         """Test that a valid, non-locally-administered MAC skips enrichment."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("sonos", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2872,7 +2876,7 @@ class TestEnrichPlayerIdentifiers:
             },
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged (valid hardware MAC, not locally administered)
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "54:78:C9:E6:0D:A0"
@@ -2886,8 +2890,6 @@ class TestEnrichPlayerIdentifiers:
         Example: AirPlay reports 56:78:C9:E6:0D:A0, ARP resolves 54:78:C9:E6:0D:A0.
         These differ only in bit 1 of the first octet (locally-administered bit).
         """
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2901,26 +2903,24 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="54:78:C9:E6:0D:A0",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should be replaced with the ARP-resolved hardware MAC
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "54:78:C9:E6:0D:A0"
 
     @pytest.mark.asyncio
-    async def test_completely_different_mac_preserved(self, mock_mass: MagicMock) -> None:
-        """Test that the original MAC is preserved when ARP resolves a completely different MAC.
+    async def test_completely_different_mac_replaced_by_arp(self, mock_mass: MagicMock) -> None:
+        """Test that ARP result always replaces a locally-administered MAC.
 
-        This is the critical fix for Apple devices: AirPlay reports a random private MAC
-        (e.g., 62:E5:97:45:93:D3) while ARP resolves to the actual hardware MAC
-        (e.g., C0:95:6D:51:34:E0). These are completely different and replacing the
-        original would break Sendspin bridge matching.
+        Even when the ARP MAC is completely different from the reported MAC
+        (e.g., Apple devices with random private MACs), the ARP result is used
+        because it's the hardware truth that reliably unifies protocols.
+        Sendspin bridges match via AIRPLAY_ID/CAST_UUID, not MAC.
         """
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2934,20 +2934,18 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="C0:95:6D:51:34:E0",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
-        # MAC should NOT be replaced - the ARP MAC is completely different
-        assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
+        # MAC should be replaced with ARP result (hardware truth)
+        assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "C0:95:6D:51:34:E0"
 
     @pytest.mark.asyncio
     async def test_no_reported_mac_uses_arp_result(self, mock_mass: MagicMock) -> None:
         """Test that ARP MAC is used when no MAC was reported at all."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("chromecast", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2958,11 +2956,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="AA:BB:CC:DD:EE:FF",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should be set from ARP since there was none before
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
@@ -2970,8 +2968,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_invalid_mac_replaced_by_arp(self, mock_mass: MagicMock) -> None:
         """Test that an invalid MAC (00:00:00:00:00:00) is replaced by ARP result."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("dlna", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -2985,11 +2981,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="11:22:33:44:55:66",
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # Invalid MAC should be replaced
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "11:22:33:44:55:66"
@@ -2997,8 +2993,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_arp_returns_none_no_change(self, mock_mass: MagicMock) -> None:
         """Test that MAC is unchanged when ARP lookup returns None."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -3012,11 +3006,11 @@ class TestEnrichPlayerIdentifiers:
         )
 
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value=None,
         ):
-            await controller._enrich_player_identifiers(player)
+            await enrich_device_mac_address(player.device_info)
 
         # MAC should remain unchanged
         assert player.device_info.identifiers[IdentifierType.MAC_ADDRESS] == "62:E5:97:45:93:D3"
@@ -3024,8 +3018,6 @@ class TestEnrichPlayerIdentifiers:
     @pytest.mark.asyncio
     async def test_ipv6_mapped_ipv4_normalized(self, mock_mass: MagicMock) -> None:
         """Test that IPv6-mapped IPv4 addresses are normalized."""
-        controller = PlayerController(mock_mass)
-
         provider = MockProvider("airplay", mass=mock_mass)
         player = MockPlayer(
             provider,
@@ -3038,7 +3030,7 @@ class TestEnrichPlayerIdentifiers:
             },
         )
 
-        await controller._enrich_player_identifiers(player)
+        await enrich_device_mac_address(player.device_info)
 
         # IP should be normalized to IPv4
         assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.100"
@@ -3452,16 +3444,12 @@ class TestEnrichAndMatchIntegration:
     """
 
     @pytest.mark.asyncio
-    async def test_apple_device_mac_preserved_enables_sendspin_match(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_apple_device_sendspin_matches_via_airplay_id(self, mock_mass: MagicMock) -> None:
         """Test the full Apple device scenario end-to-end.
 
         1. AirPlay player registers with private MAC 62:E5:97:45:93:D3
-        2. ARP resolves completely different hardware MAC C0:95:6D:51:34:E0
-        3. Original MAC is preserved (Fix 3)
-        4. Sendspin bridge registers with same private MAC 62:E5:97:45:93:D3
-        5. Identifier matching succeeds because the original MAC was preserved
+        2. ARP resolves to hardware MAC C0:95:6D:51:34:E0 (always used)
+        3. Sendspin bridge matches via AIRPLAY_ID, not MAC
         """
         controller = PlayerController(mock_mass)
 
@@ -3474,44 +3462,44 @@ class TestEnrichAndMatchIntegration:
             player_type=PlayerType.PLAYER,
             identifiers={
                 IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3",
+                IdentifierType.AIRPLAY_ID: "62:E5:97:45:93:D3",
                 IdentifierType.IP_ADDRESS: "192.168.1.200",
             },
         )
 
-        # Simulate ARP enrichment - resolves completely different MAC
+        # ARP enrichment replaces MAC with hardware truth
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="C0:95:6D:51:34:E0",
         ):
-            await controller._enrich_player_identifiers(airplay_player)
+            await enrich_device_mac_address(airplay_player.device_info)
 
-        # Verify original MAC is preserved (Fix 3)
+        # MAC replaced with ARP result
         assert (
             airplay_player.device_info.identifiers[IdentifierType.MAC_ADDRESS]
-            == "62:E5:97:45:93:D3"
+            == "C0:95:6D:51:34:E0"
         )
 
-        # Create Sendspin bridge player with same private MAC
+        # Create Sendspin bridge player with AIRPLAY_ID (how Sendspin actually matches)
         sendspin_provider = MockProvider("sendspin", mass=mock_mass)
         sendspin_player = MockPlayer(
             sendspin_provider,
             "spb_62e5974593d3",
             "Apple TV (Sendspin)",
             player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.MAC_ADDRESS: "62:E5:97:45:93:D3"},
+            identifiers={IdentifierType.AIRPLAY_ID: "62:E5:97:45:93:D3"},
         )
 
-        # Identifiers should match because original MAC was preserved
+        # Identifiers match via AIRPLAY_ID
         assert controller._identifiers_match(airplay_player, sendspin_player, "sendspin") is True
 
     @pytest.mark.asyncio
     async def test_wiim_device_mac_replaced_still_matches(self, mock_mass: MagicMock) -> None:
-        """Test that WiiM devices still work after locally-administered bit replacement.
+        """Test that WiiM devices match after ARP enrichment.
 
-        WiiM reports 56:78:C9:E6:0D:A0 (locally administered), ARP resolves to
-        54:78:C9:E6:0D:A0 (hardware). The replacement is safe because
-        normalize_mac_for_matching handles this difference.
+        WiiM AirPlay reports 56:78:C9:E6:0D:A0 (locally administered), ARP resolves to
+        54:78:C9:E6:0D:A0 (hardware). The MAC is always replaced with the ARP result.
         """
         controller = PlayerController(mock_mass)
 
@@ -3530,11 +3518,11 @@ class TestEnrichAndMatchIntegration:
 
         # ARP resolves MAC that differs only in locally-administered bit
         with patch(
-            "music_assistant.controllers.players.protocol_linking.resolve_real_mac_address",
+            "music_assistant.helpers.util.resolve_real_mac_address",
             new_callable=AsyncMock,
             return_value="54:78:C9:E6:0D:A0",
         ):
-            await controller._enrich_player_identifiers(airplay_player)
+            await enrich_device_mac_address(airplay_player.device_info)
 
         # MAC should be replaced (only bit difference)
         assert (
@@ -3554,3 +3542,1776 @@ class TestEnrichAndMatchIntegration:
 
         # Should match by MAC
         assert controller._identifiers_match(airplay_player, dlna_player, "dlna") is True
+
+
+class TestDuplicateProtocolPrevention:
+    """Tests for preventing duplicate protocol domain linking.
+
+    When multiple instances of the same protocol (e.g., two AirPlay or ShairPort-Sync
+    instances, or multi-zone Bluesound players) run on the same host, they share the
+    same IP/MAC. These must NOT all bind to the same parent player — each should get
+    its own separate universal player.
+    """
+
+    def test_parent_has_active_protocol_from_domain_empty(self, mock_mass: MagicMock) -> None:
+        """Test helper returns False when parent has no linked protocols."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        assert controller._parent_has_active_protocol_from_domain(sonos_player, "airplay") is False
+
+    def test_parent_has_active_protocol_from_domain_true(self, mock_mass: MagicMock) -> None:
+        """Test helper returns True when parent has an active link from the given domain."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        airplay_provider = MockProvider("airplay")
+        airplay_player = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay_player._attr_available = True
+        airplay_player._cache.clear()
+        airplay_player.update_state(signal_event=False)
+
+        # Register players
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": airplay_player,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+        }
+        airplay_player.set_initialized()
+        sonos_player.set_initialized()
+
+        # Add a protocol link
+        controller._add_protocol_link(sonos_player, airplay_player, "airplay")
+
+        assert controller._parent_has_active_protocol_from_domain(sonos_player, "airplay") is True
+        assert controller._parent_has_active_protocol_from_domain(sonos_player, "dlna") is False
+
+    def test_parent_has_active_protocol_excludes_player_id(self, mock_mass: MagicMock) -> None:
+        """Test helper excludes the specified player_id from the check."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        airplay_provider = MockProvider("airplay")
+        airplay_player = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay_player._attr_available = True
+        airplay_player._cache.clear()
+        airplay_player.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": airplay_player,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+        }
+        airplay_player.set_initialized()
+        sonos_player.set_initialized()
+
+        controller._add_protocol_link(sonos_player, airplay_player, "airplay")
+
+        # Should return False when the only match is the excluded player
+        assert (
+            controller._parent_has_active_protocol_from_domain(
+                sonos_player, "airplay", exclude_player_id="ap_1"
+            )
+            is False
+        )
+
+    def test_add_protocol_link_refuses_duplicate_domain(self, mock_mass: MagicMock) -> None:
+        """Test that _add_protocol_link refuses when domain already has an active link."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2 = MockPlayer(
+            airplay_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Both available
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        ap2._attr_available = True
+        ap2._cache.clear()
+        ap2.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "ap_2": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        ap2.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link first AirPlay - should succeed
+        controller._add_protocol_link(sonos_player, ap1, "airplay")
+        assert ap1.protocol_parent_id == "sonos_1"
+        assert len(sonos_player.linked_output_protocols) == 1
+
+        # Link second AirPlay - should be refused (domain already active)
+        controller._add_protocol_link(sonos_player, ap2, "airplay")
+        assert ap2.protocol_parent_id is None
+        assert len(sonos_player.linked_output_protocols) == 1
+        assert sonos_player.linked_output_protocols[0].output_protocol_id == "ap_1"
+
+    def test_add_protocol_link_allows_different_domains(self, mock_mass: MagicMock) -> None:
+        """Test that _add_protocol_link allows links from different protocol domains."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        dlna_provider = MockProvider("dlna")
+        dlna1 = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        dlna1._attr_available = True
+        dlna1._cache.clear()
+        dlna1.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap1,
+            "dlna_1": dlna1,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "dlna_1": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        dlna1.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link AirPlay - should succeed
+        controller._add_protocol_link(sonos_player, ap1, "airplay")
+        assert ap1.protocol_parent_id == "sonos_1"
+
+        # Link DLNA - should also succeed (different domain)
+        controller._add_protocol_link(sonos_player, dlna1, "dlna")
+        assert dlna1.protocol_parent_id == "sonos_1"
+        assert len(sonos_player.linked_output_protocols) == 2
+
+    def test_add_protocol_link_allows_replacing_inactive_domain(self, mock_mass: MagicMock) -> None:
+        """Test that a new link can replace one from the same domain if old one is inactive."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2 = MockPlayer(
+            airplay_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        ap2._attr_available = True
+        ap2._cache.clear()
+        ap2.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "ap_2": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        ap2.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link first AirPlay
+        controller._add_protocol_link(sonos_player, ap1, "airplay")
+        assert ap1.protocol_parent_id == "sonos_1"
+
+        # Make first AirPlay unavailable (simulates disconnection)
+        ap1._attr_available = False
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+
+        # Link second AirPlay - should succeed since first is inactive
+        controller._add_protocol_link(sonos_player, ap2, "airplay")
+        assert ap2.protocol_parent_id == "sonos_1"
+
+    def test_try_link_protocol_to_native_skips_duplicate_domain(self, mock_mass: MagicMock) -> None:
+        """Test that _try_link_protocol_to_native falls through when domain is duplicate."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_1",
+            "Sonos Speaker",
+            player_type=PlayerType.PLAYER,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2 = MockPlayer(
+            airplay_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        ap2._attr_available = True
+        ap2._cache.clear()
+        ap2.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "ap_2": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        ap2.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link first AirPlay to native player
+        controller._add_protocol_link(sonos_player, ap1, "airplay")
+        assert ap1.protocol_parent_id == "sonos_1"
+
+        # Mock _schedule_protocol_evaluation to track if it's called
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller._try_link_protocol_to_native(ap2)
+
+        # ap2 should NOT have been linked to sonos
+        assert ap2.protocol_parent_id is None
+        # ap2 should be scheduled for delayed evaluation (which will create its own
+        # universal player)
+        mock_schedule.assert_called_once_with(ap2)
+
+    def test_try_link_protocols_to_native_skips_duplicate_domain(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that _try_link_protocols_to_native skips protocol players with duplicate domain."""
+        controller = PlayerController(mock_mass)
+
+        # Config.get returns {} for CONF_PLAYERS dict lookups
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default or {})
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_1",
+            "Sonos Speaker",
+            player_type=PlayerType.PLAYER,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2 = MockPlayer(
+            airplay_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        dlna_provider = MockProvider("dlna")
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        ap2._attr_available = True
+        ap2._cache.clear()
+        ap2.update_state(signal_event=False)
+        dlna_player._attr_available = True
+        dlna_player._cache.clear()
+        dlna_player.update_state(signal_event=False)
+
+        controller._players = {
+            "ap_1": ap1,
+            "ap_2": ap2,
+            "dlna_1": dlna_player,
+            "sonos_1": sonos_player,
+        }
+        controller._player_throttlers = {
+            "ap_1": Throttler(1, 0.05),
+            "ap_2": Throttler(1, 0.05),
+            "dlna_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        ap2.set_initialized()
+        dlna_player.set_initialized()
+        sonos_player.set_initialized()
+
+        # Call _try_link_protocols_to_native for the Sonos player
+        # It should link ap1 and dlna but NOT ap2 (duplicate airplay domain)
+        controller._try_link_protocols_to_native(sonos_player)
+
+        # First AirPlay should be linked
+        assert ap1.protocol_parent_id == "sonos_1"
+        # DLNA should be linked (different domain)
+        assert dlna_player.protocol_parent_id == "sonos_1"
+        # Second AirPlay should NOT be linked (duplicate domain)
+        assert ap2.protocol_parent_id is None
+        assert len(sonos_player.linked_output_protocols) == 2
+
+    def test_normal_multi_protocol_device_still_works(self, mock_mass: MagicMock) -> None:
+        """Test that a device with AirPlay+DLNA (different protocols) still links correctly."""
+        controller = PlayerController(mock_mass)
+
+        # Config.get returns {} for CONF_PLAYERS dict lookups
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default or {})
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_1",
+            "Sonos Speaker",
+            player_type=PlayerType.PLAYER,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        dlna_provider = MockProvider("dlna")
+        dlna = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap._attr_available = True
+        ap._cache.clear()
+        ap.update_state(signal_event=False)
+        dlna._attr_available = True
+        dlna._cache.clear()
+        dlna.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap,
+            "dlna_1": dlna,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "dlna_1": Throttler(1, 0.05),
+        }
+        ap.set_initialized()
+        dlna.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link both protocols
+        controller._try_link_protocols_to_native(sonos_player)
+
+        assert ap.protocol_parent_id == "sonos_1"
+        assert dlna.protocol_parent_id == "sonos_1"
+        assert len(sonos_player.linked_output_protocols) == 2
+
+    def test_cached_parent_restore_refuses_duplicate_domain(self, mock_mass: MagicMock) -> None:
+        """Test that restoring a cached parent is refused when domain already has active link."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_1",
+            "Sonos Speaker",
+            player_type=PlayerType.PLAYER,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        airplay_provider = MockProvider("airplay")
+        ap1 = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2 = MockPlayer(
+            airplay_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap1._attr_available = True
+        ap1._cache.clear()
+        ap1.update_state(signal_event=False)
+        ap2._attr_available = True
+        ap2._cache.clear()
+        ap2.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {
+            "sonos_1": Throttler(1, 0.05),
+            "ap_1": Throttler(1, 0.05),
+            "ap_2": Throttler(1, 0.05),
+        }
+        ap1.set_initialized()
+        ap2.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link first AirPlay
+        controller._add_protocol_link(sonos_player, ap1, "airplay")
+        assert ap1.protocol_parent_id == "sonos_1"
+
+        # Simulate ap2 having a cached parent from previous session
+        with (
+            patch.object(
+                controller,
+                "_get_cached_protocol_parent_id",
+                return_value="sonos_1",
+            ),
+            patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule,
+        ):
+            controller._try_link_protocol_to_native(ap2)
+
+        # ap2 should NOT have been linked (domain already active on sonos_1)
+        assert ap2.protocol_parent_id is None
+        # ap2 should be scheduled for delayed evaluation
+        mock_schedule.assert_called_once_with(ap2)
+
+
+class TestUniversalPlayerMerging:
+    """Tests for merging universal players when identifiers overlap."""
+
+    def test_merge_universal_players_on_identifier_copy(self, mock_mass: MagicMock) -> None:
+        """Test that two universal players merge when they share a MAC after identifier copy.
+
+        Simulates the Edifier scenario: DLNA creates a UUID-based universal player,
+        AirPlay creates a MAC-based universal player. When ARP enrichment adds the
+        real MAC to the DLNA player and it's copied to the DLNA universal player,
+        the two universal players should merge because they now share the same MAC.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        # Universal player 1: from DLNA (UUID-based, no MAC initially)
+        up1 = UniversalPlayer(
+            provider=up_provider,
+            player_id="upf15fff97f002",
+            name="Speaker Liv",
+            device_info=DeviceInfo(model="DLNA Speaker", manufacturer="Edifier"),
+            protocol_player_ids=["dlna_uuid_1"],
+        )
+        up1._attr_device_info.add_identifier(
+            IdentifierType.UUID, "FF97F002-783E-6505-6579-F15FFF97F002"
+        )
+        up1._cache.clear()
+        up1.update_state(signal_event=False)
+        up1.set_initialized()
+
+        # Universal player 2: from AirPlay (MAC-based)
+        up2 = UniversalPlayer(
+            provider=up_provider,
+            player_id="up50411c2f00ee",
+            name="Speaker Liv",
+            device_info=DeviceInfo(model="AirPlay Speaker", manufacturer="Edifier"),
+            protocol_player_ids=["ap_1", "spb_1"],
+        )
+        up2._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "50:41:1C:2F:00:EE")
+        up2._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, "52:41:1C:2F:00:EE")
+        up2._cache.clear()
+        up2.update_state(signal_event=False)
+        up2.set_initialized()
+
+        # Create mock DLNA protocol player (has MAC from ARP enrichment)
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_uuid_1",
+            "Speaker Liv DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.UUID: "FF97F002-783E-6505-6579-F15FFF97F002",
+                IdentifierType.MAC_ADDRESS: "50:41:1C:2F:00:EE",  # From ARP
+                IdentifierType.IP_ADDRESS: "192.168.1.80",
+            },
+        )
+        dlna_player.set_initialized()
+
+        # Create mock AirPlay protocol player
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "Speaker Liv AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "50:41:1C:2F:00:EE",
+                IdentifierType.AIRPLAY_ID: "52:41:1C:2F:00:EE",
+            },
+        )
+        ap_player.set_initialized()
+
+        # Link protocols to their respective universal players
+        controller._players = {
+            "upf15fff97f002": up1,
+            "up50411c2f00ee": up2,
+            "dlna_uuid_1": dlna_player,
+            "ap_1": ap_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Link DLNA to up1
+        controller._add_protocol_link(up1, dlna_player, "dlna")
+        assert dlna_player.protocol_parent_id == "upf15fff97f002"
+
+        # Link AirPlay to up2
+        controller._add_protocol_link(up2, ap_player, "airplay")
+        assert ap_player.protocol_parent_id == "up50411c2f00ee"
+
+        # Now simulate what happens when DLNA player copies identifiers to up1
+        # (this happens in _try_restore_cached_parent or _try_link_to_existing_player)
+        for conn_type, value in dlna_player.device_info.identifiers.items():
+            up1.device_info.add_identifier(conn_type, value)
+
+        # up1 now has MAC 50:41:1C:2F:00:EE which matches up2
+        assert up1.device_info.identifiers.get(IdentifierType.MAC_ADDRESS) == "50:41:1C:2F:00:EE"
+
+        # Call merge check
+        controller._check_merge_universal_players(up1)
+
+        # up1 should have absorbed up2's protocol links (AirPlay)
+        protocol_domains = {link.protocol_domain for link in up1.linked_output_protocols}
+        assert "dlna" in protocol_domains
+        assert "airplay" in protocol_domains
+
+        # up2 should have no more protocol links
+        assert len(up2.linked_output_protocols) == 0
+
+        # AirPlay player should now be linked to up1
+        assert ap_player.protocol_parent_id == "upf15fff97f002"
+
+        # up1 should have protocol player IDs from both
+        assert "dlna_uuid_1" in up1._protocol_player_ids
+        assert "ap_1" in up1._protocol_player_ids
+
+        # Unregister should have been called for up2
+        mock_mass.create_task.assert_called()
+
+    def test_no_merge_when_identifiers_dont_match(self, mock_mass: MagicMock) -> None:
+        """Test that universal players are not merged when identifiers don't overlap."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        up1 = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_1",
+            name="Speaker A",
+            device_info=DeviceInfo(model="Model A", manufacturer="Maker A"),
+            protocol_player_ids=["dlna_1"],
+        )
+        up1._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:01")
+        up1._cache.clear()
+        up1.update_state(signal_event=False)
+        up1.set_initialized()
+
+        up2 = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_2",
+            name="Speaker B",
+            device_info=DeviceInfo(model="Model B", manufacturer="Maker B"),
+            protocol_player_ids=["ap_1"],
+        )
+        up2._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:02")
+        up2._cache.clear()
+        up2.update_state(signal_event=False)
+        up2.set_initialized()
+
+        controller._players = {"up_1": up1, "up_2": up2}
+        controller._player_throttlers = {
+            "up_1": Throttler(1, 0.05),
+            "up_2": Throttler(1, 0.05),
+        }
+
+        # Call merge - should do nothing since MACs are different
+        controller._check_merge_universal_players(up1)
+
+        # Both players should remain untouched
+        assert "up_1" in controller._players
+        assert "up_2" in controller._players
+
+    def test_merge_keeps_player_with_more_protocols(self, mock_mass: MagicMock) -> None:
+        """Test that the universal player with more protocol links absorbs the other."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        # up1 has only 1 protocol link (DLNA)
+        up1 = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_small",
+            name="Small Player",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["dlna_1"],
+        )
+        up1._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        up1._cache.clear()
+        up1.update_state(signal_event=False)
+        up1.set_initialized()
+
+        # up2 has 2 protocol links (AirPlay + Sendspin)
+        up2 = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_big",
+            name="Big Player",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_1", "spb_1"],
+        )
+        up2._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        up2._cache.clear()
+        up2.update_state(signal_event=False)
+        up2.set_initialized()
+
+        # Create protocol players
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna_player.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player.set_initialized()
+
+        sendspin_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            sendspin_provider,
+            "spb_1",
+            "Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        spb_player.set_initialized()
+
+        controller._players = {
+            "up_small": up1,
+            "up_big": up2,
+            "dlna_1": dlna_player,
+            "ap_1": ap_player,
+            "spb_1": spb_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Link DLNA to small, AirPlay+Sendspin to big
+        controller._add_protocol_link(up1, dlna_player, "dlna")
+        controller._add_protocol_link(up2, ap_player, "airplay")
+        controller._add_protocol_link(up2, spb_player, "sendspin")
+
+        # Merge from the small player's perspective
+        controller._check_merge_universal_players(up1)
+
+        # up2 (bigger) should have absorbed up1's DLNA link
+        protocol_domains = {link.protocol_domain for link in up2.linked_output_protocols}
+        assert "airplay" in protocol_domains
+        assert "sendspin" in protocol_domains
+        assert "dlna" in protocol_domains
+
+        # DLNA player should now point to up_big
+        assert dlna_player.protocol_parent_id == "up_big"
+
+        # up1 should have no more links
+        assert len(up1.linked_output_protocols) == 0
+
+
+class TestEndToEndDuplicateProtocol:
+    """End-to-end integration tests for duplicate protocol → separate universal player flow.
+
+    These tests exercise the full async flow through _delayed_protocol_evaluation,
+    ensure_universal_player_for_protocols, and _create_separate_universal_player,
+    verifying that a second instance of the same protocol domain on the same host
+    results in a separate universal player.
+    """
+
+    @staticmethod
+    def _setup_e2e_controller(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, UniversalPlayerProvider]:
+        """Set up a PlayerController and UniversalPlayerProvider wired for E2E testing.
+
+        The mock_mass is configured so that:
+        - get_providers(ProviderType.PLAYER) returns the universal provider
+        - register_or_update adds the player to the controller's _players dict
+        - config.create_default_player_config does not fail
+        - config.set does not fail
+
+        :return: Tuple of (controller, universal_provider).
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        # Wire get_providers to return our universal provider
+        mock_mass.get_providers = MagicMock(return_value=[up_provider])
+
+        # Wire register_or_update to add the player to controller._players
+        async def fake_register_or_update(player: Player) -> None:
+            controller._players[player.player_id] = player
+            controller._player_throttlers[player.player_id] = Throttler(1, 0.05)
+            player.set_initialized()
+
+        mock_mass.players = MagicMock()
+        mock_mass.players.register_or_update = AsyncMock(side_effect=fake_register_or_update)
+        mock_mass.players.get_player = lambda pid: controller._players.get(pid)
+
+        # Wire config methods
+        mock_mass.config.create_default_player_config = MagicMock()
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Test")
+
+        return controller, up_provider
+
+    @pytest.mark.asyncio
+    async def test_path_a_delayed_eval_creates_separate_universal_for_duplicate(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Path A: _delayed_protocol_evaluation creates separate universal player for duplicate.
+
+        Scenario: Two AirPlay instances register on the same host.
+        1. First AirPlay links to existing universal player
+           via _add_protocol_to_existing_universal
+        2. Second AirPlay arrives at _delayed_protocol_evaluation
+        3. It finds the existing universal player but is refused (domain duplicate)
+        4. Falls through to _find_matching_protocol_players (which skips same-domain)
+        5. Creates a NEW separate universal player via _create_or_update_universal_player
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        # Create existing universal player with AirPlay already linked
+        universal = _create_universal_player(
+            mock_mass,
+            "up_aabbccddeeff",
+            "Living Room Speaker",
+            protocol_player_ids=["ap_1"],
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Create first AirPlay (already linked to universal)
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap1 = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay Instance 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap1.set_initialized()
+        controller._add_protocol_link(universal, ap1, "airplay")
+        assert ap1.protocol_parent_id == "up_aabbccddeeff"
+
+        # Create second AirPlay (same MAC, not yet linked)
+        ap2 = MockPlayer(
+            ap_provider,
+            "ap_2",
+            "AirPlay Instance 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2.set_initialized()
+
+        controller._players = {
+            "up_aabbccddeeff": universal,
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Run delayed evaluation for ap2 - full async flow
+        await controller._delayed_protocol_evaluation("ap_2")
+
+        # ap2 should NOT be linked to the existing universal player
+        assert ap2.protocol_parent_id != "up_aabbccddeeff"
+
+        # ap2 should have its own universal player (with player_id-based device key)
+        assert ap2.protocol_parent_id is not None
+        separate_up_id = ap2.protocol_parent_id
+        assert separate_up_id in controller._players
+        separate_up = controller._players[separate_up_id]
+        assert isinstance(separate_up, UniversalPlayer)
+
+        # The original universal player should still have only ap_1
+        original_ap_links = [
+            link for link in universal.linked_output_protocols if link.protocol_domain == "airplay"
+        ]
+        assert len(original_ap_links) == 1
+        assert original_ap_links[0].output_protocol_id == "ap_1"
+
+    @pytest.mark.asyncio
+    async def test_path_a_delayed_eval_joins_existing_universal_different_domain(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Path A: _delayed_protocol_evaluation correctly joins when domain is different.
+
+        Scenario: AirPlay universal player exists, DLNA arrives via delayed eval.
+        DLNA should successfully join the existing universal player (different domain).
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        # Create existing universal player with AirPlay linked
+        universal = _create_universal_player(
+            mock_mass,
+            "up_aabbccddeeff",
+            "Living Room Speaker",
+            protocol_player_ids=["ap_1"],
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap1 = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap1.set_initialized()
+        controller._add_protocol_link(universal, ap1, "airplay")
+
+        # Create DLNA player (same device, different protocol)
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna1 = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna1.set_initialized()
+
+        controller._players = {
+            "up_aabbccddeeff": universal,
+            "ap_1": ap1,
+            "dlna_1": dlna1,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Run delayed evaluation for DLNA
+        await controller._delayed_protocol_evaluation("dlna_1")
+
+        # DLNA should join the existing universal player
+        assert dlna1.protocol_parent_id == "up_aabbccddeeff"
+
+        # Universal player should now have both AirPlay and DLNA
+        domains = {link.protocol_domain for link in universal.linked_output_protocols}
+        assert "airplay" in domains
+        assert "dlna" in domains
+
+    @pytest.mark.asyncio
+    async def test_path_b_ensure_universal_separates_duplicate_domain(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Path B: ensure_universal_player_for_protocols separates can_join vs rejected.
+
+        Scenario: Two AirPlay players arrive simultaneously for delayed eval.
+        Both are unlinked, both pass to _create_or_update_universal_player.
+        The first creates a universal player. The second finds the existing one
+        and is rejected (duplicate domain), getting its own separate universal player.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap1 = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay Instance 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap1.set_initialized()
+
+        ap2 = MockPlayer(
+            ap_provider,
+            "ap_2",
+            "AirPlay Instance 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2.set_initialized()
+
+        controller._players = {
+            "ap_1": ap1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # First: ap1 goes through delayed evaluation, creates a universal player
+        await controller._delayed_protocol_evaluation("ap_1")
+
+        # ap1 should have a universal player parent
+        assert ap1.protocol_parent_id is not None
+        first_up_id = ap1.protocol_parent_id
+        assert first_up_id in controller._players
+
+        # Second: ap2 goes through delayed evaluation
+        # _find_matching_universal_player will find the universal player by MAC
+        # _add_protocol_to_existing_universal will refuse (duplicate domain)
+        # _find_matching_protocol_players will skip ap1 (same domain)
+        # _create_or_update_universal_player → ensure_universal_player_for_protocols
+        #   finds existing universal player, separates ap2 as rejected
+        await controller._delayed_protocol_evaluation("ap_2")
+
+        # ap2 should have its own separate universal player
+        assert ap2.protocol_parent_id is not None
+        second_up_id = ap2.protocol_parent_id
+        assert second_up_id != first_up_id
+        assert second_up_id in controller._players
+
+        # Both universal players should exist
+        first_up = controller._players[first_up_id]
+        second_up = controller._players[second_up_id]
+        assert isinstance(first_up, UniversalPlayer)
+        assert isinstance(second_up, UniversalPlayer)
+
+    @pytest.mark.asyncio
+    async def test_path_b_first_creates_then_second_gets_separate(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Path B: First protocol player creates universal, second gets separate.
+
+        Scenario: AirPlay and DLNA create a universal player together.
+        Then a second AirPlay arrives and gets its own separate universal player.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+
+        ap1 = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap1.set_initialized()
+
+        dlna1 = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna1.set_initialized()
+
+        ap2 = MockPlayer(
+            ap_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2.set_initialized()
+
+        controller._players = {
+            "ap_1": ap1,
+            "dlna_1": dlna1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # First: ap1 arrives at delayed eval, finds dlna1 as matching (different domain)
+        # Together they create a universal player
+        await controller._delayed_protocol_evaluation("ap_1")
+
+        assert ap1.protocol_parent_id is not None
+        # dlna1 should also be linked (found by _find_matching_protocol_players)
+        assert dlna1.protocol_parent_id == ap1.protocol_parent_id
+        shared_up_id = ap1.protocol_parent_id
+
+        # Second: ap2 arrives at delayed eval
+        await controller._delayed_protocol_evaluation("ap_2")
+
+        # ap2 should get its own universal player
+        assert ap2.protocol_parent_id is not None
+        assert ap2.protocol_parent_id != shared_up_id
+        assert ap2.protocol_parent_id in controller._players
+
+        # Shared universal player should have AirPlay + DLNA
+        shared_up = controller._players[shared_up_id]
+        shared_domains = {link.protocol_domain for link in shared_up.linked_output_protocols}
+        assert "airplay" in shared_domains
+        assert "dlna" in shared_domains
+
+    @pytest.mark.asyncio
+    async def test_path_c_sendspin_duplicate_gets_separate_universal(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Path C: Two Sendspin bridge instances on same host get separate universal players.
+
+        Sendspin bridges match via CAST_UUID / AIRPLAY_ID, not MAC. Two bridges
+        on the same host share the same MAC (from ARP) but have different CAST_UUIDs.
+        Each should get its own universal player.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        sendspin_provider = MockProvider("sendspin", mass=mock_mass)
+
+        # First Sendspin bridge
+        spb1 = MockPlayer(
+            sendspin_provider,
+            "spb_1",
+            "Sendspin Bridge 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                IdentifierType.CAST_UUID: "cast-uuid-111",
+            },
+        )
+        spb1.set_initialized()
+
+        # Second Sendspin bridge (same MAC, different CAST_UUID)
+        spb2 = MockPlayer(
+            sendspin_provider,
+            "spb_2",
+            "Sendspin Bridge 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                IdentifierType.CAST_UUID: "cast-uuid-222",
+            },
+        )
+        spb2.set_initialized()
+
+        controller._players = {
+            "spb_1": spb1,
+            "spb_2": spb2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # First: spb1 goes through delayed evaluation
+        await controller._delayed_protocol_evaluation("spb_1")
+
+        assert spb1.protocol_parent_id is not None
+        first_up_id = spb1.protocol_parent_id
+
+        # Second: spb2 goes through delayed evaluation
+        # _find_matching_protocol_players skips spb1 (same domain: "sendspin")
+        # _find_matching_universal_player may find the first universal player by MAC
+        # _add_protocol_to_existing_universal refuses (duplicate domain: "sendspin")
+        # Falls through to create separate universal player
+        await controller._delayed_protocol_evaluation("spb_2")
+
+        assert spb2.protocol_parent_id is not None
+        second_up_id = spb2.protocol_parent_id
+
+        # Each should have its own universal player
+        assert first_up_id != second_up_id
+        assert first_up_id in controller._players
+        assert second_up_id in controller._players
+
+        first_up = controller._players[first_up_id]
+        second_up = controller._players[second_up_id]
+        assert isinstance(first_up, UniversalPlayer)
+        assert isinstance(second_up, UniversalPlayer)
+
+    @pytest.mark.asyncio
+    async def test_three_airplay_instances_get_separate_universals(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that three AirPlay instances each get their own universal player.
+
+        Exercises the flow when there are 3+ instances of the same protocol.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        players = []
+        for i in range(1, 4):
+            p = MockPlayer(
+                ap_provider,
+                f"ap_{i}",
+                f"AirPlay Instance {i}",
+                player_type=PlayerType.PROTOCOL,
+                identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+            )
+            p.set_initialized()
+            players.append(p)
+
+        controller._players = {p.player_id: p for p in players}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Run delayed evaluation for each in sequence
+        for p in players:
+            await controller._delayed_protocol_evaluation(p.player_id)
+
+        # Each should have its own universal player
+        parent_ids = {p.protocol_parent_id for p in players}
+        assert None not in parent_ids
+        # All three should have distinct parents
+        assert len(parent_ids) == 3
+
+        # All three universal players should exist
+        for pid in parent_ids:
+            assert pid in controller._players
+            assert isinstance(controller._players[pid], UniversalPlayer)
+
+    @pytest.mark.asyncio
+    async def test_mixed_protocols_plus_duplicate_creates_correct_topology(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that mixed protocols + duplicate create correct player topology.
+
+        Scenario:
+        - Device has AirPlay, DLNA, and Chromecast protocols
+        - Plus a second AirPlay instance (duplicate)
+        Result:
+        - One universal player with AirPlay + DLNA + Chromecast
+        - One separate universal player for the second AirPlay
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        cc_provider = MockProvider("chromecast", mass=mock_mass)
+
+        ap1 = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap1.set_initialized()
+
+        dlna1 = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna1.set_initialized()
+
+        cc1 = MockPlayer(
+            cc_provider,
+            "cc_1",
+            "Chromecast",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        cc1.set_initialized()
+
+        ap2 = MockPlayer(
+            ap_provider,
+            "ap_2",
+            "AirPlay Duplicate",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2.set_initialized()
+
+        controller._players = {
+            "ap_1": ap1,
+            "dlna_1": dlna1,
+            "cc_1": cc1,
+            "ap_2": ap2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # ap1 goes through delayed eval - finds dlna1 and cc1 as matching
+        # (different domains), creates universal player with all three
+        await controller._delayed_protocol_evaluation("ap_1")
+
+        assert ap1.protocol_parent_id is not None
+        assert dlna1.protocol_parent_id == ap1.protocol_parent_id
+        assert cc1.protocol_parent_id == ap1.protocol_parent_id
+        shared_up_id = ap1.protocol_parent_id
+
+        # ap2 goes through delayed eval - finds universal player but is rejected
+        await controller._delayed_protocol_evaluation("ap_2")
+
+        assert ap2.protocol_parent_id is not None
+        assert ap2.protocol_parent_id != shared_up_id
+
+        # Shared universal player should have 3 protocols
+        shared_up = controller._players[shared_up_id]
+        shared_domains = {link.protocol_domain for link in shared_up.linked_output_protocols}
+        assert shared_domains == {"airplay", "dlna", "chromecast"}
+
+
+class TestSiblingProtocolMatching:
+    """Tests for sibling protocol matching via _match_via_linked_protocols.
+
+    When a native player (e.g., HEOS) doesn't have its own MAC/serial identifiers
+    but has protocol players (e.g., AirPlay) already linked, a new protocol player
+    (e.g., Sendspin bridge) should be matched to the native player through the
+    shared identifiers of sibling protocols.
+    """
+
+    def test_sendspin_matches_heos_via_airplay_sibling(self, mock_mass: MagicMock) -> None:
+        """Test Sendspin links to HEOS through AirPlay's shared AIRPLAY_ID.
+
+        HEOS has no MAC/UUID identifiers. AirPlay is already linked to HEOS.
+        Sendspin has AIRPLAY_ID matching AirPlay. Sibling matching should link
+        Sendspin to HEOS.
+        """
+        controller = PlayerController(mock_mass)
+
+        # HEOS native player - no MAC, no serial, no UUID (just IP from discovery)
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider,
+            "2140037800",
+            "Denon AVR-X2700H",
+            player_type=PlayerType.PLAYER,
+        )
+        heos_player._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
+        heos_player._cache.clear()
+        heos_player.set_initialized()
+
+        # AirPlay protocol player already linked to HEOS
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap000678747b16",
+            "Denon AVR-X2700H (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        ap_player.set_initialized()
+
+        # Link AirPlay to HEOS
+        controller._players = {
+            "2140037800": heos_player,
+            "ap000678747b16": ap_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+        controller._add_protocol_link(heos_player, ap_player, "airplay")
+        assert ap_player.protocol_parent_id == "2140037800"
+
+        # Sendspin bridge with AIRPLAY_ID matching AirPlay
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_000678747b16",
+            "Denon AVR-X2700H (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        spb_player.set_initialized()
+        controller._players["spb_000678747b16"] = spb_player
+        controller._player_throttlers["spb_000678747b16"] = Throttler(1, 0.05)
+
+        # Direct identifier match would fail (HEOS has no identifiers)
+        assert controller._identifiers_match(heos_player, spb_player, "sendspin") is False
+
+        # Sibling matching should succeed through AirPlay's identifiers
+        assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is True
+        assert spb_player.protocol_parent_id == "2140037800"
+
+    def test_sibling_match_no_linked_protocols(self, mock_mass: MagicMock) -> None:
+        """Test sibling matching returns False when native player has no linked protocols."""
+        controller = PlayerController(mock_mass)
+
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider, "heos_1", "HEOS Player", player_type=PlayerType.PLAYER
+        )
+        heos_player.set_initialized()
+
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_1",
+            "Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.AIRPLAY_ID: "ap_1"},
+        )
+        spb_player.set_initialized()
+
+        controller._players = {"heos_1": heos_player, "spb_1": spb_player}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is False
+
+    def test_sibling_match_no_identifier_overlap(self, mock_mass: MagicMock) -> None:
+        """Test sibling matching returns False when identifiers don't overlap."""
+        controller = PlayerController(mock_mass)
+
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider, "heos_1", "HEOS Player", player_type=PlayerType.PLAYER
+        )
+        heos_player.set_initialized()
+
+        # AirPlay with one MAC
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player.set_initialized()
+
+        controller._players = {"heos_1": heos_player, "ap_1": ap_player}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+        controller._add_protocol_link(heos_player, ap_player, "airplay")
+
+        # Sendspin with different MAC, no shared identifiers
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_1",
+            "Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        )
+        spb_player.set_initialized()
+        controller._players["spb_1"] = spb_player
+        controller._player_throttlers["spb_1"] = Throttler(1, 0.05)
+
+        assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is False
+        assert spb_player.protocol_parent_id is None
+
+    def test_sibling_match_refuses_duplicate_domain(self, mock_mass: MagicMock) -> None:
+        """Test sibling matching refuses link when domain is already active on native player."""
+        controller = PlayerController(mock_mass)
+
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider, "heos_1", "HEOS Player", player_type=PlayerType.PLAYER
+        )
+        heos_player.set_initialized()
+
+        # AirPlay already linked
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player.set_initialized()
+
+        controller._players = {"heos_1": heos_player, "ap_1": ap_player}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+        controller._add_protocol_link(heos_player, ap_player, "airplay")
+
+        # Second AirPlay instance with same MAC - should be refused (duplicate domain)
+        ap2 = MockPlayer(
+            ap_provider,
+            "ap_2",
+            "AirPlay 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap2.set_initialized()
+        controller._players["ap_2"] = ap2
+        controller._player_throttlers["ap_2"] = Throttler(1, 0.05)
+
+        assert controller._match_via_linked_protocols(heos_player, ap2, "airplay") is False
+        assert ap2.protocol_parent_id is None
+
+    def test_try_link_to_existing_uses_sibling_matching(self, mock_mass: MagicMock) -> None:
+        """Test _try_link_to_existing_player falls back to sibling matching."""
+        controller = PlayerController(mock_mass)
+
+        # No cached protocol IDs for HEOS
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider,
+            "2140037800",
+            "Denon AVR-X2700H",
+            player_type=PlayerType.PLAYER,
+        )
+        heos_player.set_initialized()
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap000678747b16",
+            "Denon AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.AIRPLAY_ID: "ap000678747b16"},
+        )
+        ap_player.set_initialized()
+
+        controller._players = {
+            "2140037800": heos_player,
+            "ap000678747b16": ap_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+        controller._add_protocol_link(heos_player, ap_player, "airplay")
+
+        # Sendspin with matching AIRPLAY_ID
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_000678747b16",
+            "Denon Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.AIRPLAY_ID: "ap000678747b16"},
+        )
+        spb_player.set_initialized()
+        controller._players["spb_000678747b16"] = spb_player
+        controller._player_throttlers["spb_000678747b16"] = Throttler(1, 0.05)
+
+        # _try_link_to_existing_player should succeed via sibling matching
+        result = controller._try_link_to_existing_player(spb_player, "sendspin")
+        assert result is True
+        assert spb_player.protocol_parent_id == "2140037800"
+
+
+class TestDelayedEvalRetry:
+    """Tests for the retry of _try_link_to_existing_player in _delayed_protocol_evaluation.
+
+    When a protocol player's delayed evaluation fires, native players may have
+    registered during the delay period. The retry ensures they are checked before
+    falling through to universal player creation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_delayed_eval_links_to_native_registered_during_delay(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test delayed eval links to a native player that registered during the delay.
+
+        Scenario: Sendspin registers before HEOS. The delayed evaluation fires
+        after HEOS has registered and has AirPlay linked. The retry should find
+        HEOS via sibling matching and link Sendspin.
+        """
+        controller, _ = TestEndToEndDuplicateProtocol._setup_e2e_controller(mock_mass)
+
+        # No cached protocol IDs
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        # HEOS native player (no device identifiers)
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider,
+            "2140037800",
+            "Denon AVR-X2700H",
+            player_type=PlayerType.PLAYER,
+        )
+        heos_player._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
+        heos_player._cache.clear()
+        heos_player.set_initialized()
+
+        # AirPlay already linked to HEOS
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap000678747b16",
+            "Denon AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        ap_player.set_initialized()
+        ap_player.set_protocol_parent_id("2140037800")
+
+        # Sendspin (not yet linked)
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_000678747b16",
+            "Denon Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        spb_player.set_initialized()
+
+        # Set up players dict (simulating: HEOS registered during the delay)
+        controller._players = {
+            "2140037800": heos_player,
+            "ap000678747b16": ap_player,
+            "spb_000678747b16": spb_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Link AirPlay to HEOS
+        controller._add_protocol_link(heos_player, ap_player, "airplay")
+
+        # Run delayed evaluation for Sendspin
+        await controller._delayed_protocol_evaluation("spb_000678747b16")
+
+        # Sendspin should be linked to HEOS, not a new universal player
+        assert spb_player.protocol_parent_id == "2140037800"
+
+    @pytest.mark.asyncio
+    async def test_delayed_eval_skips_already_linked(self, mock_mass: MagicMock) -> None:
+        """Test delayed eval returns early if protocol player was linked during the delay."""
+        controller, _ = TestEndToEndDuplicateProtocol._setup_e2e_controller(mock_mass)
+
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_1",
+            "Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.AIRPLAY_ID: "ap_1"},
+        )
+        spb_player.set_initialized()
+        # Simulate it was linked during the delay
+        spb_player.set_protocol_parent_id("some_parent")
+
+        controller._players = {"spb_1": spb_player}
+        controller._player_throttlers = {"spb_1": Throttler(1, 0.05)}
+
+        # Should return early without creating universal player
+        await controller._delayed_protocol_evaluation("spb_1")
+        assert spb_player.protocol_parent_id == "some_parent"
+
+
+class TestNativePlayerSiblingLinking:
+    """Tests for the second pass in _try_link_protocols_to_native using sibling matching.
+
+    After a native player registers and recovers cached protocol links, the second
+    pass should match remaining unlinked protocol players via sibling identifiers.
+    """
+
+    def test_native_registration_links_sendspin_via_sibling(self, mock_mass: MagicMock) -> None:
+        """Test HEOS registration links Sendspin via AirPlay sibling identifiers.
+
+        Scenario: Sendspin registered before HEOS. When HEOS registers, the first
+        pass can't match Sendspin (no direct identifiers). After recovering cached
+        AirPlay link, the second pass matches Sendspin via AirPlay's AIRPLAY_ID.
+        """
+        controller = PlayerController(mock_mass)
+
+        # Set up config to return cached AirPlay link for HEOS
+        def config_get_side_effect(key: str, default: object = None) -> object:
+            if key == "players/2140037800/values/linked_protocol_ids":
+                return ["ap000678747b16"]
+            if key == "players/ap000678747b16":
+                return {
+                    "provider": "airplay--test",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "2140037800"},
+                }
+            if key == "players":
+                return {
+                    "ap000678747b16": {
+                        "provider": "airplay--test",
+                        "player_type": "protocol",
+                        "values": {"protocol_parent_id": "2140037800"},
+                    },
+                    "spb_000678747b16": {
+                        "provider": "sendspin--test",
+                        "player_type": "protocol",
+                        "values": {},
+                    },
+                }
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=config_get_side_effect)
+        mock_mass.get_provider = MagicMock(return_value=None)
+
+        # AirPlay protocol player (already registered, waiting for parent)
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap000678747b16",
+            "Denon AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        ap_player.set_initialized()
+        # AirPlay has cached parent set but parent hasn't registered yet
+        ap_player.set_protocol_parent_id("2140037800")
+
+        # Sendspin (registered, not linked)
+        spb_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_player = MockPlayer(
+            spb_provider,
+            "spb_000678747b16",
+            "Denon Sendspin",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
+                IdentifierType.AIRPLAY_ID: "ap000678747b16",
+            },
+        )
+        spb_player.set_initialized()
+
+        # HEOS native player registers now
+        heos_provider = MockProvider("heos", mass=mock_mass)
+        heos_player = MockPlayer(
+            heos_provider,
+            "2140037800",
+            "Denon AVR-X2700H",
+            player_type=PlayerType.PLAYER,
+        )
+        heos_player._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
+        heos_player._cache.clear()
+        heos_player.set_initialized()
+
+        controller._players = {
+            "ap000678747b16": ap_player,
+            "spb_000678747b16": spb_player,
+            "2140037800": heos_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Simulate what happens when HEOS registers
+        controller._try_link_protocols_to_native(heos_player)
+
+        # AirPlay should be recovered from cache (linked_output_protocols)
+        airplay_linked = any(
+            link.output_protocol_id == "ap000678747b16"
+            for link in heos_player.linked_output_protocols
+        )
+        assert airplay_linked, "AirPlay should be recovered from cached protocol links"
+
+        # Sendspin should be linked via sibling matching (second pass)
+        assert spb_player.protocol_parent_id == "2140037800"
+        sendspin_linked = any(
+            link.output_protocol_id == "spb_000678747b16"
+            for link in heos_player.linked_output_protocols
+        )
+        assert sendspin_linked, "Sendspin should be linked via sibling protocol matching"

@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape as xmlescape
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.helpers.audio import get_mime_type
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
@@ -179,6 +180,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         return result
 
     ext = media.uri.split(".")[-1].split("?")[0]
+    mime_type = get_mime_type(ext)
     image_url = media.image_url or MASS_LOGO_ONLINE
     if media.media_type in (MediaType.FLOW_STREAM, MediaType.RADIO) or not media.duration:
         # flow stream, radio or other duration-less stream
@@ -192,7 +194,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
             f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
             f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
-            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+            f'<res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(media.uri)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -219,7 +221,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"
