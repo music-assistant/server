@@ -24,7 +24,12 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    DB_TABLE_PLAYLOG,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+    SYSTEM_USERNAMES,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -629,7 +634,7 @@ class AuthenticationManager:
         )
 
         # If this is the first non-system user, migrate playlog entries to them
-        if is_first_user and normalized_username != HOMEASSISTANT_SYSTEM_USER:
+        if is_first_user and normalized_username not in SYSTEM_USERNAMES:
             self._has_users = True
             await self._migrate_playlog_to_first_user(user_id)
 
@@ -638,7 +643,7 @@ class AuthenticationManager:
     async def _has_non_system_users(self) -> bool:
         """Check if any non-system users exist."""
         user_rows = await self.database.get_rows("users", limit=10)
-        return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
+        return any(row["username"] not in SYSTEM_USERNAMES for row in user_rows)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
@@ -1017,7 +1022,7 @@ class AuthenticationManager:
         users = []
         for row in user_rows:
             # Skip system users
-            if row["username"] == HOMEASSISTANT_SYSTEM_USER:
+            if row["username"] in SYSTEM_USERNAMES:
                 continue
             users.append(
                 User(

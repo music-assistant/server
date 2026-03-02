@@ -28,7 +28,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import DEFAULT_PORT
+from music_assistant.constants import DEFAULT_PORT, PARTY_MODE_SYSTEM_USER
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 
@@ -83,7 +83,6 @@ BADGE_COLOR_OPTIONS = [
 ]
 
 # Guest user configuration
-PARTY_GUEST_USERNAME = "party_guest"
 PARTY_GUEST_DISPLAY_NAME = "Party Guest"
 
 # Extra attribute keys for tracking guest items in the queue
@@ -451,13 +450,13 @@ class PartyModePlugin(PluginProvider):
         :returns: The party guest User.
         """
         auth = self.mass.webserver.auth
-        user = await auth.get_user_by_username(PARTY_GUEST_USERNAME)
+        user = await auth.get_user_by_username(PARTY_MODE_SYSTEM_USER)
         if user:
             return user
 
         # Create the party guest user
         user = await auth.create_user(
-            username=PARTY_GUEST_USERNAME,
+            username=PARTY_MODE_SYSTEM_USER,
             role=UserRole.GUEST,
             display_name=PARTY_GUEST_DISPLAY_NAME,
         )
@@ -578,7 +577,7 @@ class PartyModePlugin(PluginProvider):
         user = get_current_user()
 
         # Verify user is a guest
-        if not user or user.username != PARTY_GUEST_USERNAME:
+        if not user or user.username != PARTY_MODE_SYSTEM_USER:
             raise InvalidDataError("This endpoint is only available to party mode guests")
 
         # Check if guest access is enabled
@@ -744,7 +743,7 @@ class PartyModePlugin(PluginProvider):
         user = get_current_user()
 
         # Verify user is a guest
-        if not user or user.username != PARTY_GUEST_USERNAME:
+        if not user or user.username != PARTY_MODE_SYSTEM_USER:
             raise InvalidDataError("This endpoint is only available to party mode guests")
 
         # Check if guest access and skip are enabled
@@ -787,7 +786,7 @@ class PartyModePlugin(PluginProvider):
         auth = self.mass.webserver.auth
 
         # Find the party mode guest user
-        guest_user = await auth.get_user_by_username(PARTY_GUEST_USERNAME)
+        guest_user = await auth.get_user_by_username(PARTY_MODE_SYSTEM_USER)
         if not guest_user:
             self.logger.debug("No party guest user found, nothing to revoke")
             return
