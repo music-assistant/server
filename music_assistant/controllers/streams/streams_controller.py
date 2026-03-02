@@ -2184,10 +2184,8 @@ class StreamsController(CoreController):
         """Set up smart fades logger level."""
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
-            self.smart_fades_analyzer.logger.setLevel(self.logger.level)
             self.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
-            self.smart_fades_analyzer.logger.setLevel(log_level)
             self.smart_fades_mixer.logger.setLevel(log_level)
 
     async def cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:

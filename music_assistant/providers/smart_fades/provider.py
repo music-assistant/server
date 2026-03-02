@@ -36,6 +36,40 @@ ANALYSIS_AUDIO_FORMAT = AudioFormat(
 )
 
 
+def _calculate_overall_bpm(beats: np.ndarray, n_segments: int = 5) -> float:
+    """Calculate overall BPM using a robust segment-based approach.
+
+    Splits the beat array into N segments, computes a BPM per segment, then
+    discards outlier segments (those deviating more than 3 BPM from the median)
+    before averaging the consistent remainder. This prevents a single poorly-tracked
+    section from pulling the final BPM away from the true value.
+
+    :param beats: Array of beat timestamps in seconds.
+    :param n_segments: Number of equal segments to split the beats into.
+    """
+    if len(beats) < n_segments * 2:
+        return float(60.0 / np.mean(np.diff(beats)))
+
+    segment_bpms = []
+    for idx in np.array_split(np.arange(len(beats)), n_segments):
+        if len(idx) < 2:
+            continue
+        segment_bpms.append(60.0 / float(np.mean(np.diff(beats[idx]))))
+
+    if len(segment_bpms) < 2:
+        return float(60.0 / np.mean(np.diff(beats)))
+
+    seg_arr = np.array(segment_bpms)
+    median_bpm = float(np.median(seg_arr))
+    consistent = seg_arr[np.abs(seg_arr - median_bpm) <= 3.0]
+
+    if len(consistent) < 2:
+        # All segments too spread out — fall back to unfiltered mean
+        return float(np.mean(seg_arr))
+
+    return float(np.mean(consistent))
+
+
 @dataclass
 class SmartFadesData:
     """Per-session data for smart fades analysis."""
@@ -174,8 +208,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             self.logger.debug("Not enough beats detected, skipping storage")
             return
 
-        beat_intervals = np.diff(beats)
-        bpm = float(60.0 / np.mean(beat_intervals))
+        bpm = _calculate_overall_bpm(beats)
 
         analysis = AudioAnalysisData(
             bpm=bpm,
