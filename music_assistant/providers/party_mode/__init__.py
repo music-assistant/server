@@ -602,11 +602,13 @@ class PartyModePlugin(PluginProvider):
         started_playback = False
 
         if queue.state == PlaybackState.PLAYING:
-            pass  # Handled below via boost/guest section insertion
-        elif queue.current_index is not None:
-            # Not playing but queue has a position (paused/idle with loaded queue)
-            # Insert as next song after current position, then skip to it
-            insert_index = queue.current_index + 1
+            # Queue is actively playing — insert into the priority section
+            extra_attrs: dict[str, Any] = {ATTR_PARTY_MODE_GUEST: True}
+            if boost:
+                extra_attrs[ATTR_PARTY_MODE_BOOSTED] = True
+            await self._add_to_priority_section(queue_id, uri, extra_attrs)
+        else:
+            # Queue is not playing — resolve the item, insert, and start playback
             media_item = await self.mass.music.get_item_by_uri(uri)
             if not media_item or media_item.media_type not in (
                 MediaType.TRACK,
@@ -617,6 +619,8 @@ class PartyModePlugin(PluginProvider):
             queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
             if boost:
                 queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+            # Insert after current position if queue has one, otherwise at the start
+            insert_index = (queue.current_index + 1) if queue.current_index is not None else 0
             await self.mass.player_queues.load(
                 queue_id=queue_id,
                 queue_items=[queue_item],
@@ -627,34 +631,6 @@ class PartyModePlugin(PluginProvider):
             )
             await self.mass.player_queues.play_index(queue_id, insert_index)
             started_playback = True
-        else:
-            # Queue has no position — fresh start
-            media_item = await self.mass.music.get_item_by_uri(uri)
-            if not media_item or media_item.media_type not in (
-                MediaType.TRACK,
-                MediaType.RADIO,
-            ):
-                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
-            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-            if boost:
-                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
-            await self.mass.player_queues.load(
-                queue_id=queue_id,
-                queue_items=[queue_item],
-                insert_at_index=0,
-                keep_remaining=True,
-                keep_played=True,
-                shuffle=False,
-            )
-            await self.mass.player_queues.play_index(queue_id, 0)
-            started_playback = True
-
-        if queue.state == PlaybackState.PLAYING and not started_playback:
-            extra_attrs: dict[str, Any] = {ATTR_PARTY_MODE_GUEST: True}
-            if boost:
-                extra_attrs[ATTR_PARTY_MODE_BOOSTED] = True
-            await self._add_to_priority_section(queue_id, uri, extra_attrs)
 
         self.logger.info(
             "Guest added to queue: %s (boost=%s, started_playback=%s)",
