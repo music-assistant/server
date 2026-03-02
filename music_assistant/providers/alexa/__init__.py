@@ -216,7 +216,7 @@ async def get_config_entries(
                 ConfigValueOption("Italian (Italy)", "it-IT"),
                 ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
             ],
-            default_value="en-US",  # oder was für dich sinnvoll ist
+            default_value="en-US",  # choose a sensible default
         )
     )
 
