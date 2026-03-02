@@ -613,6 +613,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         if not (player := self.get_player(player_id)):
             return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_up(player_id)
+            return
         current_volume = player.state.volume_level or 0
         if current_volume < 10 or current_volume > 90:
             step_size = 1
@@ -631,6 +634,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command.
         """
         if not (player := self.get_player(player_id)):
+            return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.state.volume_level or 0
         if current_volume < 10 or current_volume > 90:
