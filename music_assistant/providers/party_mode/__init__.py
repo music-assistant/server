@@ -6,6 +6,7 @@ to add songs to the queue with configurable rate limiting.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -383,6 +384,7 @@ class PartyModePlugin(PluginProvider):
         """Initialize the Party Mode plugin."""
         super().__init__(mass, manifest, config, supported_features)
         self._unregister_handles: list[Callable[[], None]] = []
+        self._queue_lock = asyncio.Lock()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle config updates without reloading.
@@ -679,32 +681,33 @@ class PartyModePlugin(PluginProvider):
         else:
             section_attribute = ATTR_PARTY_MODE_GUEST
 
-        # Find the insert position (end of the relevant section)
-        queue = self.mass.player_queues.get(queue_id)
-        queue_items = self.mass.player_queues.items(queue_id)
+        # Hold the lock while reading queue state, calculating the insert index,
+        # and loading the item so concurrent guest requests don't interleave.
+        async with self._queue_lock:
+            queue = self.mass.player_queues.get(queue_id)
+            queue_items = self.mass.player_queues.items(queue_id)
 
-        # Use index_in_buffer when playing to avoid inserting before an already-buffered track,
-        # which would cause the newly added song to be skipped
-        if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            current_index = (
-                queue.index_in_buffer
-                if queue.index_in_buffer is not None
-                else (queue.current_index if queue.current_index is not None else 0)
+            # Use index_in_buffer when playing to avoid inserting before an already-buffered
+            # track, which would cause the newly added song to be skipped
+            if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                current_index = (
+                    queue.index_in_buffer
+                    if queue.index_in_buffer is not None
+                    else (queue.current_index if queue.current_index is not None else 0)
+                )
+            else:
+                current_index = queue.current_index or 0 if queue else 0
+
+            insert_index = self._find_section_end(queue_items, current_index, section_attribute)
+
+            await self.mass.player_queues.load(
+                queue_id=queue_id,
+                queue_items=[queue_item],
+                insert_at_index=insert_index,
+                keep_remaining=True,
+                keep_played=True,
+                shuffle=False,
             )
-        else:
-            current_index = queue.current_index or 0 if queue else 0
-
-        insert_index = self._find_section_end(queue_items, current_index, section_attribute)
-
-        # Load the item at the calculated position
-        await self.mass.player_queues.load(
-            queue_id=queue_id,
-            queue_items=[queue_item],
-            insert_at_index=insert_index,
-            keep_remaining=True,
-            keep_played=True,
-            shuffle=False,
-        )
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
