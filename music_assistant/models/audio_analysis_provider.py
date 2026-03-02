@@ -84,9 +84,6 @@ class AudioAnalysisProvider(Provider):
                 stored_version,
                 self.analysis_version,
             )
-            # DEBUG:
-            if stream_details.queue_id:
-                await self.mass.player_queues.next(stream_details.queue_id)
             return
 
         self._sessions[session_id] = AnalysisSessionData(
