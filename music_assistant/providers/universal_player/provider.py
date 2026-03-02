@@ -343,6 +343,10 @@ class UniversalPlayerProvider(PlayerProvider):
         for the given protocol players. It uses per-device locking to prevent race
         conditions when multiple protocols for the same device register simultaneously.
 
+        When a second instance of the same protocol domain tries to join an existing
+        universal player (e.g., two AirPlay instances on the same host), the duplicate
+        is separated out and given its own universal player with a player_id-based key.
+
         :param protocol_players: List of protocol players for the same device.
         :return: The created or updated universal player, or None if operation failed.
         """
@@ -365,11 +369,33 @@ class UniversalPlayerProvider(PlayerProvider):
 
             # Check if universal player already exists
             if existing := self.mass.players.get_player(universal_player_id):
-                # Update existing universal player with new protocol players
-                protocol_player_ids = [p.player_id for p in protocol_players]
-                for player_id in protocol_player_ids:
-                    if isinstance(existing, UniversalPlayer):
-                        await self.add_protocol_to_universal_player(universal_player_id, player_id)
+                if isinstance(existing, UniversalPlayer):
+                    # Separate players into those that can join vs those that are
+                    # domain-duplicates (a domain already active on the universal player)
+                    active_domains: set[str] = set()
+                    for link in existing.linked_output_protocols:
+                        if not link.protocol_domain:
+                            continue
+                        linked_player = self.mass.players.get_player(link.output_protocol_id)
+                        if linked_player and linked_player.available:
+                            active_domains.add(link.protocol_domain)
+                    can_join = [
+                        p for p in protocol_players if p.provider.domain not in active_domains
+                    ]
+                    rejected = [p for p in protocol_players if p.provider.domain in active_domains]
+
+                    # Add players that can join to the existing universal player
+                    for player in can_join:
+                        await self.add_protocol_to_universal_player(
+                            universal_player_id, player.player_id
+                        )
+
+                    # Create separate universal players for rejected (domain-duplicate)
+                    # players using player_id-based device keys
+                    for player in rejected:
+                        fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
+                        await self._create_separate_universal_player(fallback_key, player)
+
                 return existing
 
             # Create new universal player
@@ -390,6 +416,39 @@ class UniversalPlayerProvider(PlayerProvider):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
+
+    async def _create_separate_universal_player(
+        self, device_key: str, protocol_player: Player
+    ) -> Player | None:
+        """
+        Create a separate universal player for a protocol player that was rejected.
+
+        Used when a second instance of the same protocol domain (e.g., two AirPlay
+        instances on the same host) cannot join the existing universal player.
+        A unique device_key derived from the player_id ensures no collision.
+
+        :param device_key: Unique device key for this player (player_id-based).
+        :param protocol_player: The protocol player that needs its own universal player.
+        """
+        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
+
+        # Check if this separate universal player already exists
+        if existing := self.mass.players.get_player(universal_player_id):
+            if isinstance(existing, UniversalPlayer):
+                await self.add_protocol_to_universal_player(
+                    universal_player_id, protocol_player.player_id
+                )
+            return existing
+
+        device_info = self._aggregate_device_info([protocol_player])
+        name = self._get_clean_player_name([protocol_player])
+
+        return await self.create_universal_player(
+            device_key=device_key,
+            name=name,
+            device_info=device_info,
+            protocol_player_ids=[protocol_player.player_id],
+        )
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""

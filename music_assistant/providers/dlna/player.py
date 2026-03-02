@@ -19,7 +19,6 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
@@ -145,13 +144,11 @@ class DLNAPlayer(Player):
                 if uuid_value.lower().startswith("uuid:"):
                     uuid_value = uuid_value[5:]
                 self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
-                # Try to extract MAC address from UUID
-                # Many UPnP devices embed MAC in the last 12 chars of UUID
-                # e.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
-                mac_address = self._extract_mac_from_uuid(uuid_value)
-                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
-                if mac_address and is_valid_mac_address(mac_address):
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+                # MAC address is NOT extracted from UUID because the last 12 chars
+                # of UPnP UUIDs are unreliable — many devices put random/model
+                # values there, not the real hardware MAC. Instead, the player
+                # controller resolves the real MAC via ARP during registration
+                # using the IP address extracted below.
                 # Try to extract just the IP from the URL for matching
                 ip_address = self.device.device.presentation_url or self.description_url
                 with suppress(ValueError):
@@ -526,33 +523,3 @@ class DLNAPlayer(Player):
             self.set_available(False)
             await old_device.async_unsubscribe_services()
         self.update_state()
-
-    @staticmethod
-    def _extract_mac_from_uuid(uuid_value: str) -> str | None:
-        """Try to extract MAC address from UUID.
-
-        Many UPnP devices embed the MAC address in the last 12 hex characters of the UUID.
-        E.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
-
-        :param uuid_value: The UUID string (without 'uuid:' prefix).
-        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
-        """
-        # Remove dashes and get last 12 hex characters
-        hex_chars = uuid_value.replace("-", "")
-        if len(hex_chars) < 12:
-            return None
-
-        mac_hex = hex_chars[-12:]
-
-        # Validate it looks like a MAC (all hex characters)
-        try:
-            int(mac_hex, 16)
-        except ValueError:
-            return None
-
-        # Check if it could be a valid MAC (not all zeros or all ones)
-        if mac_hex in ("000000000000", "ffffffffffff", "FFFFFFFFFFFF"):
-            return None
-
-        # Format as XX:XX:XX:XX:XX:XX
-        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
