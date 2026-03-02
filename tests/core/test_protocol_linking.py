@@ -245,8 +245,8 @@ class TestIdentifiersMatch:
         # These should NOT match - they differ in more than just the locally-administered bit
         assert controller._identifiers_match(player_a, player_b) is False
 
-    def test_ip_address_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that IP addresses don't match (IP is excluded as it's not stable)."""
+    def test_ip_address_fallback_with_no_mac(self, mock_mass: MagicMock) -> None:
+        """Test that same IP matches when no MAC is available (ARP couldn't help)."""
         controller = PlayerController(mock_mass)
 
         provider = MockProvider("test")
@@ -263,8 +263,8 @@ class TestIdentifiersMatch:
             identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
         )
 
-        # IP address matching is intentionally disabled to prevent false matches
-        assert controller._identifiers_match(player_a, player_b) is False
+        # Same IP with no MAC at all = match (likely same device, ARP unavailable)
+        assert controller._identifiers_match(player_a, player_b) is True
 
     def test_sonos_uuid_dlna_suffix_match(self, mock_mass: MagicMock) -> None:
         """Test Sonos UUID matching with DLNA _MR suffix."""
@@ -412,6 +412,120 @@ class TestIdentifiersMatch:
             "Device B",
             player_type=PlayerType.PROTOCOL,
             identifiers={IdentifierType.AIRPLAY_ID: "apaabbccddeeff"},
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is False
+
+    def test_ip_fallback_with_la_mac(self, mock_mass: MagicMock) -> None:
+        """Test IP fallback matching when one player has a locally-administered MAC."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "AirPlay Device",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "DLNA Device",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                # Locally-administered MAC from ARP (device uses MAC randomization)
+                IdentifierType.MAC_ADDRESS: "02:4E:52:A1:BC:6B",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_ip_fallback_with_missing_mac(self, mock_mass: MagicMock) -> None:
+        """Test IP fallback matching when one player has no MAC at all."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "AirPlay Device",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "DLNA Device",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_ip_no_fallback_with_real_macs(self, mock_mass: MagicMock) -> None:
+        """Test that IP alone does NOT match when both players have real (non-LA) MACs."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Device A",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Device B",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                # A8 first octet = 10101000, LA bit (0x02) is clear → real MAC
+                IdentifierType.MAC_ADDRESS: "A8:BB:CC:DD:EE:FF",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+
+        # Both have real MACs that don't match - IP should NOT be used as fallback
+        assert controller._identifiers_match(player_a, player_b) is False
+
+    def test_ip_no_fallback_different_ips(self, mock_mass: MagicMock) -> None:
+        """Test that different IPs don't match even with LA MAC."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Device A",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
+                IdentifierType.IP_ADDRESS: "192.168.1.48",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Device B",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "02:4E:52:A1:BC:6B",
+                IdentifierType.IP_ADDRESS: "192.168.1.99",
+            },
         )
 
         assert controller._identifiers_match(player_a, player_b) is False
@@ -4780,6 +4894,44 @@ class TestEndToEndDuplicateProtocol:
         for pid in parent_ids:
             assert pid in controller._players
             assert isinstance(controller._players[pid], UniversalPlayer)
+
+    @pytest.mark.asyncio
+    async def test_same_domain_same_ip_get_separate_universals(self, mock_mass: MagicMock) -> None:
+        """Test that multiple instances of the same protocol on the same host stay separate.
+
+        Scenario: 3 shairport-sync AirPlay instances on the same Raspberry Pi.
+        All share the same IP and have locally-administered MACs.
+        The IP fallback must NOT merge them — domain dedup takes precedence.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        players = []
+        for i in range(1, 4):
+            p = MockPlayer(
+                ap_provider,
+                f"ap_{i}",
+                f"Shairport Zone {i}",
+                player_type=PlayerType.PROTOCOL,
+                identifiers={
+                    # Each has a distinct LA MAC (as shairport-sync generates)
+                    IdentifierType.MAC_ADDRESS: f"02:AA:BB:CC:DD:{i:02X}",
+                    IdentifierType.IP_ADDRESS: "192.168.1.10",
+                },
+            )
+            p.set_initialized()
+            players.append(p)
+
+        controller._players = {p.player_id: p for p in players}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        for p in players:
+            await controller._delayed_protocol_evaluation(p.player_id)
+
+        # Each should have its own universal player (NOT merged)
+        parent_ids = {p.protocol_parent_id for p in players}
+        assert None not in parent_ids
+        assert len(parent_ids) == 3
 
     @pytest.mark.asyncio
     async def test_mixed_protocols_plus_duplicate_creates_correct_topology(

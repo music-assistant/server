@@ -545,16 +545,14 @@ class ChromecastPlayer(Player):
                 status.status,
             )
             self._attr_available = new_available
-            self._attr_device_info = DeviceInfo(
-                model=self.cast_info.model_name,
-                manufacturer=self.cast_info.manufacturer or "",
-            )
+            # Update in-place to preserve ARP-enriched identifiers (e.g. real MAC)
+            self._attr_device_info.model = self.cast_info.model_name
+            self._attr_device_info.manufacturer = self.cast_info.manufacturer or ""
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
             self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
             self._attr_device_info.add_identifier(
                 IdentifierType.CAST_UUID, str(self.cast_info.uuid)
             )
-            # Only add MAC address if it's valid (not 00:00:00:00:00:00)
             if is_valid_mac_address(self.cast_info.mac_address):
                 self._attr_device_info.add_identifier(
                     IdentifierType.MAC_ADDRESS, self.cast_info.mac_address

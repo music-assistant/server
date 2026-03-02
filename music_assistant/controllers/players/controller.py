@@ -139,6 +139,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
+        # Serialize delayed evaluations to prevent race conditions
+        self._delayed_evaluation_lock = asyncio.Lock()
 
     async def get_config_entries(
         self,

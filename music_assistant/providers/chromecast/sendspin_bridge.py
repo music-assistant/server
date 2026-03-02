@@ -35,6 +35,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
+    BRIDGE_PREFIX,
     CONF_SENDSPIN_SYNC_DELAY,
     DEFAULT_SENDSPIN_SYNC_DELAY,
 )
@@ -72,6 +73,22 @@ def get_bridge_client_id(cast_player: ChromecastPlayer) -> str | None:
     if device_mac and is_valid_mac_address(device_mac):
         return bridge_client_id_from_mac(device_mac)
     return None
+
+
+def _toggle_locally_administered_bit(mac_hex: str) -> str | None:
+    """Toggle bit 1 (locally-administered bit) of the first octet of a hex MAC string.
+
+    :param mac_hex: Lowercase 12-char hex MAC without separators (e.g. "5478c9e60da0").
+    :return: The MAC with the LA bit toggled, or None if input is invalid.
+    """
+    if len(mac_hex) != 12:
+        return None
+    try:
+        first_octet = int(mac_hex[:2], 16)
+        toggled = first_octet ^ 0x02
+        return f"{toggled:02x}{mac_hex[2:]}"
+    except ValueError:
+        return None
 
 
 def is_sendspin_cast_blocked(manufacturer: str, model: str) -> bool:
@@ -431,17 +448,30 @@ class SendspinBridgeManager:
                 )
                 return
 
-            # Check if another bridge (e.g. AirPlay) already registered this client_id.
-            # Devices that support both AirPlay and Chromecast share the same MAC,
-            # so only the first bridge to register wins.
+            # Check if a bridge already exists for this MAC (exact or LA-bit variant).
+            # AirPlay uses locally-administered MAC, Chromecast uses the real MAC -
+            # these differ by the LA bit so we check both variants.
             if sendspin_server.get_client(bridge_client_id):
                 self.logger.debug(
-                    "Sendspin client %s already registered (likely by another bridge), "
-                    "skipping Chromecast bridge for %s",
+                    "Sendspin client %s already registered, skipping Chromecast bridge for %s",
                     bridge_client_id,
                     cast_player.display_name,
                 )
                 return
+
+            la_variant_mac = _toggle_locally_administered_bit(
+                bridge_client_id[len(BRIDGE_PREFIX) :]
+            )
+            if la_variant_mac:
+                la_variant_id = f"{BRIDGE_PREFIX}{la_variant_mac}"
+                if sendspin_server.get_client(la_variant_id):
+                    self.logger.debug(
+                        "Sendspin client %s already registered (LA variant), "
+                        "skipping Chromecast bridge for %s",
+                        la_variant_id,
+                        cast_player.display_name,
+                    )
+                    return
 
             bridge = SendspinChromecastBridge(
                 self.provider, cast_player, sendspin_server, bridge_client_id

@@ -33,6 +33,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import (
+    is_locally_administered_mac,
     is_valid_mac_address,
     normalize_mac_for_matching,
 )
@@ -71,6 +72,7 @@ class ProtocolLinkingMixin:
         mass: MusicAssistant
         _players: dict[str, Player]
         _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
+        _delayed_evaluation_lock: asyncio.Lock
         logger: logging.Logger
 
         def all_players(  # noqa: D102
@@ -340,36 +342,37 @@ class ProtocolLinkingMixin:
         Called after a delay to allow all protocol players for a device to register.
         Decides whether to create a universal player, join an existing one, or
         promote a single protocol player directly.
+
+        Uses a shared lock to serialize evaluations - multiple protocol players from the
+        same device may trigger concurrent evaluations that would otherwise race each other.
         """
         self._pending_protocol_evaluations.pop(player_id, None)
 
-        protocol_player = self.get_player(player_id)
-        if not protocol_player or protocol_player.protocol_parent_id:
-            return
-
-        protocol_domain = protocol_player.provider.domain
-
-        # Re-try linking to an existing native/universal player.
-        # During the delay, native players may have registered and become available
-        # for matching (e.g., HEOS registers after Sendspin bridge).
-        if self._try_link_to_existing_player(protocol_player, protocol_domain):
-            return
-
-        # Check if there's an existing universal player we should join
-        if existing_universal := self._find_matching_universal_player(protocol_player):
-            await self._add_protocol_to_existing_universal(
-                existing_universal, protocol_player, protocol_domain
-            )
-            # Check if linking succeeded (may be refused for duplicate domain)
-            if protocol_player.protocol_parent_id is not None:
+        async with self._delayed_evaluation_lock:
+            protocol_player = self.get_player(player_id)
+            if not protocol_player or protocol_player.protocol_parent_id:
                 return
-            # Link was refused - fall through to create a separate universal player
 
-        # Find all protocol players that match this device's identifiers
-        matching_protocols = self._find_matching_protocol_players(protocol_player)
+            protocol_domain = protocol_player.provider.domain
 
-        # Create or update UniversalPlayer for all protocol players
-        await self._create_or_update_universal_player(matching_protocols)
+            # Re-try linking to an existing native/universal player
+            if self._try_link_to_existing_player(protocol_player, protocol_domain):
+                return
+
+            # Check if there's an existing universal player we should join
+            if existing_universal := self._find_matching_universal_player(protocol_player):
+                await self._add_protocol_to_existing_universal(
+                    existing_universal, protocol_player, protocol_domain
+                )
+                if protocol_player.protocol_parent_id is not None:
+                    return
+                # Link refused (domain duplicate) - fall through to create separate UP
+
+            # Find all protocol players that match this device's identifiers
+            matching_protocols = self._find_matching_protocol_players(protocol_player)
+
+            # Create or update UniversalPlayer for all protocol players
+            await self._create_or_update_universal_player(matching_protocols)
 
     def _find_matching_protocol_players(self, protocol_player: Player) -> list[Player]:
         """
@@ -576,6 +579,11 @@ class ProtocolLinkingMixin:
         locking, and player creation. The controller then links the protocols
         to the universal player.
         """
+        # Filter out players that got linked during the async delay
+        protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
+        if not protocol_players:
+            return
+
         # Get the universal_player provider
         universal_provider: UniversalPlayerProvider | None = None
         for provider in self.mass.get_providers(ProviderType.PLAYER):
@@ -723,10 +731,10 @@ class ProtocolLinkingMixin:
                 continue
             if exclude_player_id and link.output_protocol_id == exclude_player_id:
                 continue
-            # Check if the linked protocol player is actually registered (active)
-            if linked_player := self.get_player(link.output_protocol_id):
-                if linked_player.available:
-                    return True
+            # A registered player from this domain blocks the link, even if unavailable.
+            # Being offline doesn't make it a different device.
+            if self.get_player(link.output_protocol_id):
+                return True
         return False
 
     def _add_protocol_link(
@@ -919,6 +927,13 @@ class ProtocolLinkingMixin:
             # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
             protocol_domain = protocol_provider.split("--")[0]
 
+            # Skip if parent already has a link from this domain
+            existing_domains = {
+                link.protocol_domain for link in native_player.linked_output_protocols
+            }
+            if protocol_domain in existing_domains:
+                continue
+
             # Get provider name for display
             provider_name = protocol_domain.title()  # Default fallback
             if provider := self.mass.get_provider(protocol_domain, return_unavailable=True):
@@ -1008,10 +1023,9 @@ class ProtocolLinkingMixin:
         Check if identifiers match between two players.
 
         Matching is done by comparing connection identifiers (MAC, serial, UUID).
-        IP address is never used for matching as it can change with DHCP and
-        cause incorrect matches. The player controller validates and enriches
-        MAC addresses during registration (invalidating bad MACs and resolving
-        real hardware MACs via ARP for locally-administered addresses).
+        As a last resort, IP address is used when at least one player has a
+        locally-administered MAC, indicating the device uses MAC randomization
+        and ARP could not resolve the real hardware address.
 
         Invalid identifiers (e.g., 00:00:00:00:00:00 MAC addresses) are filtered out
         to prevent false matches between unrelated devices.
@@ -1069,6 +1083,28 @@ class ProtocolLinkingMixin:
                     return True
                 if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
+
+        # Last resort: IP-based matching for devices with MAC randomization.
+        # Some devices use a random locally-administered MAC on the network, so ARP
+        # returns a useless address. When at least one player has an LA MAC (or no MAC)
+        # and both share the same IP, they're very likely the same physical device.
+        ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
+        ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
+        if ip_a and ip_b and ip_a == ip_b:
+            mac_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
+            mac_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
+            a_is_real = (
+                mac_a is not None
+                and is_valid_mac_address(mac_a)
+                and not is_locally_administered_mac(mac_a)
+            )
+            b_is_real = (
+                mac_b is not None
+                and is_valid_mac_address(mac_b)
+                and not is_locally_administered_mac(mac_b)
+            )
+            if not (a_is_real and b_is_real):
+                return True
 
         return False
 
