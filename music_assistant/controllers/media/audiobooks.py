@@ -294,36 +294,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
-        # cleanup provider specific entries for this item
-        # we always prefer the library playlog entry
-        for prov_mapping in media_item.provider_mappings:
-            await self.mass.music.database.delete(
-                DB_TABLE_PLAYLOG,
-                {
-                    "media_type": self.media_type.value,
-                    "item_id": prov_mapping.item_id,
-                    "provider": prov_mapping.provider_instance,
-                },
-            )
-        if media_item.fully_played is None and media_item.resume_position_ms is None:
-            return
-        cur_entry = await self.mass.music.database.get_row(
-            DB_TABLE_PLAYLOG,
-            {
-                "media_type": self.media_type.value,
-                "item_id": db_id,
-                "provider": "library",
-            },
-        )
-        seconds_played = int((media_item.resume_position_ms or 0) / 1000)
-        # abort if nothing changed
-        if (
-            cur_entry
-            and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
-            and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
-        ):
-            return
-
+        # Get user(s)
         user: User | None = None
         if session_user := get_current_user():
             # this is the active session user that triggered the action
@@ -339,7 +310,41 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
 
+        # cleanup provider specific entries for this item
+        # we always prefer the library playlog entry
+        for prov_mapping in media_item.provider_mappings:
+            for user_id in user_ids:
+                await self.mass.music.database.delete(
+                    DB_TABLE_PLAYLOG,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": prov_mapping.item_id,
+                        "provider": prov_mapping.provider_instance,
+                        "userid": user_id,
+                    },
+                )
+        if media_item.fully_played is None and media_item.resume_position_ms is None:
+            return
+
         for user_id in user_ids:
+            cur_entry = await self.mass.music.database.get_row(
+                DB_TABLE_PLAYLOG,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": db_id,
+                    "provider": "library",
+                    "userid": user_id,
+                },
+            )
+            seconds_played = int((media_item.resume_position_ms or 0) / 1000)
+            # abort if nothing changed
+            if (
+                cur_entry
+                and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
+                and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+            ):
+                return
+
             await self.mass.music.database.insert(
                 DB_TABLE_PLAYLOG,
                 {
