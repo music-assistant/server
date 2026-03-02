@@ -65,7 +65,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    
+
+
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
@@ -217,7 +218,7 @@ async def get_config_entries(
                 ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
             ],
             default_value="en-US",  # choose a sensible default
-        )
+        ),
     )
 
 
