@@ -158,7 +158,10 @@ class PlayerQueuesController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        enqueue_options = [ConfigValueOption(x.name, x.value) for x in QueueOption]
+        enqueue_options = [
+            ConfigValueOption("Play (and keep queue)", QueueOption.PLAY.value),
+            ConfigValueOption("Play (and replace queue)", QueueOption.REPLACE.value),
+        ]
         return (
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
