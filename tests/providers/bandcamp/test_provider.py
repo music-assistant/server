@@ -13,16 +13,23 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from bandcamp_async_api.models import CollectionType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     RetriesExhausted,
 )
+from music_assistant_models.media_items import BrowseFolder
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.bandcamp import DEFAULT_TOP_TRACKS_LIMIT, BandcampProvider, split_id
+from music_assistant.providers.bandcamp import (
+    DEFAULT_TOP_TRACKS_LIMIT,
+    SUPPORTED_FEATURES,
+    BandcampProvider,
+    split_id,
+)
 
 
 @pytest.fixture
@@ -69,7 +76,7 @@ def config_mock() -> Mock:
 @pytest.fixture
 async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> BandcampProvider:
     """Return a BandcampProvider instance."""
-    provider = BandcampProvider(mass_mock, manifest_mock, config_mock)
+    provider = BandcampProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
 
     # Initialize the provider
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
@@ -718,3 +725,256 @@ async def test_fetch_api_track_login_error(provider: BandcampProvider) -> None:
         pytest.raises(LoginFailed, match=r"login is invalid or expired"),
     ):
         await provider._fetch_api_track("123-456-789")
+
+
+# --- Browse tests ---
+
+
+async def test_browse_feature_supported(provider: BandcampProvider) -> None:
+    """Test that BROWSE is in supported features."""
+    assert ProviderFeature.BROWSE in provider.supported_features
+
+
+async def test_browse_root_with_identity(provider: BandcampProvider) -> None:
+    """Test browse root returns standard folders plus Wishlist and Following."""
+    provider._client.identity = "mock_token"
+
+    with patch.object(
+        type(provider).__bases__[0], "browse", new_callable=AsyncMock
+    ) as mock_super_browse:
+        mock_super_browse.return_value = [
+            BrowseFolder(
+                item_id="artists", provider="bandcamp_test", path="bandcamp_test://artists", name=""
+            ),
+            BrowseFolder(
+                item_id="albums", provider="bandcamp_test", path="bandcamp_test://albums", name=""
+            ),
+        ]
+
+        result = await provider.browse("bandcamp_test://")
+
+        assert len(result) == 4
+        folder_ids = [f.item_id for f in result if isinstance(f, BrowseFolder)]
+        assert "wishlist" in folder_ids
+        assert "following" in folder_ids
+
+        wishlist_folder = next(
+            f for f in result if isinstance(f, BrowseFolder) and f.item_id == "wishlist"
+        )
+        assert wishlist_folder.path == "bandcamp_test://wishlist"
+        assert wishlist_folder.name == "Wishlist"
+
+        following_folder = next(
+            f for f in result if isinstance(f, BrowseFolder) and f.item_id == "following"
+        )
+        assert following_folder.path == "bandcamp_test://following"
+        assert following_folder.name == "Following"
+
+
+async def test_browse_root_without_identity(provider: BandcampProvider) -> None:
+    """Test browse root without identity omits Wishlist and Following."""
+    provider._client.identity = None
+
+    with patch.object(
+        type(provider).__bases__[0], "browse", new_callable=AsyncMock
+    ) as mock_super_browse:
+        mock_super_browse.return_value = [
+            BrowseFolder(
+                item_id="artists", provider="bandcamp_test", path="bandcamp_test://artists", name=""
+            ),
+        ]
+
+        result = await provider.browse("bandcamp_test://")
+
+        assert len(result) == 1
+        folder_ids = [f.item_id for f in result if isinstance(f, BrowseFolder)]
+        assert "wishlist" not in folder_ids
+        assert "following" not in folder_ids
+
+
+async def test_browse_standard_subpath_delegates_to_super(provider: BandcampProvider) -> None:
+    """Test that standard subpaths like 'artists' delegate to super().browse()."""
+    with patch.object(
+        type(provider).__bases__[0], "browse", new_callable=AsyncMock
+    ) as mock_super_browse:
+        mock_super_browse.return_value = [Mock(), Mock()]
+
+        result = await provider.browse("bandcamp_test://artists")
+
+        mock_super_browse.assert_called_once_with("bandcamp_test://artists")
+        assert len(result) == 2
+
+
+async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvider) -> None:
+    """Test browsing wishlist returns resolved albums and tracks."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(item_type="album", item_id=456, band_id=123),
+        Mock(item_type="track", item_id=789, band_id=123),
+    ]
+
+    mock_album = Mock()
+    mock_track = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+        patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+        mock_get_track.return_value = mock_track
+
+        result = await provider.browse("bandcamp_test://wishlist")
+
+        mock_get_collection.assert_called_once_with(CollectionType.WISHLIST)
+        mock_get_album.assert_called_once_with("123-456")
+        mock_get_track.assert_called_once_with("123-0-789")
+        assert len(result) == 2
+        assert mock_album in result
+        assert mock_track in result
+
+
+async def test_browse_wishlist_skips_failed_items(provider: BandcampProvider) -> None:
+    """Test that wishlist browse skips items that fail to resolve."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(item_type="album", item_id=456, band_id=123),
+        Mock(item_type="album", item_id=789, band_id=123),
+    ]
+
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.side_effect = [mock_album, MediaNotFoundError("not found")]
+
+        result = await provider.browse("bandcamp_test://wishlist")
+
+        assert len(result) == 1
+
+
+async def test_browse_wishlist_login_error(provider: BandcampProvider) -> None:
+    """Test wishlist browse raises LoginFailed on auth error."""
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            side_effect=BandcampMustBeLoggedInError("Must be logged in"),
+        ),
+        pytest.raises(LoginFailed),
+    ):
+        await provider.browse("bandcamp_test://wishlist")
+
+
+async def test_browse_wishlist_rate_limit(provider: BandcampProvider) -> None:
+    """Test wishlist browse raises on rate limit after retries."""
+    rate_error = BandcampRateLimitError("Rate limited")
+    rate_error.retry_after = 3
+
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            side_effect=rate_error,
+        ),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(RetriesExhausted),
+    ):
+        await provider.browse("bandcamp_test://wishlist")
+
+
+async def test_browse_following_returns_artists(provider: BandcampProvider) -> None:
+    """Test browsing following returns resolved artists."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(band_id=100),
+        Mock(band_id=200),
+    ]
+
+    mock_artist_1 = Mock()
+    mock_artist_2 = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_artist.side_effect = [mock_artist_1, mock_artist_2]
+
+        result = await provider.browse("bandcamp_test://following")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING)
+        assert mock_get_artist.call_count == 2
+        assert len(result) == 2
+
+
+async def test_browse_following_skips_failed_artists(provider: BandcampProvider) -> None:
+    """Test that following browse skips artists that fail to resolve."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(band_id=100),
+        Mock(band_id=200),
+    ]
+
+    mock_artist = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
+
+        result = await provider.browse("bandcamp_test://following")
+
+        assert len(result) == 1
+
+
+async def test_browse_following_login_error(provider: BandcampProvider) -> None:
+    """Test following browse raises LoginFailed on auth error."""
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            side_effect=BandcampMustBeLoggedInError("Must be logged in"),
+        ),
+        pytest.raises(LoginFailed),
+    ):
+        await provider.browse("bandcamp_test://following")
+
+
+async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProvider) -> None:
+    """Test that wishlist browse ignores items with unknown item_type."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(item_type="band", item_id=100, band_id=100),
+        Mock(item_type="album", item_id=456, band_id=123),
+    ]
+
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        result = await provider.browse("bandcamp_test://wishlist")
+
+        assert len(result) == 1
+        mock_get_album.assert_called_once_with("123-456")

@@ -1,7 +1,7 @@
 """Bandcamp music provider support for MusicAssistant."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from typing import cast
 
@@ -29,7 +29,16 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import Album, Artist, AudioFormat, SearchResults, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    AudioFormat,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    SearchResults,
+    Track,
+)
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -48,6 +57,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.BROWSE,
 }
 
 CONF_IDENTITY = "identity"
@@ -417,6 +427,86 @@ class BandcampProvider(MusicProvider):
                 break
 
         return tracks[: self.top_tracks_limit]
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this provider's items.
+
+        :param path: The path to browse, (e.g. provider_id://artists).
+        """
+        subpath = path.split("://")[1] if "://" in path else ""
+
+        if subpath == "wishlist":
+            return await self._browse_wishlist()
+        if subpath == "following":
+            return await self._browse_following()
+
+        # Delegate standard library paths and root listing to the base class
+        result = list(await super().browse(path))
+
+        # At root level, append Wishlist and Following folders when authenticated
+        if not subpath and self._client.identity:
+            base = f"{self.instance_id}://"
+            result.append(
+                BrowseFolder(
+                    item_id="wishlist",
+                    provider=self.instance_id,
+                    path=base + "wishlist",
+                    name="Wishlist",
+                )
+            )
+            result.append(
+                BrowseFolder(
+                    item_id="following",
+                    provider=self.instance_id,
+                    path=base + "following",
+                    name="Following",
+                )
+            )
+
+        return result
+
+    @use_cache(CACHE)
+    @throttle_with_retries
+    async def _browse_wishlist(self) -> list[Album | Track]:
+        """Fetch wishlist items from Bandcamp."""
+        items: list[Album | Track] = []
+        try:
+            collection = await self._client.get_collection_items(CollectionType.WISHLIST)
+            for item in collection.items:
+                with suppress(MediaNotFoundError):
+                    if item.item_type == "album":
+                        items.append(await self.get_album(f"{item.band_id}-{item.item_id}"))
+                    elif item.item_type == "track":
+                        items.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
+        except BandcampMustBeLoggedInError as error:
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError("Failed to get wishlist items") from error
+        return items
+
+    @use_cache(CACHE)
+    @throttle_with_retries
+    async def _browse_following(self) -> list[Artist]:
+        """Fetch followed artists from Bandcamp."""
+        artists: list[Artist] = []
+        try:
+            collection = await self._client.get_collection_items(CollectionType.FOLLOWING)
+            for item in collection.items:
+                with suppress(MediaNotFoundError):
+                    artists.append(await self.get_artist(item.band_id))
+        except BandcampMustBeLoggedInError as error:
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError("Failed to get following items") from error
+        return artists
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track.
