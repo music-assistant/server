@@ -1743,6 +1743,7 @@ class AuthenticationManager:
             SELECT code FROM join_codes
             WHERE user_id = :user_id
             AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
             ORDER BY created_at DESC
             LIMIT 1
             """,
