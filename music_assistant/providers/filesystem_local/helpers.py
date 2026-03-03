@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 IGNORE_DIRS = (
     "recycle",
     "Recently-Snaphot",
+    "Recently-Snapshot",
     "#recycle",
     "System Volume Information",
     "lost+found",
