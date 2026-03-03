@@ -18,6 +18,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
