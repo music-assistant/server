@@ -317,6 +317,8 @@ class Player(ABC):
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation, feel free to override if your
         # provider has a more efficient way to determine this
+        if self.type == PlayerType.GROUP:
+            return None
         if self.group_members and self.group_members[0] != self.player_id:
             return self.group_members[0]
         for player in self.mass.players.all_players(

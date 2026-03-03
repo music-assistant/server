@@ -1254,51 +1254,56 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if not player.state.enabled:
                 return
 
-            # Save the original MAC reported by the provider (before ARP enrichment)
-            reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-
-            # Try to use cached ARP MAC from config for fast matching on restart.
-            # This allows protocol linking to work immediately even if ARP is slow/fails.
             conf_base = f"{CONF_PLAYERS}/{player_id}/values"
-            cached_arp_mac: str | None = self.mass.config.get(
-                f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
-            )
-            if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
-                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+            if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+                # Save the original MAC reported by the provider (before ARP enrichment)
+                reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
 
-            # Enrich device MAC address via ARP if needed
-            # (handles invalid MACs, locally-administered MACs, and missing MACs)
-            await enrich_device_mac_address(player.device_info, self.logger)
-
-            # Cache the resolved MAC for fast matching on subsequent restarts
-            current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-            if current_mac and is_valid_mac_address(current_mac) and current_mac != cached_arp_mac:
-                self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
-
-            # Store original reported MAC if it differs from the resolved MAC.
-            # This enables multi-MAC matching for devices with multiple interfaces
-            # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
-            # protocol reports the other.
-            if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
-                if reported_mac.upper() != current_mac.upper():
-                    player.extra_data["reported_mac"] = reported_mac
-                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
-                else:
-                    # Provider's reported MAC matches the resolved MAC; clear any stale
-                    # stored reported MAC to avoid false-positive multi-MAC matches.
-                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-            elif not reported_mac or not is_valid_mac_address(reported_mac):
-                # Restore reported MAC from config on restart only when the provider
-                # did not supply a usable MAC address.
-                cached_reported_mac: str | None = self.mass.config.get(
-                    f"{conf_base}/{CONF_REPORTED_MAC}", None
+                # Try to use cached ARP MAC from config for fast matching on restart.
+                # This allows protocol linking to work immediately even if ARP is slow/fails.
+                cached_arp_mac: str | None = self.mass.config.get(
+                    f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
                 )
-                if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
-                    if current_mac and cached_reported_mac.upper() == current_mac.upper():
-                        # Cached value matches the resolved MAC; clear stale entry.
-                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
+                    player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
+                # Enrich device MAC address via ARP if needed
+                # (handles invalid MACs, locally-administered MACs, and missing MACs)
+                await enrich_device_mac_address(player.device_info, self.logger)
+
+                # Cache the resolved MAC for fast matching on subsequent restarts
+                current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+                if (
+                    current_mac
+                    and is_valid_mac_address(current_mac)
+                    and current_mac != cached_arp_mac
+                ):
+                    self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
+
+                # Store original reported MAC if it differs from the resolved MAC.
+                # This enables multi-MAC matching for devices with multiple interfaces
+                # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+                # protocol reports the other.
+                if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+                    if reported_mac.upper() != current_mac.upper():
+                        player.extra_data["reported_mac"] = reported_mac
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
                     else:
-                        player.extra_data["reported_mac"] = cached_reported_mac
+                        # Provider's reported MAC matches the resolved MAC; clear any stale
+                        # stored reported MAC to avoid false-positive multi-MAC matches.
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                elif not reported_mac or not is_valid_mac_address(reported_mac):
+                    # Restore reported MAC from config on restart only when the provider
+                    # did not supply a usable MAC address.
+                    cached_reported_mac: str | None = self.mass.config.get(
+                        f"{conf_base}/{CONF_REPORTED_MAC}", None
+                    )
+                    if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
+                        if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                            # Cached value matches the resolved MAC; clear stale entry.
+                            self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                        else:
+                            player.extra_data["reported_mac"] = cached_reported_mac
 
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
@@ -2494,7 +2499,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Forward command to the appropriate player after all (base) sanity checks
         # GROUP players (sync_group, universal_group) manage their own members internally
         # and don't need protocol translation - call their set_members directly
-        if parent_player.type == PlayerType.GROUP:
+        if (
+            parent_player.type == PlayerType.GROUP
+            and PlayerFeature.SET_MEMBERS in parent_player.state.supported_features
+        ):
             await parent_player.set_members(
                 player_ids_to_add=final_player_ids_to_add,
                 player_ids_to_remove=final_player_ids_to_remove,

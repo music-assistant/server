@@ -84,6 +84,7 @@ class ChromecastPlayer(Player):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
@@ -106,12 +107,15 @@ class ChromecastPlayer(Player):
             model=self.cast_info.model_name,
             manufacturer=self.cast_info.manufacturer or "",
         )
-        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
-        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
-        if is_valid_mac_address(self.cast_info.mac_address):
-            self._attr_device_info.add_identifier(
-                IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
-            )
+        # add mac/IP identifiers for protocol-matching
+        # (but skip for groups since they don't have a real IP/MAC)
+        if not cast_info.is_audio_group:
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+            # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+            if is_valid_mac_address(self.cast_info.mac_address):
+                self._attr_device_info.add_identifier(
+                    IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+                )
         self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         self._attr_device_info.add_identifier(IdentifierType.CAST_UUID, str(self.cast_info.uuid))
         assert provider.mz_mgr is not None  # for type checking
@@ -432,10 +436,12 @@ class ChromecastPlayer(Player):
             assert self.mz_controller is not None  # for type checking
             self._attr_type = PlayerType.GROUP
             self._attr_group_members = [str(UUID(x)) for x in self.mz_controller.members]
+            self._attr_static_group_members = self._attr_group_members.copy()
             self._attr_supported_features = {
                 PlayerFeature.PLAY_MEDIA,
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PAUSE,
                 PlayerFeature.ENQUEUE,
             }
@@ -581,18 +587,21 @@ class ChromecastPlayer(Player):
                 status.status,
             )
             self._attr_available = new_available
-            # Update in-place to preserve ARP-enriched identifiers (e.g. real MAC)
             self._attr_device_info.model = self.cast_info.model_name
             self._attr_device_info.manufacturer = self.cast_info.manufacturer or ""
-            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.cast_info.host)
+            # Groups share a member device's IP/MAC, skip to avoid false protocol matches
+            if not self.cast_info.is_audio_group:
+                self._attr_device_info.add_identifier(
+                    IdentifierType.IP_ADDRESS, self.cast_info.host
+                )
+                if is_valid_mac_address(self.cast_info.mac_address):
+                    self._attr_device_info.add_identifier(
+                        IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
+                    )
             self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
             self._attr_device_info.add_identifier(
                 IdentifierType.CAST_UUID, str(self.cast_info.uuid)
             )
-            if is_valid_mac_address(self.cast_info.mac_address):
-                self._attr_device_info.add_identifier(
-                    IdentifierType.MAC_ADDRESS, self.cast_info.mac_address
-                )
             self.update_state()
 
             if new_available and self.type == PlayerType.PLAYER:

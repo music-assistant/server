@@ -110,6 +110,8 @@ class ProtocolLinkingMixin:
         if player.state.type == PlayerType.PROTOCOL:
             # Protocol player: try to find a native parent
             self._try_link_protocol_to_native(player)
+        elif player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+            return
         else:
             # Native player: try to find protocol players to link
             self._try_link_protocols_to_native(player)
@@ -148,6 +150,9 @@ class ProtocolLinkingMixin:
         :return: True if handled (linked or waiting), False if should fall through.
         """
         if parent_player := self.get_player(cached_parent_id):
+            if parent_player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+                self._clear_protocol_parent_id(protocol_player.player_id)
+                return False
             already_linked = any(
                 link.output_protocol_id == protocol_player.player_id
                 for link in parent_player.linked_output_protocols
@@ -197,8 +202,11 @@ class ProtocolLinkingMixin:
         for native_player in self.all_players(return_protocol_players=False):
             if native_player.player_id == protocol_player.player_id:
                 continue
-            # Skip all protocol players - they should be handled via universal_player
-            if native_player.state.type == PlayerType.PROTOCOL:
+            if native_player.state.type in (
+                PlayerType.PROTOCOL,
+                PlayerType.GROUP,
+                PlayerType.STEREO_PAIR,
+            ):
                 continue
 
             # For universal players, check if this protocol player is in its stored list
