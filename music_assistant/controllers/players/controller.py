@@ -1824,7 +1824,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.state.playback_state == PlaybackState.PLAYING:
             self.logger.info("Restarting playback of Player %s after DSP change", player_id)
             # this will restart the queue stream/playback
-            if player.mass_queue_active:
+            if self.get_active_queue(player):
                 self.mass.call_later(
                     0, self.mass.player_queues.resume, player.state.active_source, False
                 )
