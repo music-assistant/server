@@ -67,12 +67,13 @@ class SyncGroupPlayer(Player):
         # TODO: remove this logic once 2.8 is released and we start the 2.9 cycle.
         changes_made = False
         for member_id in static_members_conf:
-            if member_player := self.mass.players.get_player(member_id):
-                if member_player.protocol_parent_id:
-                    static_members.append(member_player.protocol_parent_id)
-                    changes_made = True
-                else:
-                    static_members.append(member_id)
+            if (
+                member_player := self.mass.players.get_player(member_id)
+            ) and member_player.protocol_parent_id:
+                static_members.append(member_player.protocol_parent_id)
+                changes_made = True
+            else:
+                static_members.append(member_id)
         if changes_made:
             self.mass.config.set_raw_player_config_value(
                 self.player_id, CONF_GROUP_MEMBERS, static_members
