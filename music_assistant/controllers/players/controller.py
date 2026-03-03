@@ -1279,22 +1279,26 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # This enables multi-MAC matching for devices with multiple interfaces
             # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
             # protocol reports the other.
-            if (
-                reported_mac
-                and is_valid_mac_address(reported_mac)
-                and current_mac
-                and reported_mac.upper() != current_mac.upper()
-            ):
-                player.extra_data["reported_mac"] = reported_mac
-                self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
-            else:
-                # Restore reported MAC from config on restart (when provider reports
-                # the ARP MAC directly because device_info was already enriched)
+            if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+                if reported_mac.upper() != current_mac.upper():
+                    player.extra_data["reported_mac"] = reported_mac
+                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
+                else:
+                    # Provider's reported MAC matches the resolved MAC; clear any stale
+                    # stored reported MAC to avoid false-positive multi-MAC matches.
+                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+            elif not reported_mac or not is_valid_mac_address(reported_mac):
+                # Restore reported MAC from config on restart only when the provider
+                # did not supply a usable MAC address.
                 cached_reported_mac: str | None = self.mass.config.get(
                     f"{conf_base}/{CONF_REPORTED_MAC}", None
                 )
                 if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
-                    player.extra_data["reported_mac"] = cached_reported_mac
+                    if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                        # Cached value matches the resolved MAC; clear stale entry.
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                    else:
+                        player.extra_data["reported_mac"] = cached_reported_mac
 
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
