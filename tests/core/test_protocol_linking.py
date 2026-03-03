@@ -5570,3 +5570,314 @@ class TestNativePlayerSiblingLinking:
             for link in heos_player.linked_output_protocols
         )
         assert sendspin_linked, "Sendspin should be linked via sibling protocol matching"
+
+
+class TestMultiMACMatching:
+    """Tests for multi-MAC matching (reported MAC vs ARP MAC)."""
+
+    def test_match_on_reported_mac_when_arp_mac_differs(self, mock_mass: MagicMock) -> None:
+        """Two players match when one's reported MAC equals the other's ARP-resolved MAC."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        # Player A has ARP-resolved MAC in identifiers, reported MAC saved in extra_data
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_a.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:02"
+
+        # Player B has a MAC that matches player_a's reported MAC
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_match_on_reported_mac_reverse(self, mock_mass: MagicMock) -> None:
+        """Match when player_b's reported MAC matches player_a's ARP MAC."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_b.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:02"
+
+        assert controller._identifiers_match(player_a, player_b) is True
+
+    def test_no_match_when_both_macs_differ(self, mock_mass: MagicMock) -> None:
+        """No match when all MACs differ between players."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_a.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:02"
+
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        player_b.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:04"
+
+        assert controller._identifiers_match(player_a, player_b) is False
+
+    def test_match_reported_mac_with_la_bit_normalization(self, mock_mass: MagicMock) -> None:
+        """Reported MAC matching also applies LA bit normalization."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("test")
+        # Player A has ARP MAC, reported MAC has LA bit set
+        player_a = MockPlayer(
+            provider,
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_a.extra_data["reported_mac"] = "56:78:C9:E6:0D:A0"  # LA variant
+
+        # Player B has the hardware MAC
+        player_b = MockPlayer(
+            provider,
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},  # real MAC
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is True
+
+
+class TestProtocolParentIdPersistence:
+    """Tests for protocol_parent_id persistence for all parent types."""
+
+    def test_parent_id_saved_for_universal_parent(self, mock_mass: MagicMock) -> None:
+        """protocol_parent_id should be saved when linking to a universal player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        universal_provider = create_mock_universal_provider(mock_mass)
+        parent = UniversalPlayer(
+            provider=universal_provider,
+            player_id="up_test",
+            name="Test Universal",
+            device_info=DeviceInfo(),
+            protocol_player_ids=[],
+        )
+        parent.update_state(signal_event=False)
+
+        protocol_provider = MockProvider("airplay")
+        protocol_player = MockPlayer(
+            protocol_provider,
+            "airplay_test",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+
+        controller._players = {
+            "up_test": parent,
+            "airplay_test": protocol_player,
+        }
+
+        controller._add_protocol_link(parent, protocol_player, "airplay")
+
+        # Verify _save_protocol_parent_id was called (config.set with parent ID)
+        config_set_calls = [
+            call
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in str(call)
+        ]
+        assert len(config_set_calls) >= 1, (
+            "protocol_parent_id should be saved for universal player parents"
+        )
+
+    def test_parent_id_cleared_for_universal_parent(self, mock_mass: MagicMock) -> None:
+        """protocol_parent_id should be cleared when unlinking from a universal player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        universal_provider = create_mock_universal_provider(mock_mass)
+        parent = UniversalPlayer(
+            provider=universal_provider,
+            player_id="up_test",
+            name="Test Universal",
+            device_info=DeviceInfo(),
+            protocol_player_ids=["airplay_test"],
+        )
+        parent.update_state(signal_event=False)
+
+        protocol_provider = MockProvider("airplay")
+        protocol_player = MockPlayer(
+            protocol_provider,
+            "airplay_test",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id("up_test")
+
+        # Set up linked protocols
+        parent.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_test",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        controller._players = {
+            "up_test": parent,
+            "airplay_test": protocol_player,
+        }
+
+        controller._remove_protocol_link(parent, "airplay_test")
+
+        # Verify protocol_parent_id was cleared in config
+        config_set_calls = [
+            call
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in str(call) and call.args[1] is None
+        ]
+        assert len(config_set_calls) >= 1, (
+            "protocol_parent_id should be cleared for universal player parents"
+        )
+
+
+class TestCleanupProtocolLinks:
+    """Tests for protocol link cleanup on player removal."""
+
+    def test_cleanup_clears_config_parent_id(self, mock_mass: MagicMock) -> None:
+        """When a universal player is removed, protocol parent_ids are cleared in config."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        universal_provider = create_mock_universal_provider(mock_mass)
+        parent = UniversalPlayer(
+            provider=universal_provider,
+            player_id="up_test",
+            name="Test Universal",
+            device_info=DeviceInfo(),
+            protocol_player_ids=["airplay_test"],
+        )
+        parent.update_state(signal_event=False)
+
+        protocol_provider = MockProvider("airplay")
+        protocol_player = MockPlayer(
+            protocol_provider,
+            "airplay_test",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id("up_test")
+
+        parent.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_test",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        controller._players = {
+            "up_test": parent,
+            "airplay_test": protocol_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        controller._cleanup_protocol_links(parent)
+
+        # Verify protocol_parent_id was cleared in config
+        config_set_calls = [
+            call
+            for call in mock_mass.config.set.call_args_list
+            if "airplay_test" in str(call) and "protocol_parent_id" in str(call)
+        ]
+        assert len(config_set_calls) >= 1, (
+            "protocol_parent_id should be cleared in config on parent removal"
+        )
+        # Verify in-memory parent cleared
+        assert protocol_player.protocol_parent_id is None
+
+
+class TestStaleConfigMigration:
+    """Tests for stale protocol_parent_id cleanup on startup."""
+
+    def test_clears_stale_parent_ids(self, mock_mass: MagicMock) -> None:
+        """Stale parent_ids pointing to deleted players are cleared on startup."""
+        controller = PlayerController(mock_mass)
+
+        # Set up config with a protocol player pointing to a deleted universal player
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "airplay_test": {
+                    "player_type": "protocol",
+                    "values": {
+                        "protocol_parent_id": "up_deleted_player",
+                    },
+                },
+                "heos_player": {
+                    "player_type": "player",
+                    "values": {},
+                },
+            }
+        )
+
+        controller._cleanup_stale_protocol_parent_ids()
+
+        # Verify the stale parent_id was cleared
+        mock_mass.config.set.assert_any_call(
+            "players/airplay_test/values/protocol_parent_id",
+            None,
+        )
+
+    def test_keeps_valid_parent_ids(self, mock_mass: MagicMock) -> None:
+        """Valid parent_ids pointing to existing players are preserved."""
+        controller = PlayerController(mock_mass)
+
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "airplay_test": {
+                    "player_type": "protocol",
+                    "values": {
+                        "protocol_parent_id": "up_valid_player",
+                    },
+                },
+                "up_valid_player": {
+                    "player_type": "group",
+                    "provider": "universal_player",
+                    "values": {},
+                },
+            }
+        )
+
+        controller._cleanup_stale_protocol_parent_ids()
+
+        # Verify no set calls were made to clear the parent_id
+        for call in mock_mass.config.set.call_args_list:
+            assert "protocol_parent_id" not in str(call), "Valid parent_id should not be cleared"

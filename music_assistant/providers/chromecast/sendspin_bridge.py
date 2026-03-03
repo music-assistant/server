@@ -416,12 +416,13 @@ class SendspinBridgeManager:
                 return
 
             # skip if the cast player's parent also has airplay linked
-            # (we prefer the airplay bridge due to better sync performance))
+            # (we prefer the airplay bridge due to better sync performance)
             if cast_player.protocol_parent_id:
                 parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
-                for protocol in parent_player.linked_output_protocols:
-                    if protocol.protocol_domain == "airplay":
-                        return
+                if parent_player:
+                    for protocol in parent_player.linked_output_protocols:
+                        if protocol.protocol_domain == "airplay":
+                            return
 
             # Resolve client_id from device MAC address
             bridge_client_id = get_bridge_client_id(cast_player)

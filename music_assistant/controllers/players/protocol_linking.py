@@ -317,16 +317,16 @@ class ProtocolLinkingMixin:
         if cached_parent_id and not self.get_player(cached_parent_id):
             # Previously linked to a native player that hasn't registered yet
             # Use longer delay to give native providers time to start up
-            delay = 30.0
+            delay = 45.0
             self.logger.debug(
-                "Protocol player %s waiting for cached parent %s (30s delay)",
+                "Protocol player %s waiting for cached parent %s (45s delay)",
                 player_id,
                 cached_parent_id,
             )
         else:
             # Standard delay for protocol player discovery
             # Allows time for other protocols and native players to register
-            delay = 10.0
+            delay = 15.0
 
         # Schedule evaluation after the delay
         handle = self.mass.loop.call_later(
@@ -791,8 +791,9 @@ class ProtocolLinkingMixin:
         # (only for non-universal players, as universal players handle this themselves)
         if native_player.provider.domain != "universal_player":
             self._save_linked_protocol_ids(native_player)
-            # Also save the parent ID on the protocol player for reverse lookup on restart
-            self._save_protocol_parent_id(protocol_player.player_id, native_player.player_id)
+        # Always save the parent ID on the protocol player for reverse lookup on restart
+        # (needed for both native and universal parents to enable fast restore)
+        self._save_protocol_parent_id(protocol_player.player_id, native_player.player_id)
 
     def _remove_protocol_link(
         self, native_player: Player, protocol_player_id: str, permanent: bool = False
@@ -819,14 +820,15 @@ class ProtocolLinkingMixin:
             if protocol_player.protocol_parent_id == native_player.player_id:
                 protocol_player.set_protocol_parent_id(None)
 
-        # Update persisted linked protocol IDs and clear cached parent
+        # Update persisted linked protocol IDs
         if native_player.provider.domain != "universal_player":
             if permanent:
                 # Permanently remove from cache (player config is being deleted)
                 self._remove_protocol_id_from_cache(native_player.player_id, protocol_player_id)
             # Note: we don't call _save_linked_protocol_ids here anymore for non-permanent
             # removals because the merge approach will preserve the ID in the cache
-            self._clear_protocol_parent_id(protocol_player_id)
+        # Always clear the cached parent ID (for both native and universal parents)
+        self._clear_protocol_parent_id(protocol_player_id)
 
     def _save_linked_protocol_ids(self, native_player: Player) -> None:
         """
@@ -1003,6 +1005,9 @@ class ProtocolLinkingMixin:
             }
             all_protocol_ids.update(self._get_cached_protocol_ids(player.player_id))
             for protocol_id in all_protocol_ids:
+                # Clear cached parent ID in config so protocol won't try to
+                # restore a link to the deleted player on next restart
+                self._clear_protocol_parent_id(protocol_id)
                 if protocol_player := self.get_player(protocol_id):
                     # Protocol player is available: clear parent and schedule re-evaluation
                     # so it can be matched to a new parent or a new universal player
@@ -1078,9 +1083,30 @@ class ProtocolLinkingMixin:
                 # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
                 val_a_norm = normalize_mac_for_matching(val_a)
                 val_b_norm = normalize_mac_for_matching(val_b)
-            else:
-                val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-                val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+
+                # Direct match on current MAC
+                if val_a_norm == val_b_norm:
+                    return True
+
+                # Multi-MAC matching: also check original reported MACs.
+                # Devices with multiple interfaces (WiFi + Ethernet) may have ARP
+                # resolve one MAC while the protocol reports a different one.
+                macs_a = {val_a_norm}
+                macs_b = {val_b_norm}
+                reported_a = player_a.extra_data.get("reported_mac")
+                reported_b = player_b.extra_data.get("reported_mac")
+                if reported_a and is_valid_mac_address(reported_a):
+                    macs_a.add(normalize_mac_for_matching(reported_a))
+                if reported_b and is_valid_mac_address(reported_b):
+                    macs_b.add(normalize_mac_for_matching(reported_b))
+                if macs_a & macs_b:
+                    return True
+
+                # No MAC match - continue to next identifier type
+                continue
+
+            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
 
             # Direct match
             if val_a_norm == val_b_norm:

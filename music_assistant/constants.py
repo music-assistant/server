@@ -118,6 +118,8 @@ CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast 
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
+CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
