@@ -266,8 +266,8 @@ class MSXHTTPServer:
         player_info = "".join(player_rows) if player_rows else ""
 
         # Build URLs
-        host_parts = request.host.split(":")
-        hostname = host_parts[0]
+        _raw_host = request.url.host  # aiohttp-parsed, IPv6-safe, no port, no brackets
+        hostname = f"[{_raw_host}]" if ":" in _raw_host else _raw_host
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
@@ -2090,11 +2090,12 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     def _get_prefix(self, request: web.Request) -> str:
         """Build URL prefix for JSON content, using our known port.
 
-        Strips any port from the Host header and substitutes self.port to prevent
-        a spoofed Host header from redirecting generated URLs to a foreign host.
-        The IP portion is preserved so the TV can reach us by the correct address.
+        Uses aiohttp's parsed URL host (IPv6-safe, no port, no brackets) and
+        substitutes self.port to prevent a spoofed Host header from redirecting
+        generated URLs to a foreign host.
         """
-        host_addr = request.host.split(":")[0]
+        host = request.url.host  # aiohttp-parsed: no port, no brackets, IPv6-safe
+        host_addr = f"[{host}]" if ":" in host else host  # bracket IPv6 literals for URLs
         return f"http://{host_addr}:{self.port}"
 
     def _get_player_id_and_device_param(self, request: web.Request) -> tuple[str, str]:

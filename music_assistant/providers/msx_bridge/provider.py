@@ -172,9 +172,15 @@ class SharedGroupStream:
             # between the snapshot and the registration, eliminating the window
             # where the first chunk would appear in both the catch-up buffer and
             # the subscriber's live queue.
+            # Also capture self.finished under the lock: if the producer already
+            # completed before we registered, we must self-signal EOF so that
+            # the live-stream loop below does not block forever.
             async with self._lock:
                 buffer_snapshot = list(self.buffer)
+                already_finished = self.finished
                 self.subscribers[player_id] = q
+                if already_finished:
+                    q.put_nowait(None)
                 subscriber_count = len(self.subscribers)
 
             logger.info(
