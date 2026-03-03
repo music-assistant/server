@@ -220,7 +220,6 @@ class SmartCrossFade(SmartFade):
                 bpm=self.fade_out_analysis.bpm,
             )
 
-        # Check if we would have enough audio after beat alignment for the crossfade
         if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
             self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
         else:

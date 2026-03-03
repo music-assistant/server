@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 # Same sample format expressed in both MA and Sendspin type systems.
 _PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S32LE,
+    content_type=ContentType.PCM_F32LE,
     sample_rate=48000,
     bit_depth=32,
     channels=2,
@@ -36,6 +36,7 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     sample_rate=48000,
     bit_depth=32,
     channels=2,
+    sample_type="float",
 )
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000
@@ -315,8 +316,11 @@ class SendspinPlaybackSession:
         """Return (join_pending_ids, active_pipelines) under lock."""
         async with self._state_lock:
             members = self._members
+            leader_id = self.player.player_id
             return set(self._join_catchup), tuple(
-                (mid, p) for mid, p in self._member_pipelines.items() if mid in members
+                (mid, p)
+                for mid, p in self._member_pipelines.items()
+                if mid in members or mid == leader_id
             )
 
     # -- Public API ------------------------------------------------------------
@@ -369,8 +373,9 @@ class SendspinPlaybackSession:
             if player_id in self._members:
                 self.pending_join_members.discard(player_id)
                 return
-            # Force a fresh channel identity for every new join cycle.
-            self._preassigned_channels[player_id] = uuid4()
+            # Preserve any channel pre-resolved during add_client so join-time
+            # role requirements and prepared audio stay on the same channel.
+            self._preassigned_channels.setdefault(player_id, uuid4())
         self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
@@ -730,6 +735,17 @@ class SendspinPlaybackSession:
                 commit_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await commit_task
+            # On clean EOF, wait for clients to finish playing their
+            # buffered audio before sending stream/end (which clears
+            # client buffers per the SendSpin spec).
+            if producer_stopped_cleanly:
+                try:
+                    await self._wait_for_buffer_drain()
+                except asyncio.CancelledError:
+                    # New playback interrupted the drain — treat as
+                    # non-clean stop so we skip group.stop() below
+                    # and let the new playback handle the transition.
+                    producer_stopped_cleanly = False
             with suppress(Exception):
                 self._stop_push_stream()
             await self._clear_join_catchup()
@@ -741,6 +757,13 @@ class SendspinPlaybackSession:
                 self._first_commit_monotonic_us = None
                 self._produced_audio_us = 0
                 self._history.clear()
+                # Drop cached DSP decisions so next playback reflects latest config.
+                self._pipeline_config_cache.clear()
+            # Only emit a group STOP when MA stream playback reached natural EOF.
+            # Skip this on cancellation/error paths to avoid stop-event races with transitions.
+            if producer_stopped_cleanly:
+                with suppress(Exception):
+                    await self.player.api.group.stop()
 
     # -- Join injection --------------------------------------------------------
 
@@ -915,6 +938,8 @@ class SendspinPlaybackSession:
             self._mapping_dirty = False
         for member_id in member_ids:
             await self._sync_member_pipeline(member_id)
+        # Keep leader pipeline in sync so leader DSP can be applied when required.
+        await self._sync_member_pipeline(self.player.player_id)
 
     async def _sync_member_pipeline(self, player_id: str) -> _MemberPipeline:
         """Create/update pipeline state for one member from current MA config."""
@@ -1069,6 +1094,33 @@ class SendspinPlaybackSession:
         """Create PushStream with channel resolver for per-member routing."""
         return self.player.api.group.start_stream(channel_resolver=self._resolve_channel_for_player)
 
+    async def _wait_for_buffer_drain(self) -> None:
+        """Wait for clients to finish playing buffered audio.
+
+        Called before stopping the push stream on natural EOF to prevent
+        stream/end from clearing client buffers while audio is still playing.
+
+        Uses the push stream's public backpressure API with a zero buffer
+        target to sleep until the clock catches up with all committed audio.
+        Each internal sleep is capped at 1 second, so we loop until drained.
+
+        Raises asyncio.CancelledError if a new playback request interrupts.
+        """
+        ps = self._push_stream
+        if ps is None or ps.is_stopped:
+            return
+        self.player.logger.debug("Waiting for client buffer drain before stream/end")
+        # Safety timeout: never wait longer than the max buffer depth.
+        deadline = time.monotonic() + (_PRODUCER_BUFFER_LIMIT_US / 1_000_000)
+        while time.monotonic() < deadline:
+            t0 = time.monotonic()
+            await ps.sleep_to_limit_buffer(0)
+            # sleep_to_limit_buffer returns immediately when the clock has
+            # caught up with all committed audio (nothing left to drain).
+            if time.monotonic() - t0 < 0.05:
+                break
+        self.player.logger.debug("Client buffer drain complete")
+
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
         self.player.api.group.stop_stream()
@@ -1078,13 +1130,9 @@ class SendspinPlaybackSession:
         pipeline = self._member_pipelines.get(player_id)
         if pipeline is not None:
             return pipeline.channel_id
-        # The leader always receives MAIN_CHANNEL audio directly from the
-        # commit loop; only group members get per-player DSP channels.
-        if player_id == self.player.player_id:
-            return MAIN_CHANNEL
         # Force a fresh config read for pending/unknown joiners so the very
         # first resolution (triggered by add_client) uses up-to-date DSP settings.
-        force = player_id not in self._members
+        force = player_id not in self._members and player_id != self.player.player_id
         config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
             return MAIN_CHANNEL

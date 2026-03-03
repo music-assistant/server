@@ -850,7 +850,7 @@ class LocalFileSystemProvider(MusicProvider):
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write(new_playlist_data)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
@@ -1857,7 +1857,7 @@ class LocalFileSystemProvider(MusicProvider):
                     continue
                 chapters.append(
                     MediaItemChapter(
-                        position=position if use_alphabetical else (chapter_tags.track or position),
+                        position=position,
                         name=chapter_tags.title,
                         start=total_duration,
                         end=total_duration + chapter_tags.duration,
