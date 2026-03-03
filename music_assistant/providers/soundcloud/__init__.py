@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qs, urlparse
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -14,7 +15,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -368,9 +369,54 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
+    async def _get_stream_url(self, item_id: str) -> str | None:
+        """Get stream URL, preferring progressive (HTTP) over HLS.
+
+        SoundCloud HLS playlists can have limited content windows (~10 min) which
+        cause seeking failures mid-track. Progressive HTTP URLs support full
+        range-based seeking across the entire track duration.
+        """
+        full_json = await self._soundcloud.get_track_details(item_id)
+        if not (full_json and isinstance(full_json, list)):
+            return None
+        track_info = full_json[0]
+        track_auth = track_info.get("track_authorization")
+        if not track_auth:
+            return None
+        transcodings = track_info.get("media", {}).get("transcodings", [])
+        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
+        for preferred_protocol in ("progressive", None):
+            for transcoding in transcodings:
+                preset = transcoding.get("preset", "")
+                protocol = transcoding.get("format", {}).get("protocol", "")
+                if not preset.startswith("mp3"):
+                    continue
+                if preferred_protocol is not None and protocol != preferred_protocol:
+                    continue
+                stream_url = (
+                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                    f"&track_authorization={track_auth}"
+                )
+                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+                if isinstance(req, dict) and "url" in req:
+                    return str(req["url"])
+        return None
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
+        url = await self._get_stream_url(item_id)
+        if not url:
+            msg = f"No stream URL available for Soundcloud track {item_id}"
+            raise MediaNotFoundError(msg)
+        # Parse CDN URL expiry to avoid seeking with an expired URL.
+        # SoundCloud CDN URLs are short-lived; seeking starts a new FFmpeg process
+        # that makes a fresh HTTP request to the stored URL, which may have expired.
+        expiration = 30  # conservative default if expiry cannot be determined
+        if parsed_qs := parse_qs(urlparse(url).query):
+            for param in ("Expires", "expire"):
+                if expire_ts := parsed_qs.get(param, [None])[0]:
+                    expiration = max(30, int(expire_ts) - int(time.time()) - 10)
+                    break
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -385,6 +431,7 @@ class SoundcloudMusicProvider(MusicProvider):
             path=url,
             can_seek=True,
             allow_seek=True,
+            expiration=expiration,
         )
 
     async def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
