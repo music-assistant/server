@@ -16,6 +16,8 @@ from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
 from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
+from aiomusiccast.pyamaha import System as MCSystem
+from mashumaro import DataClassDictMixin
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -72,6 +74,27 @@ if TYPE_CHECKING:
     from .provider import MusicCastProvider
 
 
+@dataclass
+class MusicCastMacAddresses(DataClassDictMixin):
+    """MusicCastMacAddresses.
+
+    The MAC addresses lack the colons.
+    """
+
+    wired_lan: str | None = None
+    wireless_lan: str | None = None
+    wireless_direct: str | None = None
+
+
+@dataclass
+class MusicCastNetworkStatus(DataClassDictMixin):
+    """Helper class to parse the relevant information from aiomusiccast."""
+
+    connection: str | None = None
+    ip_address: str | None = None
+    mac_address: MusicCastMacAddresses | None = None
+
+
 @dataclass(kw_only=True)
 class UpnpUpdateHelper:
     """UpnpUpdateHelper.
@@ -109,9 +132,9 @@ class MusicCastPlayer(Player):
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
-        self.set_static_attributes()
+        await self.set_static_attributes()
 
-    def set_static_attributes(self) -> None:
+    async def set_static_attributes(self) -> None:
         """Set static properties."""
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -133,16 +156,34 @@ class MusicCastPlayer(Player):
             model=self.physical_device.device.data.model_name or "unknown model",
             software_version=(self.physical_device.device.data.system_version or "unknown version"),
         )
-        if device_ip := self.physical_device.device.device.ip:
-            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device_ip)
-        if device_id := self.physical_device.device.data.device_id:
-            self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
-            # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
-            if len(device_id) == 12:
-                mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
-                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
-                if is_valid_mac_address(mac):
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+
+        if "zone" not in self.player_id:
+            # we do not add mac/ ip information to zone players to prevent false player merging
+            network_status = await self.physical_device.device.device.request_json(
+                MCSystem.get_network_status()
+            )
+            network_info = MusicCastNetworkStatus.from_dict(network_status)
+            mac_address: str | None = None
+
+            if network_info.connection is not None and network_info.mac_address is not None:
+                mac_address = getattr(network_info.mac_address, network_info.connection, None)
+
+            if device_ip := self.physical_device.device.device.ip:
+                self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device_ip)
+
+            if mac_address is not None:
+                mac = ":".join(mac_address[i : i + 2].upper() for i in range(0, 12, 2))
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+
+            if device_id := self.physical_device.device.data.device_id:
+                self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
+                # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
+                if len(device_id) == 12 and mac_address is None:
+                    # fallback to device id for mac
+                    mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
+                    # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+                    if is_valid_mac_address(mac):
+                        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
 
         # polling
         self._attr_needs_poll = True
