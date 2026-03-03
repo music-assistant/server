@@ -459,7 +459,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 ]
             )
         if playlist_obj.get("genre"):
-            playlist.metadata.genres = playlist_obj["genre"]
+            playlist.metadata.genres = {playlist_obj["genre"]}
         if playlist_obj.get("tag_list"):
             playlist.metadata.style = playlist_obj["tag_list"]
         return playlist
