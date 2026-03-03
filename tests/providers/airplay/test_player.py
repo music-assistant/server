@@ -49,4 +49,4 @@ def test_requires_pairing(
         raop_discovery_info=raop_discovery_info,
         airplay_discovery_info=aiplay_discovery_info,
     )
-    assert player._requires_pairing() == expected
+    assert player._requires_pin_pairing() == expected

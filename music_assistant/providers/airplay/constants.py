@@ -25,6 +25,7 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
+CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
@@ -86,8 +87,6 @@ AIRPLAY_2_DEFAULT_MODELS = (
     ("LG Electronics", "*"),
 )
 
-PIN_REQUIRED = 0x8
-LEGACY_PAIRING_BIT = 0x200
 BROKEN_AIRPLAY_WARN = ConfigEntry(
     key="BROKEN_AIRPLAY",
     type=ConfigEntryType.ALERT,
@@ -106,3 +105,8 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.VOLUME_SET,
 }
+
+
+PIN_REQUIRED = 0x8
+PASSWORD_BIT = 0x80
+LEGACY_PAIRING_BIT = 0x200
