@@ -43,12 +43,6 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
-# Party mode system user (guest access)
-PARTY_MODE_SYSTEM_USER: Final[str] = "party_mode_system"
-# Set of all system-managed usernames (excluded from user lists, first-user checks, etc.)
-SYSTEM_USERNAMES: Final[frozenset[str]] = frozenset(
-    {HOMEASSISTANT_SYSTEM_USER, PARTY_MODE_SYSTEM_USER}
-)
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
