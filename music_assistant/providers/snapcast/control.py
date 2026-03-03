@@ -251,7 +251,7 @@ class MusicAssistantControl:
         # Event
         if "event" in data and data.get("object_id") == self.queue_id:
             event = data["event"]
-            if event == "queue_updated":
+            if event == "queue_updated" and data.get("data"):
                 properties = self._create_properties(data["data"])
                 self.send_snapcast_properties_notification(properties)
                 return
