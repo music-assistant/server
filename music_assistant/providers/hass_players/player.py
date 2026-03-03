@@ -455,13 +455,12 @@ class HomeAssistantPlayer(Player):
         # so we later only react to state updates that include it.
         media_content_id = self._hass_attributes.get("media_content_id", "")
         is_ma_playback = media_content_id.startswith(self.mass.streams.base_url)
-
         media_title = self._hass_attributes.get("media_title")
 
         if media_content_id and is_ma_playback:
             # MA playback - ensure active_source points to player_id for queue lookup.
             # The actual current_media will be set by MA's queue controller.
-            self._attr_active_source = self.player_id
+            self._attr_active_source = None
         elif (
             media_content_id
             and media_title

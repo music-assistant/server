@@ -21,8 +21,6 @@ class StreamingProtocol(IntEnum):
     AIRPLAY2 = 2  # AirPlay 2
 
 
-CACHE_CATEGORY_PREV_VOLUME: Final[int] = 1
-
 CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
@@ -30,21 +28,26 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
+CONF_STORED_VOLUME: Final[str] = "stored_volume"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-AIRPLAY_OUTPUT_BUFFER_DURATION_MS: Final[int] = (
-    2000  # Read ahead buffer for cliraop. Output buffer duration for cliap2.
-)
+# Read ahead buffer for cliraop. Default output buffer duration.
+AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
+# Minimum output buffer duration permitted.
+AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 500
+# Maximum output buffer duration permitted.
+AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2500  # Time in ms to allow AirPlay2 device to connect
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow AirPlay2 device to connect
 RAOP_CONNECT_TIME_MS: Final[int] = 1000  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
+CONF_AIRPLAY_LATENCY: Final[str] = "airplay_latency"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
@@ -80,8 +83,11 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
+    ("LG Electronics", "*"),
 )
 
+PIN_REQUIRED = 0x8
+LEGACY_PAIRING_BIT = 0x200
 BROKEN_AIRPLAY_WARN = ConfigEntry(
     key="BROKEN_AIRPLAY",
     type=ConfigEntryType.ALERT,

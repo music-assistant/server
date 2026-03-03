@@ -122,6 +122,7 @@ class AsyncProcess:
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
+            bufsize=0,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
@@ -171,10 +172,10 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             self.proc.stdin.write(data)
             with suppress(BrokenPipeError, ConnectionResetError):
@@ -182,10 +183,10 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called:
+        if self._close_called or self.proc is None:
             return
-        assert self.proc is not None  # for type checking
-        assert self.proc.stdin is not None  # for type checking
+        if self.proc.stdin is None:
+            return
         async with self._stdin_lock:
             try:
                 if self.proc.stdin.can_write_eof():
@@ -260,10 +261,16 @@ class AsyncProcess:
                 self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                # Log unexpected exceptions from the stdin feeder before suppressing
+                LOGGER.warning(
+                    "Process stdin feeder task ended with error: %s",
+                    err,
+                )
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):
@@ -353,14 +360,13 @@ class AsyncProcess:
             with suppress(asyncio.CancelledError, Exception):
                 await self._stderr_reader_task
 
-        # Close all pipes first to prevent any I/O blocking
-        # This helps processes stuck on blocked I/O to receive signals
+        # Close stdin to signal we're done sending data
+        # Note: Don't manually call feed_eof() on stdout/stderr - this causes
+        # "feed_data after feed_eof" assertion errors when the subprocess transport
+        # still has buffered data to deliver. Let the process termination naturally
+        # close the streams.
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
-        if self.proc.stdout:
-            self.proc.stdout.feed_eof()
-        if self.proc.stderr:
-            self.proc.stderr.feed_eof()
 
         # Send SIGKILL immediately using os.kill for more direct signal delivery
         self.logger.debug("Killing process %s with PID %s", self.name, pid)

@@ -226,6 +226,7 @@ class MediaAssistantPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
             device_info = await self.roku.update()
 
@@ -239,7 +240,7 @@ class MediaAssistantPlayer(Player):
             if app_running:
                 await self.roku_input(
                     {
-                        "u": media.uri,
+                        "u": stream_url,
                         "t": "a",
                         "albumName": media.album,
                         "songName": media.title,

@@ -28,9 +28,9 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
 )
-from music_assistant.helpers.audio import get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
 from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE
@@ -47,15 +47,17 @@ BASE_FEATURES = {
 }
 
 
-class UniversalGroupPlayer(GroupPlayer):
+class UniversalGroupPlayer(Player):
     """Universal Group Player implementation."""
+
+    _attr_type: PlayerType = PlayerType.GROUP
 
     def __init__(
         self,
         provider: UniversalGroupProvider,
         player_id: str,
     ) -> None:
-        """Initialize GroupPlayer instance."""
+        """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
         self._attr_name = self.config.name or f"Universal Group {player_id}"
@@ -88,6 +90,12 @@ class UniversalGroupPlayer(GroupPlayer):
         """Return if the player requires flow mode."""
         return True
 
+    @cached_property
+    def synced_to(self) -> str | None:
+        """Return the id of the player this player is synced to (sync leader)."""
+        # groups can't be synced
+        return None
+
     @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
@@ -103,7 +111,7 @@ class UniversalGroupPlayer(GroupPlayer):
         }
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_static_group_members = static_members.copy()
         if not self.powered:
@@ -249,7 +257,7 @@ class UniversalGroupPlayer(GroupPlayer):
             await self.stream.stop()
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT)
+        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT, self.player_id)
 
         # start the stream task
         self.stream = UGPStream(
@@ -401,7 +409,7 @@ class UniversalGroupPlayer(GroupPlayer):
 
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{output_format_str}",
+            "Content-Type": get_mime_type(output_format_str),
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",

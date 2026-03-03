@@ -75,7 +75,7 @@ from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import TaskManager, parse_title_and_version
+from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
@@ -101,7 +101,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 27
+DB_SCHEMA_VERSION: Final[int] = 30
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -1446,7 +1446,7 @@ class MusicController(CoreController):
             params["userid"] = userid
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            ma_fully_played = db_entry["fully_played"]
+            ma_fully_played = parse_optional_bool(db_entry["fully_played"])
 
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
@@ -2306,13 +2306,17 @@ class MusicController(CoreController):
                 if search_name in genre_cache:
                     return genre_cache[search_name]
                 aliases_json = serialize_to_json(aliases or [name])
+                icon_metadata = GenreController._get_genre_icon_metadata(translation_key)
+                metadata_json = (
+                    serialize_to_json(icon_metadata.to_dict()) if icon_metadata else empty_metadata
+                )
                 row_id = await db.execute_insert(
                     genre_insert_sql,
                     (
                         name,
                         sort_name,
                         translation_key,
-                        empty_metadata,
+                        metadata_json,
                         empty_external_ids,
                         aliases_json,
                         search_name,
@@ -2471,6 +2475,20 @@ class MusicController(CoreController):
                     await db.execute(full_query)
                     await db.commit()
 
+        if prev_version <= 29:
+            # Smart fades analyses were previously computed on silence-stripped audio,
+            # so beat timestamps are misaligned with the unstripped buffers now passed
+            # to the crossfade mixer. Truncate the table so all analyses are re-computed.
+            await self._database.execute(f"DELETE FROM {DB_TABLE_SMART_FADES_ANALYSIS}")
+
+        if prev_version <= 30:
+            # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
+            # i.e. ["track"] the default, as this was the only media type supported.
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
+                " json DEFAULT '[\"track\"]' NOT NULL"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2582,7 +2600,8 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]'
             );"""
         )
         await self.database.execute(

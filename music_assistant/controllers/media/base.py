@@ -34,7 +34,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
-from music_assistant.helpers.util import guard_single_request
+from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
@@ -55,6 +55,7 @@ JSON_KEYS = (
     "narrators",
     "authors",
     "genre_aliases",
+    "supported_mediatypes",
 )
 
 SORT_KEYS = {
@@ -1094,6 +1095,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if not (raw_value := db_row_dict[key]):
                 continue
             db_row_dict[key] = json_loads(raw_value)
+
+        # parse "fully_played" as bool if present in the row
+        if "fully_played" in db_row_dict:
+            db_row_dict["fully_played"] = parse_optional_bool(db_row_dict["fully_played"])
 
         # copy track_album --> album
         if track_album := db_row_dict.get("track_album"):

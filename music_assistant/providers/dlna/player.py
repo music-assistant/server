@@ -19,7 +19,6 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
@@ -145,13 +144,11 @@ class DLNAPlayer(Player):
                 if uuid_value.lower().startswith("uuid:"):
                     uuid_value = uuid_value[5:]
                 self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
-                # Try to extract MAC address from UUID
-                # Many UPnP devices embed MAC in the last 12 chars of UUID
-                # e.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
-                mac_address = self._extract_mac_from_uuid(uuid_value)
-                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
-                if mac_address and is_valid_mac_address(mac_address):
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+                # MAC address is NOT extracted from UUID because the last 12 chars
+                # of UPnP UUIDs are unreliable — many devices put random/model
+                # values there, not the real hardware MAC. Instead, the player
+                # controller resolves the real MAC via ARP during registration
+                # using the IP address extracted below.
                 # Try to extract just the IP from the URL for matching
                 ip_address = self.device.device.presentation_url or self.description_url
                 with suppress(ValueError):
@@ -448,8 +445,9 @@ class DLNAPlayer(Player):
         assert self.device is not None  # for type checking
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
-            await self.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+            await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:
             self.logger.error(
                 "Enqueuing the next track failed for player %s - "
@@ -500,39 +498,28 @@ class DLNAPlayer(Player):
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
             self.logger.debug("Device unavailable: %r", err)
-            if TYPE_CHECKING:
-                assert isinstance(self.provider, DLNAPlayerProvider)  # for type checking
-            await self.provider._device_disconnect(self)
+            await self._device_disconnect()
             raise PlayerUnavailableError from err
         finally:
             self.force_poll = False
 
-    @staticmethod
-    def _extract_mac_from_uuid(uuid_value: str) -> str | None:
-        """Try to extract MAC address from UUID.
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        await self._device_disconnect()
 
-        Many UPnP devices embed the MAC address in the last 12 hex characters of the UUID.
-        E.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
+    async def _device_disconnect(self) -> None:
+        """Destroy connections to the device."""
+        async with self.lock:
+            if not self.device:
+                self.logger.debug("Disconnecting from device that's not connected")
+                return
 
-        :param uuid_value: The UUID string (without 'uuid:' prefix).
-        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
-        """
-        # Remove dashes and get last 12 hex characters
-        hex_chars = uuid_value.replace("-", "")
-        if len(hex_chars) < 12:
-            return None
+            self.logger.debug("Disconnecting from %s", self.device.name)
 
-        mac_hex = hex_chars[-12:]
-
-        # Validate it looks like a MAC (all hex characters)
-        try:
-            int(mac_hex, 16)
-        except ValueError:
-            return None
-
-        # Check if it could be a valid MAC (not all zeros or all ones)
-        if mac_hex in ("000000000000", "ffffffffffff", "FFFFFFFFFFFF"):
-            return None
-
-        # Format as XX:XX:XX:XX:XX:XX
-        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+            self.device.on_event = None
+            old_device = self.device
+            self.device = None
+            self.set_available(False)
+            await old_device.async_unsubscribe_services()
+        self.update_state()

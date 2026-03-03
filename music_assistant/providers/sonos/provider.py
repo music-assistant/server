@@ -21,6 +21,7 @@ from music_assistant.constants import (
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import get_primary_ip_address
@@ -266,7 +267,7 @@ class SonosPlayerProvider(PlayerProvider):
             "track": {
                 "type": "track",
                 "mediaUrl": media.uri,
-                "contentType": f"audio/{media.uri.split('.')[-1]}",
+                "contentType": get_mime_type(media.uri.split(".")[-1]),
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "name": media.title,
                 "imageUrl": media.image_url,

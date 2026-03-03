@@ -36,6 +36,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -109,7 +110,7 @@ class SqueezelitePlayer(Player):
         )
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is registered or the config was updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # set presets and display
         await self._set_preset_items()
         await self._set_display()
@@ -265,7 +266,7 @@ class SqueezelitePlayer(Player):
         # select audio source, we force flow mode
         # because multi-client streaming does not support enqueueing
         audio_source = self.mass.streams.get_stream(
-            media, master_audio_format, force_flow_mode=True
+            media, master_audio_format, player_id=self.player_id, force_flow_mode=True
         )
 
         # start the stream task
@@ -297,9 +298,10 @@ class SqueezelitePlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._handle_play_url_for_slimplayer(
             self.client,
-            url=media.uri,
+            url=stream_url,
             media=media,
             enqueue=True,
             send_flush=False,
@@ -329,6 +331,10 @@ class SqueezelitePlayer(Player):
                         if sync_client.state != SlimPlayerState.STOPPED:
                             # stop the player if it is playing
                             await sync_client.stop()
+            # if no children remain, remove ourselves from the list too
+            remaining = [x for x in self._attr_group_members if x != self.player_id]
+            if not remaining:
+                self._attr_group_members.clear()
 
         # handle additions
         players_added = False
@@ -345,6 +351,9 @@ class SqueezelitePlayer(Player):
                 await child_player.stop()
             self._attr_group_members.append(player_id)
             players_added = True
+        # ensure the sync leader (self) is the first item in group_members
+        if self._attr_group_members and self.player_id not in self._attr_group_members:
+            self._attr_group_members.insert(0, self.player_id)
 
         # always update the state after modifying group members
         self.update_state()
@@ -417,11 +426,8 @@ class SqueezelitePlayer(Player):
                 source_id=metadata.get("source_id"),
                 queue_item_id=metadata.get("queue_item_id"),
             )
-            # Set active source from metadata if available, otherwise use player_id
-            self._attr_active_source = metadata.get("source_id") or self.player_id
         else:
             self._attr_current_media = None
-            self._attr_active_source = self.player_id
 
     async def _handle_play_url_for_slimplayer(
         self,
@@ -454,7 +460,7 @@ class SqueezelitePlayer(Player):
         )
         await slimplayer.play_url(
             url=url,
-            mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+            mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -478,7 +484,7 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+                    mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,

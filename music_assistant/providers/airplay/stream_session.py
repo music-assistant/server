@@ -73,7 +73,14 @@ class AirPlayStreamSession:
         has_airplay2_client = any(
             p.protocol == StreamingProtocol.AIRPLAY2 for p in self.sync_clients
         )
-        wait_start = AIRPLAY2_CONNECT_TIME_MS if has_airplay2_client else RAOP_CONNECT_TIME_MS
+        max_output_buffer_ms: int = 0
+        if has_airplay2_client:
+            max_output_buffer_ms = max(p.output_buffer_duration_ms for p in self.sync_clients)
+        wait_start = (
+            AIRPLAY2_CONNECT_TIME_MS + max_output_buffer_ms
+            if has_airplay2_client
+            else RAOP_CONNECT_TIME_MS + max_output_buffer_ms
+        )
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds
@@ -209,6 +216,7 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         pcm_sample_size = self.pcm_format.pcm_sample_size
         watchdog_task = asyncio.create_task(self._silence_watchdog(pcm_sample_size))
+        stream_error: BaseException | None = None
         try:
             async for chunk in audio_source:
                 if not self._first_chunk_received.is_set():
@@ -225,11 +233,26 @@ class AirPlayStreamSession:
                     self.prov.logger.debug("No running clients remaining, stopping audio streamer")
                     break
                 self.seconds_streamed += len(chunk) / pcm_sample_size
+        except asyncio.CancelledError:
+            self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
+            raise
+        except Exception as err:
+            stream_error = err
+            self.prov.logger.error(
+                "Audio source error after %.1fs of streaming: %s",
+                self.seconds_streamed,
+                err,
+                exc_info=err,
+            )
         finally:
             if not watchdog_task.done():
                 watchdog_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await watchdog_task
+            if stream_error:
+                self.prov.logger.warning(
+                    "Stream ended prematurely due to error - notifying players"
+                )
         async with self._lock:
             await asyncio.gather(
                 *[
@@ -345,11 +368,13 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.write_eof()
             await ffmpeg.wait_with_timeout(30)
-            if airplay_player.stream and airplay_player.stream._cli_proc:
-                await airplay_player.stream._cli_proc.write_eof()
+            if airplay_player.stream:
+                await airplay_player.stream.write_audio_eof()
 
     async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
         """Start CLI process and ffmpeg for a single client."""
+        # sync volume from parent player if needed
+        airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
         if airplay_player.protocol == StreamingProtocol.AIRPLAY2:

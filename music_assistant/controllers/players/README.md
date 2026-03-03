@@ -309,7 +309,7 @@ Key scenarios to test:
 ### Configuration Storage
 
 Protocol links are persisted in player configuration:
-- `linked_protocol_player_ids` - List of protocol player IDs
+- `linked_protocol_ids` - List of protocol player IDs
 - Restored on restart for fast reconnection
 
 ### Key Methods (in protocol_linking.py)

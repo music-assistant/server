@@ -235,15 +235,15 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(msg)
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         if not media.duration:
             # Sonos really does not like FLAC streams without duration
-            media.uri = media.uri.replace(".flac", ".mp3")
+            stream_url = stream_url.replace(".flac", ".mp3")
 
         didl_metadata = create_didl_metadata(media)
         is_announcement = media.media_type == MediaType.ANNOUNCEMENT
         force_radio = False if is_announcement else not media.duration
 
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await asyncio.to_thread(
             self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
         )
@@ -260,12 +260,13 @@ class SonosPlayer(Player):
             raise PlayerCommandFailed(msg)
 
         didl_metadata = create_didl_metadata(media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
 
         def add_to_queue() -> None:
             self.soco.avTransport.SetNextAVTransportURI(
                 [
                     ("InstanceID", 0),
-                    ("NextURI", media.uri),
+                    ("NextURI", stream_url),
                     ("NextURIMetaData", didl_metadata),
                 ]
             )
