@@ -266,7 +266,7 @@ class MSXHTTPServer:
         player_info = "".join(player_rows) if player_rows else ""
 
         # Build URLs
-        _raw_host = request.url.host  # aiohttp-parsed, IPv6-safe, no port, no brackets
+        _raw_host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         hostname = f"[{_raw_host}]" if ":" in _raw_host else _raw_host
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
@@ -2094,7 +2094,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         substitutes self.port to prevent a spoofed Host header from redirecting
         generated URLs to a foreign host.
         """
-        host = request.url.host  # aiohttp-parsed: no port, no brackets, IPv6-safe
+        host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         host_addr = f"[{host}]" if ":" in host else host  # bracket IPv6 literals for URLs
         return f"http://{host_addr}:{self.port}"
 
