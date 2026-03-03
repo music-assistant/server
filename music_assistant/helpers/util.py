@@ -968,14 +968,14 @@ async def enrich_device_mac_address(
     logger: logging.Logger | None = None,
 ) -> None:
     """
-    Enrich a player's device_info with a real MAC address via ARP if needed.
+    Enrich a player's device_info with a real MAC address via ARP.
 
     Called automatically during player registration. It validates the existing MAC,
-    normalizes IPv6-mapped IPv4 addresses, and performs an ARP lookup to resolve the
-    real hardware MAC when the reported MAC is missing, invalid, or locally-administered.
-
-    The ARP result is always preferred over the reported MAC because it reflects
-    the true hardware address and reliably unifies protocols on the same device.
+    normalizes IPv6-mapped IPv4 addresses, and always performs an ARP lookup when
+    an IP is available. The ARP result replaces the reported MAC because it reflects
+    the true hardware address and reliably unifies protocols on the same device -
+    even when different protocols report different valid MACs (e.g., Yamaha devices
+    where DLNA and AirPlay MACs differ by 1 in the last octet).
 
     :param device_info: The player's DeviceInfo to enrich in-place.
     :param logger: Optional logger for debug messages.
@@ -1009,17 +1009,13 @@ async def enrich_device_mac_address(
     if not ip_address:
         return
 
-    # Check if we need to do ARP lookup:
-    # - No MAC reported (or was blanked out above)
-    # - MAC is locally administered (virtual/random)
-    if reported_mac and not is_locally_administered_mac(reported_mac):
-        return
-
-    # Try to resolve real MAC via ARP
+    # Always attempt ARP lookup when we have an IP address.
+    # Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
+    # MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
+    # ARP resolves the true hardware MAC which reliably unifies all protocols.
+    # The result is cached in player config so subsequent restarts are fast.
     real_mac = await resolve_real_mac_address(reported_mac, ip_address)
     if real_mac and real_mac.upper() != (reported_mac or "").upper():
-        # Always use the ARP result - it's the hardware truth and reliably
-        # unifies different protocols on the same physical device.
         device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
         if logger:
             logger.debug(
@@ -1027,6 +1023,10 @@ async def enrich_device_mac_address(
                 reported_mac or "none",
                 real_mac,
             )
+    elif not reported_mac:
+        # ARP failed and no reported MAC - nothing we can do
+        if logger:
+            logger.debug("ARP lookup failed for %s and no reported MAC", ip_address)
 
 
 class TaskManager:

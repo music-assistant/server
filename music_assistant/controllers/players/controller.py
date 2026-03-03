@@ -30,6 +30,7 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import (
     EventType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -68,6 +69,7 @@ from music_assistant.constants import (
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
     CONF_AUTO_PLAY,
+    CONF_CACHED_ARP_MAC,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
@@ -77,6 +79,8 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    CONF_PROTOCOL_PARENT_ID,
+    CONF_REPORTED_MAC,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -88,6 +92,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
+    is_valid_mac_address,
     validate_announcement_chime_url,
 )
 from music_assistant.models.core_controller import CoreController
@@ -152,6 +157,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
 
     async def close(self) -> None:
@@ -1248,9 +1254,51 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if not player.state.enabled:
                 return
 
+            # Save the original MAC reported by the provider (before ARP enrichment)
+            reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+
+            # Try to use cached ARP MAC from config for fast matching on restart.
+            # This allows protocol linking to work immediately even if ARP is slow/fails.
+            conf_base = f"{CONF_PLAYERS}/{player_id}/values"
+            cached_arp_mac: str | None = self.mass.config.get(
+                f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
+            )
+            if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
+                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
             # Enrich device MAC address via ARP if needed
             # (handles invalid MACs, locally-administered MACs, and missing MACs)
             await enrich_device_mac_address(player.device_info, self.logger)
+
+            # Cache the resolved MAC for fast matching on subsequent restarts
+            current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+            if current_mac and is_valid_mac_address(current_mac) and current_mac != cached_arp_mac:
+                self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
+
+            # Store original reported MAC if it differs from the resolved MAC.
+            # This enables multi-MAC matching for devices with multiple interfaces
+            # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+            # protocol reports the other.
+            if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+                if reported_mac.upper() != current_mac.upper():
+                    player.extra_data["reported_mac"] = reported_mac
+                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
+                else:
+                    # Provider's reported MAC matches the resolved MAC; clear any stale
+                    # stored reported MAC to avoid false-positive multi-MAC matches.
+                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+            elif not reported_mac or not is_valid_mac_address(reported_mac):
+                # Restore reported MAC from config on restart only when the provider
+                # did not supply a usable MAC address.
+                cached_reported_mac: str | None = self.mass.config.get(
+                    f"{conf_base}/{CONF_REPORTED_MAC}", None
+                )
+                if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
+                    if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                        # Cached value matches the resolved MAC; clear stale entry.
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                    else:
+                        player.extra_data["reported_mac"] = cached_reported_mac
 
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
@@ -2073,6 +2121,31 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         elif prev_state == PlaybackState.PLAYING:
             # player was playing something before the announcement - try to resume that here
             await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
+
+    def _cleanup_stale_protocol_parent_ids(self) -> None:
+        """Clean up stale protocol_parent_id values in config on startup.
+
+        Scans protocol player configs and clears parent_ids that point to
+        player configs that no longer exist (e.g., deleted universal players).
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        for player_id, player_config in all_player_configs.items():
+            if player_config.get("player_type") != "protocol":
+                continue
+            values = player_config.get("values", {})
+            parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
+            if not parent_id:
+                continue
+            # Check if parent config still exists
+            parent_config = all_player_configs.get(parent_id)
+            if not parent_config:
+                self.logger.debug(
+                    "Clearing stale protocol_parent_id %s for %s (parent config deleted)",
+                    parent_id,
+                    player_id,
+                )
+                conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
+                self.mass.config.set(conf_key, None)
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
