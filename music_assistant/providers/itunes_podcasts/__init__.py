@@ -61,7 +61,13 @@ CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
 
-SUPPORTED_FEATURES = {ProviderFeature.SEARCH, ProviderFeature.RECOMMENDATIONS}
+SUPPORTED_FEATURES = {
+    ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
+    # This provider does not have a "real" library. Refer to method comment
+    # in get_library_podcasts
+    ProviderFeature.LIBRARY_PODCASTS,
+}
 
 
 async def setup(
@@ -212,6 +218,37 @@ class ITunesPodcastsProvider(MusicProvider):
             podcast.metadata.images = UniqueList(image_list)
             podcast_list.append(podcast)
         return podcast_list
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Get library podcasts.
+
+        We use get_library_podcasts to sync all feeds which have been added to the MA library
+        by the user via the search function. The provider itself does not offer a real library.
+
+        The item_id corresponds to the feed_url.
+        """
+        podcasts = await self.mass.music.podcasts.get_library_items_by_prov_id(
+            provider_instance=self.instance_id
+        )
+        for podcast in podcasts:
+            feed_url: str | None = None
+            for provider_mapping in podcast.provider_mappings:
+                if provider_mapping.provider_instance == self.instance_id:
+                    feed_url = provider_mapping.item_id
+                    break
+            if feed_url is None:
+                self.logger.debug("Podcast %s lacks a feed url.", podcast.name)
+                continue
+            try:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=feed_url,
+                    max_episodes=self.max_episodes,
+                )
+                await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
+            except MediaNotFoundError:
+                self.logger.warning("Was unable to sync podcast %s (%s).", podcast.name, feed_url)
+            yield (await self.get_podcast(feed_url))
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
