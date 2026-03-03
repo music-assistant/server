@@ -3874,8 +3874,8 @@ class TestDuplicateProtocolPrevention:
         assert dlna1.protocol_parent_id == "sonos_1"
         assert len(sonos_player.linked_output_protocols) == 2
 
-    def test_add_protocol_link_allows_replacing_inactive_domain(self, mock_mass: MagicMock) -> None:
-        """Test that a new link can replace one from the same domain if old one is inactive."""
+    def test_add_protocol_link_allows_replacing_removed_player(self, mock_mass: MagicMock) -> None:
+        """Test that a new link can replace a stale one after the old player is removed."""
         controller = PlayerController(mock_mass)
 
         sonos_provider = MockProvider("sonos")
@@ -3924,14 +3924,65 @@ class TestDuplicateProtocolPrevention:
         controller._add_protocol_link(sonos_player, ap1, "airplay")
         assert ap1.protocol_parent_id == "sonos_1"
 
-        # Make first AirPlay unavailable (simulates disconnection)
-        ap1._attr_available = False
-        ap1._cache.clear()
-        ap1.update_state(signal_event=False)
+        # Remove first AirPlay from registry (provider cleaned up stale player)
+        del controller._players["ap_1"]
 
-        # Link second AirPlay - should succeed since first is inactive
+        # Link second AirPlay - should succeed since first was removed
         controller._add_protocol_link(sonos_player, ap2, "airplay")
         assert ap2.protocol_parent_id == "sonos_1"
+
+    def test_add_protocol_link_blocks_when_existing_still_registered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a new link is blocked when the old player is still registered."""
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos")
+        sonos_player = MockPlayer(
+            sonos_provider, "sonos_1", "Sonos Speaker", player_type=PlayerType.PLAYER
+        )
+
+        snap_provider = MockProvider("snapcast")
+        snap1 = MockPlayer(
+            snap_provider,
+            "snap_1",
+            "Snapcast 1",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "D0:11:E5:00:67:2F"},
+        )
+        snap2 = MockPlayer(
+            snap_provider,
+            "snap_2",
+            "Snapcast 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "D0:11:E5:00:67:2F"},
+        )
+
+        # Both unavailable
+        snap1._attr_available = False
+        snap1._cache.clear()
+        snap1.update_state(signal_event=False)
+        snap2._attr_available = False
+        snap2._cache.clear()
+        snap2.update_state(signal_event=False)
+
+        controller._players = {
+            "sonos_1": sonos_player,
+            "snap_1": snap1,
+            "snap_2": snap2,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+        snap1.set_initialized()
+        snap2.set_initialized()
+        sonos_player.set_initialized()
+
+        # Link first snapcast
+        controller._add_protocol_link(sonos_player, snap1, "snapcast")
+        assert snap1.protocol_parent_id == "sonos_1"
+
+        # Try to link second snapcast - should be BLOCKED (snap1 still registered)
+        controller._add_protocol_link(sonos_player, snap2, "snapcast")
+        assert snap2.protocol_parent_id is None
 
     def test_try_link_protocol_to_native_skips_duplicate_domain(self, mock_mass: MagicMock) -> None:
         """Test that _try_link_protocol_to_native falls through when domain is duplicate."""
@@ -4932,6 +4983,58 @@ class TestEndToEndDuplicateProtocol:
         parent_ids = {p.protocol_parent_id for p in players}
         assert None not in parent_ids
         assert len(parent_ids) == 3
+
+    @pytest.mark.asyncio
+    async def test_same_domain_same_mac_get_separate_universals(self, mock_mass: MagicMock) -> None:
+        """Test that two snapcast instances with the same ARP-resolved MAC stay separate.
+
+        Scenario: Two snapcast clients on the same Mac mini. Both have distinct
+        locally-administered MACs but ARP resolves both to the same real hardware MAC.
+        They should each get their own universal player, not be merged.
+        """
+        controller, _ = self._setup_e2e_controller(mock_mass)
+
+        snap_provider = MockProvider("snapcast", mass=mock_mass)
+        snap1 = MockPlayer(
+            snap_provider,
+            "ma_cea0b4ed2221",
+            "Mac-mini-15269.local",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                # ARP-enriched: both resolve to same real MAC
+                IdentifierType.MAC_ADDRESS: "D0:11:E5:00:67:2F",
+                IdentifierType.IP_ADDRESS: "192.168.1.42",
+            },
+        )
+        snap2 = MockPlayer(
+            snap_provider,
+            "ma_cea0b4ed2220",
+            "Mac-mini-63197.local",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "D0:11:E5:00:67:2F",
+                IdentifierType.IP_ADDRESS: "192.168.1.42",
+            },
+        )
+        snap1._attr_available = False
+        snap1._cache.clear()
+        snap1.update_state(signal_event=False)
+        snap2._attr_available = False
+        snap2._cache.clear()
+        snap2.update_state(signal_event=False)
+        snap1.set_initialized()
+        snap2.set_initialized()
+
+        controller._players = {"ma_cea0b4ed2221": snap1, "ma_cea0b4ed2220": snap2}
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        await controller._delayed_protocol_evaluation("ma_cea0b4ed2221")
+        await controller._delayed_protocol_evaluation("ma_cea0b4ed2220")
+
+        # Each should have its own universal player
+        assert snap1.protocol_parent_id is not None
+        assert snap2.protocol_parent_id is not None
+        assert snap1.protocol_parent_id != snap2.protocol_parent_id
 
     @pytest.mark.asyncio
     async def test_mixed_protocols_plus_duplicate_creates_correct_topology(

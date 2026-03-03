@@ -414,6 +414,13 @@ class ProtocolLinkingMixin:
         self, universal_player: Player, protocol_player: Player, protocol_domain: str
     ) -> None:
         """Add a protocol player to an existing universal player."""
+        # Refuse if the universal player already has a registered player from this domain.
+        # This prevents a second instance (e.g., two snapcast players on the same host)
+        # from replacing the first. The caller falls through to create a separate UP.
+        for link in universal_player.linked_output_protocols:
+            if link.protocol_domain == protocol_domain and self.get_player(link.output_protocol_id):
+                return
+
         self._add_protocol_link(universal_player, protocol_player, protocol_domain)
 
         # Check if linking actually succeeded (may be refused for duplicate domain)
@@ -732,7 +739,8 @@ class ProtocolLinkingMixin:
             if exclude_player_id and link.output_protocol_id == exclude_player_id:
                 continue
             # A registered player from this domain blocks the link, even if unavailable.
-            # Being offline doesn't make it a different device.
+            # Being offline doesn't make it a different device — it's still occupying
+            # this domain slot. The provider should remove stale players explicitly.
             if self.get_player(link.output_protocol_id):
                 return True
         return False
@@ -1007,14 +1015,16 @@ class ProtocolLinkingMixin:
                     )
                     self._schedule_protocol_evaluation(protocol_player)
                 else:
-                    # Protocol player is not registered (unavailable/stale):
-                    # clean up its orphaned config
-                    self.logger.info(
-                        "Player %s removed - cleaning up stale protocol config %s",
+                    # Protocol player is not registered yet — it may still be
+                    # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
+                    # its config as that would cause a KeyError when it finishes
+                    # registering. Stale configs are harmless and get cleaned up
+                    # naturally on subsequent restarts.
+                    self.logger.debug(
+                        "Player %s removed - protocol %s not registered, skipping cleanup",
                         player.player_id,
                         protocol_id,
                     )
-                    self.mass.players.delete_player_config(protocol_id)
 
     def _identifiers_match(
         self, player_a: Player, player_b: Player, protocol_domain: str = ""
