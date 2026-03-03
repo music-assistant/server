@@ -275,14 +275,6 @@ class MSXBridgeProvider(PlayerProvider):
         """Handle async initialization — start embedded HTTP server."""
         raw_port = cast("int", self.config.get_value(CONF_HTTP_PORT, DEFAULT_HTTP_PORT))
         port = max(1, min(65535, int(raw_port)))
-        raw_timeout = cast(
-            "int", self.config.get_value(CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT)
-        )
-        if raw_timeout != int(raw_timeout) or raw_timeout < 1 or raw_timeout > 1440:
-            self.logger.warning(
-                "player_idle_timeout value %s is out of range [1, 1440], clamping",
-                raw_timeout,
-            )
         self.grouping_enabled = bool(
             self.config.get_value(CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING)
         )

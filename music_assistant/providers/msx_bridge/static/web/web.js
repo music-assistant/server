@@ -419,15 +419,26 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             var title = esc(parseMsx(item.titleHeader || item.title || item.label || ''));
             var sub = esc(item.titleFooter || '');
-            var imgHtml = item.image
-                ? '<div class="card-img"><img src="' + esc(item.image) + '" alt="" loading="lazy"></div>'
-                : '<div class="card-img card-img--empty">' + msxIcon(item.icon || 'music_note') + '</div>';
 
-            card.innerHTML = imgHtml +
+            // Build img container via DOM to safely assign src without innerHTML injection
+            var imgContainer = document.createElement('div');
+            if (item.image) {
+                imgContainer.className = 'card-img';
+                var img = document.createElement('img');
+                img.src = item.image;
+                img.alt = '';
+                img.loading = 'lazy';
+                imgContainer.appendChild(img);
+            } else {
+                imgContainer.className = 'card-img card-img--empty';
+                imgContainer.innerHTML = msxIcon(item.icon || 'music_note');
+            }
+            card.appendChild(imgContainer);
+            card.insertAdjacentHTML('beforeend',
                 '<div class="card-body">' +
                     '<div class="card-title">' + title + '</div>' +
                     (sub ? '<div class="card-sub">' + sub + '</div>' : '') +
-                '</div>';
+                '</div>');
 
             card.addEventListener('click', function () { handleAction(item); });
             grid.appendChild(card);
@@ -446,16 +457,26 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             var title = esc(parseMsx(item.titleHeader || item.title || item.playerLabel || ''));
             var sub = esc(item.titleFooter || item.label || '');
-            var imgHtml = item.image
-                ? '<img src="' + esc(item.image) + '" alt="" class="track-art" loading="lazy">'
-                : '<div class="track-art track-art--empty">' + msxIcon('audiotrack') + '</div>';
 
-            row.innerHTML =
-                imgHtml +
+            // Build art element via DOM to safely assign src without innerHTML injection
+            if (item.image) {
+                var img = document.createElement('img');
+                img.src = item.image;
+                img.alt = '';
+                img.className = 'track-art';
+                img.loading = 'lazy';
+                row.appendChild(img);
+            } else {
+                var emptyArt = document.createElement('div');
+                emptyArt.className = 'track-art track-art--empty';
+                emptyArt.innerHTML = msxIcon('audiotrack');
+                row.appendChild(emptyArt);
+            }
+            row.insertAdjacentHTML('beforeend',
                 '<div class="track-info">' +
                     '<div class="track-title">' + title + '</div>' +
                     (sub ? '<div class="track-sub">' + sub + '</div>' : '') +
-                '</div>';
+                '</div>');
 
             row.addEventListener('click', function () { handleAction(item); });
             list.appendChild(row);
@@ -989,20 +1010,27 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             }
             numEl += '</div>';
 
-            var imgHtml = item.image
-                ? '<img src="' + esc(item.image) + '" alt="" class="kiosk-queue-art" loading="lazy">'
-                : '<div class="kiosk-queue-art--empty"><span class="material-symbols-rounded" style="font-size:16px">audiotrack</span></div>';
-
             var durStr = item.duration ? fmtDur(item.duration) : '';
 
+            // Set static HTML first (no user-data), then append img via DOM
             row.innerHTML =
                 numEl +
-                imgHtml +
+                (item.image ? '<span class="kiosk-queue-art-slot"></span>' : '<div class="kiosk-queue-art--empty"><span class="material-symbols-rounded" style="font-size:16px">audiotrack</span></div>') +
                 '<div class="kiosk-queue-info">' +
                     '<div class="kiosk-queue-title">' + esc(item.title || '') + '</div>' +
                     '<div class="kiosk-queue-sub">' + esc(item.artist || '') + '</div>' +
                 '</div>' +
                 '<div class="kiosk-queue-dur">' + durStr + '</div>';
+
+            if (item.image) {
+                var img = document.createElement('img');
+                img.src = item.image;
+                img.alt = '';
+                img.className = 'kiosk-queue-art';
+                img.loading = 'lazy';
+                var slot = row.querySelector('.kiosk-queue-art-slot');
+                slot.parentNode.replaceChild(img, slot);
+            }
 
             container.appendChild(row);
         });
