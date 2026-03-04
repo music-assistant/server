@@ -385,15 +385,23 @@ class ITunesPodcastsProvider(MusicProvider):
         return parsed_podcast  # type: ignore[no-any-return]
 
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
-        # We cache for 24 hours. However, the user may overwrite the cache with a library sync. So
-        # 24 hours is only true for a non-library item, e.g. a search result not added to the
-        # library.
+        # We cache just a couple minutes longer then our sync interval, if it is configured.
+        # Otherwise we cache for 12 hrs
+        # Keys are in music_assistant/constants
+        library_sync_time_minutes = int(
+            str(self.config.get_value("provider_sync_interval_podcasts"))
+        )
+        library_sync_enabled = bool(self.config.get_value("library_sync_podcasts"))
+        if library_sync_time_minutes == 0 or not library_sync_enabled:
+            cache_time = 60 * 60 * 12  # 12h
+        else:
+            cache_time = library_sync_time_minutes * 60 + 600  # 10 minutes extra cache
         await self.mass.cache.set(
             key=feed_url,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
-            expiration=60 * 60 * 24,  # 24h
+            expiration=cache_time,
         )
 
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
