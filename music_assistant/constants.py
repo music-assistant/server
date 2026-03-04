@@ -1089,6 +1089,8 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "juke",
     "alexa",
     "radio",
+    "airplay",
+    "chromecast",
     # bluetooth (bluesound, musiccast)
     "bluetooth",
     # physical/analog inputs (sonos, heos, musiccast, demo)
