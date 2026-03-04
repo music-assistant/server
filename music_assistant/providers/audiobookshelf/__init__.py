@@ -623,7 +623,10 @@ for more details.
     @handle_refresh_token
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from ABS."""
-        assert media_type == MediaType.PLAYLIST
+        if media_type != MediaType.PLAYLIST:
+            raise InvalidDataError(
+                "Library remove is only implemented for playlists in the Audiobookshelf provider."
+            )
         async with self.playlist_lock:
             self.playlist_last = time.time()
             with suppress(AbsNotFoundError):
@@ -633,10 +636,15 @@ for more details.
 
     @handle_refresh_token
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to ABS library.
+        """Add library item.
 
-        When is this endpoint used for playlists?
+        This method is only called, if this item in question is not part of your library
+        yet, e.g. a "top 500 mix playlist". This doesn't exist in ABS.
         """
+        self.logger.error(
+            "The library_add is not implemented on the ABS provider. Please reach out to us, "
+            "should you see this message in your log."
+        )
         return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
@@ -1808,9 +1816,9 @@ for more details.
         ):
             async with self.playlist_lock:
                 await self.mass.music.playlists.remove_item_from_library(item_id=mass_item.item_id)
-                playlist_set = self.libraries.playlists_audiobooks.get(abs_playlist.id_)
+                playlist_set = self.libraries.playlists_audiobooks.get(abs_playlist.library_id)
                 if playlist_set is None:
-                    playlist_set = self.libraries.playlists_podcasts.get(abs_playlist.id_)
+                    playlist_set = self.libraries.playlists_podcasts.get(abs_playlist.library_id)
                 if playlist_set is not None:
                     with suppress(KeyError):
                         playlist_set.remove(abs_playlist.id_)
