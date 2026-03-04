@@ -385,15 +385,15 @@ class ITunesPodcastsProvider(MusicProvider):
         return parsed_podcast  # type: ignore[no-any-return]
 
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
-        # We cache for 12 hours. However, the user may overwrite the cache with a library sync. So
-        # 12 hours is only true for a non-library item, e.g. a search result not added to the
+        # We cache for 24 hours. However, the user may overwrite the cache with a library sync. So
+        # 24 hours is only true for a non-library item, e.g. a search result not added to the
         # library.
         await self.mass.cache.set(
             key=feed_url,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
-            expiration=60 * 60 * 12,  # 12h
+            expiration=60 * 60 * 24,  # 24h
         )
 
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
