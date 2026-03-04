@@ -231,15 +231,17 @@ class ITunesPodcastsProvider(MusicProvider):
             provider_instance=self.instance_id
         )
         for podcast in podcasts:
-            feed_url: str | None = None
+            our_provider_mapping: ProviderMapping | None = None
             for provider_mapping in podcast.provider_mappings:
                 if provider_mapping.provider_instance == self.instance_id:
-                    feed_url = provider_mapping.item_id
+                    our_provider_mapping = provider_mapping
                     break
-            if feed_url is None:
+            if our_provider_mapping is None:
                 # We should never end up here.
-                self.logger.error("Podcast %s lacks a feed url.", podcast.name)
+                self.logger.error("Podcast %s lacks a provider mapping.", podcast.name)
                 continue
+            feed_url = our_provider_mapping.item_id
+            parsed_podcast: dict[str, Any] | None = None
             try:
                 parsed_podcast = await get_podcastparser_dict(
                     session=self.mass.http_session,
@@ -249,9 +251,21 @@ class ITunesPodcastsProvider(MusicProvider):
                 await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
                 self.logger.debug("Synced podcast %s.", podcast.name)
             except MediaNotFoundError:
-                # We just keep what we have then, if the sync is unsuccessful.
+                # If we are not able to refresh the podcast, we must prevent the sync
+                # from deleting the podcast from the library - that is both a breaking change
+                # (pre March 2026) and certainly not desired just because of some downtime.
                 self.logger.warning("Was unable to sync podcast %s (%s).", podcast.name, feed_url)
-            yield (await self.get_podcast(feed_url))
+                podcast.item_id = feed_url
+                podcast.provider_mappings = {our_provider_mapping}
+                yield podcast
+
+            assert parsed_podcast is not None  # for type checking
+            yield parse_podcast(
+                feed_url=feed_url,
+                parsed_feed=parsed_podcast,
+                instance_id=self.instance_id,
+                domain=self.domain,
+            )
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
