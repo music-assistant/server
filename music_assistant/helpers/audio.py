@@ -789,7 +789,6 @@ async def _connect_radio_stream(
             yield resp
 
 
-# This branch is to be tested against https://stream.rise-fm.com:8100/1.mp3
 async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, StreamType]:
     """
     Resolve a streaming radio URL.
