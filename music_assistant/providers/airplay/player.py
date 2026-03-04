@@ -118,7 +118,7 @@ class AirPlayPlayer(Player):
     @property
     def protocol(self) -> StreamingProtocol:
         """Get the streaming protocol to use/prefer for this player."""
-        preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL))
+        preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0))
         return self._get_protocol_for_config_value(preferred_option)
 
     @property
@@ -187,6 +187,8 @@ class AirPlayPlayer(Player):
                 "while older devices may only support RAOP.\n\n"
                 "In most cases the default automatic selection will work fine.",
                 options=[
+                    # TODO: only show options that are actually available for a player
+                    # based on the mdns service info
                     ConfigValueOption("Automatically select", 0),
                     ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
                     ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
@@ -290,9 +292,13 @@ class AirPlayPlayer(Player):
         return CONF_AIRPLAY_CREDENTIALS
 
     def _get_protocol_for_config_value(self, config_option: int) -> StreamingProtocol:
-        if config_option == StreamingProtocol.AIRPLAY2 and self.airplay_discovery_info:
+        if config_option == StreamingProtocol.AIRPLAY2:
+            if not self.airplay_discovery_info:
+                raise ValueError("No AirPlay service found for this player")
             return StreamingProtocol.AIRPLAY2
-        if config_option == StreamingProtocol.RAOP and self.raop_discovery_info:
+        if config_option == StreamingProtocol.RAOP:
+            if not self.raop_discovery_info:
+                raise ValueError("No RAOP service found for this player")
             return StreamingProtocol.RAOP
         # automatic selection
         if self.airplay_discovery_info and is_airplay2_preferred_model(
@@ -750,4 +756,4 @@ class AirPlayPlayer(Player):
         for child_id in group_child_ids:
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
-        return sync_clients
+        return sync_clients  # base don
