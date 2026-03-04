@@ -765,13 +765,8 @@ async def _connect_radio_stream(
 ) -> AsyncGenerator[Any, None]:
     """Connect to a radio stream URL with fallback for legacy SSL/TLS configurations.
 
-    Some Icecast/Shoutcast radio servers use outdated TLS configurations that
-    don't support modern cipher suites, causing SSL handshake failures. This
-    helper first tries connecting with the default SSL settings and, only if
-    that fails with an SSL handshake error, retries with a more permissive
-    cipher configuration (SECLEVEL=0).
-    This does not weaken security for servers that support modern TLS.
-    Certificate verification is already disabled via http_session_no_ssl.
+    Some radio servers use outdated TLS configurations that reject modern cipher suites.
+    Since radio streams are public broadcast content, relaxing cipher requirements is acceptable.
     :param mass: The MusicAssistant instance.
     :param url: The radio stream URL to connect to.
     :param kwargs: Additional keyword arguments passed to aiohttp get().
