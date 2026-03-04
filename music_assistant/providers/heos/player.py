@@ -128,7 +128,10 @@ class HeosPlayer(Player):
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
-        self.logger.log(5, "[%s] Event received: %s", self._device.name, event)
+        if event == const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
+            self.logger.log(5, "[%s] Event received: %s", self._device.name, event)
+        else:
+            self.logger.debug("[%s] Event received: %s", self._device.name, event)
 
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
