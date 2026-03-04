@@ -244,7 +244,7 @@ class SpotifyProvider(MusicProvider):
 
         search_query = search_query.replace("'", "")
         offset = 0
-        page_limit = min(limit, 50)
+        page_limit = min(limit, 10)
 
         while True:
             api_result = await self._get_data(
@@ -579,7 +579,7 @@ class SpotifyProvider(MusicProvider):
             # The resume position will be automatically updated by MA's internal tracking
             # and will be retrieved via get_audiobook() which combines MA + Spotify positions
 
-    @use_cache()
+    @use_cache(86400 * 365)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -588,7 +588,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    @use_cache(2600 * 3)  # 3 hours
+    @use_cache(3600 * 3)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
@@ -620,9 +620,9 @@ class SpotifyProvider(MusicProvider):
             # so we need to break when we've reached the total.
             if (offset + index) > total:
                 break
-            if not (item and item["track"] and item["track"]["id"]):
+            if not (item and item["item"] and item["item"]["id"]):
                 continue
-            track = parse_track(item["track"], self)
+            track = parse_track(item["item"], self)
             track.position = offset + index
             result.append(track)
         return result
@@ -652,34 +652,38 @@ class SpotifyProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
-        if item.media_type == MediaType.ARTIST:
-            await self._put_data("me/following", {"ids": [item.item_id]}, type="artist")
-        elif item.media_type == MediaType.ALBUM:
-            await self._put_data("me/albums", {"ids": [item.item_id]})
-        elif item.media_type == MediaType.TRACK:
-            await self._put_data("me/tracks", {"ids": [item.item_id]})
-        elif item.media_type == MediaType.PLAYLIST:
-            await self._put_data(f"playlists/{item.item_id}/followers", data={"public": False})
-        elif item.media_type == MediaType.PODCAST:
-            await self._put_data("me/shows", ids=item.item_id)
-        elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            await self._put_data("me/audiobooks", ids=item.item_id)
+        uri_type_map = {
+            MediaType.ARTIST: "artist",
+            MediaType.ALBUM: "album",
+            MediaType.TRACK: "track",
+            MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "show",
+            MediaType.AUDIOBOOK: "audiobook",
+        }
+        if item.media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
+            return False
+        uri_type = uri_type_map.get(item.media_type)
+        if uri_type:
+            uri = f"spotify:{uri_type}:{item.item_id}"
+            await self._put_data("me/library", uris=uri)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
-        if media_type == MediaType.ARTIST:
-            await self._delete_data("me/following", {"ids": [prov_item_id]}, type="artist")
-        elif media_type == MediaType.ALBUM:
-            await self._delete_data("me/albums", {"ids": [prov_item_id]})
-        elif media_type == MediaType.TRACK:
-            await self._delete_data("me/tracks", {"ids": [prov_item_id]})
-        elif media_type == MediaType.PLAYLIST:
-            await self._delete_data(f"playlists/{prov_item_id}/followers")
-        elif media_type == MediaType.PODCAST:
-            await self._delete_data("me/shows", ids=prov_item_id)
-        elif media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            await self._delete_data("me/audiobooks", ids=prov_item_id)
+        uri_type_map = {
+            MediaType.ARTIST: "artist",
+            MediaType.ALBUM: "album",
+            MediaType.TRACK: "track",
+            MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "show",
+            MediaType.AUDIOBOOK: "audiobook",
+        }
+        if media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
+            return False
+        uri_type = uri_type_map.get(media_type)
+        if uri_type:
+            uri = f"spotify:{uri_type}:{prov_item_id}"
+            await self._delete_data("me/library", uris=uri)
         return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -697,18 +701,16 @@ class SpotifyProvider(MusicProvider):
             uri = f"playlists/{prov_playlist_id}/items"
             spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
             for item in spotify_result["items"]:
-                if not (item and item["track"] and item["track"]["id"]):
+                if not (item and item["item"] and item["item"]["id"]):
                     continue
-                track_uris.append({"uri": f"spotify:track:{item['track']['id']}"})
-        data = {"tracks": track_uris}
+                track_uris.append({"uri": f"spotify:track:{item['item']['id']}"})
+        data = {"items": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
-        if self._sp_user is None:
-            raise LoginFailed("User info not available - not logged in")
         data = {"name": name, "public": False}
-        new_playlist = await self._post_data(f"users/{self._sp_user['id']}/playlists", data=data)
+        new_playlist = await self._post_data("me/playlists", data=data)
         self._fix_create_playlist_api_bug(new_playlist)
         return parse_playlist(new_playlist, self)
 
@@ -872,7 +874,8 @@ class SpotifyProvider(MusicProvider):
             self._sp_user = userinfo = await self._get_data(
                 "me", auth_info=auth_info, use_global_session=True
             )
-            self.mass.metadata.set_default_preferred_language(userinfo["country"])
+            if country := userinfo.get("country"):
+                self.mass.metadata.set_default_preferred_language(country)
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
         return auth_info
 
