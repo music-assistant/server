@@ -711,44 +711,43 @@ class GenreController(MediaControllerBase[Genre]):
             # - The media item exists but the alias is no longer in metadata.genres.
             #   When genres is null or [] json_each returns no rows, so NOT EXISTS is true
             #   and all mappings for that item are removed.
-            await db.execute(
-                f"DELETE FROM {gm} "
-                f"WHERE media_type = '{media_type.value}' "
+            await db.delete_where_query(
+                gm,
+                f"media_type = '{media_type.value}' "
                 f"AND alias IS NOT NULL "
                 f"AND NOT EXISTS ("
                 f"  SELECT 1 FROM {table}, "
                 f"  json_each(json_extract({table}.metadata, '$.genres')) AS g "
                 f"  WHERE {table}.item_id = {gm}.media_id "
                 f"  AND LOWER(TRIM(g.value)) = LOWER({gm}.alias)"
-                f")"
+                f")",
             )
+
+        mappings_removed = count_before - await db.get_count(gm)
+        if mappings_removed:
+            self.logger.info("Genre scan: removed %d stale genre mappings", mappings_removed)
 
         # Delete playlog entries for empty non-default genres before removing them, to avoid
         # orphaned playlog rows pointing to genres that no longer exist.
-        await db.execute(
-            f"DELETE FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type = '{MediaType.GENRE.value}' "
+        await db.delete_where_query(
+            DB_TABLE_PLAYLOG,
+            f"media_type = '{MediaType.GENRE.value}' "
             f"AND item_id IN ("
             f"  SELECT item_id FROM {DB_TABLE_GENRES} "
             f"  WHERE translation_key IS NULL "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
             f"  )"
-            f")"
+            f")",
         )
         genres_before = await db.get_count(DB_TABLE_GENRES)
-        await db.execute(
-            f"DELETE FROM {DB_TABLE_GENRES} "
-            f"WHERE translation_key IS NULL "
+        await db.delete_where_query(
+            DB_TABLE_GENRES,
+            f"translation_key IS NULL "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
-            f")"
+            f")",
         )
-
-        await db.commit()
-        mappings_removed = count_before - await db.get_count(gm)
-        if mappings_removed:
-            self.logger.info("Genre scan: removed %d stale genre mappings", mappings_removed)
         genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
         if genres_deleted:
             self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
