@@ -1213,6 +1213,9 @@ class PlayerQueuesController(CoreController):
         ):
             try:
                 queue = PlayerQueue.from_dict(prev_state)
+                # drop the play action in progress flag if it exists
+                # this can happen if MA was killed while a play action was in progress
+                queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
