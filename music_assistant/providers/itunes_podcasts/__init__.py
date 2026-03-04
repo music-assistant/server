@@ -237,7 +237,8 @@ class ITunesPodcastsProvider(MusicProvider):
                     feed_url = provider_mapping.item_id
                     break
             if feed_url is None:
-                self.logger.debug("Podcast %s lacks a feed url.", podcast.name)
+                # We should never end up here.
+                self.logger.error("Podcast %s lacks a feed url.", podcast.name)
                 continue
             try:
                 parsed_podcast = await get_podcastparser_dict(
@@ -247,6 +248,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 )
                 await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
             except MediaNotFoundError:
+                # We just keep what we have then, if the sync is unsuccessful.
                 self.logger.warning("Was unable to sync podcast %s (%s).", podcast.name, feed_url)
             yield (await self.get_podcast(feed_url))
 
@@ -382,12 +384,15 @@ class ITunesPodcastsProvider(MusicProvider):
         return parsed_podcast  # type: ignore[no-any-return]
 
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
+        # We cache for 12 hours. However, the user may overwrite the cache with a library sync. So
+        # 12 hours is only true for a non-library item, e.g. a search result not added to the
+        # library.
         await self.mass.cache.set(
             key=feed_url,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
-            expiration=60 * 60 * 24,  # 1 day
+            expiration=60 * 60 * 12,  # 12h
         )
 
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
