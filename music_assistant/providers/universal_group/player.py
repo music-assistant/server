@@ -28,7 +28,7 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
 )
-from music_assistant.helpers.audio import get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
@@ -409,7 +409,7 @@ class UniversalGroupPlayer(Player):
 
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{output_format_str}",
+            "Content-Type": get_mime_type(output_format_str),
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",

@@ -200,7 +200,10 @@ class PlayerQueuesController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        enqueue_options = [ConfigValueOption(x.name, x.value) for x in QueueOption]
+        enqueue_options = [
+            ConfigValueOption("Play (and keep queue)", QueueOption.PLAY.value),
+            ConfigValueOption("Play (and replace queue)", QueueOption.REPLACE.value),
+        ]
         return (
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
@@ -577,7 +580,7 @@ class PlayerQueuesController(CoreController):
                     elif start_item is not None:
                         start_item_uri = start_item.uri
                     media_items += await self._resolve_media_items(
-                        media_item, start_item_uri, queue_id=queue_id
+                        media_item, start_item_uri, userid=queue.userid, queue_id=queue_id
                     )
 
             except MusicAssistantError as err:
@@ -1165,18 +1168,28 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_ungroup(group_id)
             await asyncio.sleep(3)
 
+        # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
+        source_resume_pos = int(source_queue.corrected_elapsed_time)
+        source_current_index = source_queue.current_index
+        source_current_item = source_queue.current_item
+
+        # stop the source player synchronously to prevent the async stop from
+        # clear() racing with the target's sync group formation/protocol switching
+        if source_queue.state != PlaybackState.IDLE:
+            await self.stop(source_queue_id)
+
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
-        target_queue.resume_pos = int(source_queue.elapsed_time)
-        target_queue.current_index = source_queue.current_index
-        if source_queue.current_item:
-            target_queue.current_item = source_queue.current_item
+        target_queue.resume_pos = source_resume_pos
+        target_queue.current_index = source_current_index
+        if source_current_item:
+            target_queue.current_item = source_current_item
             target_queue.current_item.queue_id = target_queue_id
-        self.clear(source_queue_id)
+        self.clear(source_queue_id, skip_stop=True)
 
         await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
         for item in source_items:
@@ -1486,6 +1499,56 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(
                 self.mass.streams.cleanup_stale_queue_buffers(queue_id, current_index)
             )
+
+    def queue_buffer_completed(self, queue_id: str) -> None:
+        """Call when the flow stream has finished generating all audio data for a queue.
+
+        At this point all audio data for the queue has been passed to the encoding pipeline.
+        The player will go idle once it finishes playing the remaining buffered audio.
+
+        We start a background task that waits for the player to go idle and checks if new
+        items have been added to the queue in the meantime, resuming playback if so.
+
+        :param queue_id: The queue ID.
+        """
+        queue = self._queues.get(queue_id)
+        if not queue:
+            return
+        self.logger.debug("Queue flow buffer completed for %s", queue.display_name)
+
+        # capture session_id so we can bail out if playback restarts
+        original_session_id = queue.session_id
+
+        async def _resume_on_idle() -> None:
+            # wait for the player to finish playing the buffered audio and go idle
+            idle_detected = False
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if not queue.active or queue.session_id != original_session_id:
+                    return
+                if queue.state == PlaybackState.IDLE:
+                    idle_detected = True
+                    break
+            if not idle_detected:
+                return
+            # player went idle, give it a brief moment to settle
+            await asyncio.sleep(1)
+            if queue.state != PlaybackState.IDLE or queue.session_id != original_session_id:
+                return
+            # check if new items were added to the queue after the flow stream ended
+            if queue.current_index is not None and (
+                next_item := self.get_next_item(queue_id, queue.current_index)
+            ):
+                next_index = self.index_by_id(queue_id, next_item.queue_item_id)
+                if next_index is not None:
+                    self.logger.info(
+                        "Resuming playback after flow stream completed for %s",
+                        queue.display_name,
+                    )
+                    await self.play_index(queue_id, next_index)
+
+        task_id = f"queue_buffer_completed_{queue_id}"
+        self.mass.create_task(_resume_on_idle(), task_id=task_id)
 
     # Main queue manipulation methods
 
@@ -2040,7 +2103,9 @@ class PlayerQueuesController(CoreController):
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
-                self.mass.music.mark_item_played(media_item, queue_id=queue_id, user_initiated=True)
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
             )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
@@ -2570,23 +2635,19 @@ class PlayerQueuesController(CoreController):
                 return current_item_id
             return None
         # try to extract the item id from a mass stream url
+        # URL format: {base_url}/{mode}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}
+        base_url = self.mass.streams.base_url
         if (
             protocol_player.current_media.uri
-            and queue_id in protocol_player.current_media.uri
-            and self.mass.streams.base_url in protocol_player.current_media.uri
+            and base_url
+            and protocol_player.current_media.uri.startswith(base_url)
         ):
-            current_item_id = protocol_player.current_media.uri.rsplit("/")[-1].split(".")[0]
-            if self.get_item(queue_id, current_item_id):
-                return current_item_id
-        # try to extract the item id from a queue_id/item_id combi
-        if (
-            protocol_player.current_media.uri
-            and queue_id in protocol_player.current_media.uri
-            and "/" in protocol_player.current_media.uri
-        ):
-            current_item_id = protocol_player.current_media.uri.split("/")[1]
-            if self.get_item(queue_id, current_item_id):
-                return current_item_id
+            path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
+            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            if len(path_parts) >= 5:
+                current_item_id = path_parts[3]
+                if self.get_item(queue_id, current_item_id):
+                    return current_item_id
 
         return None
 
@@ -2607,18 +2668,31 @@ class PlayerQueuesController(CoreController):
         if prev_state["current_item_id"] is None:
             return
 
-        async def _clear_queue_delayed() -> None:
+        async def _clear_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
                 if queue.state != PlaybackState.IDLE:
                     return
                 if queue.next_item is not None:
                     return
+                # check the actual queue items list for newly added items
+                # queue.next_item may be stale as it's only updated during PLAYING/PAUSED
+                if queue.current_index is not None and (
+                    next_item := self.get_next_item(queue.queue_id, queue.current_index)
+                ):
+                    next_index = self.index_by_id(queue.queue_id, next_item.queue_item_id)
+                    if next_index is not None:
+                        self.logger.info(
+                            "Items added to queue while idle, resuming playback for %s",
+                            queue.display_name,
+                        )
+                        await self.play_index(queue.queue_id, next_index)
+                    return
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
-        # now determine if the item was fully played before clearing
+        # now determine if the item was fully played before clearing/resuming
 
         # For flow mode, check if the last track was fully streamed using the stream log
         # This is more reliable than elapsed_time which can be reset/incorrect
@@ -2626,7 +2700,7 @@ class PlayerQueuesController(CoreController):
             last_log_entry = queue.flow_mode_stream_log[-1]
             if last_log_entry.seconds_streamed is not None:
                 # The last track finished streaming, safe to clear queue
-                self.mass.create_task(_clear_queue_delayed())
+                self.mass.create_task(_clear_or_resume_delayed())
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -2637,7 +2711,7 @@ class PlayerQueuesController(CoreController):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_clear_queue_delayed())
+            self.mass.create_task(_clear_or_resume_delayed())
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -2646,7 +2720,7 @@ class PlayerQueuesController(CoreController):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_clear_queue_delayed())
+            self.mass.create_task(_clear_or_resume_delayed())
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState

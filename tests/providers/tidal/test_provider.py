@@ -333,7 +333,7 @@ async def test_create_playlist_delegates_to_playlists(provider: TidalProvider) -
     with patch.object(provider.playlists, "create", new_callable=AsyncMock) as mock_create:
         mock_create.return_value = Mock(spec=Playlist)
 
-        await provider.create_playlist("New Playlist")
+        await provider.create_playlist("New Playlist", media_types={MediaType.TRACK})
 
         mock_create.assert_called_with("New Playlist")
 

@@ -15,17 +15,12 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerType
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_LINKED_PROTOCOL_IDS, CONF_PLAYERS
 from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import (
-    CONF_DEVICE_IDENTIFIERS,
-    CONF_DEVICE_INFO,
-    CONF_LINKED_PROTOCOL_IDS,
-    UNIVERSAL_PLAYER_PREFIX,
-)
+from .constants import CONF_DEVICE_IDENTIFIERS, CONF_DEVICE_INFO, UNIVERSAL_PLAYER_PREFIX
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
@@ -136,7 +131,7 @@ class UniversalPlayerProvider(PlayerProvider):
                     await self.mass.config.remove_player_config(player_id)
                     return
 
-            # Check if native player has this protocol in linked_protocol_player_ids
+            # Check if native player has this protocol in linked_protocol_ids
             all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
             for other_player_id, other_config in all_player_configs.items():
                 if other_player_id == player_id:
@@ -144,7 +139,7 @@ class UniversalPlayerProvider(PlayerProvider):
                 if other_config.get("provider") == "universal_player":
                     continue
                 other_values = other_config.get("values", {})
-                linked_protocols = other_values.get("linked_protocol_player_ids", [])
+                linked_protocols = other_values.get(CONF_LINKED_PROTOCOL_IDS, [])
                 if protocol_id in linked_protocols:
                     self.logger.info(
                         "Deleting stale universal player %s - "
@@ -348,6 +343,10 @@ class UniversalPlayerProvider(PlayerProvider):
         for the given protocol players. It uses per-device locking to prevent race
         conditions when multiple protocols for the same device register simultaneously.
 
+        When a second instance of the same protocol domain tries to join an existing
+        universal player (e.g., two AirPlay instances on the same host), the duplicate
+        is separated out and given its own universal player with a player_id-based key.
+
         :param protocol_players: List of protocol players for the same device.
         :return: The created or updated universal player, or None if operation failed.
         """
@@ -370,11 +369,33 @@ class UniversalPlayerProvider(PlayerProvider):
 
             # Check if universal player already exists
             if existing := self.mass.players.get_player(universal_player_id):
-                # Update existing universal player with new protocol players
-                protocol_player_ids = [p.player_id for p in protocol_players]
-                for player_id in protocol_player_ids:
-                    if isinstance(existing, UniversalPlayer):
-                        await self.add_protocol_to_universal_player(universal_player_id, player_id)
+                if isinstance(existing, UniversalPlayer):
+                    # Separate players into those that can join vs those that are
+                    # domain-duplicates (a domain already active on the universal player)
+                    active_domains: set[str] = set()
+                    for link in existing.linked_output_protocols:
+                        if not link.protocol_domain:
+                            continue
+                        # A registered player occupies this domain slot even if unavailable
+                        if self.mass.players.get_player(link.output_protocol_id):
+                            active_domains.add(link.protocol_domain)
+                    can_join = [
+                        p for p in protocol_players if p.provider.domain not in active_domains
+                    ]
+                    rejected = [p for p in protocol_players if p.provider.domain in active_domains]
+
+                    # Add players that can join to the existing universal player
+                    for player in can_join:
+                        await self.add_protocol_to_universal_player(
+                            universal_player_id, player.player_id
+                        )
+
+                    # Create separate universal players for rejected (domain-duplicate)
+                    # players using player_id-based device keys
+                    for player in rejected:
+                        fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
+                        await self._create_separate_universal_player(fallback_key, player)
+
                 return existing
 
             # Create new universal player
@@ -395,6 +416,56 @@ class UniversalPlayerProvider(PlayerProvider):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
+
+    async def _create_separate_universal_player(
+        self, device_key: str, protocol_player: Player
+    ) -> Player | None:
+        """
+        Create a separate universal player for a protocol player that was rejected.
+
+        Used when a second instance of the same protocol domain (e.g., two AirPlay
+        instances on the same host) cannot join the existing universal player.
+        A unique device_key derived from the player_id ensures no collision.
+
+        :param device_key: Unique device key for this player (player_id-based).
+        :param protocol_player: The protocol player that needs its own universal player.
+        """
+        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
+
+        # Check if this separate universal player already exists
+        if existing := self.mass.players.get_player(universal_player_id):
+            if isinstance(existing, UniversalPlayer):
+                await self.add_protocol_to_universal_player(
+                    universal_player_id, protocol_player.player_id
+                )
+            return existing
+
+        device_info = self._aggregate_device_info([protocol_player])
+        name = self._get_clean_player_name([protocol_player])
+
+        return await self.create_universal_player(
+            device_key=device_key,
+            name=name,
+            device_info=device_info,
+            protocol_player_ids=[protocol_player.player_id],
+        )
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a universal player and clean up any stale protocol player configs."""
+        if player := self.get_universal_player(player_id):
+            # Clean up configs for protocol players tracked by this universal player
+            # that are not currently registered (unavailable/stale).
+            # Available protocol players are handled by _cleanup_protocol_links
+            # in the player controller (clears parent + schedules re-evaluation).
+            for protocol_id in list(player._protocol_player_ids):
+                if not self.mass.players.get_player(protocol_id):
+                    self.logger.info(
+                        "Cleaning up stale protocol config %s from universal player %s",
+                        protocol_id,
+                        player_id,
+                    )
+                    self.mass.players.delete_player_config(protocol_id)
+        await self.remove_universal_player(player_id)
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """

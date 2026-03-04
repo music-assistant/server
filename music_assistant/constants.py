@@ -114,12 +114,12 @@ CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
-CONF_LINKED_PROTOCOL_PLAYER_IDS: Final[str] = (
-    "linked_protocol_player_ids"  # cached for fast restart
-)
+CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
+CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -1022,10 +1022,10 @@ NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
 
 # Protocol priority values (lower = more preferred)
 PROTOCOL_PRIORITY: Final[dict[str, int]] = {
-    "sendspin": 10,
+    "airplay": 10,
     "squeezelite": 20,
     "chromecast": 30,
-    "airplay": 40,
+    "sendspin": 40,
     "dlna": 50,
 }
 
@@ -1057,4 +1057,53 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+}
+
+EXTERNAL_SOURCES: Final[set[str]] = {
+    # list of sources that are definitely considered "external"
+    # values are matched case-insensitive against the player's active_source
+    # streaming services / connect sources
+    "spotify",
+    "spotify_connect",
+    "spotify connect",
+    "apple_music",
+    "apple music",
+    "tidal",
+    "tidal_connect",
+    "tidal connect",
+    "qobuz",
+    "deezer",
+    "amazon_music",
+    "amazon music",
+    "pandora",
+    "iheartradio",
+    "napster",
+    "rhapsody",
+    "siriusxm",
+    "soundcloud",
+    "tunein",
+    "tune in",
+    "radioparadise",
+    "radio paradise",
+    "radiko",
+    "juke",
+    "alexa",
+    "radio",
+    # bluetooth (bluesound, musiccast)
+    "bluetooth",
+    # physical/analog inputs (sonos, heos, musiccast, demo)
+    "line-in",
+    "linein",
+    "line in",
+    "line_in",
+    "aux",
+    "tuner",
+    # tv / hdmi (sonos, bluesound)
+    "tv",
+    "tv input",
+    "hdmi arc",
+    # local/usb playback on device (musiccast)
+    "usb",
+    # external (hass_players)
+    "external",
 }

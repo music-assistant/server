@@ -1,6 +1,5 @@
 """Helpers for Audiobookshelf provider."""
 
-import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -33,7 +32,6 @@ class SessionHelper:
 
     abs_session_id: str
     last_sync_time: float
-    hls_stream_open: asyncio.Event  # only used for hls_streams, otherwise ignored
 
 
 @dataclass(kw_only=True)

@@ -7,13 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import (
-    IdentifierType,
-    MediaType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-)
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -59,8 +53,6 @@ class TrackedPlayerState(TypedDict, total=False):
 
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
-
-    _attr_type = PlayerType.PROTOCOL
 
     def __init__(
         self,

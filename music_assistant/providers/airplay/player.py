@@ -22,11 +22,11 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
-    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
-    CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
     CONF_ACTION_RESET_PAIRING,
     CONF_ACTION_START_PAIRING,
@@ -39,6 +39,7 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PIN_REQUIRED,
@@ -101,14 +102,15 @@ class AirPlayPlayer(Player):
         if is_valid_mac_address(mac_address):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
+        self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
-        # Set player type based on manufacturer:
-        # - Apple devices (HomePod, Apple TV, Mac) have native AirPlay support -> PLAYER
+        # Set player type based on manufacturer/model:
+        # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
         # - Non-Apple devices are generic AirPlay receivers -> PROTOCOL (wrapped in UniversalPlayer)
-        if is_apple_device(manufacturer):
+        if is_apple_device(manufacturer, model):
             self._attr_type = PlayerType.PLAYER
         else:
             self._attr_type = PlayerType.PROTOCOL
@@ -120,14 +122,14 @@ class AirPlayPlayer(Player):
         return self._get_protocol_for_config_value(preferred_option)
 
     @property
-    def available(self) -> bool:
-        """Return if the player is currently available."""
+    def needs_setup(self) -> bool:
+        """Return if the player needs setup."""
         if self._requires_pairing():
             # check if we have credentials stored for the current protocol
             creds_key = self._get_credentials_key(self.protocol)
             if not self.config.get_value(creds_key):
-                return False
-        return super().available
+                return True
+        return False
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -151,7 +153,7 @@ class AirPlayPlayer(Player):
         """Get the configured output buffer duration in milliseconds."""
         return cast(
             "int",
-            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS),
+            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
         )
 
     async def get_config_entries(
@@ -239,8 +241,11 @@ class AirPlayPlayer(Player):
             ConfigEntry(
                 key=CONF_AIRPLAY_LATENCY,
                 type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
-                range=(AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS, AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
+                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+                range=(
+                    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
+                    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
+                ),
                 label="Milliseconds of data to buffer",
                 description=(
                     "The number of milliseconds of data to buffer\n"
@@ -250,8 +255,6 @@ class AirPlayPlayer(Player):
                 ),
                 category="protocol_generic",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.AIRPLAY2.value,
-                hidden=self.protocol != StreamingProtocol.AIRPLAY2,
                 advanced=True,
             ),
         ]
@@ -542,12 +545,9 @@ class AirPlayPlayer(Player):
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self._attr_volume_level = volume_level
         self.update_state()
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=volume_level,
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_VOLUME,
+        # store last state in playerconfig
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME, volume_level
         )
 
     async def set_members(
@@ -639,7 +639,7 @@ class AirPlayPlayer(Player):
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running or not self.stream.session:
+        if not self.stream or not self.stream.running:
             return
         metadata = self.state.current_media
         if not metadata:
@@ -662,6 +662,7 @@ class AirPlayPlayer(Player):
             self.mass.create_task(self.volume_set(volume))
         else:
             self._attr_volume_level = volume
+            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
             self.update_state()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
@@ -705,6 +706,28 @@ class AirPlayPlayer(Player):
             self._attr_elapsed_time = elapsed_time
             self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
+
+    def sync_volume_level(self) -> None:
+        """
+        Sync volume from parent player if needed.
+
+        AirPlay players only report their volume level when we are actually streaming to them
+        and we remember the last used/reported volume level in the player config by default
+        but if we have a parent player, that may know better about the current volume level,
+        so we try to sync from that parent player if possible
+        """
+        if (
+            self.protocol_parent_id
+            and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
+            and parent_player.state.volume_level is not None
+        ):
+            if self._attr_volume_level == parent_player.state.volume_level:
+                return
+            self._attr_volume_level = parent_player.state.volume_level
+            self.mass.config.set_raw_player_config_value(
+                self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
+            )
+            self.update_state()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
