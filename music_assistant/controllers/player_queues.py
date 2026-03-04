@@ -135,14 +135,14 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
         if queue is None:
             # Queue not found, just call the function and let it handle the error
             return await func(self, *args, **kwargs)
+        flag_already_present = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
         try:
-            has_flag = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 self.signal_update(queue_id)
             return await func(self, *args, **kwargs)
         finally:
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
 
