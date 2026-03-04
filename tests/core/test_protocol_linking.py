@@ -2556,6 +2556,7 @@ class TestFinalSyncedToWithNativeProtocolParent:
         apple_tv = MockPlayer(airplay_provider, "apple_tv_1", "Apple TV")
         apple_tv._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
         apple_tv._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        apple_tv._attr_group_members = ["apple_tv_1", "airplay_sonos"]
         apple_tv._cache.clear()
 
         # Sonos visible player
@@ -2598,6 +2599,10 @@ class TestFinalSyncedToWithNativeProtocolParent:
             "sonos_1": Throttler(1, 0.05),
             "airplay_sonos": Throttler(1, 0.05),
         }
+
+        apple_tv.set_initialized()
+        sonos_player.set_initialized()
+        sonos_airplay.set_initialized()
 
         apple_tv.update_state(signal_event=False)
         sonos_airplay.update_state(signal_event=False)

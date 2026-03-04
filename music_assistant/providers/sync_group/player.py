@@ -51,7 +51,7 @@ class SyncGroupPlayer(Player):
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         # groups can't be synced

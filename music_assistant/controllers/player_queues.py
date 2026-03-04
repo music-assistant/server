@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     QueueOption,
     RepeatMode,
@@ -1285,6 +1286,9 @@ class PlayerQueuesController(CoreController):
 
         NOTE: This is called every second if the player is playing.
         """
+        if player.type == PlayerType.PROTOCOL:
+            # protocol players do not have a queue on their own
+            return
         queue_id = player.player_id
         if (queue := self._queues.get(queue_id)) is None:
             # race condition
@@ -1302,7 +1306,6 @@ class PlayerQueuesController(CoreController):
             # we're currently transitioning to a new track,
             # ignore updates from the player during this time
             return
-
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 

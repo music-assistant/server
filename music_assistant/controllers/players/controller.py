@@ -1503,10 +1503,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # nothing changed
             return
 
-        # always signal update to the playerqueue
-        if player.state.type != PlayerType.PROTOCOL:
-            self.mass.player_queues.on_player_update(player, changed_values)
-
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
         # we check if there are only changes in the elapsed time
         clean_changed_keys = set(changed_values.keys()) - {"current_media.elapsed_time"}
@@ -1516,6 +1512,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
             if abs(prev_value - new_value) < 5:
                 return
+
+        # signal update to the playerqueue
+        if player.state.type != PlayerType.PROTOCOL:
+            self.mass.call_later(
+                0.5,
+                self.mass.player_queues.on_player_update,
+                player,
+                changed_values,
+                task_id=f"queue_on_player_update_{player.player_id}",
+            )
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:
@@ -2163,11 +2169,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = player.state.playback_state == PlaybackState.PLAYING
-                if player_playing:
-                    self.mass.loop.call_soon(
+                if player_playing and player.type != PlayerType.PROTOCOL:
+                    self.mass.call_later(
+                        0.5,
                         self.mass.player_queues.on_player_update,
                         player,
-                        {"corrected_elapsed_time": (None, player.corrected_elapsed_time)},
+                        {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
+                        task_id=f"queue_on_player_update_{player.player_id}",
                     )
                 # Poll player;
                 if not player.needs_poll:
@@ -3011,7 +3019,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
         if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
-            player.set_active_output_protocol(None)
+            self.mass.call_later(
+                5,
+                player.set_active_output_protocol,
+                None,
+                task_id=f"clear_active_protocol_{player_id}",
+            )
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """
