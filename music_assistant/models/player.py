@@ -1731,7 +1731,7 @@ class Player(ABC):
         """
         # First check the native synced_to from the property
         if native_synced_to := self.synced_to:
-            if sync_parent := self.mass.players.get_player(self.synced_to):
+            if sync_parent := self.mass.players.get_player(native_synced_to):
                 return sync_parent.protocol_parent_id or sync_parent.player_id
 
             return native_synced_to
