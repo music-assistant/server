@@ -247,6 +247,7 @@ class ITunesPodcastsProvider(MusicProvider):
                     max_episodes=self.max_episodes,
                 )
                 await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
+                self.logger.debug("Synced podcast %s.", podcast.name)
             except MediaNotFoundError:
                 # We just keep what we have then, if the sync is unsuccessful.
                 self.logger.warning("Was unable to sync podcast %s (%s).", podcast.name, feed_url)
