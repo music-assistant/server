@@ -46,6 +46,17 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
+MEDIA_TABLES: tuple[tuple[str, MediaType], ...] = (
+    (DB_TABLE_TRACKS, MediaType.TRACK),
+    (DB_TABLE_ALBUMS, MediaType.ALBUM),
+    (DB_TABLE_ARTISTS, MediaType.ARTIST),
+    (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
+    (DB_TABLE_RADIOS, MediaType.RADIO),
+    (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
+    (DB_TABLE_PODCASTS, MediaType.PODCAST),
+)
+
+
 class GenreController(MediaControllerBase[Genre]):
     """Controller for Genre entities."""
 
@@ -571,16 +582,6 @@ class GenreController(MediaControllerBase[Genre]):
         """
         db = self.mass.music.database
 
-        media_tables = (
-            (DB_TABLE_TRACKS, MediaType.TRACK),
-            (DB_TABLE_ALBUMS, MediaType.ALBUM),
-            (DB_TABLE_ARTISTS, MediaType.ARTIST),
-            (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
-            (DB_TABLE_RADIOS, MediaType.RADIO),
-            (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
-            (DB_TABLE_PODCASTS, MediaType.PODCAST),
-        )
-
         # Build alias -> genre_ids lookup from all genres in the database.
         # One alias can map to multiple genres (n:n relationship).
         alias_to_genre: dict[str, list[int]] = {}
@@ -603,7 +604,7 @@ class GenreController(MediaControllerBase[Genre]):
             f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
             f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
             f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-            for table, _ in media_tables
+            for table, _ in MEDIA_TABLES
         ]
         unique_names_sql = " UNION ".join(union_parts)
         rows = await db.get_rows_from_query(unique_names_sql, limit=0)
@@ -662,7 +663,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
-            for table, media_type in media_tables:
+            for table, media_type in MEDIA_TABLES:
                 full_query = (
                     f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
                     f"(genre_id, media_id, media_type, alias) "
@@ -693,19 +694,9 @@ class GenreController(MediaControllerBase[Genre]):
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
-        media_tables = (
-            (DB_TABLE_TRACKS, MediaType.TRACK),
-            (DB_TABLE_ALBUMS, MediaType.ALBUM),
-            (DB_TABLE_ARTISTS, MediaType.ARTIST),
-            (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
-            (DB_TABLE_RADIOS, MediaType.RADIO),
-            (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
-            (DB_TABLE_PODCASTS, MediaType.PODCAST),
-        )
-
         count_before = await db.get_count(gm)
 
-        for table, media_type in media_tables:
+        for table, media_type in MEDIA_TABLES:
             # Delete a mapping when either:
             # - The media item was deleted (orphaned row), or
             # - The media item exists but the alias is no longer in metadata.genres.
@@ -729,6 +720,8 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Delete playlog entries for empty non-default genres before removing them, to avoid
         # orphaned playlog rows pointing to genres that no longer exist.
+        # 'WHERE translation_key IS NULL' is used because it is only set for default genres, so this
+        # keeps all default genres even if they become unmapped/empty.
         await db.delete_where_query(
             DB_TABLE_PLAYLOG,
             f"media_type = '{MediaType.GENRE.value}' "
@@ -765,16 +758,6 @@ class GenreController(MediaControllerBase[Genre]):
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
-        media_tables = (
-            (DB_TABLE_TRACKS, MediaType.TRACK),
-            (DB_TABLE_ALBUMS, MediaType.ALBUM),
-            (DB_TABLE_ARTISTS, MediaType.ARTIST),
-            (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
-            (DB_TABLE_RADIOS, MediaType.RADIO),
-            (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
-            (DB_TABLE_PODCASTS, MediaType.PODCAST),
-        )
-
         # Build alias -> genre_ids lookup (n:n) from all genres in the database.
         alias_to_genre: dict[str, list[int]] = {}
         genre_rows = await db.get_rows_from_query(
@@ -798,7 +781,7 @@ class GenreController(MediaControllerBase[Genre]):
             f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
             f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
             f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-            for table, _mtype in media_tables
+            for table, _mtype in MEDIA_TABLES
         ]
         unique_names_sql = " UNION ".join(union_parts)
         rows = await db.get_rows_from_query(unique_names_sql, limit=0)
@@ -856,7 +839,7 @@ class GenreController(MediaControllerBase[Genre]):
         cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
         count_before = await db.get_count(gm)
-        for table, media_type in media_tables:
+        for table, media_type in MEDIA_TABLES:
             full_query = (
                 f"{cte} INSERT OR IGNORE INTO {gm}"
                 f"(genre_id, media_id, media_type, alias) "
