@@ -1,6 +1,7 @@
 """Test Bandcamp Provider integration."""
 
 from collections.abc import AsyncGenerator
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -14,22 +15,46 @@ from bandcamp_async_api import (
     SearchResultTrack,
 )
 from bandcamp_async_api.models import CollectionType
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import BrowseFolder
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.bandcamp import (
+    CACHE_EMPTY_RESULTS,
+    CACHE_USER_LISTS,
     DEFAULT_TOP_TRACKS_LIMIT,
     SUPPORTED_FEATURES,
     BandcampProvider,
     split_id,
 )
+
+
+def _fan_mock(
+    fan_id: int,
+    name: str | None,
+    image_url: str | None = None,
+    url: str | None = None,
+) -> Mock:
+    """Create a mock FanItem with real string attributes for BrowseFolder compatibility."""
+    fan = Mock(spec=["fan_id", "name", "image_url", "url"])
+    fan.fan_id = fan_id
+    fan.name = name
+    fan.image_url = image_url
+    fan.url = url
+    return fan
 
 
 @pytest.fixture
@@ -753,10 +778,12 @@ async def test_browse_root_with_identity(provider: BandcampProvider) -> None:
 
         result = await provider.browse("bandcamp_test://")
 
-        assert len(result) == 4
+        assert len(result) == 6
         folder_ids = [f.item_id for f in result if isinstance(f, BrowseFolder)]
         assert "wishlist" in folder_ids
         assert "following" in folder_ids
+        assert "fans" in folder_ids
+        assert "followers" in folder_ids
 
         wishlist_folder = next(
             f for f in result if isinstance(f, BrowseFolder) and f.item_id == "wishlist"
@@ -829,7 +856,7 @@ async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvi
 
         result = await provider.browse("bandcamp_test://wishlist")
 
-        mock_get_collection.assert_called_once_with(CollectionType.WISHLIST)
+        mock_get_collection.assert_called_once_with(CollectionType.WISHLIST, fan_id=None)
         mock_get_album.assert_called_once_with("123-456")
         mock_get_track.assert_called_once_with("123-0-789")
         assert len(result) == 2
@@ -895,8 +922,8 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
     """Test browsing following returns resolved artists."""
     mock_collection = Mock()
     mock_collection.items = [
-        Mock(band_id=100),
-        Mock(band_id=200),
+        Mock(spec=["band_id", "name"], band_id=100, name="Artist1"),
+        Mock(spec=["band_id", "name"], band_id=200, name="Artist2"),
     ]
 
     mock_artist_1 = Mock()
@@ -913,7 +940,7 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
 
         result = await provider.browse("bandcamp_test://following")
 
-        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING)
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=None)
         assert mock_get_artist.call_count == 2
         assert len(result) == 2
 
@@ -922,8 +949,8 @@ async def test_browse_following_skips_failed_artists(provider: BandcampProvider)
     """Test that following browse skips artists that fail to resolve."""
     mock_collection = Mock()
     mock_collection.items = [
-        Mock(band_id=100),
-        Mock(band_id=200),
+        Mock(spec=["band_id", "name"], band_id=100, name="Found"),
+        Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
     ]
 
     mock_artist = Mock()
@@ -978,3 +1005,592 @@ async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProv
 
         assert len(result) == 1
         mock_get_album.assert_called_once_with("123-456")
+
+
+# --- _map_api_errors context manager tests ---
+
+
+def test_map_api_errors_login_error(provider: BandcampProvider) -> None:
+    """Test _map_api_errors maps BandcampMustBeLoggedInError to LoginFailed."""
+    with (
+        pytest.raises(LoginFailed, match="Wrong Bandcamp identity token"),
+        provider._map_api_errors("test context"),
+    ):
+        raise BandcampMustBeLoggedInError("Must be logged in")
+
+
+def test_map_api_errors_rate_limit(provider: BandcampProvider) -> None:
+    """Test _map_api_errors maps BandcampRateLimitError to ResourceTemporarilyUnavailable."""
+    rate_error = BandcampRateLimitError("Rate limited")
+    rate_error.retry_after = 5
+
+    with (
+        pytest.raises(ResourceTemporarilyUnavailable, match="rate limit"),
+        provider._map_api_errors("test context"),
+    ):
+        raise rate_error
+
+
+def test_map_api_errors_generic_api_error(provider: BandcampProvider) -> None:
+    """Test _map_api_errors maps BandcampAPIError to MediaNotFoundError with context."""
+    with (
+        pytest.raises(MediaNotFoundError, match="my custom context"),
+        provider._map_api_errors("my custom context"),
+    ):
+        raise BandcampAPIError("Something went wrong")
+
+
+def test_map_api_errors_no_exception(provider: BandcampProvider) -> None:
+    """Test _map_api_errors passes through when no exception is raised."""
+    with provider._map_api_errors("test context"):
+        pass  # no exception
+
+
+# --- _browse_person_root tests ---
+
+
+def test_browse_person_root_returns_five_subfolders(provider: BandcampProvider) -> None:
+    """Test _browse_person_root returns 5 sub-folders for a person."""
+    folders = provider._browse_person_root(42, "bandcamp_test://fans/42")
+
+    assert len(folders) == 5
+    names = [f.name for f in folders]
+    assert names == ["Collection", "Wishlist", "Following", "Fans", "Followers"]
+    for folder in folders:
+        assert folder.path.startswith("bandcamp_test://fans/42/")
+        assert folder.item_id.startswith("person_42_")
+
+
+# --- _people_to_folders tests ---
+
+
+def test_people_to_folders_with_images(provider: BandcampProvider) -> None:
+    """Test _people_to_folders creates folders with thumbnails."""
+    people = [
+        _fan_mock(1, "Alice", "http://example.com/alice.jpg", "https://bandcamp.com/alice"),
+        _fan_mock(2, "Bob", "http://example.com/bob.jpg", "https://bandcamp.com/bob"),
+    ]
+
+    folders = provider._people_to_folders(people, "bandcamp_test://fans")
+
+    assert len(folders) == 2
+    assert folders[0].name == "Alice"
+    assert folders[0].path == "bandcamp_test://fans/alice"
+    assert folders[0].image is not None
+    assert folders[0].image.type == ImageType.THUMB
+    assert folders[0].image.path == "http://example.com/alice.jpg"
+    # Verify slug→fan_id mapping was stored
+    assert provider._slug_to_fan_id["alice"] == 1
+    assert provider._slug_to_fan_id["bob"] == 2
+
+
+def test_people_to_folders_without_image(provider: BandcampProvider) -> None:
+    """Test _people_to_folders handles missing image_url."""
+    people = [_fan_mock(1, "NoPhoto", url="https://bandcamp.com/nophoto")]
+    folders = provider._people_to_folders(people, "bandcamp_test://fans")
+
+    assert len(folders) == 1
+    assert folders[0].image is None
+    assert folders[0].path == "bandcamp_test://fans/nophoto"
+
+
+def test_people_to_folders_missing_name(provider: BandcampProvider) -> None:
+    """Test _people_to_folders falls back to 'User {id}' when name is empty."""
+    people = [_fan_mock(99, None)]
+    folders = provider._people_to_folders(people, "bandcamp_test://fans")
+
+    assert folders[0].name == "User 99"
+    # No URL → falls back to numeric fan_id in path
+    assert folders[0].path == "bandcamp_test://fans/99"
+
+
+# --- _fan_slug unit tests ---
+
+
+def test_fan_slug_extracts_from_url() -> None:
+    """Test _fan_slug extracts slug from a standard Bandcamp URL."""
+    person = _fan_mock(1, "Alice", url="https://bandcamp.com/alice")
+    assert BandcampProvider._fan_slug(person) == "alice"
+
+
+def test_fan_slug_strips_trailing_slash() -> None:
+    """Test _fan_slug handles trailing slash in URL."""
+    person = _fan_mock(1, "Alice", url="https://bandcamp.com/alice/")
+    assert BandcampProvider._fan_slug(person) == "alice"
+
+
+def test_fan_slug_none_url() -> None:
+    """Test _fan_slug returns None when url is None."""
+    person = _fan_mock(1, "Alice", url=None)
+    assert BandcampProvider._fan_slug(person) is None
+
+
+def test_fan_slug_empty_string_url() -> None:
+    """Test _fan_slug returns None when url is empty string."""
+    person = _fan_mock(1, "Alice", url="")
+    assert BandcampProvider._fan_slug(person) is None
+
+
+# --- _resolve_person_segment unit tests ---
+
+
+def test_resolve_person_segment_slug_hit(provider: BandcampProvider) -> None:
+    """Test slug cache hit takes priority over numeric parse."""
+    provider._slug_to_fan_id["42"] = 999  # slug "42" maps to fan 999
+    assert provider._resolve_person_segment("42") == 999  # slug wins over int parse
+
+
+def test_resolve_person_segment_numeric(provider: BandcampProvider) -> None:
+    """Test numeric segment returns int when no slug match."""
+    assert provider._resolve_person_segment("123") == 123
+
+
+def test_resolve_person_segment_unknown_slug(provider: BandcampProvider) -> None:
+    """Test unknown non-numeric segment returns None."""
+    assert provider._resolve_person_segment("nonexistent") is None
+
+
+def test_resolve_person_segment_zero(provider: BandcampProvider) -> None:
+    """Test zero is returned as valid int (caller validates)."""
+    assert provider._resolve_person_segment("0") == 0
+
+
+def test_people_to_folders_no_url_falls_back_to_id(provider: BandcampProvider) -> None:
+    """Test _people_to_folders uses numeric fan_id when url is None."""
+    people = [_fan_mock(77, "NoUrl")]
+    folders = provider._people_to_folders(people, "bandcamp_test://fans")
+
+    assert folders[0].path == "bandcamp_test://fans/77"
+    assert "77" not in provider._slug_to_fan_id
+
+
+# --- _browse_person dispatch routing tests ---
+
+
+async def test_browse_fans_top_level(provider: BandcampProvider) -> None:
+    """Test browsing 'fans' at top level fetches authenticated user's fans."""
+    mock_collection = Mock()
+    mock_collection.items = [_fan_mock(1, "Fan1", url="https://bandcamp.com/fan1")]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider.browse("bandcamp_test://fans")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING_FANS, fan_id=None)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://fans/fan1"
+
+
+async def test_browse_followers_top_level(provider: BandcampProvider) -> None:
+    """Test browsing 'followers' at top level fetches authenticated user's followers."""
+    mock_collection = Mock()
+    mock_collection.items = [_fan_mock(2, "Follower1", url="https://bandcamp.com/follower1")]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider.browse("bandcamp_test://followers")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWERS, fan_id=None)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://followers/follower1"
+
+
+async def test_browse_fans_person_id_shows_subfolders(provider: BandcampProvider) -> None:
+    """Test browsing 'fans/42' returns 5 sub-folders for person 42."""
+    result = await provider.browse("bandcamp_test://fans/42")
+
+    assert len(result) == 5
+    names = [f.name for f in result if isinstance(f, BrowseFolder)]
+    assert "Collection" in names
+    assert "Wishlist" in names
+    assert "Following" in names
+    assert "Fans" in names
+    assert "Followers" in names
+
+
+async def test_browse_person_collection(provider: BandcampProvider) -> None:
+    """Test browsing fans/42/collection fetches person's collection."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        result = await provider.browse("bandcamp_test://fans/42/collection")
+
+        mock_get_collection.assert_called_once_with(CollectionType.COLLECTION, fan_id=42)
+        assert len(result) == 1
+        assert result[0] is mock_album
+
+
+async def test_browse_person_wishlist(provider: BandcampProvider) -> None:
+    """Test browsing fans/42/wishlist fetches person's wishlist."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(item_type="album", item_id=789, band_id=123)]
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        result = await provider.browse("bandcamp_test://fans/42/wishlist")
+
+        mock_get_collection.assert_called_once_with(CollectionType.WISHLIST, fan_id=42)
+        assert len(result) == 1
+        assert result[0] is mock_album
+
+
+async def test_browse_person_following(provider: BandcampProvider) -> None:
+    """Test browsing fans/42/following fetches person's followed artists."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
+    mock_artist = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_artist.return_value = mock_artist
+
+        result = await provider.browse("bandcamp_test://fans/42/following")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=42)
+        assert len(result) == 1
+        assert result[0] is mock_artist
+
+
+async def test_browse_person_fans(provider: BandcampProvider) -> None:
+    """Test browsing fans/42/fans fetches person 42's fans."""
+    mock_collection = Mock()
+    mock_collection.items = [_fan_mock(99, "SubFan", url="https://bandcamp.com/subfan")]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider.browse("bandcamp_test://fans/42/fans")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING_FANS, fan_id=42)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://fans/42/fans/subfan"
+
+
+async def test_browse_person_followers(provider: BandcampProvider) -> None:
+    """Test browsing followers/42/followers fetches person 42's followers."""
+    mock_collection = Mock()
+    mock_collection.items = [_fan_mock(88, "SubFollower", url="https://bandcamp.com/subfollower")]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider.browse("bandcamp_test://followers/42/followers")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWERS, fan_id=42)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://followers/42/followers/subfollower"
+
+
+async def test_browse_deep_nesting(provider: BandcampProvider) -> None:
+    """Test deep social graph traversal: fans/42/fans/99 shows person 99's sub-folders."""
+    result = await provider.browse("bandcamp_test://fans/42/fans/99")
+
+    assert len(result) == 5
+    # Paths should include the full prefix
+    for folder in result:
+        assert isinstance(folder, BrowseFolder)
+        assert folder.path.startswith("bandcamp_test://fans/42/fans/99/")
+
+
+async def test_browse_deep_nesting_with_slug(provider: BandcampProvider) -> None:
+    """Test slug-based navigation: fans/alice/fans resolves alice to fan_id."""
+    # Pre-populate slug mapping (as if we had previously browsed fans)
+    provider._slug_to_fan_id["alice"] = 42
+
+    mock_collection = Mock()
+    mock_collection.items = [
+        _fan_mock(99, "Bob", url="https://bandcamp.com/bob"),
+    ]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider.browse("bandcamp_test://fans/alice/fans")
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING_FANS, fan_id=42)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://fans/alice/fans/bob"
+
+
+async def test_browse_slug_person_root(provider: BandcampProvider) -> None:
+    """Test navigating to a slug-identified person shows 5 sub-folders."""
+    provider._slug_to_fan_id["teancom"] = 42
+
+    result = await provider.browse("bandcamp_test://fans/teancom")
+
+    assert len(result) == 5
+    for folder in result:
+        assert isinstance(folder, BrowseFolder)
+        assert folder.path.startswith("bandcamp_test://fans/teancom/")
+
+
+async def test_browse_person_invalid_id_zero(provider: BandcampProvider) -> None:
+    """Test that person ID of 0 raises InvalidDataError."""
+    with pytest.raises(InvalidDataError, match="Invalid person ID"):
+        await provider.browse("bandcamp_test://fans/0")
+
+
+async def test_browse_person_invalid_id_negative(provider: BandcampProvider) -> None:
+    """Test that negative person ID raises InvalidDataError."""
+    with pytest.raises(InvalidDataError, match="Invalid person ID"):
+        await provider.browse("bandcamp_test://fans/-1")
+
+
+async def test_browse_person_unknown_subcategory(provider: BandcampProvider) -> None:
+    """Test that an unknown sub-category raises InvalidDataError."""
+    with pytest.raises(InvalidDataError, match="Unknown browse sub-category"):
+        await provider.browse("bandcamp_test://fans/42/playlists")
+
+
+async def test_browse_person_invalid_path_no_id(provider: BandcampProvider) -> None:
+    """Test that sub-category without valid person ID raises InvalidDataError."""
+    with pytest.raises(InvalidDataError, match="Invalid browse path"):
+        await provider.browse("bandcamp_test://fans/abc/collection")
+
+
+# --- _browse_person_content with explicit person_id ---
+
+
+async def test_browse_person_content_with_person_id(provider: BandcampProvider) -> None:
+    """Test _browse_person_content with explicit person_id passes fan_id."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        result = await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+        mock_get_collection.assert_called_once_with(CollectionType.COLLECTION, fan_id=42)
+        assert len(result) == 1
+        assert result[0] is mock_album
+
+
+async def test_browse_person_content_caches_results(provider: BandcampProvider) -> None:
+    """Test _browse_person_content caches non-empty results."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        await provider._browse_person_content(42, CollectionType.WISHLIST)
+
+        mock_cache_set = cast("AsyncMock", provider.mass.cache.set)
+        mock_cache_set.assert_called_once()
+        cache_key = mock_cache_set.call_args[0][0]
+        assert "42" in cache_key
+        assert CollectionType.WISHLIST.value in cache_key
+
+
+async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> None:
+    """Test _browse_person_content returns cached result without hitting API."""
+    cached_items = [Mock(), Mock()]
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+    ):
+        result = await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+        mock_get_collection.assert_not_called()
+        assert result is cached_items
+
+
+async def test_browse_person_content_empty_cached_with_short_ttl(
+    provider: BandcampProvider,
+) -> None:
+    """Test empty results are cached with CACHE_EMPTY_RESULTS TTL."""
+    mock_collection = Mock()
+    mock_collection.items = []
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+        assert result == []
+        mock_cache_set = cast("AsyncMock", provider.mass.cache.set)
+        mock_cache_set.assert_called_once()
+        assert mock_cache_set.call_args.kwargs["expiration"] == CACHE_EMPTY_RESULTS
+
+
+async def test_browse_person_content_nonempty_cached_with_normal_ttl(
+    provider: BandcampProvider,
+) -> None:
+    """Test non-empty results are cached with CACHE_USER_LISTS TTL."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    mock_album = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_album.return_value = mock_album
+
+        await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+        mock_cache_set = cast("AsyncMock", provider.mass.cache.set)
+        mock_cache_set.assert_called_once()
+        assert mock_cache_set.call_args.kwargs["expiration"] == CACHE_USER_LISTS
+
+
+async def test_browse_person_content_api_error(provider: BandcampProvider) -> None:
+    """Test _browse_person_content maps generic API error via _map_api_errors."""
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            side_effect=BandcampAPIError("API Error"),
+        ),
+        pytest.raises(MediaNotFoundError, match="Failed to get"),
+    ):
+        await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+
+# --- _browse_person_following with explicit person_id ---
+
+
+async def test_browse_person_following_with_person_id(provider: BandcampProvider) -> None:
+    """Test _browse_person_following with explicit person_id."""
+    mock_collection = Mock()
+    mock_collection.items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
+    mock_artist = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_artist.return_value = mock_artist
+
+        result = await provider._browse_person_following(42)
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING, fan_id=42)
+        assert len(result) == 1
+        assert result[0] is mock_artist
+
+
+async def test_browse_person_following_skips_not_found(provider: BandcampProvider) -> None:
+    """Test _browse_person_following logs warning and skips unfound artists."""
+    mock_collection = Mock()
+    mock_collection.items = [
+        Mock(spec=["band_id", "name"], band_id=100, name="Found"),
+        Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
+    ]
+    mock_artist = Mock()
+
+    with (
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get_collection.return_value = mock_collection
+        mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
+
+        result = await provider._browse_person_following(42)
+
+        assert len(result) == 1
+
+
+# --- _browse_person_people tests ---
+
+
+async def test_browse_person_people_with_person_id(provider: BandcampProvider) -> None:
+    """Test _browse_person_people with explicit person_id fetches their fans."""
+    mock_collection = Mock()
+    mock_collection.items = [_fan_mock(10, "Fan", "http://img.jpg", "https://bandcamp.com/thefan")]
+
+    with patch.object(
+        provider._client, "get_collection_items", new_callable=AsyncMock
+    ) as mock_get_collection:
+        mock_get_collection.return_value = mock_collection
+
+        result = await provider._browse_person_people(
+            CollectionType.FOLLOWING_FANS, "bandcamp_test://fans/42/fans", person_id=42
+        )
+
+        mock_get_collection.assert_called_once_with(CollectionType.FOLLOWING_FANS, fan_id=42)
+        assert len(result) == 1
+        assert isinstance(result[0], BrowseFolder)
+        assert result[0].path == "bandcamp_test://fans/42/fans/thefan"
+
+
+async def test_browse_person_people_api_error(provider: BandcampProvider) -> None:
+    """Test _browse_person_people maps API error via _map_api_errors."""
+    with (
+        patch.object(
+            provider._client,
+            "get_collection_items",
+            side_effect=BandcampAPIError("API Error"),
+        ),
+        pytest.raises(MediaNotFoundError, match="Failed to get"),
+    ):
+        await provider._browse_person_people(
+            CollectionType.FOLLOWERS, "bandcamp_test://followers", person_id=42
+        )

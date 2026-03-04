@@ -1,8 +1,8 @@
 """Bandcamp music provider support for MusicAssistant."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Sequence
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from typing import cast
 
 from bandcamp_async_api import (
@@ -15,10 +15,11 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from bandcamp_async_api.models import BCAlbum, BCTrack, CollectionType
+from bandcamp_async_api.models import BCAlbum, BCTrack, CollectionType, FanItem
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -35,6 +36,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
+    MediaItemImage,
     MediaItemType,
     SearchResults,
     Track,
@@ -63,7 +65,9 @@ SUPPORTED_FEATURES = {
 CONF_IDENTITY = "identity"
 CONF_TOP_TRACKS_LIMIT = "top_tracks_limit"
 DEFAULT_TOP_TRACKS_LIMIT = 50
-CACHE = 3600 * 24 * 30  # Cache for 30 days
+CACHE_METADATA = 3600 * 24 * 30  # 30 days - artist/album/track metadata rarely changes
+CACHE_USER_LISTS = 3600 * 4  # 4 hours - wishlists/following change with user activity
+CACHE_EMPTY_RESULTS = 300  # 5 minutes - avoid hammering API for genuinely empty lists
 
 
 async def setup(
@@ -125,6 +129,7 @@ class BandcampProvider(MusicProvider):
 
     _client: BandcampAPIClient
     _converters: BandcampConverters
+    _slug_to_fan_id: dict[str, int]  # unbounded; eviction would break back-navigation
     throttler: ThrottlerManager = ThrottlerManager(
         rate_limit=50,  # requests per period seconds
         period=10,
@@ -145,6 +150,7 @@ class BandcampProvider(MusicProvider):
             default_retry_after=3,  # Bandcamp responds with Retry-After 3
         )
         self._converters = BandcampConverters(self.domain, self.instance_id)
+        self._slug_to_fan_id = {}
 
         # The provider can function without login (search and streaming),
         # but if credentials were explicitly configured, validate them now.
@@ -164,7 +170,6 @@ class BandcampProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    @use_cache(CACHE)
     @throttle_with_retries
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 50
@@ -265,7 +270,7 @@ class BandcampProvider(MusicProvider):
                 yield track
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist(self, prov_artist_id: str | int) -> Artist:
         """Get full artist details by id."""
@@ -281,7 +286,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -330,7 +335,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get track {item_id}") from error
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         api_track, api_album = await self._fetch_api_track(prov_track_id)
@@ -348,7 +353,7 @@ class BandcampProvider(MusicProvider):
             album_image_url=api_track.album.art_url if api_track.album else "",
         )
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
@@ -380,7 +385,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get albums tracks for {prov_album_id}") from error
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -413,7 +418,7 @@ class BandcampProvider(MusicProvider):
 
         return albums
 
-    @use_cache(CACHE)
+    @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
@@ -428,85 +433,289 @@ class BandcampProvider(MusicProvider):
 
         return tracks[: self.top_tracks_limit]
 
+    # Maps person sub-route names to (method_suffix, CollectionType).
+    # "content" → _browse_person_content, "following" → _browse_person_following,
+    # "people" → _browse_person_people.
+    _PERSON_SUB_ROUTES: dict[str, tuple[str, CollectionType]] = {
+        "collection": ("content", CollectionType.COLLECTION),
+        "wishlist": ("content", CollectionType.WISHLIST),
+        "following": ("following", CollectionType.FOLLOWING),
+        "fans": ("people", CollectionType.FOLLOWING_FANS),
+        "followers": ("people", CollectionType.FOLLOWERS),
+    }
+
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
         subpath = path.split("://")[1] if "://" in path else ""
+        # Filter empty segments from double-slashes or trailing slashes
+        path_parts = [p for p in subpath.split("/") if p]
+        base = f"{self.instance_id}://"
 
-        if subpath == "wishlist":
-            return await self._browse_wishlist()
-        if subpath == "following":
-            return await self._browse_following()
+        # Route fan/follower paths (supports arbitrary nesting depth)
+        if path_parts and path_parts[0] in ("fans", "followers"):
+            return await self._browse_person(path_parts, base)
+
+        if path_parts == ["wishlist"]:
+            return await self._browse_person_content(None, CollectionType.WISHLIST)
+        if path_parts == ["following"]:
+            return await self._browse_person_following(None)
 
         # Delegate standard library paths and root listing to the base class
         result = list(await super().browse(path))
 
-        # At root level, append Wishlist and Following folders when authenticated
-        if not subpath and self._client.identity:
-            base = f"{self.instance_id}://"
-            result.append(
-                BrowseFolder(
-                    item_id="wishlist",
-                    provider=self.instance_id,
-                    path=base + "wishlist",
-                    name="Wishlist",
+        # At root level, append custom browse folders when authenticated.
+        # These top-level folders query the authenticated user (person_id=None);
+        # person-specific paths (e.g. fans/42/wishlist) work without authentication
+        # since the Bandcamp API only requires identity for the "me" shortcut.
+        if not path_parts and self._client.identity:
+            for folder_id, folder_name in (
+                ("wishlist", "Wishlist"),
+                ("following", "Following"),
+                ("fans", "Fans"),
+                ("followers", "Followers"),
+            ):
+                result.append(
+                    BrowseFolder(
+                        item_id=folder_id,
+                        provider=self.instance_id,
+                        path=base + folder_id,
+                        name=folder_name,
+                    )
                 )
-            )
-            result.append(
-                BrowseFolder(
-                    item_id="following",
-                    provider=self.instance_id,
-                    path=base + "following",
-                    name="Following",
-                )
-            )
 
         return result
 
-    @use_cache(CACHE)
-    @throttle_with_retries
-    async def _browse_wishlist(self) -> list[Album | Track]:
-        """Fetch wishlist items from Bandcamp."""
-        items: list[Album | Track] = []
+    async def _browse_person(
+        self,
+        path_parts: list[str],
+        base: str,
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Route person browse paths: fans/followers and their sub-categories.
+
+        Pattern: (fans|followers)[/{id}[/(collection|wishlist|following|fans|followers)]*]
+        """
+        # Top-level: authenticated user's fans or followers
+        if len(path_parts) == 1:
+            collection_type = (
+                CollectionType.FOLLOWING_FANS
+                if path_parts[0] == "fans"
+                else CollectionType.FOLLOWERS
+            )
+            return await self._browse_person_people(collection_type, f"{base}{path_parts[0]}")
+
+        tail = path_parts[-1]
+
+        # Path ends with a person identifier (numeric ID or slug) → show their 5 sub-folders
+        person_id = self._resolve_person_segment(tail)
+        if person_id is not None:
+            if person_id <= 0:
+                raise InvalidDataError(f"Invalid person ID in browse path: {tail}")
+            return self._browse_person_root(person_id, f"{base}{'/'.join(path_parts)}")
+
+        # Path ends with a sub-category → person identifier is second-to-last
+        if len(path_parts) < 2:
+            raise InvalidDataError(f"Invalid browse path: {base}{'/'.join(path_parts)}")
+        person_id = self._resolve_person_segment(path_parts[-2])
+        if person_id is None:
+            raise InvalidDataError(f"Invalid browse path: {base}{'/'.join(path_parts)}")
+        if person_id <= 0:
+            raise InvalidDataError(f"Invalid person ID in browse path: {path_parts[-2]}")
+
+        route = self._PERSON_SUB_ROUTES.get(tail)
+        if route is None:
+            raise InvalidDataError(f"Unknown browse sub-category: {tail}")
+
+        method_kind, collection_type = route
+        if method_kind == "content":
+            return await self._browse_person_content(person_id, collection_type)
+        if method_kind == "following":
+            return await self._browse_person_following(person_id)
+        if method_kind != "people":
+            raise InvalidDataError(f"Unknown route kind: {method_kind}")
+        canon = "/".join(path_parts)
+        return await self._browse_person_people(collection_type, f"{base}{canon}", person_id)
+
+    # --- Person browse helpers (fans, followers, and social graph traversal) ---
+
+    def _resolve_person_segment(self, segment: str) -> int | None:
+        """Resolve a path segment to a fan_id.
+
+        Checks the slug→fan_id cache first, then tries numeric parse.
+        Returns None if the segment is neither a known slug nor a valid int.
+        """
+        if segment in self._slug_to_fan_id:
+            return self._slug_to_fan_id[segment]
         try:
-            collection = await self._client.get_collection_items(CollectionType.WISHLIST)
+            return int(segment)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _fan_slug(person: FanItem) -> str | None:
+        """Extract the URL slug from a FanItem's url.
+
+        e.g. "https://bandcamp.com/teancom" → "teancom"
+        """
+        if person.url:
+            slug: str = person.url.rstrip("/").rsplit("/", 1)[-1]
+            if slug:
+                return slug
+        return None
+
+    def _people_to_folders(self, items: list[FanItem], base_path: str) -> list[BrowseFolder]:
+        """Convert a list of people to BrowseFolder items with thumbnails."""
+        folders: list[BrowseFolder] = []
+        for person in items:
+            slug = self._fan_slug(person)
+            if slug:
+                self._slug_to_fan_id[slug] = person.fan_id
+            path_segment = slug or str(person.fan_id)
+            folder = BrowseFolder(
+                item_id=f"person_{person.fan_id}",
+                provider=self.instance_id,
+                path=f"{base_path}/{path_segment}",
+                name=person.name or f"User {person.fan_id}",
+            )
+            if person.image_url:
+                folder.image = MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=person.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            folders.append(folder)
+        return folders
+
+    def _browse_person_root(self, person_id: int, base_path: str) -> list[BrowseFolder]:
+        """Return the 5 sub-folders for a person's profile."""
+        sub_folders = [
+            ("collection", "Collection"),
+            ("wishlist", "Wishlist"),
+            ("following", "Following"),
+            ("fans", "Fans"),
+            ("followers", "Followers"),
+        ]
+        return [
+            BrowseFolder(
+                item_id=f"person_{person_id}_{sub_id}",
+                provider=self.instance_id,
+                path=f"{base_path}/{sub_id}",
+                name=name,
+            )
+            for sub_id, name in sub_folders
+        ]
+
+    @contextmanager
+    def _map_api_errors(self, context: str) -> Iterator[None]:
+        """Map Bandcamp API exceptions to MusicAssistant exceptions."""
+        try:
+            yield
+        except BandcampMustBeLoggedInError as error:
+            raise LoginFailed("Wrong Bandcamp identity token.") from error
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(context) from error
+
+    @throttle_with_retries
+    async def _browse_person_content(
+        self, person_id: int | None, collection_type: CollectionType
+    ) -> list[Album | Track]:
+        """Fetch a person's collection or wishlist items.
+
+        :param person_id: Person to query. None = authenticated user.
+        """
+        cache_key = f"_browse_person_content_{person_id}_{collection_type.value}"
+        cached: list[Album | Track] | None = await self.mass.cache.get(
+            cache_key, provider=self.instance_id
+        )
+        if cached is not None:
+            return cached
+        items: list[Album | Track] = []
+        with self._map_api_errors(f"Failed to get {collection_type.value} for person {person_id}"):
+            collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
             for item in collection.items:
                 with suppress(MediaNotFoundError):
                     if item.item_type == "album":
                         items.append(await self.get_album(f"{item.band_id}-{item.item_id}"))
                     elif item.item_type == "track":
                         items.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
-        except BandcampMustBeLoggedInError as error:
-            raise LoginFailed("Wrong Bandcamp identity token.") from error
-        except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
-                "Bandcamp rate limit reached", backoff_time=error.retry_after
-            ) from error
-        except BandcampAPIError as error:
-            raise MediaNotFoundError("Failed to get wishlist items") from error
+        await self.mass.cache.set(
+            cache_key,
+            items,
+            expiration=CACHE_USER_LISTS if items else CACHE_EMPTY_RESULTS,
+            provider=self.instance_id,
+        )
         return items
 
-    @use_cache(CACHE)
     @throttle_with_retries
-    async def _browse_following(self) -> list[Artist]:
-        """Fetch followed artists from Bandcamp."""
+    async def _browse_person_following(self, person_id: int | None) -> list[Artist]:
+        """Fetch a person's followed artists.
+
+        :param person_id: Person to query. None = authenticated user.
+        """
+        cache_key = f"_browse_person_following_{person_id}"
+        cached: list[Artist] | None = await self.mass.cache.get(
+            cache_key, provider=self.instance_id
+        )
+        if cached is not None:
+            return cached
         artists: list[Artist] = []
-        try:
-            collection = await self._client.get_collection_items(CollectionType.FOLLOWING)
+        with self._map_api_errors(f"Failed to get following for person {person_id}"):
+            collection = await self._client.get_collection_items(
+                CollectionType.FOLLOWING, fan_id=person_id
+            )
             for item in collection.items:
-                with suppress(MediaNotFoundError):
+                try:
                     artists.append(await self.get_artist(item.band_id))
-        except BandcampMustBeLoggedInError as error:
-            raise LoginFailed("Wrong Bandcamp identity token.") from error
-        except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
-                "Bandcamp rate limit reached", backoff_time=error.retry_after
-            ) from error
-        except BandcampAPIError as error:
-            raise MediaNotFoundError("Failed to get following items") from error
+                except MediaNotFoundError:
+                    self.logger.warning(
+                        "Artist not found for band_id %s (%s)", item.band_id, item.name
+                    )
+        await self.mass.cache.set(
+            cache_key,
+            artists,
+            expiration=CACHE_USER_LISTS if artists else CACHE_EMPTY_RESULTS,
+            provider=self.instance_id,
+        )
         return artists
+
+    @throttle_with_retries
+    async def _browse_person_people(
+        self,
+        collection_type: CollectionType,
+        base_path: str,
+        person_id: int | None = None,
+    ) -> list[BrowseFolder]:
+        """Fetch a person's fans or followers as browsable folders.
+
+        :param collection_type: FOLLOWING_FANS or FOLLOWERS.
+        :param base_path: Browse path prefix for the resulting folder links.
+        :param person_id: Person to query. None = authenticated user.
+        """
+        # base_path included intentionally: folder links differ per navigation path.
+        cache_key = f"_browse_person_people_{person_id}_{collection_type.value}_{base_path}"
+        cached: list[BrowseFolder] | None = await self.mass.cache.get(
+            cache_key, provider=self.instance_id
+        )
+        if cached is not None:
+            return cached
+        with self._map_api_errors(f"Failed to get {collection_type.value} for person {person_id}"):
+            collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
+            items = cast("list[FanItem]", collection.items)
+            folders = self._people_to_folders(items, base_path)
+        await self.mass.cache.set(
+            cache_key,
+            folders,
+            expiration=CACHE_USER_LISTS if folders else CACHE_EMPTY_RESULTS,
+            provider=self.instance_id,
+        )
+        return folders
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track.
