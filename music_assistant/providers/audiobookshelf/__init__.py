@@ -501,7 +501,7 @@ for more details.
                 provider_instance_id_or_domain=self.instance_id,
             ):
                 self.logger.debug(
-                    "Removing a playlist with not tracks from MA library, %s", ma_playlist.name
+                    "Removing a playlist with no tracks from MA library, %s", ma_playlist.name
                 )
                 await self.mass.music.remove_item_from_library(
                     media_type=MediaType.PLAYLIST, library_item_id=ma_playlist.item_id
