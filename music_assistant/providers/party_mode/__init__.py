@@ -381,21 +381,6 @@ class PartyModePlugin(PluginProvider):
         self._unregister_handles: list[Callable[[], None]] = []
         self._queue_lock = asyncio.Lock()
 
-    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
-        """Handle config updates without reloading.
-
-        Most party mode settings are read dynamically via config.get_value(),
-        so no provider reload is generally needed on config changes.
-
-        :param config: The new ProviderConfig to apply.
-        :param changed_keys: Set of config keys that changed.
-        """
-        old_guest_enabled = self.config.get_value(CONF_ENABLE_GUEST_ACCESS)
-        self.config = config
-        new_guest_enabled = self.config.get_value(CONF_ENABLE_GUEST_ACCESS)
-        if old_guest_enabled and not new_guest_enabled:
-            await self._revoke_guest_tokens()
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
