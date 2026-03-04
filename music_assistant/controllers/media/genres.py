@@ -682,6 +682,77 @@ class GenreController(MediaControllerBase[Genre]):
             len(raw_name_to_genres),
         )
 
+    async def _cleanup_stale_genre_mappings(self) -> None:
+        """Remove genre mappings where the alias is no longer in the media item's metadata.genres.
+
+        A mapping is considered stale when the alias stored in the mapping is no longer present
+        in the media item's current metadata.genres. This includes items where metadata.genres
+        is empty or null — all mappings for such items are removed. Empty non-default genres
+        (those without a translation_key) are also deleted.
+        """
+        db = self.mass.music.database
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+
+        media_tables = (
+            (DB_TABLE_TRACKS, MediaType.TRACK),
+            (DB_TABLE_ALBUMS, MediaType.ALBUM),
+            (DB_TABLE_ARTISTS, MediaType.ARTIST),
+            (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
+            (DB_TABLE_RADIOS, MediaType.RADIO),
+            (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
+            (DB_TABLE_PODCASTS, MediaType.PODCAST),
+        )
+
+        count_before = await db.get_count(gm)
+
+        for table, media_type in media_tables:
+            # Delete a mapping when either:
+            # - The media item was deleted (orphaned row), or
+            # - The media item exists but the alias is no longer in metadata.genres.
+            #   When genres is null or [] json_each returns no rows, so NOT EXISTS is true
+            #   and all mappings for that item are removed.
+            await db.execute(
+                f"DELETE FROM {gm} "
+                f"WHERE media_type = '{media_type.value}' "
+                f"AND alias IS NOT NULL "
+                f"AND NOT EXISTS ("
+                f"  SELECT 1 FROM {table}, "
+                f"  json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                f"  WHERE {table}.item_id = {gm}.media_id "
+                f"  AND LOWER(TRIM(g.value)) = LOWER({gm}.alias)"
+                f")"
+            )
+
+        # Delete playlog entries for empty non-default genres before removing them, to avoid
+        # orphaned playlog rows pointing to genres that no longer exist.
+        await db.execute(
+            f"DELETE FROM {DB_TABLE_PLAYLOG} "
+            f"WHERE media_type = '{MediaType.GENRE.value}' "
+            f"AND item_id IN ("
+            f"  SELECT item_id FROM {DB_TABLE_GENRES} "
+            f"  WHERE translation_key IS NULL "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
+            f"  )"
+            f")"
+        )
+        genres_before = await db.get_count(DB_TABLE_GENRES)
+        await db.execute(
+            f"DELETE FROM {DB_TABLE_GENRES} "
+            f"WHERE translation_key IS NULL "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
+            f")"
+        )
+
+        await db.commit()
+        mappings_removed = count_before - await db.get_count(gm)
+        if mappings_removed:
+            self.logger.info("Genre scan: removed %d stale genre mappings", mappings_removed)
+        genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
+        if genres_deleted:
+            self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
+
     async def _bulk_scan_unmapped_genres(self) -> int:
         """Scan only unmapped media items and create genre mappings using CTE.
 
@@ -690,6 +761,8 @@ class GenreController(MediaControllerBase[Genre]):
 
         :return: Total number of items mapped.
         """
+        await self._cleanup_stale_genre_mappings()
+
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
