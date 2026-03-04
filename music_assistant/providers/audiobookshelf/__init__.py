@@ -1773,7 +1773,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)),
+                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
