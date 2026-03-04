@@ -128,7 +128,7 @@ class HeosPlayer(Player):
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
-        self.logger.debug("[%s] Event received: %s", self._device.name, event)
+        self.logger.log(5, "[%s] Event received: %s", self._device.name, event)
 
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
@@ -300,6 +300,11 @@ class HeosPlayer(Player):
         else:
             await self._heos.set_group([int(player) for player in members])
         # group_members will be updated when group_changed event is handled
+
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT SOURCE command on the player."""
+        self.logger.debug("[%s] Selecting source %s", self._device.name, source)
+        await self._device.play_input_source(source)
 
     async def get_config_entries(
         self,
