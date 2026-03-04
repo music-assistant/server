@@ -424,10 +424,6 @@ class SpotifyProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes."""
-        # Get podcast object for context if available
-        podcast = await self.mass.music.podcasts.get_library_item_by_prov_id(
-            prov_podcast_id, self.instance_id
-        )
         podcast = await self.get_podcast(prov_podcast_id)
 
         # Get (cached) episode data
@@ -615,14 +611,17 @@ class SpotifyProvider(MusicProvider):
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
         total = spotify_result.get("total", 0)
-        for index, item in enumerate(spotify_result["items"], 1):
+        items = spotify_result.get("items", [])
+        # me/tracks returns item["track"], playlists/{id}/items returns item["item"]
+        item_key = "track" if is_liked_songs else "item"
+        for index, item in enumerate(items, 1):
             # Spotify wraps/recycles items for offsets beyond the playlist size,
             # so we need to break when we've reached the total.
             if (offset + index) > total:
                 break
-            if not (item and item["item"] and item["item"]["id"]):
+            if not (item and item.get(item_key) and item[item_key].get("id")):
                 continue
-            track = parse_track(item["item"], self)
+            track = parse_track(item[item_key], self)
             track.position = offset + index
             result.append(track)
         return result
@@ -663,9 +662,10 @@ class SpotifyProvider(MusicProvider):
         if item.media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
             return False
         uri_type = uri_type_map.get(item.media_type)
-        if uri_type:
-            uri = f"spotify:{uri_type}:{item.item_id}"
-            await self._put_data("me/library", uris=uri)
+        if not uri_type:
+            return False
+        uri = f"spotify:{uri_type}:{item.item_id}"
+        await self._put_data("me/library", uris=uri)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -681,9 +681,10 @@ class SpotifyProvider(MusicProvider):
         if media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
             return False
         uri_type = uri_type_map.get(media_type)
-        if uri_type:
-            uri = f"spotify:{uri_type}:{prov_item_id}"
-            await self._delete_data("me/library", uris=uri)
+        if not uri_type:
+            return False
+        uri = f"spotify:{uri_type}:{prov_item_id}"
+        await self._delete_data("me/library", uris=uri)
         return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -1061,11 +1062,7 @@ class SpotifyProvider(MusicProvider):
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
         """Get raw episode data from Spotify API (cached).
 
-        Args:
-            prov_podcast_id: Spotify podcast ID
-
-        Returns:
-            List of episode data dictionaries
+        :param prov_podcast_id: Spotify podcast ID.
         """
         episodes_data: list[dict[str, Any]] = []
 
@@ -1090,11 +1087,7 @@ class SpotifyProvider(MusicProvider):
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
         """Get raw chapter data from Spotify API (cached).
 
-        Args:
-            prov_audiobook_id: Spotify audiobook ID
-
-        Returns:
-            List of chapter data dictionaries
+        :param prov_audiobook_id: Spotify audiobook ID.
         """
         chapters_data: list[dict[str, Any]] = []
 
