@@ -376,8 +376,8 @@ class UniversalPlayerProvider(PlayerProvider):
                     for link in existing.linked_output_protocols:
                         if not link.protocol_domain:
                             continue
-                        linked_player = self.mass.players.get_player(link.output_protocol_id)
-                        if linked_player and linked_player.available:
+                        # A registered player occupies this domain slot even if unavailable
+                        if self.mass.players.get_player(link.output_protocol_id):
                             active_domains.add(link.protocol_domain)
                     can_join = [
                         p for p in protocol_players if p.provider.domain not in active_domains

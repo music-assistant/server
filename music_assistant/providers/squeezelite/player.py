@@ -331,6 +331,10 @@ class SqueezelitePlayer(Player):
                         if sync_client.state != SlimPlayerState.STOPPED:
                             # stop the player if it is playing
                             await sync_client.stop()
+            # if no children remain, remove ourselves from the list too
+            remaining = [x for x in self._attr_group_members if x != self.player_id]
+            if not remaining:
+                self._attr_group_members.clear()
 
         # handle additions
         players_added = False
@@ -347,6 +351,9 @@ class SqueezelitePlayer(Player):
                 await child_player.stop()
             self._attr_group_members.append(player_id)
             players_added = True
+        # ensure the sync leader (self) is the first item in group_members
+        if self._attr_group_members and self.player_id not in self._attr_group_members:
+            self._attr_group_members.insert(0, self.player_id)
 
         # always update the state after modifying group members
         self.update_state()
