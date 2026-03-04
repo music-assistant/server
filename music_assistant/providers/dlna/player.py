@@ -436,8 +436,9 @@ class DLNAPlayer(Player):
             await self.device.async_set_transport_uri(url, title, didl_metadata)
             await self.device.async_wait_for_can_play(10)
             await self.device.async_play()
-        finally:
+        except Exception:
             self._attr_playback_state = prev_state
+            raise
         self.update_state()
 
     @catch_request_errors
