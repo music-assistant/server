@@ -140,7 +140,7 @@ class ITunesPodcastsProvider(MusicProvider):
         # 20 requests per minute, be a bit below
         self.throttler = ThrottlerManager(rate_limit=18, period=60)
 
-    @use_cache(3600 * 12)  # Cache for 12 hours
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
