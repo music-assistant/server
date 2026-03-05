@@ -278,7 +278,7 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
-            future_s = (chunk.timestamp_us - time.monotonic() * 1_000_000) / 1_000_000
+            future_s = chunk.timestamp_us / 1_000_000 - time.monotonic()
             start_ntp = unix_time_to_ntp(time.time() + future_s)
 
             if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
