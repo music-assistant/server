@@ -25,7 +25,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
-    CONF_LINKED_PROTOCOL_PLAYER_IDS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_PARENT_ID,
@@ -35,9 +35,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
-    normalize_ip_address,
     normalize_mac_for_matching,
-    resolve_real_mac_address,
 )
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
@@ -74,6 +72,7 @@ class ProtocolLinkingMixin:
         mass: MusicAssistant
         _players: dict[str, Player]
         _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
+        _delayed_evaluation_lock: asyncio.Lock
         logger: logging.Logger
 
         def all_players(  # noqa: D102
@@ -100,77 +99,6 @@ class ProtocolLinkingMixin:
         """
         return player.state.type == PlayerType.PROTOCOL
 
-    async def _enrich_player_identifiers(self, player: Player) -> None:
-        """
-        Enrich player identifiers with real MAC address if needed.
-
-        Some devices report different virtual/locally administered MAC addresses per protocol
-        (AirPlay, DLNA, Chromecast may all have different MACs for the same device).
-        This also applies to native players that may report virtual MACs.
-        This method tries to resolve the actual hardware MAC via ARP and adds it as an
-        additional identifier to enable proper matching between protocols and native players.
-
-        Invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff) are discarded and
-        replaced with the real MAC via ARP lookup.
-
-        IP addresses are normalized (IPv6-mapped IPv4 addresses are converted to IPv4).
-        """
-        identifiers = player.device_info.identifiers
-        reported_mac = identifiers.get(IdentifierType.MAC_ADDRESS)
-        ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
-
-        # Normalize IP address (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
-        if ip_address:
-            normalized_ip = normalize_ip_address(ip_address)
-            if normalized_ip and normalized_ip != ip_address:
-                player.device_info.add_identifier(IdentifierType.IP_ADDRESS, normalized_ip)
-                self.logger.debug(
-                    "Normalized IP address for %s: %s -> %s",
-                    player.state.name,
-                    ip_address,
-                    normalized_ip,
-                )
-                ip_address = normalized_ip
-
-        # Skip MAC enrichment if no IP available (can't do ARP lookup)
-        if not ip_address:
-            return
-
-        # Check if we need to do ARP lookup:
-        # 1. No MAC reported at all
-        # 2. MAC is invalid (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
-        # 3. MAC is locally administered (virtual)
-        should_lookup = (
-            not reported_mac
-            or not is_valid_mac_address(reported_mac)
-            or is_locally_administered_mac(reported_mac)
-        )
-
-        if not should_lookup:
-            # MAC looks valid and is a real hardware MAC
-            return
-
-        # Try to resolve real MAC via ARP
-        real_mac = await resolve_real_mac_address(reported_mac, ip_address)
-        if real_mac and real_mac.upper() != (reported_mac or "").upper():
-            # Replace the invalid/virtual MAC with the real MAC address
-            # (add_identifier will store multiple values if the implementation supports it)
-            player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
-            if reported_mac and not is_valid_mac_address(reported_mac):
-                self.logger.debug(
-                    "Replaced invalid MAC for %s: %s -> %s",
-                    player.state.name,
-                    reported_mac,
-                    real_mac,
-                )
-            else:
-                self.logger.debug(
-                    "Resolved real MAC for %s: %s -> %s",
-                    player.state.name,
-                    reported_mac or "none",
-                    real_mac,
-                )
-
     def _evaluate_protocol_links(self, player: Player) -> None:
         """
         Evaluate and establish protocol links for a player.
@@ -182,6 +110,8 @@ class ProtocolLinkingMixin:
         if player.state.type == PlayerType.PROTOCOL:
             # Protocol player: try to find a native parent
             self._try_link_protocol_to_native(player)
+        elif player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+            return
         else:
             # Native player: try to find protocol players to link
             self._try_link_protocols_to_native(player)
@@ -193,20 +123,78 @@ class ProtocolLinkingMixin:
         # Check for cached parent_id from previous session and restore link immediately
         cached_parent_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
         if cached_parent_id:
-            protocol_player.set_protocol_parent_id(cached_parent_id)
-            if parent_player := self.get_player(cached_parent_id):
-                if not any(
-                    link.output_protocol_id == protocol_player.player_id
-                    for link in parent_player.linked_output_protocols
-                ):
-                    self._add_protocol_link(parent_player, protocol_player, protocol_domain)
-                    protocol_player.update_state()
-                    parent_player.update_state()
+            result = self._try_restore_cached_parent(
+                protocol_player, cached_parent_id, protocol_domain
+            )
+            if result:
                 return
-            # Parent not registered yet - skip evaluation (no universal player created)
-            return
+            # Link was refused or parent has active domain - fall through to search
 
         # Look for a matching native player
+        if self._try_link_to_existing_player(protocol_player, protocol_domain):
+            return
+
+        # No native player found - schedule delayed evaluation to allow other protocols to register
+        if not protocol_player.protocol_parent_id:
+            self._schedule_protocol_evaluation(protocol_player)
+
+    def _try_restore_cached_parent(
+        self, protocol_player: Player, cached_parent_id: str, protocol_domain: str
+    ) -> bool:
+        """
+        Try to restore a cached parent link from a previous session.
+
+        :param protocol_player: The protocol player to link.
+        :param cached_parent_id: The cached parent player ID.
+        :param protocol_domain: The protocol domain (e.g., "airplay").
+        :return: True if handled (linked or waiting), False if should fall through.
+        """
+        if parent_player := self.get_player(cached_parent_id):
+            if parent_player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+                self._clear_protocol_parent_id(protocol_player.player_id)
+                return False
+            already_linked = any(
+                link.output_protocol_id == protocol_player.player_id
+                for link in parent_player.linked_output_protocols
+            )
+            if already_linked:
+                # Already linked from a previous call - just restore parent and identifiers
+                protocol_player.set_protocol_parent_id(cached_parent_id)
+            else:
+                # Try to add the link (may be refused if domain already has active link)
+                self._add_protocol_link(parent_player, protocol_player, protocol_domain)
+            if protocol_player.protocol_parent_id:
+                protocol_player.update_state()
+                parent_player.update_state()
+                # Copy identifiers from protocol player to universal player on restore.
+                # Restored universal players start with empty identifiers which must be
+                # repopulated from their protocol players so that new protocol players
+                # (like Sendspin bridges) can match via identifiers.
+                if parent_player.provider.domain == "universal_player" and isinstance(
+                    parent_player, UniversalPlayer
+                ):
+                    for conn_type, value in protocol_player.device_info.identifiers.items():
+                        parent_player.device_info.add_identifier(conn_type, value)
+                    self._update_universal_device_info(parent_player, protocol_player)
+                    # Check if this universal player should now be merged with another
+                    # (e.g., DLNA brought a MAC via ARP that matches an AirPlay universal)
+                    self._check_merge_universal_players(parent_player)
+                return True
+            # Link was refused (domain already active on parent) - fall through
+            return False
+
+        # Parent not registered yet - set parent and skip evaluation
+        protocol_player.set_protocol_parent_id(cached_parent_id)
+        return True
+
+    def _try_link_to_existing_player(self, protocol_player: Player, protocol_domain: str) -> bool:
+        """
+        Try to link a protocol player to an existing native or universal player.
+
+        :param protocol_player: The protocol player to link.
+        :param protocol_domain: The protocol domain (e.g., "airplay").
+        :return: True if linked successfully, False if no match found.
+        """
         # Protocol players should only link to:
         # 1. True native players (Sonos, etc.)
         # 2. Universal players
@@ -214,15 +202,28 @@ class ProtocolLinkingMixin:
         for native_player in self.all_players(return_protocol_players=False):
             if native_player.player_id == protocol_player.player_id:
                 continue
-            # Skip all protocol players - they should be handled via universal_player
-            if native_player.state.type == PlayerType.PROTOCOL:
+            if native_player.state.type in (
+                PlayerType.PROTOCOL,
+                PlayerType.GROUP,
+                PlayerType.STEREO_PAIR,
+            ):
                 continue
 
             # For universal players, check if this protocol player is in its stored list
+            # or if identifiers match (for new protocol players like Sendspin bridges
+            # that weren't previously known to the Universal Player)
             if native_player.provider.domain == "universal_player":
                 if isinstance(native_player, UniversalPlayer):
-                    if protocol_player.player_id in native_player._protocol_player_ids:
+                    is_known = protocol_player.player_id in native_player._protocol_player_ids
+                    is_match = not is_known and self._identifiers_match(
+                        native_player, protocol_player, protocol_domain
+                    )
+                    if is_known or is_match:
                         self._add_protocol_link(native_player, protocol_player, protocol_domain)
+                        # Check if linking actually succeeded (may be refused for
+                        # duplicate domain)
+                        if not protocol_player.protocol_parent_id:
+                            continue
                         # Copy identifiers from protocol player to universal player
                         # This is important for restored universal players which start
                         # with empty identifiers
@@ -230,31 +231,80 @@ class ProtocolLinkingMixin:
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
                         self._update_universal_device_info(native_player, protocol_player)
+                        # Register newly matched protocol player with the universal player
+                        if is_match:
+                            native_player.add_protocol_player(protocol_player.player_id)
                         # Persist updated data to config (async via task)
                         self._save_universal_player_data(native_player)
+                        # Check if this universal player should now be merged with another
+                        self._check_merge_universal_players(native_player)
                         protocol_player.update_state()
                         native_player.update_state()
-                        return
+                        return True
                 continue
 
             # Check cached protocol IDs first for fast matching on restart
             cached_ids = self._get_cached_protocol_ids(native_player.player_id)
             if protocol_player.player_id in cached_ids:
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
-                protocol_player.update_state()
-                native_player.update_state()
-                return
+                if protocol_player.protocol_parent_id:
+                    protocol_player.update_state()
+                    native_player.update_state()
+                    return True
+                # Link refused (domain duplicate) - try next native player
+                continue
 
             # Fallback to identifier matching
             if self._identifiers_match(native_player, protocol_player, protocol_domain):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
-                protocol_player.update_state()
-                native_player.update_state()
-                return
+                if protocol_player.protocol_parent_id:
+                    protocol_player.update_state()
+                    native_player.update_state()
+                    return True
+                # Link refused (domain duplicate) - try next native player
+                continue
 
-        # No native player found - schedule delayed evaluation to allow other protocols to register
-        if not protocol_player.protocol_parent_id:
-            self._schedule_protocol_evaluation(protocol_player)
+            # Final fallback: check if any already-linked protocol player on this native
+            # player shares identifiers with the new protocol player ("sibling matching").
+            # This handles native players (e.g., HEOS) that don't have their own MAC/serial
+            # identifiers but have protocol players (e.g., AirPlay) from the same device
+            # that do share identifiers with the new protocol player (e.g., Sendspin bridge).
+            if self._match_via_linked_protocols(native_player, protocol_player, protocol_domain):
+                return True
+
+        return False
+
+    def _match_via_linked_protocols(
+        self,
+        native_player: Player,
+        protocol_player: Player,
+        protocol_domain: str,
+    ) -> bool:
+        """
+        Try to match a protocol player to a native player via sibling protocol identifiers.
+
+        Check if any of the native player's already-linked protocol players share
+        identifiers with the new protocol player. This handles native players that lack
+        their own device identifiers but have sibling protocols from the same physical device.
+
+        :param native_player: The native player to potentially link to.
+        :param protocol_player: The new protocol player to link.
+        :param protocol_domain: The protocol domain of the new player.
+        :return: True if linked successfully, False if no match found.
+        """
+        for linked in native_player.linked_output_protocols:
+            linked_player = self.get_player(linked.output_protocol_id)
+            if not linked_player:
+                continue
+            if self._identifiers_match(linked_player, protocol_player, protocol_domain):
+                self._add_protocol_link(native_player, protocol_player, protocol_domain)
+                if protocol_player.protocol_parent_id:
+                    protocol_player.update_state()
+                    native_player.update_state()
+                    return True
+                # Link refused (domain duplicate) - stop checking siblings
+                break
+        return False
 
     def _schedule_protocol_evaluation(self, protocol_player: Player) -> None:
         """
@@ -275,16 +325,16 @@ class ProtocolLinkingMixin:
         if cached_parent_id and not self.get_player(cached_parent_id):
             # Previously linked to a native player that hasn't registered yet
             # Use longer delay to give native providers time to start up
-            delay = 30.0
+            delay = 45.0
             self.logger.debug(
-                "Protocol player %s waiting for cached parent %s (30s delay)",
+                "Protocol player %s waiting for cached parent %s (45s delay)",
                 player_id,
                 cached_parent_id,
             )
         else:
             # Standard delay for protocol player discovery
             # Allows time for other protocols and native players to register
-            delay = 10.0
+            delay = 15.0
 
         # Schedule evaluation after the delay
         handle = self.mass.loop.call_later(
@@ -300,27 +350,37 @@ class ProtocolLinkingMixin:
         Called after a delay to allow all protocol players for a device to register.
         Decides whether to create a universal player, join an existing one, or
         promote a single protocol player directly.
+
+        Uses a shared lock to serialize evaluations - multiple protocol players from the
+        same device may trigger concurrent evaluations that would otherwise race each other.
         """
         self._pending_protocol_evaluations.pop(player_id, None)
 
-        protocol_player = self.get_player(player_id)
-        if not protocol_player or protocol_player.protocol_parent_id:
-            return
+        async with self._delayed_evaluation_lock:
+            protocol_player = self.get_player(player_id)
+            if not protocol_player or protocol_player.protocol_parent_id:
+                return
 
-        protocol_domain = protocol_player.provider.domain
+            protocol_domain = protocol_player.provider.domain
 
-        # Check if there's an existing universal player we should join
-        if existing_universal := self._find_matching_universal_player(protocol_player):
-            await self._add_protocol_to_existing_universal(
-                existing_universal, protocol_player, protocol_domain
-            )
-            return
+            # Re-try linking to an existing native/universal player
+            if self._try_link_to_existing_player(protocol_player, protocol_domain):
+                return
 
-        # Find all protocol players that match this device's identifiers
-        matching_protocols = self._find_matching_protocol_players(protocol_player)
+            # Check if there's an existing universal player we should join
+            if existing_universal := self._find_matching_universal_player(protocol_player):
+                await self._add_protocol_to_existing_universal(
+                    existing_universal, protocol_player, protocol_domain
+                )
+                if protocol_player.protocol_parent_id is not None:
+                    return
+                # Link refused (domain duplicate) - fall through to create separate UP
 
-        # Create or update UniversalPlayer for all protocol players
-        await self._create_or_update_universal_player(matching_protocols)
+            # Find all protocol players that match this device's identifiers
+            matching_protocols = self._find_matching_protocol_players(protocol_player)
+
+            # Create or update UniversalPlayer for all protocol players
+            await self._create_or_update_universal_player(matching_protocols)
 
     def _find_matching_protocol_players(self, protocol_player: Player) -> list[Player]:
         """
@@ -362,7 +422,18 @@ class ProtocolLinkingMixin:
         self, universal_player: Player, protocol_player: Player, protocol_domain: str
     ) -> None:
         """Add a protocol player to an existing universal player."""
+        # Refuse if the universal player already has a registered player from this domain.
+        # This prevents a second instance (e.g., two snapcast players on the same host)
+        # from replacing the first. The caller falls through to create a separate UP.
+        for link in universal_player.linked_output_protocols:
+            if link.protocol_domain == protocol_domain and self.get_player(link.output_protocol_id):
+                return
+
         self._add_protocol_link(universal_player, protocol_player, protocol_domain)
+
+        # Check if linking actually succeeded (may be refused for duplicate domain)
+        if not protocol_player.protocol_parent_id:
+            return
 
         if isinstance(universal_player, UniversalPlayer):
             universal_player.add_protocol_player(protocol_player.player_id)
@@ -378,6 +449,9 @@ class ProtocolLinkingMixin:
                         universal_player.player_id, universal_player
                     )
                     break
+
+            # Check if this universal player should now be merged with another
+            self._check_merge_universal_players(universal_player)
 
         protocol_player.update_state()
         universal_player.update_state()
@@ -421,6 +495,80 @@ class ProtocolLinkingMixin:
 
         self.mass.create_task(_do_save())
 
+    def _check_merge_universal_players(self, universal_player: UniversalPlayer) -> None:
+        """
+        Check if another universal player should be merged into this one.
+
+        Called after identifiers are copied from a protocol player to a universal player.
+        When a protocol player brings new identifiers (e.g., MAC from ARP enrichment),
+        the universal player may now match another universal player that was created
+        from a different protocol (e.g., DLNA-based universal player now matches
+        AirPlay-based universal player because they share the same MAC address).
+
+        The universal player with more protocol links absorbs the other one.
+        """
+        for player in list(self._players.values()):
+            if player.provider.domain != "universal_player":
+                continue
+            if player.player_id == universal_player.player_id:
+                continue
+            if not isinstance(player, UniversalPlayer):
+                continue
+
+            if not self._identifiers_match(universal_player, player, ""):
+                continue
+
+            # Determine which player absorbs the other (more protocols wins)
+            keep, remove = (
+                (universal_player, player)
+                if len(universal_player.linked_output_protocols)
+                >= len(player.linked_output_protocols)
+                else (player, universal_player)
+            )
+
+            self.logger.info(
+                "Merging universal player %s into %s (shared identifiers)",
+                remove.player_id,
+                keep.player_id,
+            )
+
+            # Transfer protocol links from the removed player to the keeper
+            for linked in list(remove.linked_output_protocols):
+                if protocol_player := self.get_player(linked.output_protocol_id):
+                    protocol_player.set_protocol_parent_id(None)
+                    domain = linked.protocol_domain or protocol_player.provider.domain
+
+                    # Check if keeper already has an active link from this domain
+                    if self._parent_has_active_protocol_from_domain(keep, domain):
+                        self.logger.debug(
+                            "Skipping duplicate %s link during merge: %s",
+                            domain,
+                            linked.output_protocol_id,
+                        )
+                        continue
+
+                    self._add_protocol_link(keep, protocol_player, domain)
+                    protocol_player.update_state()
+
+            # Merge identifiers
+            for conn_type, value in remove.device_info.identifiers.items():
+                keep.device_info.add_identifier(conn_type, value)
+
+            # Add protocol player IDs from the removed player
+            if isinstance(keep, UniversalPlayer):
+                for pid in remove._protocol_player_ids:
+                    keep.add_protocol_player(pid)
+
+            remove.set_linked_output_protocols([])
+            keep.update_state()
+
+            # Persist updated data and remove the obsolete player
+            self._save_universal_player_data(keep)
+            self.mass.create_task(self.unregister(remove.player_id, permanent=True))
+
+            # Only merge one at a time (re-evaluation will catch cascading merges)
+            break
+
     def _link_protocols_to_universal(
         self, universal_player: Player, protocol_players: list[Player]
     ) -> None:
@@ -446,6 +594,11 @@ class ProtocolLinkingMixin:
         locking, and player creation. The controller then links the protocols
         to the universal player.
         """
+        # Filter out players that got linked during the async delay
+        protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
+        if not protocol_players:
+            return
+
         # Get the universal_player provider
         universal_provider: UniversalPlayerProvider | None = None
         for provider in self.mass.get_providers(ProviderType.PLAYER):
@@ -465,7 +618,24 @@ class ProtocolLinkingMixin:
             return
 
         # Link the protocols to the universal player (controller manages cross-provider state)
-        self._link_protocols_to_universal(universal_player, protocol_players)
+        # Filter out players that were already linked
+        # (e.g., via _add_protocol_to_existing_universal)
+        unlinked_players = [p for p in protocol_players if not p.protocol_parent_id]
+
+        # Split unlinked players: those that can join the main universal player
+        # vs those that got separate universal players (domain-duplicates)
+        for player in list(unlinked_players):
+            # Check if a separate universal player was created for this player
+            fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
+            separate_id = f"up{fallback_key}"
+            if separate_up := self.get_player(separate_id):
+                # Link to the separate universal player instead
+                self._add_protocol_link(separate_up, player, player.provider.domain)
+                player.update_state()
+                separate_up.update_state()
+                unlinked_players.remove(player)
+
+        self._link_protocols_to_universal(universal_player, unlinked_players)
         universal_player.update_state()
 
     def _try_link_protocols_to_native(self, native_player: Player) -> None:
@@ -482,14 +652,41 @@ class ProtocolLinkingMixin:
                 continue
 
             protocol_domain = protocol_player.provider.domain
+
+            # Skip if this native player already has an active link from this domain
+            # (prevents a second instance of the same protocol from trying to link)
+            if self._parent_has_active_protocol_from_domain(native_player, protocol_domain):
+                continue
+
             if self._identifiers_match(native_player, protocol_player, protocol_domain):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
-                protocol_player.update_state()
-                native_player.update_state()
+                # Check if linking succeeded (may be refused for duplicate domain)
+                if protocol_player.protocol_parent_id is not None:
+                    protocol_player.update_state()
+                    native_player.update_state()
 
         # Proactively recover disabled/missing protocols from config
         # This ensures disabled protocols show up in the UI so they can be re-enabled
         self._recover_cached_protocol_links(native_player)
+
+        # Second pass: match remaining unlinked protocol players via sibling identifiers.
+        # After cache recovery, the native player has linked protocols (e.g., AirPlay)
+        # whose identifiers can be used to match new protocol players (e.g., Sendspin bridge)
+        # that share the same device identifiers but couldn't match the native player directly.
+        for protocol_player in self.all_players(return_protocol_players=True):
+            if protocol_player.state.type != PlayerType.PROTOCOL:
+                continue
+            if protocol_player.protocol_parent_id:
+                continue
+            protocol_domain = protocol_player.provider.domain
+            if self._parent_has_active_protocol_from_domain(native_player, protocol_domain):
+                continue
+            if self._match_via_linked_protocols(native_player, protocol_player, protocol_domain):
+                self.logger.debug(
+                    "Linked %s to %s via sibling protocol identifiers",
+                    protocol_player.player_id,
+                    native_player.player_id,
+                )
 
     def _check_replace_universal_player(self, native_player: Player) -> None:
         """Check if a universal player should be replaced by this native player."""
@@ -530,10 +727,50 @@ class ProtocolLinkingMixin:
             # Remove the now-obsolete universal player
             self.mass.create_task(self.unregister(player.player_id, permanent=True))
 
+    def _parent_has_active_protocol_from_domain(
+        self, parent: Player, domain: str, exclude_player_id: str | None = None
+    ) -> bool:
+        """
+        Check if a parent already has an active (registered) protocol player from a given domain.
+
+        This prevents a second protocol player of the same domain (e.g., a second AirPlay
+        instance on the same host) from replacing the first one's link on the same parent.
+
+        :param parent: The parent player to check.
+        :param domain: The protocol domain to check for (e.g., "airplay", "dlna").
+        :param exclude_player_id: Optional player ID to exclude from the check
+            (used when checking if a player's own domain is already linked).
+        """
+        for link in parent.linked_output_protocols:
+            if link.protocol_domain != domain:
+                continue
+            if exclude_player_id and link.output_protocol_id == exclude_player_id:
+                continue
+            # A registered player from this domain blocks the link, even if unavailable.
+            # Being offline doesn't make it a different device — it's still occupying
+            # this domain slot. The provider should remove stale players explicitly.
+            if self.get_player(link.output_protocol_id):
+                return True
+        return False
+
     def _add_protocol_link(
         self, native_player: Player, protocol_player: Player, protocol_domain: str
     ) -> None:
         """Add a protocol link from native player to protocol player."""
+        # Guard: refuse to replace an existing active link from the same domain.
+        # This prevents a second instance of the same protocol (e.g., two AirPlay
+        # instances on the same host) from silently replacing the first one.
+        if self._parent_has_active_protocol_from_domain(
+            native_player, protocol_domain, exclude_player_id=protocol_player.player_id
+        ):
+            self.logger.debug(
+                "Refusing to link %s to %s: parent already has an active %s link",
+                protocol_player.player_id,
+                native_player.player_id,
+                protocol_domain,
+            )
+            return
+
         # Remove any existing link for the same protocol domain
         updated_protocols = [
             link
@@ -562,8 +799,9 @@ class ProtocolLinkingMixin:
         # (only for non-universal players, as universal players handle this themselves)
         if native_player.provider.domain != "universal_player":
             self._save_linked_protocol_ids(native_player)
-            # Also save the parent ID on the protocol player for reverse lookup on restart
-            self._save_protocol_parent_id(protocol_player.player_id, native_player.player_id)
+        # Always save the parent ID on the protocol player for reverse lookup on restart
+        # (needed for both native and universal parents to enable fast restore)
+        self._save_protocol_parent_id(protocol_player.player_id, native_player.player_id)
 
     def _remove_protocol_link(
         self, native_player: Player, protocol_player_id: str, permanent: bool = False
@@ -590,14 +828,15 @@ class ProtocolLinkingMixin:
             if protocol_player.protocol_parent_id == native_player.player_id:
                 protocol_player.set_protocol_parent_id(None)
 
-        # Update persisted linked protocol IDs and clear cached parent
+        # Update persisted linked protocol IDs
         if native_player.provider.domain != "universal_player":
             if permanent:
                 # Permanently remove from cache (player config is being deleted)
                 self._remove_protocol_id_from_cache(native_player.player_id, protocol_player_id)
             # Note: we don't call _save_linked_protocol_ids here anymore for non-permanent
             # removals because the merge approach will preserve the ID in the cache
-            self._clear_protocol_parent_id(protocol_player_id)
+        # Always clear the cached parent ID (for both native and universal parents)
+        self._clear_protocol_parent_id(protocol_player_id)
 
     def _save_linked_protocol_ids(self, native_player: Player) -> None:
         """
@@ -607,9 +846,7 @@ class ProtocolLinkingMixin:
         disabled protocol players in the cache. This allows disabled protocols to be
         shown in the UI so they can be re-enabled.
         """
-        conf_key = (
-            f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
-        )
+        conf_key = f"{CONF_PLAYERS}/{native_player.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         # Get existing cached IDs to preserve disabled protocols
         existing_ids: list[str] = self.mass.config.get(conf_key, [])
         # Get currently active protocol IDs
@@ -623,7 +860,7 @@ class ProtocolLinkingMixin:
 
     def _get_cached_protocol_ids(self, player_id: str) -> list[str]:
         """Get cached linked protocol IDs from config."""
-        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         result = self.mass.config.get(conf_key, [])
         return list(result) if result else []
 
@@ -635,7 +872,7 @@ class ProtocolLinkingMixin:
 
         Use this when a protocol player config is being deleted, not just disabled.
         """
-        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_PLAYER_IDS}"
+        conf_key = f"{CONF_PLAYERS}/{parent_player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
         cached_ids: list[str] = self.mass.config.get(conf_key, [])
         if protocol_player_id in cached_ids:
             cached_ids.remove(protocol_player_id)
@@ -674,7 +911,7 @@ class ProtocolLinkingMixin:
         cached_protocol_ids = self._get_cached_protocol_ids(native_player.player_id)
 
         # Also check all protocol players that have protocol_parent_id pointing to this player
-        # (this handles disabled protocols that may not be in linked_protocol_player_ids)
+        # (this handles disabled protocols that may not be in linked_protocol_ids)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for protocol_id, protocol_config in all_player_configs.items():
             # Skip if not a protocol player
@@ -701,19 +938,24 @@ class ProtocolLinkingMixin:
                 continue
 
             # Determine protocol domain from provider
-            protocol_provider = protocol_config.get("provider")
+            protocol_provider: str = protocol_config.get("provider")
             if not protocol_provider:
                 continue
 
             # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
             protocol_domain = protocol_provider.split("--")[0]
 
+            # Skip if parent already has a link from this domain
+            existing_domains = {
+                link.protocol_domain for link in native_player.linked_output_protocols
+            }
+            if protocol_domain in existing_domains:
+                continue
+
             # Get provider name for display
-            provider_name = "Protocol"  # Default fallback
-            for provider in self.mass.get_providers(ProviderType.PLAYER):
-                if provider.domain == protocol_domain:
-                    provider_name = provider.name
-                    break
+            provider_name = protocol_domain.title()  # Default fallback
+            if provider := self.mass.get_provider(protocol_domain, return_unavailable=True):
+                provider_name = provider.name
 
             # Get priority for this protocol
             priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
@@ -763,18 +1005,39 @@ class ProtocolLinkingMixin:
                     else:
                         parent_player.update_state()
         else:
-            # Native player being removed: schedule protocol evaluation for linked protocols
-            # so they can be assigned to a universal player
-            for linked in player.linked_output_protocols:
-                if protocol_player := self.get_player(linked.output_protocol_id):
+            # Native/universal player being removed: handle all linked protocol players.
+            # Collect all known protocol IDs from both active links and cached config,
+            # since cached config may contain protocols that weren't restored this session.
+            all_protocol_ids: set[str] = {
+                link.output_protocol_id for link in player.linked_output_protocols
+            }
+            all_protocol_ids.update(self._get_cached_protocol_ids(player.player_id))
+            for protocol_id in all_protocol_ids:
+                # Clear cached parent ID in config so protocol won't try to
+                # restore a link to the deleted player on next restart
+                self._clear_protocol_parent_id(protocol_id)
+                if protocol_player := self.get_player(protocol_id):
+                    # Protocol player is available: clear parent and schedule re-evaluation
+                    # so it can be matched to a new parent or a new universal player
                     protocol_player.set_protocol_parent_id(None)
                     protocol_player.update_state()
                     self.logger.debug(
-                        "Native player %s removed - scheduling evaluation for %s",
+                        "Player %s removed - scheduling evaluation for protocol %s",
                         player.player_id,
-                        protocol_player.player_id,
+                        protocol_id,
                     )
                     self._schedule_protocol_evaluation(protocol_player)
+                else:
+                    # Protocol player is not registered yet — it may still be
+                    # mid-discovery (e.g., DLNA connecting via SSDP). Don't delete
+                    # its config as that would cause a KeyError when it finishes
+                    # registering. Stale configs are harmless and get cleaned up
+                    # naturally on subsequent restarts.
+                    self.logger.debug(
+                        "Player %s removed - protocol %s not registered, skipping cleanup",
+                        player.player_id,
+                        protocol_id,
+                    )
 
     def _identifiers_match(
         self, player_a: Player, player_b: Player, protocol_domain: str = ""
@@ -783,9 +1046,9 @@ class ProtocolLinkingMixin:
         Check if identifiers match between two players.
 
         Matching is done by comparing connection identifiers (MAC, serial, UUID).
-        IP address is used as a fallback for protocol players only, because some
-        devices report different virtual MAC addresses per protocol (e.g., DLNA vs
-        AirPlay vs Chromecast may all have different MACs for the same device).
+        As a last resort, IP address is used when at least one player has a
+        locally-administered MAC, indicating the device uses MAC randomization
+        and ARP could not resolve the real hardware address.
 
         Invalid identifiers (e.g., 00:00:00:00:00:00 MAC addresses) are filtered out
         to prevent false matches between unrelated devices.
@@ -794,11 +1057,13 @@ class ProtocolLinkingMixin:
         identifiers_b = player_b.device_info.identifiers
 
         # Check identifiers in order of reliability
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID
+        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
         for conn_type in (
             IdentifierType.MAC_ADDRESS,
             IdentifierType.SERIAL_NUMBER,
             IdentifierType.UUID,
+            IdentifierType.CAST_UUID,
+            IdentifierType.AIRPLAY_ID,
         ):
             val_a = identifiers_a.get(conn_type)
             val_b = identifiers_b.get(conn_type)
@@ -826,9 +1091,30 @@ class ProtocolLinkingMixin:
                 # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
                 val_a_norm = normalize_mac_for_matching(val_a)
                 val_b_norm = normalize_mac_for_matching(val_b)
-            else:
-                val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-                val_b_norm = val_b.lower().replace(":", "").replace("-", "")
+
+                # Direct match on current MAC
+                if val_a_norm == val_b_norm:
+                    return True
+
+                # Multi-MAC matching: also check original reported MACs.
+                # Devices with multiple interfaces (WiFi + Ethernet) may have ARP
+                # resolve one MAC while the protocol reports a different one.
+                macs_a = {val_a_norm}
+                macs_b = {val_b_norm}
+                reported_a = player_a.extra_data.get("reported_mac")
+                reported_b = player_b.extra_data.get("reported_mac")
+                if reported_a and is_valid_mac_address(reported_a):
+                    macs_a.add(normalize_mac_for_matching(reported_a))
+                if reported_b and is_valid_mac_address(reported_b):
+                    macs_b.add(normalize_mac_for_matching(reported_b))
+                if macs_a & macs_b:
+                    return True
+
+                # No MAC match - continue to next identifier type
+                continue
+
+            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
+            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
 
             # Direct match
             if val_a_norm == val_b_norm:
@@ -842,38 +1128,48 @@ class ProtocolLinkingMixin:
                 if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
 
-        # Fallback: IP address matching for protocol players only
-        # Some devices report different virtual MAC addresses per protocol,
-        # but the IP address remains the same. Only use this for protocol-to-protocol
-        # or protocol-to-universal matching to avoid false positives.
-        if self._can_use_ip_matching(player_a, player_b):
-            ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
-            ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
-
-            # Normalize IP addresses (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
-            ip_a_normalized = normalize_ip_address(ip_a)
-            ip_b_normalized = normalize_ip_address(ip_b)
-
-            if ip_a_normalized and ip_b_normalized and ip_a_normalized == ip_b_normalized:
+        # Last resort: IP-based matching.
+        # Two players on the same IP are very likely the same physical device.
+        # This handles two cases:
+        # 1. MAC randomization: at least one player has no real MAC (LA or missing),
+        #    so ARP couldn't resolve a usable address.
+        # 2. Different MACs per protocol: some devices (e.g., Yamaha MusicCast) report
+        #    different valid globally-unique MACs per protocol (DLNA vs AirPlay differ
+        #    by 1 in the last octet). IP matching is safe here because two different
+        #    devices on a LAN cannot share the same IP simultaneously.
+        #    To avoid false positives between unrelated native players, this path
+        #    requires at least one player to be a protocol or universal player.
+        ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
+        ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
+        if ip_a and ip_b and ip_a == ip_b:
+            mac_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
+            mac_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
+            a_is_real = (
+                mac_a is not None
+                and is_valid_mac_address(mac_a)
+                and not is_locally_administered_mac(mac_a)
+            )
+            b_is_real = (
+                mac_b is not None
+                and is_valid_mac_address(mac_b)
+                and not is_locally_administered_mac(mac_b)
+            )
+            # Case 1: at least one player has no real hardware MAC
+            if not (a_is_real and b_is_real):
+                return True
+            # Case 2: both have real MACs but at least one is a protocol/universal player
+            a_is_protocol = (
+                player_a.type == PlayerType.PROTOCOL
+                or player_a.provider.domain == "universal_player"
+            )
+            b_is_protocol = (
+                player_b.type == PlayerType.PROTOCOL
+                or player_b.provider.domain == "universal_player"
+            )
+            if a_is_protocol or b_is_protocol:
                 return True
 
         return False
-
-    def _can_use_ip_matching(self, player_a: Player, player_b: Player) -> bool:
-        """
-        Check if IP address matching can be used between two players.
-
-        IP matching is only allowed when at least one player is a protocol player
-        or universal player, to avoid false positives between unrelated devices.
-        """
-        # Check if at least one is a protocol player or universal player
-        a_is_protocol = (
-            player_a.type == PlayerType.PROTOCOL or player_a.provider.domain == "universal_player"
-        )
-        b_is_protocol = (
-            player_b.type == PlayerType.PROTOCOL or player_b.provider.domain == "universal_player"
-        )
-        return a_is_protocol or b_is_protocol
 
     def _select_best_output_protocol(self, player: Player) -> tuple[Player, OutputProtocol | None]:
         """

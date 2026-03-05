@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Final, cast, get_args
+from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
 import shortuuid
@@ -38,6 +38,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
     MASS_LOGO,
+    PLAYLIST_MEDIA_TYPES,
     VARIOUS_ARTISTS_FANART,
     PlaylistPlayableItem,
 )
@@ -90,6 +91,10 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS,
+    ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES,
+    ProviderFeature.PLAYLIST_CREATE_RADIOS,
+    ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
@@ -242,6 +247,12 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            supported_mediatypes={
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+                MediaType.RADIO,
+                MediaType.TRACK,
+            },
             is_editable=True,
         )
         if image_url := stored_item.get("image_url"):
@@ -358,7 +369,7 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(  # type: ignore[override]
+    async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks.
@@ -380,22 +391,32 @@ class BuiltinProvider(MusicProvider):
                 media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
                 media_controller = self.mass.music.get_controller(media_type)
                 # prefer item already in the db
-                track = await media_controller.get_library_item_by_prov_id(
+                media_item: (
+                    MediaItemType | None
+                ) = await media_controller.get_library_item_by_prov_id(
                     item_id, provider_instance_id_or_domain
                 )
-                if track is None:
-                    # get the provider item and not the full track from a regular 'get' call
-                    # as we only need basic track info here
-                    track = await media_controller.get_provider_item(
-                        item_id, provider_instance_id_or_domain
-                    )
-                if isinstance(track, get_args(PlaylistPlayableItem)):
-                    playlist_item = cast("PlaylistPlayableItem", track)
+                if media_item is None:
+                    # Call provider.get_item directly with the correct media_type.
+                    # Using media_controller.get_provider_item would pass the
+                    # controller's own media_type, which is wrong for podcast
+                    # episodes (controller has PODCAST, not PODCAST_EPISODE).
+                    item_prov = self.mass.get_provider(provider_instance_id_or_domain)
+                    if not item_prov:
+                        raise ProviderUnavailableError(
+                            f"{provider_instance_id_or_domain} is not available"
+                        )
+                    item_prov = cast("MusicProvider", item_prov)
+                    media_item = await item_prov.get_item(media_type, item_id)
+                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
                     playlist_item.position = index
                     result.append(playlist_item)
                 else:
                     self.logger.warning(
-                        "Unsupported media type in playlist %s: %s", prov_playlist_id, type(track)
+                        "Unsupported media type in playlist %s: %s",
+                        prov_playlist_id,
+                        type(media_item),
                     )
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
@@ -435,7 +456,7 @@ class BuiltinProvider(MusicProvider):
             stored_item["last_updated"] = int(time.time())
             self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         item_id = shortuuid.random(8)
         stored_item = StoredItem(item_id=item_id, name=name)

@@ -559,7 +559,7 @@ class OpenSonicProvider(MusicProvider):
             tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new empty playlist on the server."""
         if not await self.conn.create_playlist(name=name):
             raise ProviderPermissionDenied(

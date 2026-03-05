@@ -70,6 +70,7 @@ from music_assistant.helpers.audio import (
     get_buffered_media_stream,
     get_chunksize,
     get_media_stream,
+    get_mime_type,
     get_player_filter_params,
     get_stream_details,
     resample_pcm_audio,
@@ -479,14 +480,14 @@ class StreamsController(CoreController):
             "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers=headers,
         )
-        resp.content_type = f"audio/{output_format.output_format_str}"
+        resp.content_type = get_mime_type(output_format.output_format_str)
         http_profile = await self.mass.config.get_player_config_value(
             player_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
@@ -617,8 +618,6 @@ class StreamsController(CoreController):
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
-        queue.flow_mode_stream_log = []
-
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(player)
 
@@ -644,7 +643,7 @@ class StreamsController(CoreController):
             **ICY_HEADERS,
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -766,7 +765,7 @@ class StreamsController(CoreController):
                 data += chunk
             return web.Response(
                 body=data,
-                content_type=f"audio/{audio_format.output_format_str}",
+                content_type=get_mime_type(audio_format.output_format_str),
                 headers=DEFAULT_STREAM_HEADERS,
             )
 
@@ -775,7 +774,7 @@ class StreamsController(CoreController):
             reason="OK",
             headers=DEFAULT_STREAM_HEADERS,
         )
-        resp.content_type = f"audio/{audio_format.output_format_str}"
+        resp.content_type = get_mime_type(audio_format.output_format_str)
         if http_profile == "chunked":
             resp.enable_chunked_encoding()
 
@@ -834,7 +833,7 @@ class StreamsController(CoreController):
             "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "icy-name": plugin_source.name,
             "Accept-Ranges": "none",
-            "Content-Type": f"audio/{output_format.output_format_str}",
+            "Content-Type": get_mime_type(output_format.output_format_str),
         }
 
         resp = web.StreamResponse(
@@ -842,7 +841,7 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        resp.content_type = f"audio/{output_format.output_format_str}"
+        resp.content_type = get_mime_type(output_format.output_format_str)
         http_profile = await self.mass.config.get_player_config_value(
             player_id, CONF_HTTP_PROFILE, default="default", return_type=str
         )
@@ -1023,6 +1022,7 @@ class StreamsController(CoreController):
         last_streamdetails: StreamDetails | None = None
         last_play_log_entry: PlayLogEntry | None = None
         queue.flow_mode = True
+        queue.flow_mode_stream_log = []
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
@@ -1277,6 +1277,9 @@ class StreamsController(CoreController):
             last_fadeout_part = b""
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
+        # inform the queue controller that all audio data has been generated
+        # so it can handle the case where new items were added after the flow stream ended
+        self.mass.player_queues.queue_buffer_completed(queue.queue_id)
 
     async def get_announcement_stream(
         self,
@@ -1306,14 +1309,22 @@ class StreamsController(CoreController):
 
         async def fetch_announcement() -> None:
             fmt = announcement_url.rsplit(".")[-1]
-            async for chunk in get_ffmpeg_stream(
-                audio_input=announcement_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
-                output_format=pcm_format,
-                chunk_size=get_chunksize(pcm_format, 1),
-            ):
-                await announcement_data.put(chunk)
-            await announcement_data.put(None)  # signal end of stream
+            try:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=announcement_url,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                    output_format=pcm_format,
+                    chunk_size=get_chunksize(pcm_format, 1),
+                ):
+                    await announcement_data.put(chunk)
+            except AudioError as err:
+                self.logger.warning(
+                    "Failed to fetch announcement audio from %s: %s",
+                    announcement_url,
+                    err,
+                )
+            finally:
+                await announcement_data.put(None)  # always signal end of stream
 
         self.mass.create_task(fetch_announcement())
 

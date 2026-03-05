@@ -357,7 +357,7 @@ class AudioTags:
     @property
     def genres(self) -> tuple[str, ...]:
         """Return (all) genres, if any."""
-        return split_items(self.tags.get("genre"))
+        return split_items(self.tags.get("genre"), allow_unsafe_splitters=True)
 
     @property
     def disc(self) -> int | None:
