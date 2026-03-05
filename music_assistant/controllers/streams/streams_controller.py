@@ -1309,14 +1309,22 @@ class StreamsController(CoreController):
 
         async def fetch_announcement() -> None:
             fmt = announcement_url.rsplit(".")[-1]
-            async for chunk in get_ffmpeg_stream(
-                audio_input=announcement_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
-                output_format=pcm_format,
-                chunk_size=get_chunksize(pcm_format, 1),
-            ):
-                await announcement_data.put(chunk)
-            await announcement_data.put(None)  # signal end of stream
+            try:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=announcement_url,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                    output_format=pcm_format,
+                    chunk_size=get_chunksize(pcm_format, 1),
+                ):
+                    await announcement_data.put(chunk)
+            except AudioError as err:
+                self.logger.warning(
+                    "Failed to fetch announcement audio from %s: %s",
+                    announcement_url,
+                    err,
+                )
+            finally:
+                await announcement_data.put(None)  # always signal end of stream
 
         self.mass.create_task(fetch_announcement())
 
