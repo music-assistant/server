@@ -20,6 +20,7 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AIRPLAY2_CONNECT_TIME_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
@@ -43,6 +44,7 @@ from .constants import (
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PIN_REQUIRED,
+    RAOP_CONNECT_TIME_MS,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
@@ -155,6 +157,14 @@ class AirPlayPlayer(Player):
             "int",
             self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
         )
+
+    @property
+    def wait_start(self) -> int:
+        """Get the time in ms to allow device to connect before starting stream."""
+        # TODO: make this value configurable ?
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            return AIRPLAY2_CONNECT_TIME_MS
+        return RAOP_CONNECT_TIME_MS
 
     async def get_config_entries(
         self,
@@ -293,12 +303,8 @@ class AirPlayPlayer(Player):
 
     def _get_protocol_for_config_value(self, config_option: int) -> StreamingProtocol:
         if config_option == StreamingProtocol.AIRPLAY2:
-            if not self.airplay_discovery_info:
-                raise ValueError("No AirPlay service found for this player")
             return StreamingProtocol.AIRPLAY2
         if config_option == StreamingProtocol.RAOP:
-            if not self.raop_discovery_info:
-                raise ValueError("No RAOP service found for this player")
             return StreamingProtocol.RAOP
         # automatic selection
         if self.airplay_discovery_info and is_airplay2_preferred_model(
@@ -497,6 +503,14 @@ class AirPlayPlayer(Player):
         if self.stream and self.stream.session:
             # forward stop to the entire stream session
             await self.stream.session.stop()
+        elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(self.player_id):
+            # Sendspin bridge active: trigger full bridge cleanup
+            # which stops streaming, kills the CLI, and cancels writer tasks
+            pass
+        elif self.stream and self.stream.running:
+            # Fallback: stop protocol directly
+            await self.stream.stop(force=True)
+            self.stream = None
         self._attr_current_media = None
         self.update_state()
 
