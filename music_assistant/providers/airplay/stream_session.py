@@ -17,13 +17,7 @@ from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_time_to_ntp
 
-from .constants import (
-    AIRPLAY2_CONNECT_TIME_MS,
-    CONF_ENABLE_LATE_JOIN,
-    ENABLE_LATE_JOIN_DEFAULT,
-    RAOP_CONNECT_TIME_MS,
-    StreamingProtocol,
-)
+from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -70,17 +64,7 @@ class AirPlayStreamSession:
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
         cur_time = time.time()
-        has_airplay2_client = any(
-            p.protocol == StreamingProtocol.AIRPLAY2 for p in self.sync_clients
-        )
-        max_output_buffer_ms: int = 0
-        if has_airplay2_client:
-            max_output_buffer_ms = max(p.output_buffer_duration_ms for p in self.sync_clients)
-        wait_start = (
-            AIRPLAY2_CONNECT_TIME_MS + max_output_buffer_ms
-            if has_airplay2_client
-            else RAOP_CONNECT_TIME_MS + max_output_buffer_ms
-        )
+        wait_start = max(p.wait_start for p in self.sync_clients)
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds

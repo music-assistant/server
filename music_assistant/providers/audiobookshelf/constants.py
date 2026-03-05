@@ -35,6 +35,8 @@ class AbsBrowsePaths(StrEnum):
     SERIES = "s"
     COLLECTIONS = "c"
     AUDIOBOOKS = "b"
+    PODCASTS = "p"
+    PLAYLISTS = "pl"
 
 
 class AbsBrowseItemsBookTranslationKey(StrEnum):
@@ -44,21 +46,29 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     NARRATORS = "narrators"
     SERIES = "series_plural"
     COLLECTIONS = "collections"
+    PLAYLISTS = "playlists"
     AUDIOBOOKS = "audiobooks"
 
 
 class AbsBrowseItemsPodcastTranslationKey(StrEnum):
     """Folder names in browse view for podcasts."""
 
+    PLAYLISTS = "playlists"
     PODCASTS = "podcasts"
 
 
-ABS_BROWSE_ITEMS_TO_PATH: dict[str, str] = {
+ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
+    AbsBrowseItemsBookTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
+}
+
+ABS_BROWSE_ITEMS_PODCAST_TO_PATH: dict[str, str] = {
+    AbsBrowseItemsPodcastTranslationKey.PODCASTS: AbsBrowsePaths.PODCASTS,
+    AbsBrowseItemsPodcastTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
 }
 
 ABS_SHELF_ID_ICONS: dict[str, str] = {

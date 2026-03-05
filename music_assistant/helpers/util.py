@@ -1091,7 +1091,7 @@ def lock[**P, R](  # type: ignore[valid-type]
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using the throttler with retries."""
+        """Call async function using a Lock."""
         if not (func_lock := getattr(func, "lock", None)):
             func_lock = asyncio.Lock()
             func.lock = func_lock  # type: ignore[attr-defined]

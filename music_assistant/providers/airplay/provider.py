@@ -43,6 +43,11 @@ class AirPlayProvider(PlayerProvider):
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
 
+    @property
+    def bridge_manager(self) -> SendspinBridgeManager:
+        """Return the Sendspin bridge manager."""
+        return self._bridge_manager
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Initialize Sendspin bridge manager for protocol linking
@@ -126,6 +131,10 @@ class AirPlayProvider(PlayerProvider):
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
+        # return early if player is disabled in config
+        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
+            return
         raop_discovery_info: AsyncServiceInfo | None = None
         airplay_discovery_info: AsyncServiceInfo | None = None
         if discovery_info.type == RAOP_DISCOVERY_TYPE:
@@ -139,18 +148,26 @@ class AirPlayProvider(PlayerProvider):
                 AIRPLAY_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
-            await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000)
+            if not await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+                airplay_discovery_info = None
         else:
             # AirPlay service discovered
             self.logger.debug("Discovered AirPlay service for %s", display_name)
             airplay_discovery_info = discovery_info
+            # also try to get the raop info if available
+            raop_discovery_info = AsyncServiceInfo(
+                RAOP_DISCOVERY_TYPE,
+                discovery_info.name.split("@")[-1].replace("_airplay", "_raop"),
+            )
+            if not await raop_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+                raop_discovery_info = None
 
         if airplay_discovery_info:
             manufacturer, model = get_model_info(airplay_discovery_info)
         elif raop_discovery_info:
             manufacturer, model = get_model_info(raop_discovery_info)
         else:
-            manufacturer, model = "Unknown", "Unknown"
+            return  # should not happen, but guard just in case
 
         address = get_primary_ip_address_from_zeroconf(discovery_info)
         if not address:
@@ -173,12 +190,6 @@ class AirPlayProvider(PlayerProvider):
                 }
                 if discovery_info.port in receiver_ports:
                     return
-
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
-            return
-        if not discovery_info:
-            return  # should not happen, but guard just in case
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
