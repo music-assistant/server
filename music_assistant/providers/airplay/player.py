@@ -303,12 +303,8 @@ class AirPlayPlayer(Player):
 
     def _get_protocol_for_config_value(self, config_option: int) -> StreamingProtocol:
         if config_option == StreamingProtocol.AIRPLAY2:
-            if not self.airplay_discovery_info:
-                raise ValueError("No AirPlay service found for this player")
             return StreamingProtocol.AIRPLAY2
         if config_option == StreamingProtocol.RAOP:
-            if not self.raop_discovery_info:
-                raise ValueError("No RAOP service found for this player")
             return StreamingProtocol.RAOP
         # automatic selection
         if self.airplay_discovery_info and is_airplay2_preferred_model(
