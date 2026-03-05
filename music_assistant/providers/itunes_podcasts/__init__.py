@@ -258,6 +258,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 podcast.item_id = feed_url
                 podcast.provider_mappings = {our_provider_mapping}
                 yield podcast
+                continue
 
             assert parsed_podcast is not None  # for type checking
             yield parse_podcast(
