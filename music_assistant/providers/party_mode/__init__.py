@@ -166,7 +166,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_QR_SHOW_INSTRUCTION_TEXT,
             type=ConfigEntryType.BOOLEAN,
-            default_value=True,
+            default_value=False,
             label="Show QR Code Instruction Text",
             description="Display instruction text below the QR code in the party view.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
