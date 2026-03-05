@@ -43,6 +43,11 @@ class AirPlayProvider(PlayerProvider):
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
 
+    @property
+    def bridge_manager(self) -> SendspinBridgeManager:
+        """Return the Sendspin bridge manager."""
+        return self._bridge_manager
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Initialize Sendspin bridge manager for protocol linking
@@ -143,7 +148,8 @@ class AirPlayProvider(PlayerProvider):
                 AIRPLAY_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
-            await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000)
+            if not await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+                airplay_discovery_info = None
         else:
             # AirPlay service discovered
             self.logger.debug("Discovered AirPlay service for %s", display_name)
@@ -153,7 +159,8 @@ class AirPlayProvider(PlayerProvider):
                 RAOP_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_airplay", "_raop"),
             )
-            await raop_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000)
+            if not await raop_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+                raop_discovery_info = None
 
         if airplay_discovery_info:
             manufacturer, model = get_model_info(airplay_discovery_info)

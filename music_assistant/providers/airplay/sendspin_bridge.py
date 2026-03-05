@@ -545,8 +545,8 @@ class SendspinBridgeManager:
         """Set up a Sendspin bridge for an AirPlay player."""
         if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
             # AP2 doesn't allow us to send a timestamp in the past
-            # (or one it can't reach in time) so we do not attempt to use it and fallback
-            # to RAOP for now. TODO: revisit this once sendspin allows to report a static
+            # (or one it can't reach in time) so we skip setting up the bridge.
+            # TODO: revisit this once sendspin allows to report a static
             # delay of the client, so we can report a delay that meets AP2's requirements.
             self.logger.warning(
                 "Sendspin bridge is not yet compatible with AirPlay2, skipping bridge for %s",
@@ -603,6 +603,17 @@ class SendspinBridgeManager:
             self._bridges.clear()
 
         self.logger.debug("All Sendspin bridges stopped")
+
+    def stop_streaming(self, airplay_player_id: str) -> bool:
+        """Stop streaming for a bridged AirPlay player.
+
+        :param airplay_player_id: The AirPlay player ID.
+        :return: True if a bridge was found and stopped, False otherwise.
+        """
+        if bridge := self._bridges.get(airplay_player_id):
+            bridge._on_bridge_stream_end()
+            return True
+        return False
 
     def get_bridge(self, airplay_player_id: str) -> SendspinAirPlayBridge | None:
         """Get the bridge for an AirPlay player."""

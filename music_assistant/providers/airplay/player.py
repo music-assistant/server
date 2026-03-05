@@ -503,12 +503,10 @@ class AirPlayPlayer(Player):
         if self.stream and self.stream.session:
             # forward stop to the entire stream session
             await self.stream.session.stop()
-        elif bridge := cast("AirPlayProvider", self.provider)._bridge_manager.get_bridge(
-            self.player_id
-        ):
+        elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(self.player_id):
             # Sendspin bridge active: trigger full bridge cleanup
             # which stops streaming, kills the CLI, and cancels writer tasks
-            bridge._on_bridge_stream_end()
+            pass
         elif self.stream and self.stream.running:
             # Fallback: stop protocol directly
             await self.stream.stop(force=True)
