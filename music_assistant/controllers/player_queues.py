@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     QueueOption,
     RepeatMode,
@@ -135,14 +136,14 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
         if queue is None:
             # Queue not found, just call the function and let it handle the error
             return await func(self, *args, **kwargs)
+        flag_already_present = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
         try:
-            has_flag = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 self.signal_update(queue_id)
             return await func(self, *args, **kwargs)
         finally:
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
 
@@ -200,7 +201,10 @@ class PlayerQueuesController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        enqueue_options = [ConfigValueOption(x.name, x.value) for x in QueueOption]
+        enqueue_options = [
+            ConfigValueOption("Play (and keep queue)", QueueOption.PLAY.value),
+            ConfigValueOption("Play (and replace queue)", QueueOption.REPLACE.value),
+        ]
         return (
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
@@ -577,7 +581,7 @@ class PlayerQueuesController(CoreController):
                     elif start_item is not None:
                         start_item_uri = start_item.uri
                     media_items += await self._resolve_media_items(
-                        media_item, start_item_uri, queue_id=queue_id
+                        media_item, start_item_uri, userid=queue.userid, queue_id=queue_id
                     )
 
             except MusicAssistantError as err:
@@ -1165,18 +1169,28 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_ungroup(group_id)
             await asyncio.sleep(3)
 
+        # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
+        source_resume_pos = int(source_queue.corrected_elapsed_time)
+        source_current_index = source_queue.current_index
+        source_current_item = source_queue.current_item
+
+        # stop the source player synchronously to prevent the async stop from
+        # clear() racing with the target's sync group formation/protocol switching
+        if source_queue.state != PlaybackState.IDLE:
+            await self.stop(source_queue_id)
+
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
-        target_queue.resume_pos = int(source_queue.elapsed_time)
-        target_queue.current_index = source_queue.current_index
-        if source_queue.current_item:
-            target_queue.current_item = source_queue.current_item
+        target_queue.resume_pos = source_resume_pos
+        target_queue.current_index = source_current_index
+        if source_current_item:
+            target_queue.current_item = source_current_item
             target_queue.current_item.queue_id = target_queue_id
-        self.clear(source_queue_id)
+        self.clear(source_queue_id, skip_stop=True)
 
         await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
         for item in source_items:
@@ -1200,6 +1214,9 @@ class PlayerQueuesController(CoreController):
         ):
             try:
                 queue = PlayerQueue.from_dict(prev_state)
+                # drop the play action in progress flag if it exists
+                # this can happen if MA was killed while a play action was in progress
+                queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1269,6 +1286,9 @@ class PlayerQueuesController(CoreController):
 
         NOTE: This is called every second if the player is playing.
         """
+        if player.type == PlayerType.PROTOCOL:
+            # protocol players do not have a queue on their own
+            return
         queue_id = player.player_id
         if (queue := self._queues.get(queue_id)) is None:
             # race condition
@@ -1286,7 +1306,6 @@ class PlayerQueuesController(CoreController):
             # we're currently transitioning to a new track,
             # ignore updates from the player during this time
             return
-
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
@@ -2090,7 +2109,9 @@ class PlayerQueuesController(CoreController):
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
-                self.mass.music.mark_item_played(media_item, queue_id=queue_id, user_initiated=True)
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
             )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
@@ -2620,23 +2641,19 @@ class PlayerQueuesController(CoreController):
                 return current_item_id
             return None
         # try to extract the item id from a mass stream url
+        # URL format: {base_url}/{mode}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}
+        base_url = self.mass.streams.base_url
         if (
             protocol_player.current_media.uri
-            and queue_id in protocol_player.current_media.uri
-            and self.mass.streams.base_url in protocol_player.current_media.uri
+            and base_url
+            and protocol_player.current_media.uri.startswith(base_url)
         ):
-            current_item_id = protocol_player.current_media.uri.rsplit("/")[-1].split(".")[0]
-            if self.get_item(queue_id, current_item_id):
-                return current_item_id
-        # try to extract the item id from a queue_id/item_id combi
-        if (
-            protocol_player.current_media.uri
-            and queue_id in protocol_player.current_media.uri
-            and "/" in protocol_player.current_media.uri
-        ):
-            current_item_id = protocol_player.current_media.uri.split("/")[1]
-            if self.get_item(queue_id, current_item_id):
-                return current_item_id
+            path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
+            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            if len(path_parts) >= 5:
+                current_item_id = path_parts[3]
+                if self.get_item(queue_id, current_item_id):
+                    return current_item_id
 
         return None
 

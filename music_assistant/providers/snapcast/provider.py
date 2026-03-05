@@ -19,6 +19,7 @@ from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.constants import CONF_ENABLED
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import get_ip_pton
@@ -347,9 +348,12 @@ class SnapCastProvider(PlayerProvider):
             return new_id
         return self._get_ma_id(snap_client_id)
 
-    def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer:
+    def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
         """Process Snapcast add to Player controller."""
         player_id = self._generate_and_register_id(snap_client.identifier)
+        if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
+            self.logger.debug("Ignoring disabled snapcast player: %s", player_id)
+            return None
         player = self.mass.players.get_player(player_id, raise_unavailable=False)
         if not player:
             snap_client = self._snapserver.client(self._get_snapclient_id(player_id))

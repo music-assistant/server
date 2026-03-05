@@ -1453,6 +1453,26 @@ class ConfigController:
                 LOGGER.info("Migrated AirPlay credentials for player %s", player_id)
             changed = True
 
+        # Clean up stale ARP/MAC caches from group/stereo pair player configs
+        # and protocol players that were incorrectly linked to groups.
+        # TODO: remove after 2.8 release
+        group_player_ids: set[str] = set()
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+            if player_config.get("player_type") not in ("group", "stereo_pair"):
+                continue
+            group_player_ids.add(player_id)
+            if not (values := player_config.get("values")):
+                continue
+            for key in ("cached_arp_mac", "reported_mac", "linked_protocol_ids"):
+                if values.pop(key, None) is not None:
+                    changed = True
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+            if not (values := player_config.get("values")):
+                continue
+            if values.get("protocol_parent_id") in group_player_ids:
+                values.pop("protocol_parent_id")
+                changed = True
+
         if changed:
             await self._async_save()
 

@@ -618,8 +618,6 @@ class StreamsController(CoreController):
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
-        queue.flow_mode_stream_log = []
-
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(player)
 
@@ -1024,6 +1022,7 @@ class StreamsController(CoreController):
         last_streamdetails: StreamDetails | None = None
         last_play_log_entry: PlayLogEntry | None = None
         queue.flow_mode = True
+        queue.flow_mode_stream_log = []
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
