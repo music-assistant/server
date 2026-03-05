@@ -42,9 +42,6 @@ class SyncGroupPlayer(Player):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
-        # Allow grouping with any player that supports syncing
-        # The actual compatibility is checked via can_group_with on each player
-        self._attr_can_group_with = set()
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -214,17 +211,17 @@ class SyncGroupPlayer(Player):
             # in case of static members,
             # we can only group with the players defined in the config, so we return those directly
             return set(self._attr_static_group_members)
-        # if we already have a sync leader, we use its can_group_with as reference
-        if self.sync_leader:
-            return {
-                self.sync_leader.player_id,
-                *self.sync_leader.state.can_group_with,
-            }
         members_filter = (
             cast("list[str]", self.config.get_value(CONF_MEMBERS_FILTER, []))
             if self.is_dynamic
             else []
         )
+        # if we already have a sync leader, we use its can_group_with as reference
+        if self.sync_leader:
+            return {
+                self.sync_leader.player_id,
+                *self.sync_leader.state.can_group_with.difference(members_filter),
+            }
         # If we have no syncleader, but we do have group members
         # grab 'can_group_with' from the first available member
         for member_id in self._attr_group_members:
