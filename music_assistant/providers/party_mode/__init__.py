@@ -385,7 +385,9 @@ class PartyModePlugin(PluginProvider):
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/url", self.get_party_mode_url)
+            self.mass.register_api_command(
+                "party_mode/url", self.get_party_mode_url, required_role="user"
+            )
         )
         self._unregister_handles.append(
             self.mass.register_api_command("party_mode/player", self.get_party_mode_player)
@@ -594,29 +596,31 @@ class PartyModePlugin(PluginProvider):
                 extra_attrs[ATTR_PARTY_MODE_BOOSTED] = True
             await self._add_to_priority_section(queue_id, uri, extra_attrs)
         else:
-            # Queue is not playing — resolve the item, insert, and start playback
-            media_item = await self.mass.music.get_item_by_uri(uri)
-            if not media_item or media_item.media_type not in (
-                MediaType.TRACK,
-                MediaType.RADIO,
-            ):
-                raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-            queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
-            queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-            if boost:
-                queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
-            # Insert after current position if queue has one, otherwise at the start
-            insert_index = (queue.current_index + 1) if queue.current_index is not None else 0
-            await self.mass.player_queues.load(
-                queue_id=queue_id,
-                queue_items=[queue_item],
-                insert_at_index=insert_index,
-                keep_remaining=True,
-                keep_played=True,
-                shuffle=False,
-            )
-            await self.mass.player_queues.play_index(queue_id, insert_index)
-            started_playback = True
+            # Queue is not playing — resolve the item, insert, and start playback.
+            # Hold the lock so concurrent guests don't both start playback.
+            async with self._queue_lock:
+                media_item = await self.mass.music.get_item_by_uri(uri)
+                if not media_item or media_item.media_type not in (
+                    MediaType.TRACK,
+                    MediaType.RADIO,
+                ):
+                    raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
+                queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                if boost:
+                    queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+                # Insert after current position if queue has one, otherwise at the start
+                insert_index = (queue.current_index + 1) if queue.current_index is not None else 0
+                await self.mass.player_queues.load(
+                    queue_id=queue_id,
+                    queue_items=[queue_item],
+                    insert_at_index=insert_index,
+                    keep_remaining=True,
+                    keep_played=True,
+                    shuffle=False,
+                )
+                await self.mass.player_queues.play_index(queue_id, insert_index)
+                started_playback = True
 
         self.logger.info(
             "Guest added to queue: %s (boost=%s, started_playback=%s)",
