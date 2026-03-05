@@ -379,22 +379,62 @@ async def test_get_album_tracks_success(provider: BandcampProvider) -> None:
 
 
 async def test_get_artist_albums_success(provider: BandcampProvider) -> None:
-    """Test successful artist albums retrieval."""
-    mock_discography = [{"item_type": "album", "band_id": 123, "item_id": 456}]
+    """Test successful artist albums retrieval converts discography items directly."""
+    mock_discography = [
+        {
+            "item_type": "album",
+            "band_id": 123,
+            "item_id": 456,
+            "title": "Test Album",
+            "artist_name": "Test Artist",
+            "band_name": "Test Artist",
+            "art_id": 9876543210,
+            "release_date": "21 Feb 2020 00:00:00 GMT",
+        },
+        {"item_type": "track", "band_id": 123, "item_id": 789},  # should be skipped
+    ]
 
-    with (
-        patch.object(
-            provider._client, "get_artist_discography", new_callable=AsyncMock
-        ) as mock_get_discography,
-        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
-    ):
+    with patch.object(
+        provider._client, "get_artist_discography", new_callable=AsyncMock
+    ) as mock_get_discography:
         mock_get_discography.return_value = mock_discography
-        mock_get_album.return_value = Mock()
 
         result = await provider.get_artist_albums("123")
 
         mock_get_discography.assert_called_once_with("123")
         assert len(result) == 1
+        assert result[0].item_id == "123-456"
+        assert result[0].name == "Test Album"
+        assert result[0].year == 2020
+
+
+async def test_get_artist_albums_label_uses_band_id(provider: BandcampProvider) -> None:
+    """Test that label discography uses each album's band_id, not the label's ID."""
+    mock_discography = [
+        {
+            "item_type": "album",
+            "band_id": 9999,  # actual artist, different from label ID
+            "item_id": 100,
+            "title": "Artist Album",
+            "artist_name": "Some Artist",
+            "band_name": "Some Artist",
+            "art_id": 1111,
+            "release_date": "01 Jan 2023 00:00:00 GMT",
+        },
+    ]
+
+    with patch.object(
+        provider._client, "get_artist_discography", new_callable=AsyncMock
+    ) as mock_get_discography:
+        mock_get_discography.return_value = mock_discography
+
+        # Query with label ID "555", but album should use band_id 9999
+        result = await provider.get_artist_albums("555")
+
+        assert len(result) == 1
+        assert result[0].item_id == "9999-100"  # band_id, not label ID
+        artists = list(result[0].artists)
+        assert artists[0].item_id == "9999"
 
 
 async def test_get_stream_details_success(provider: BandcampProvider) -> None:

@@ -386,22 +386,13 @@ class BandcampProvider(MusicProvider):
     @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
-        albums = []
         try:
             api_discography = await self._client.get_artist_discography(prov_artist_id)
-            for item in api_discography:
-                if item.get("item_type") == "album" and item.get("item_id"):
-                    album = None
-
-                    with suppress(MediaNotFoundError):
-                        album = await self.get_album(f"{item['band_id']}-{item['item_id']}")
-
-                    with suppress(MediaNotFoundError):
-                        album = album or await self.get_album(f"{prov_artist_id}-{item['item_id']}")
-
-                    if album:
-                        albums.append(album)
-
+            return [
+                self._converters.album_from_discography_item(item)
+                for item in api_discography
+                if item.get("item_type") == "album" and item.get("item_id")
+            ]
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Artist {prov_artist_id} albums not found on Bandcamp"
@@ -412,8 +403,6 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get albums for artist {prov_artist_id}") from error
-
-        return albums
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
