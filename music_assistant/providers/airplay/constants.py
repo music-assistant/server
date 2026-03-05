@@ -41,8 +41,8 @@ AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 500
 # Maximum output buffer duration permitted.
 AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 2000  # Time in ms to allow AirPlay2 device to connect
-RAOP_CONNECT_TIME_MS: Final[int] = 1000  # Time in ms to allow RAOP device to connect
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 4000  # Time in ms to allow AirPlay2 device to connect
+RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
